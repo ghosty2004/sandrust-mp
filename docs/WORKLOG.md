@@ -219,3 +219,18 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   (1280x720) on headless runs. Lanes notified to re-run resolution/config-dependent tests.
 - TRACE-3 batch 1 (D3D logger + chat/input/scrollbar/cursor/fonts at pixel level)
   forwarded to M4. BOT-2 done (drive/passenger/shoot; bot2.sh exit 0).
+
+## 2026-11-04 — Data serving, chat UI and tracer merged; next wave started
+
+- Merged into main (all e2e green on the merged code: saa, m1 (isolated), m2, m3, goal,
+  m4; 470 tests; clippy 0 host + i686): samp.saa serving (all 188 file opens identical
+  to the original; samp's own scripts run; custom opcodes handled), single-player
+  systems off (0 peds/cars/cops, wanted 0 — same as the original), in-game chat, input
+  box, local commands, game text, cursor (pixel-exact vs TRACE-3 measurements).
+- TRACE-3/5 done: D3D9 call-stream logger in the tracer + d3d_diff.py; all UI unknown
+  constants settled at 1280x720 and 1920x1080; passenger/locked/trailer/bike/aircraft/
+  train/damage/death and aim-sync values measured. Lane lock now automatic in run.sh.
+- DIFF-3 + F5 done: cross-client 13/24 match (11 diff, 18 pending); patch coverage
+  173 matching / 205 missing / 3 justified (rows 61, 370, 375 logged as decisions).
+- Started: M8a + M4-P (worktree m8a, lane ui), M2-P + M3-P (worktree par, lane main),
+  TRACE-6 (world entities + combat measurements, trace lane, REA). M5 continues (m5).
