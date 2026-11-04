@@ -15,10 +15,18 @@
 //!   called, so the swap never holds a lock while GTA runs, and a nested call
 //!   (focus already ≠ 0) runs the original untouched (samp's guard).
 //!
-//! Not reproduced: the SEH fault containment around the original
-//! (A 0x100A2800, which streams the player out on a fault) — Rust cannot
-//! catch SEH; a fault inside GTA's player code ends the game as it would
-//! without samp. The saved remote health global (no reader) is skipped.
+//! Fault containment like samp's wrapper A 0x100A2800 (remote peds only): the
+//! original `ProcessControl` runs inside an SEH frame ([`guarded_thiscall`]).
+//! A fault is reported as "Warning(playerped): Exception 0x… at 0x…." and,
+//! for the first 10 faults of the process (samp's filter counter), handled:
+//! execution continues after the call, the context is restored as usual and
+//! the slot is queued for [`take_faults`] (players.rs streams the player out
+//! and prints "Removed player N due to error."). From the 11th fault on the
+//! exception is passed on (the game crashes, as with samp). Deviations: samp
+//! deletes the ped inside the hook, we on the next client tick (after the
+//! world update); GTA SEH frames nested inside the faulting call are not
+//! unwound (GTA's player code registers none). The saved remote health global
+//! (no reader) is skipped.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -190,6 +198,114 @@ fn remote_context(ped: u32) -> Option<(u8, SlotShadow)> {
     Some((slot as u8, t.shadows[slot]))
 }
 
+// ---- fault containment (samp A 0x100A2800) -----------------------------------
+
+/// A fault caught inside a remote ped's `ProcessControl`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fault {
+    pub slot: u8,
+    pub code: u32,
+    pub address: u32,
+}
+
+static FAULTS: Mutex<Vec<Fault>> = Mutex::new(Vec::new());
+/// Faults handled so far (samp's filter handles the first 10 of the process).
+static FAULTS_HANDLED: AtomicU32 = AtomicU32::new(0);
+const MAX_HANDLED_FAULTS: u32 = 10;
+static FAULT_ADDRESS: AtomicU32 = AtomicU32::new(0);
+
+/// Faults caught since the last call (main thread, client tick).
+pub fn take_faults() -> Vec<Fault> {
+    std::mem::take(&mut *FAULTS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Calls the thiscall `func(this)` inside an SEH frame with `handler`. Returns 0, or the
+/// exception code when the call faulted and [`seh_handler`] resumed here.
+///
+/// Frame layout (ESP after the three pushes = the registration record):
+/// `[+0]` previous record, `[+4]` handler, `[+8]` our EBP, then EDI, ESI, EBX,
+/// the caller's EBP and the return address.
+#[unsafe(naked)]
+unsafe extern "C" fn guarded_thiscall_raw(func: u32, this: u32, handler: u32) -> u32 {
+    std::arch::naked_asm!(
+        "push ebp",
+        "mov ebp, esp",
+        "push ebx",
+        "push esi",
+        "push edi",
+        "push ebp",
+        "push dword ptr [ebp + 16]",
+        "push dword ptr fs:[0]",
+        "mov dword ptr fs:[0], esp",
+        "mov ecx, dword ptr [ebp + 12]",
+        "call dword ptr [ebp + 8]",
+        "xor eax, eax",
+        "jmp {tail}",
+        tail = sym seh_tail,
+    )
+}
+
+/// [`guarded_thiscall_raw`] with our handler.
+unsafe fn guarded_thiscall(func: u32, this: u32) -> u32 {
+    let handler = seh_handler as unsafe extern "C" fn(*mut u8, *mut u32, *mut u8, *mut u8) -> u32 as usize as u32;
+    // SAFETY: caller guarantees `func` is a thiscall function taking only `this`.
+    unsafe { guarded_thiscall_raw(func, this, handler) }
+}
+
+/// Common exit of [`guarded_thiscall_raw`]; also the resume point after a fault
+/// (ESP = registration record, EBP restored, EAX = result).
+#[unsafe(naked)]
+unsafe extern "C" fn seh_tail() {
+    std::arch::naked_asm!(
+        "pop ecx",
+        "mov dword ptr fs:[0], ecx",
+        "add esp, 8",
+        "pop edi",
+        "pop esi",
+        "pop ebx",
+        "pop ebp",
+        "ret",
+    )
+}
+
+/// x86 `CONTEXT` / `EXCEPTION_RECORD` offsets (winnt.h).
+mod ctx {
+    pub const EAX: usize = 0xB0;
+    pub const EBP: usize = 0xB4;
+    pub const EIP: usize = 0xB8;
+    pub const ESP: usize = 0xC4;
+    pub const REC_CODE: usize = 0x0;
+    pub const REC_FLAGS: usize = 0x4;
+    pub const REC_ADDRESS: usize = 0xC;
+    /// EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND.
+    pub const UNWIND_FLAGS: u32 = 0x6;
+}
+
+/// SEH handler (cdecl): resume at [`seh_tail`] with EAX = exception code.
+unsafe extern "C" fn seh_handler(rec: *mut u8, frame: *mut u32, context: *mut u8, _dispatcher: *mut u8) -> u32 {
+    const CONTINUE_EXECUTION: u32 = 0;
+    const CONTINUE_SEARCH: u32 = 1;
+    // SAFETY: pointers handed over by the system exception dispatcher.
+    unsafe {
+        let flags: u32 = std::ptr::read_unaligned(rec.add(ctx::REC_FLAGS).cast());
+        if flags & ctx::UNWIND_FLAGS != 0 {
+            return CONTINUE_SEARCH;
+        }
+        if FAULTS_HANDLED.fetch_add(1, Ordering::SeqCst) >= MAX_HANDLED_FAULTS {
+            return CONTINUE_SEARCH;
+        }
+        let code: u32 = std::ptr::read_unaligned(rec.add(ctx::REC_CODE).cast());
+        let address: u32 = std::ptr::read_unaligned(rec.add(ctx::REC_ADDRESS).cast());
+        FAULT_ADDRESS.store(address, Ordering::SeqCst);
+        let saved_ebp = *frame.add(2);
+        std::ptr::write_unaligned(context.add(ctx::EAX).cast::<u32>(), code.max(1));
+        std::ptr::write_unaligned(context.add(ctx::EBP).cast::<u32>(), saved_ebp);
+        std::ptr::write_unaligned(context.add(ctx::ESP).cast::<u32>(), frame as u32);
+        std::ptr::write_unaligned(context.add(ctx::EIP).cast::<u32>(), seh_tail as unsafe extern "C" fn() as usize as u32);
+    }
+    CONTINUE_EXECUTION
+}
+
 /// Replacement for `CPlayerPed::ProcessControl` (thiscall, vtable 0x86D190).
 pub extern "thiscall" fn player_ped_process_control(ped: u32) {
     // SAFETY: GTA's own function with the same signature.
@@ -198,12 +314,18 @@ pub extern "thiscall" fn player_ped_process_control(ped: u32) {
         Some((slot, shadow)) => {
             CALLS_REMOTE.fetch_add(1, Ordering::Relaxed);
             // SAFETY: main thread; code sites made writable at install.
-            unsafe {
+            let fault = unsafe {
                 let saved = enter(slot, &shadow);
                 copy_in(addr::UPDATE_POSITION_CALL, &[0x90; 5]);
-                original(ped);
+                let code = guarded_thiscall(addr::PLAYER_PED_PROCESS_CONTROL, ped);
                 copy_in(addr::UPDATE_POSITION_CALL, &UPDATE_POSITION_CALL_ORIGINAL);
                 leave(&saved);
+                code
+            };
+            if fault != 0 {
+                let at = FAULT_ADDRESS.load(Ordering::SeqCst);
+                crate::log!("swap: remote ped {ped:#x} (slot {slot}) faulted in ProcessControl: {fault:#x} at {at:#x}");
+                FAULTS.lock().unwrap_or_else(|e| e.into_inner()).push(Fault { slot, code: fault, address: at });
             }
         }
         None => {
@@ -303,5 +425,24 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Result<(), Pat
     let pcol = player_ped_process_collision as extern "thiscall" fn(u32) as usize as u32;
     patcher.swap_pointer(mem, "CPlayerPed::ProcessCollision vtable", addr::VT_PLAYER_PED_PROCESS_COLLISION, pcol)?;
     with_table(|_| ());
+    if std::env::var_os("SAMP_RS_SEH_SELFTEST").is_some() {
+        seh_selftest();
+    }
     Ok(())
+}
+
+/// Opt-in check of the fault containment (`SAMP_RS_SEH_SELFTEST=1`): a call that
+/// writes through a null pointer must come back with 0xC0000005, twice in a row.
+fn seh_selftest() {
+    extern "thiscall" fn fault(this: u32) {
+        // SAFETY: deliberately faulting write, caught by the SEH frame around this call.
+        unsafe { std::ptr::write_volatile(std::hint::black_box(this) as usize as *mut u32, 1) };
+    }
+    let f = fault as extern "thiscall" fn(u32) as usize as u32;
+    for i in 0..2 {
+        // SAFETY: `fault` is a thiscall function taking only `this`.
+        let code = unsafe { guarded_thiscall(f, 0) };
+        crate::log!("swap: SEH self-test {i}: code {code:#x} (expected 0xc0000005)");
+    }
+    FAULTS_HANDLED.fetch_sub(2, Ordering::SeqCst);
 }

@@ -8,9 +8,14 @@
 //! 02AB, 0446, 03FE ×2 → direct SetModelIndex → heading/matrix/pad by memory
 //! writes, all in one frame).
 //!
+//! Parity pass (docs/phase3/parity-notes.md): special actions duck / hands up
+//! (onfoot §4.2), the one-shot weapon check with GET_CURRENT_CHAR_WEAPON and
+//! the sniper ped state (§4.3), RPC 153 on remote peds, and the streaming-out
+//! of a ped whose ProcessControl faulted (swap.rs).
+//!
 //! Deviations (docs/phase3/m3-notes.md): no name tags / markers / colours
-//! applied, no fighting style, no weapon or animation sync, no special
-//! actions, no surfing positions, no collision gating, no vehicles;
+//! applied, no fighting style, no animation sync, the other special actions,
+//! no surfing positions, no vehicles;
 //! `CWorld::Players[slot].m_pPed` is cleared after deletion (samp leaves it
 //! dangling; main-session decision after TRACE-2).
 
@@ -24,8 +29,8 @@ use crate::footsync::{Rotation, quat_from_matrix};
 use crate::game::{self, off};
 use crate::patch::{Memory, ProcessMemory};
 use crate::remote::{
-    self, Correction, PadInput, RemotePlayer, SKILLS, SlotAllocator, correct_position, heading_from_forward, normalise,
-    rows_from_quat, samp_deg_to_rad, slerp, state,
+    self, Correction, PadInput, RemotePlayer, SKILLS, SlotAllocator, SpecialStep, correct_position,
+    heading_from_forward, normalise, rows_from_quat, samp_deg_to_rad, slerp, state,
 };
 use crate::script::{Arg, Runner, op};
 use crate::swap;
@@ -46,14 +51,14 @@ const ENTITY_FLAGS: u32 = 0x1C;
 const IK_LOOK_AT: u32 = 0x618970;
 const IK_CHAIN_MANAGER: u32 = 0xC15448;
 
-/// `g_ikChainMan.LookAt("FollowPedSA", ped, nullptr, 1000, bone −1, &pos, false, 0.1, 500, 3, false)`
-/// (onfoot §5.2).
-fn look_at(ped: u32, pos: &mut [f32; 3]) {
-    type LookAt = extern "thiscall" fn(u32, *const u8, u32, u32, i32, i32, *mut f32, u8, f32, i32, i32, u8);
+/// `g_ikChainMan.LookAt("FollowPedSA", ped, nullptr, time_ms, bone −1, &pos, false, 0.1, 500, 3, false)`
+/// (onfoot §5.2: remotes 1000 ms; the local player 2000 ms, A 0x10002fa0).
+pub(crate) fn look_at(ped: u32, time_ms: u32, pos: &mut [f32; 3]) {
+    type LookAt = extern "thiscall" fn(u32, *const u8, u32, u32, u32, i32, *mut f32, u8, f32, i32, i32, u8);
     // SAFETY: GTA's IK chain manager on a live ped, main thread; the strings and vector outlive the call.
     unsafe {
         let f: LookAt = std::mem::transmute(IK_LOOK_AT as usize);
-        f(IK_CHAIN_MANAGER, c"FollowPedSA".as_ptr().cast(), ped, 0, 1000, -1, pos.as_mut_ptr(), 0, 0.1, 500, 3, 0);
+        f(IK_CHAIN_MANAGER, c"FollowPedSA".as_ptr().cast(), ped, 0, time_ms, -1, pos.as_mut_ptr(), 0, 0.1, 500, 3, 0);
     }
 }
 
@@ -324,7 +329,7 @@ impl Players {
 
     // ---- per frame (A 0x100166B0, on foot) ----------------------------------
 
-    pub fn tick(&mut self, now: Instant) {
+    pub fn tick(&mut self, runner: &mut Runner, now: Instant) {
         let mem = ProcessMemory;
         for p in self.players.values_mut() {
             if p.ped == 0 {
@@ -360,6 +365,11 @@ impl Players {
                             }
                         }
                     }
+                    // One-shot weapon and ped state (onfoot §4.3, A 0x100166B0).
+                    if crate::client::ped_in_world(ped) {
+                        apply_weapon(runner, ped, slot, f.weapon);
+                    }
+                    sniper_state(runner, ped, f.keys);
                 }
                 if let Some(v) = v3(&mem, ped + off::MOVE_SPEED) {
                     p.last_speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
@@ -391,9 +401,11 @@ impl Players {
                     if call && let Some(pos) = v3(&mem, matrix + off::MATRIX_POS) {
                         p.look_last = Some(now);
                         let mut target = [0, 1, 2].map(|i| pos[i] + p.look_offset[i]);
-                        look_at(ped, &mut target);
+                        look_at(ped, 1000, &mut target);
                     }
                 }
+                // Special actions (onfoot §4.2, A 0x10014950).
+                special_actions(runner, ped, f.special_action, in_vehicle, &mut p.phone);
                 let stale = p.is_stale(now);
                 let intel = mem.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
                 let task =
@@ -430,6 +442,33 @@ impl Players {
         }
     }
 
+    /// RPC 153 for a remote player: the shared skin path on its ped, if streamed in.
+    pub fn set_skin(&mut self, runner: &mut Runner, id: u16, skin: u32) {
+        let Some(p) = self.players.get_mut(&id) else { return };
+        p.skin = skin;
+        if p.ped != 0 && game::ped_handle(&ProcessMemory, p.ped).ok().flatten().is_some() {
+            crate::client::set_ped_skin(runner, p.ped, skin);
+        }
+    }
+
+    /// Streams out every player whose ped faulted inside ProcessControl
+    /// (samp's handler in A 0x100A2800: "Removed player %u due to error.").
+    pub fn handle_faults(&mut self, runner: &mut Runner) {
+        for fault in swap::take_faults() {
+            crate::ui::print_debug(&format!(
+                "Warning(playerped): Exception 0x{:X} at 0x{:X}.",
+                fault.code, fault.address
+            ));
+            let id = self.players.values().find(|p| p.slot == Some(fault.slot)).map(|p| p.id);
+            let Some(id) = id else { continue };
+            self.destroy_ped(runner, id);
+            if let Some(p) = self.players.get_mut(&id) {
+                p.state = state::NONE;
+            }
+            crate::ui::print_debug(&format!("Removed player {id} due to error."));
+        }
+    }
+
     /// `remote` control-channel reply: a header line, then one line per remote player.
     pub fn status(&self, now: Instant, extra: impl Fn(&RemotePlayer) -> String) -> String {
         let mem = ProcessMemory;
@@ -455,5 +494,141 @@ impl Players {
             out.push_str(&extra(p));
         }
         out
+    }
+}
+
+/// `GET_CURRENT_CHAR_WEAPON` on a ped (samp A 0x100abc90; 0 without a valid handle).
+fn current_weapon(runner: &mut Runner, ped: u32) -> u8 {
+    let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return 0 };
+    runner.run(op::GET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Local(0)]);
+    runner.local_i32(0) as u8
+}
+
+/// Runs `f` with `PlayerInFocus` = slot and the slot's weapon skills swapped in
+/// (samp A 0x100ac0a0 / 0x100af7d0); everything is restored afterwards.
+fn with_focus<R>(slot: u8, f: impl FnOnce() -> R) -> R {
+    let skills = swap::with_table(|t| t.shadows.get(usize::from(slot)).map(|s| s.skills)).unwrap_or([999.0; SKILLS]);
+    let mem = ProcessMemory;
+    let mut saved = [0f32; SKILLS];
+    for (i, v) in saved.iter_mut().enumerate() {
+        *v = mem.read_f32(game::WEAPON_SKILL_STATS + 4 * i as u32).unwrap_or(0.0);
+    }
+    let focus = mem.read_u8(game::PLAYER_IN_FOCUS).unwrap_or(0);
+    poke(game::PLAYER_IN_FOCUS, slot);
+    for (i, v) in skills.iter().enumerate() {
+        poke(game::WEAPON_SKILL_STATS + 4 * i as u32, *v);
+    }
+    let r = f();
+    for (i, v) in saved.iter().enumerate() {
+        poke(game::WEAPON_SKILL_STATS + 4 * i as u32, *v);
+    }
+    poke(game::PLAYER_IN_FOCUS, focus);
+    r
+}
+
+/// SET_CURRENT_CHAR_WEAPON under the slot's context (A 0x100ac0a0, on foot).
+fn set_weapon(runner: &mut Runner, ped: u32, slot: u8, weapon: u8) {
+    let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return };
+    with_focus(slot, || runner.run(op::SET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Int(i32::from(weapon))]));
+}
+
+/// The one-shot weapon check: arm the synced weapon; if the ped does not have it,
+/// give it with 9999 rounds and arm it again (A 0x100166B0 → 0x100af7d0).
+fn apply_weapon(runner: &mut Runner, ped: u32, slot: u8, synced: u8) {
+    let synced = synced & 0x3F;
+    if current_weapon(runner, ped) == synced {
+        return;
+    }
+    set_weapon(runner, ped, slot, synced);
+    if current_weapon(runner, ped) == synced {
+        return;
+    }
+    if let Some(model) = game::weapon_model(u32::from(synced))
+        && crate::client::load_model(runner, model)
+    {
+        with_focus(slot, || {
+            // SAFETY: CPed::GiveWeapon (thiscall) on a live remote ped, main thread.
+            unsafe {
+                let give: extern "thiscall" fn(u32, u32, u32, u32) -> u32 =
+                    std::mem::transmute(game::PED_GIVE_WEAPON as usize);
+                give(ped, u32::from(synced), 9999, 1);
+            }
+        });
+        set_weapon(runner, ped, slot, synced);
+    }
+    set_weapon(runner, ped, slot, synced);
+}
+
+/// Aiming a sniper / rocket weapon puts the ped in state 12 (sniper mode), otherwise a
+/// ped in state 12 goes back to 1 (onfoot §4.3).
+fn sniper_state(runner: &mut Runner, ped: u32, keys: u16) {
+    const PEDSTATE_IDLE: u32 = 1;
+    const PEDSTATE_SNIPER_MODE: u32 = 12;
+    if keys & remote::KEY_AIM != 0 {
+        if remote::SNIPER_STATE_WEAPONS.iter().any(|&w| current_weapon(runner, ped) == w) {
+            poke(ped + off::PED_STATE, PEDSTATE_SNIPER_MODE);
+        }
+    } else if ProcessMemory.read_u32(ped + off::PED_STATE).unwrap_or(0) == PEDSTATE_SNIPER_MODE {
+        poke(ped + off::PED_STATE, PEDSTATE_IDLE);
+    }
+}
+
+/// Duck and hands-up edges for a remote ped (onfoot §4.2).
+fn special_actions(runner: &mut Runner, ped: u32, action: u8, in_vehicle: bool, phone: &mut bool) {
+    let mem = ProcessMemory;
+    if !crate::client::ped_in_world(ped) {
+        return;
+    }
+    let Some(h) = game::ped_handle(&mem, ped).ok().flatten() else { return };
+    let flags = mem.read_u32(ped + off::PED_FLAGS).unwrap_or(0);
+    let ducking = flags & PED_FLAG_DUCKING != 0;
+    let intel = mem.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
+    let task = if intel != 0 { mem.read_u32(intel + off::INTELLIGENCE_PRIMARY_TASK).unwrap_or(0) } else { 0 };
+    let hands_up = !in_vehicle && task != 0 && mem.read_u32(task).ok() == Some(game::VTBL_TASK_HANDS_UP);
+    for step in remote::special_action_steps(action, ducking, *phone, hands_up) {
+        match step {
+            SpecialStep::StartDuck => {
+                if !in_vehicle && intel != 0 {
+                    // SAFETY: CPedIntelligence::SetTaskDuckSecondary (thiscall), main thread.
+                    unsafe {
+                        let f: extern "thiscall" fn(u32, u16) =
+                            std::mem::transmute(game::INTELLIGENCE_SET_TASK_DUCK_SECONDARY as usize);
+                        f(intel, 0);
+                    }
+                }
+            }
+            SpecialStep::StopDuck => {
+                let flags = mem.read_u32(ped + off::PED_FLAGS).unwrap_or(0);
+                poke(ped + off::PED_FLAGS, flags & !PED_FLAG_DUCKING);
+            }
+            SpecialStep::StartHandsUp => {
+                if !in_vehicle {
+                    runner.run(op::TASK_HANDS_UP, &[Arg::Int(h), Arg::Int(-2)]);
+                }
+            }
+            SpecialStep::StopHandsUp => teleport_in_place(ped),
+            SpecialStep::StartPhone | SpecialStep::StopPhone => {
+                // A 0x100ae0b0: flag, then TASK_USE_MOBILE_PHONE(ped, flag).
+                *phone = step == SpecialStep::StartPhone;
+                runner.run(op::TASK_USE_MOBILE_PHONE, &[Arg::Int(h), Arg::Int(i32::from(*phone))]);
+            }
+        }
+    }
+}
+
+/// `CPed::bIsDucking` (m_nPedFlags bit 26).
+const PED_FLAG_DUCKING: u32 = 1 << 26;
+
+/// Re-sets a ped to its own matrix position through its `Teleport` virtual (A 0x100adb60).
+fn teleport_in_place(ped: u32) {
+    let mem = ProcessMemory;
+    let matrix = mem.read_u32(ped + off::PLACEABLE_MATRIX).unwrap_or(0);
+    let Some(pos) = (matrix != 0).then(|| v3(&mem, matrix + off::MATRIX_POS)).flatten() else { return };
+    let vtbl = mem.read_u32(ped + off::VTABLE).unwrap_or(0);
+    let Ok(target) = mem.read_u32(vtbl + off::VT_TELEPORT) else { return };
+    // SAFETY: the ped's own Teleport virtual (thiscall: CVector by value, bool).
+    unsafe {
+        let f: extern "thiscall" fn(u32, f32, f32, f32, u32) = std::mem::transmute(target as usize);
+        f(ped, pos[0], pos[1], pos[2], 0);
     }
 }

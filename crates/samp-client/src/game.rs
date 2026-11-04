@@ -91,6 +91,32 @@ pub const PED_CLEAR_WEAPONS: u32 = 0x5E6320;
 pub const PED_SPEECH_INITIALISE: u32 = 0x4E68D0;
 /// `CTaskSimpleJetPack` vtable (remote-control-onfoot.md §2.1).
 pub const VTBL_TASK_SIMPLE_JETPACK: u32 = 0x8705C4;
+/// Primary-task vtable samp tests for "hands up" (A 0x100ACBA0; the task `TASK_HANDS_UP` creates).
+pub const VTBL_TASK_HANDS_UP: u32 = 0x85A29C;
+/// `CPedIntelligence::SetTaskDuckSecondary(u16 length)` (thiscall), samp A 0x100AC700.
+pub const INTELLIGENCE_SET_TASK_DUCK_SECONDARY: u32 = 0x601230;
+/// `CPedIntelligence` secondary task slot 5 (IK chain task), removed before a skin change (A 0x100AE060).
+pub const INTELLIGENCE_SECONDARY_IK: u32 = 0x2C;
+/// Scalar deleting destructor samp calls on that task (A 0x100AE060).
+pub const TASK_IK_DELETING_DTOR: u32 = 0x639330;
+/// `CModelInfo::ms_modelInfoPtrs` and its size; a ped model's info has the
+/// `CPedModelInfo` vtable (samp's valid-ped-model test A 0x100B3E10).
+pub const MODEL_INFO_PTRS: u32 = 0xA9B0C8;
+pub const MODEL_INFO_COUNT: u32 = 20001;
+pub const VTBL_PED_MODEL_INFO: u32 = 0x85BDC0;
+/// `CPed::GiveWeapon(weapon, ammo, likeUnused)` is [`PED_GIVE_WEAPON`]; `CWorld::PlayerInFocus` (u8).
+pub const PLAYER_IN_FOCUS: u32 = 0xB7CD74;
+/// `CStats::StatTypesFloat[69..79]` (weapon skills, 11 floats).
+pub const WEAPON_SKILL_STATS: u32 = 0xB79380 + 0x114;
+
+/// samp's valid-ped-model test (A 0x100B3E10): a model-info pointer with the ped vtable.
+pub fn is_ped_model<M: Memory>(mem: &M, model: u32) -> bool {
+    if model >= MODEL_INFO_COUNT {
+        return false;
+    }
+    let info = mem.read_u32(MODEL_INFO_PTRS + 4 * model).unwrap_or(0);
+    info != 0 && mem.read_u32(info).ok() == Some(VTBL_PED_MODEL_INFO)
+}
 
 /// Field offsets (named via plugin-sdk VALIDATE_OFFSET / gta-reversed headers).
 pub mod off {
@@ -307,12 +333,14 @@ pub fn read_local_sample<M: Memory>(mem: &M, ped: u32) -> Result<crate::footsync
     let weapon = mem.read_u32(wbase)?;
     let ammo = mem.read_u32(wbase + off::WEAPON_AMMO_TOTAL)?;
     let intel = mem.read_u32(ped + off::PED_INTELLIGENCE)?;
-    let jetpack = if intel != 0 {
+    let primary_vtbl = if intel != 0 {
         let task = mem.read_u32(intel + off::INTELLIGENCE_PRIMARY_TASK)?;
-        task != 0 && mem.read_u32(task)? == VTBL_TASK_SIMPLE_JETPACK
+        if task != 0 { mem.read_u32(task)? } else { 0 }
     } else {
-        false
+        0
     };
+    let jetpack = !in_vehicle && primary_vtbl == VTBL_TASK_SIMPLE_JETPACK;
+    let hands_up = !in_vehicle && primary_vtbl == VTBL_TASK_HANDS_UP;
     let can_fire = weapon < 16 || weapon == 46 || ammo > 0;
     Ok(LocalSample {
         pad,
@@ -322,9 +350,12 @@ pub fn read_local_sample<M: Memory>(mem: &M, ped: u32) -> Result<crate::footsync
         health: mem.read_f32(ped + off::PED_HEALTH)?,
         armour: mem.read_f32(ped + off::PED_ARMOUR)?,
         weapon: weapon.min(63) as u8,
-        // Special actions other than ducking (jetpack, phone, carry…) come with later milestones.
+        // samp's order (A 0x10003410): jetpack, dance, hands up, phone, piss, duck, … Only the
+        // ones this client can be in are reported.
         special_action: if jetpack {
             2
+        } else if hands_up {
+            10
         } else if ducking && !in_vehicle {
             1
         } else {

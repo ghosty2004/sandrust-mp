@@ -87,8 +87,7 @@ and the ped is deleted in the same frame as RPC 138.
   ≥ 1 m away (as m2), then run the remote-player part. Output goes to `target/goal*`.
 
 ## Deviations (on purpose or not yet)
-* No SEH containment around the original ProcessControl. samp catches a fault there and streams the player out;
-  Rust cannot catch SEH, so a fault ends the game.
+* SEH containment around the original ProcessControl: added in the parity pass (`docs/phase3/parity-notes.md`).
 * Not implemented yet:
   * surfing (0x5689FD hook);
   * the cuffs/carry bone pass (0x53EA03);

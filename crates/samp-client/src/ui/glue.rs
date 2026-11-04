@@ -74,6 +74,10 @@ struct State {
     class_buttons: Option<[samp_ui::Rect; 3]>,
     /// Last click on a dialog list row (double-click detection).
     last_list_click: Option<(usize, std::time::Instant)>,
+    /// The spawn ends class selection: its mode-0 request restores input only after
+    /// 10 frames (A 0x10003c20 → 0x100a0750(0, 0); measured: 0x541DF5 restored 10
+    /// frames after the spawn frame, docs/phase3/parity-notes.md).
+    spawn_release: bool,
 }
 
 // SAFETY: the raw D3D pointers inside are only used on the game's main thread;
@@ -236,6 +240,7 @@ fn ensure(g: &mut Option<State>, debug_mode: bool) -> &mut State {
             menu_pad: (false, false),
             last_list_click: None,
             class_buttons: None,
+            spawn_release: false,
         }
     })
 }
@@ -675,7 +680,8 @@ fn present_pass() {
         || st.core.dialogs.is_open()
         || st.core.textdraws.selection.active;
     if !wants2 && st.lock.mode() == 2 {
-        exec_ops(st.lock.request_mode0(true));
+        let immediate = !std::mem::take(&mut st.spawn_release);
+        exec_ops(st.lock.request_mode0(immediate));
     }
 }
 
@@ -771,6 +777,22 @@ pub(super) fn on_edit_key(key: samp_ui::edit::EditKey, mods: samp_ui::edit::Mods
 /// The netgame is created (Client::start).
 pub fn on_netgame_start(host: &str, port: u16, name: &str) {
     with_ui(|st| st.core.on_netgame_start(host, port, name.as_bytes()));
+}
+
+/// The configured frame limit (`fpslimit`, 20..90), if the UI exists and is not busy.
+pub fn fps_limit() -> Option<u32> {
+    try_with_ui(|st| st.core.settings.fps_limit).flatten()
+}
+
+/// Spawn (A 0x10003c20): the mode-0 request that ends class selection's input lock
+/// uses the delayed (10-frame) restore.
+pub fn class_selection_release() {
+    let _ = with_ui(|st| st.spawn_release = true);
+}
+
+/// A type-8 (debug colour) chat line, e.g. samp's "Warning(…)" lines.
+pub fn print_debug(text: &str) {
+    with_ui(|st| st.core.print_debug(text.as_bytes()));
 }
 
 /// RPC 139 InitGame.
