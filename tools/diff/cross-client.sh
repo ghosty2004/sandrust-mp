@@ -55,6 +55,9 @@ while [ $# -gt 0 ]; do
         *) echo "usage: $0 [--skip-build] [--calibrate] [--patches-only] | --report RUN_DIR" >&2; exit 2 ;;
     esac
 done
+# Lanes diff/diff2 are shared (DIFF harnesses, COV-1): hold target/locks/diff.lock for the run.
+source "$HERE/lane-lock.sh"
+diff_lane_lock
 [ "$CALIBRATE" = 1 ] && B_NAME=XcOrig2
 B_KIND=ours; [ "$CALIBRATE" = 1 ] && B_KIND=orig
 mkdir -p "$DIFF_OUT/runs"
