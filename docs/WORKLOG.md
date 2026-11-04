@@ -249,3 +249,17 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   real-time shadows, sun/moon, idle camera, ambient gunfire audio, IPL pickups, input during
   class selection) and the missing local head look; assigned to the player-parity and
   world-entity work.
+
+## 2026-11-04 — Dialogs, textdraws, menus, nametags and scoreboard merged
+
+- Merged the UI branch (86dfabc). Conflicts in client.rs / players.rs resolved keeping both
+  sides (vehicle pool + UI snapshots).
+- Verified on merged main by the main session in lane ui: m1 (headless), saa, m2, m3, goal,
+  m5, m8a exit 0; m4 first failed because a queued m4 from the UI agent ran concurrently
+  without my run holding the lane lock — rerun under `flock target/locks/ui.lock`: exit 0.
+  496 workspace tests, clippy 0 (host + i686).
+- D3D call-stream diffs vs the original: 0 lines for all dialog styles, input, textdraws +
+  sprite selection, menus, nametags + bubbles, death window, scoreboard.
+- m1.sh now re-runs itself on the isolated headless display (it had opened game windows on
+  the user's desktop when run directly; no screenshots were taken).
+- Lesson: the main session's own lane runs also take the lane lock.
