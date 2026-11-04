@@ -87,13 +87,19 @@ e2e_cleanup() {
 # e2e_shot FILE.png          — screenshot of the headless display only.
 # e2e_key KEY...             — send key presses (xdotool names, e.g. shift Left w).
 # e2e_keydown/e2e_keyup KEY  — hold / release a key.
+# Several displays at once (e.g. two games on one server, DIFF-3): give each
+# e2e_headless_start call its own E2E_DISPLAY_TAG (default: E2E_TAG; it names the
+# env file, child script and gamescope log), save E2E_GAMESCOPE_PID,
+# E2E_HEADLESS_DISPLAY and E2E_GAMESCOPE after each start, and set them back
+# before e2e_shot / e2e_key / e2e_headless_stop for that display.
 E2E_HEADLESS_ENV="$E2E_ROOT/target/e2e-headless-$E2E_TAG.env"
 
 e2e_headless_start() {
-    local res="${E2E_RES:-1280x720}" w h child
+    local res="${E2E_RES:-1280x720}" w h child dtag="${E2E_DISPLAY_TAG:-$E2E_TAG}"
     w="${res%x*}"; h="${res#*x}"
+    E2E_HEADLESS_ENV="$E2E_ROOT/target/e2e-headless-$dtag.env"
     mkdir -p "$E2E_ROOT/target"; rm -f "$E2E_HEADLESS_ENV"
-    child="$E2E_ROOT/target/e2e-headless-child-$E2E_TAG.sh"
+    child="$E2E_ROOT/target/e2e-headless-child-$dtag.sh"
     {
         echo '#!/usr/bin/env bash'
         echo "env | grep -E '^(DISPLAY|GAMESCOPE_WAYLAND_DISPLAY)=' > '$E2E_HEADLESS_ENV'"
@@ -101,7 +107,7 @@ e2e_headless_start() {
     } > "$child"
     chmod +x "$child"
     # Own process group, so e2e_headless_stop can take down gamescope and its child.
-    setsid gamescope --backend headless -W "$w" -H "$h" -w "$w" -h "$h" -- "$child" > "$E2E_ROOT/target/e2e-gamescope-$E2E_TAG.log" 2>&1 &
+    setsid gamescope --backend headless -W "$w" -H "$h" -w "$w" -h "$h" -- "$child" > "$E2E_ROOT/target/e2e-gamescope-$dtag.log" 2>&1 &
     E2E_GAMESCOPE_PID=$!
     local i
     for ((i = 0; i < 40; i++)); do [ -s "$E2E_HEADLESS_ENV" ] && break; sleep 0.25; done

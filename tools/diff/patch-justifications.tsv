@@ -1,0 +1,8 @@
+# F5 patch-coverage justifications: CSV rows (line numbers of docs/re/data/gta-patches-r4-annotated.csv)
+# the project decided NOT to apply. Columns (tab-separated): row, reason, decision link.
+# Add a row only with a written reason backed by the specs; record the decision in docs/ROADMAP.md
+# "Decisions made autonomously" (main session).
+row	reason	decision
+61	not applicable on 1.0 US: 0x7FB060 is the EU-only variant of the RwRasterDestroy stub (row 60); samp writes it only for the EU executable, on 1.0 US the address is RwRasterPushContext	docs/ROADMAP.md#decisions-made-autonomously (entry pending, main session); evidence docs/phase3/re10-gaps.md M5 rows (row 61), docs/re/subsystems/gta-patches.md (0x7fb060 row)
+370	dead code in samp: the 0.95 -> 2.0 write to 0x858EF0 is only in A 0x100A2FA0, which has no reference (not in the live hook 0x100A2E20)	docs/ROADMAP.md#decisions-made-autonomously (entry pending, main session); evidence docs/phase3/re10-gaps.md M7 item 33 + rows (row 370), docs/re/subsystems/remote-control-combat.md section 10
+375	dead code in samp: the RET write to 0x6D64F0 (CVehicle::SetupRender) lives in stub A 0x100A4150, which has no call, jump or pointer reference; SetupRender is never patched	docs/ROADMAP.md#decisions-made-autonomously (entry pending, main session); evidence docs/phase3/re10-gaps.md M5 rows (row 375), docs/re/subsystems/remote-control-vehicles.md RE-10 B

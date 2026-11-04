@@ -218,3 +218,88 @@ Our client survived all 176 steps, including gmx; only its final `quit` needed t
 * Steps run in one session, so a missing reaction in ours can change later steps. For
   example, if ours does not teleport, every later position differs. The delta-based state
   comparison limits this, but does not remove it.
+
+# DIFF-3 — cross-client (criterion F3)
+
+The original client and ours on ONE server at the same time. Each player's own
+local ped is compared with the ped the OTHER client shows for it, both directions.
+
+```
+tools/diff/cross-client.sh [--skip-build]       # ours vs original (~4 min), report
+tools/diff/cross-client.sh --calibrate          # original vs original: noise floor + the original's own relations
+tools/diff/cross-client.sh --report RUN_DIR     # report only
+```
+
+* Lanes: A = original `samp.dll` + tracer (`wine/prefix-diff`, `wine/gta-sa-diff`, ctl 47706);
+  B = our client (`wine/prefix-diff2`, `wine/gta-sa-diff2`, ctl 47705; `--calibrate`: a second
+  original + tracer on 47705). One server: `E2E_TAG=diff`, UDP 7795, `diffbase` +
+  e2eprobe + `tools/diff/xclient.pwn` (RCON `xc tp|hpar|skin|sa|info`). Each game runs on its own
+  headless gamescope (`E2E_DISPLAY_TAG=xc-a` / `xc-b`; `tools/e2e/lib.sh` now supports several displays
+  at once). `wine-env.sh` is sourced per lane (private Documents, headless video mode).
+* Driver `tools/diff/xclient.py`: join, Shift on both until spawned, teleport both to the LSIA runway
+  (5 m apart, facing west), dump the patch bytes (F5), then 17 steps. Keys go to the actor's display only.
+* What is read: the same code on both sides, through `peek` (gta_sa.exe 1.0 US, plugin-sdk offsets):
+  model, position, heading, health, armour, move state, `bIsDucking` / `bIsInTheAir` / `bIsStanding`,
+  and the RpClump's animation blend list (hierarchy hash, group, id, blend). The other player's ped
+  comes from `remote` (ours: the line with that name; tracer: new `remote` command, header +
+  one line per cached `Players[slot>=1]` ped). The tracer serves one connection at a time, so the
+  driver keeps one pipelined connection per side (also for `state`).
+* Checks per step: visible, pos, heading, skin, health, armour, ducking, in_air, move, anims (the
+  sender's new animations must appear on the observer's ped within the window), anim_final.
+  Animations are compared by hierarchy hash (what is drawn), not by association group.
+* Calibration (`--calibrate`, 3 runs, identical results): the original keeps every relation except
+  health/armour (a remote ped's GTA health is always 1000 and armour 0; samp keeps the synced values
+  elsewhere). Largest original deviation 0.075 m / 0.011 rad. The report then uses
+  tolerances = 1.5 × that (floors 0.1 m, 0.03 rad), judges relations the original does not keep by
+  comparing our observer with the original's observer, and adds `sender_vs_original`: the acting
+  player's own ped must play what the original's did in the same step (else "sender == observer"
+  holds trivially when neither side applied an RPC).
+* Vehicle (M5), combat (M7), objects (M6) and chat (M4) steps are listed as PENDING.
+* Output: `target/diff/cross-client.{md,json}` (+ `cross-client-calibration.*`), runs in
+  `target/diff/runs/xclient-*` / `xcalib-*` (`samples.jsonl`, `meta.json`, patch dumps, logs).
+  Exit 0 only if every enabled step matches both ways.
+
+## Baseline (2026-11-04, run xclient-20261104-212008, calibration xcalib-20261104-211825)
+
+13/24 enabled step-directions MATCH, 11 DIFF, 18 pending.
+* MATCH both ways: spawn_idle, health_armour, tp_A, tp_B; orig→ours jump/uncrouch; ours→orig
+  jump/crouch/uncrouch. Positions within 0.09 m, headings within 0.011 rad.
+* Our local ped walks with other animations than samp's (hash f46a419c/a9f89004, group 54, vs
+  samp's a38efa5f/66296341, group 118; idle is the same hash). Our view of the original also uses
+  group-54 walk anims (walk/turn orig→ours DIFF); the original shows our walk with its own anims
+  (walk/turn ours→orig DIFF + sender_vs_original). Probably the CJ-walk anim-group rows 43/187.
+* Crouch: the original shows our crouch; ours does not show the original's (ducking 1/0).
+* SetPlayerSpecialAction(HANDSUP) and SetPlayerSkin are applied neither to our local ped nor to the
+  remote ped in ours (handsup, handsup_off, skin DIFF both ways).
+
+# F5 — patch coverage
+
+```
+tools/diff/patch-coverage.sh [--skip-build]     # boots both (cross-client.sh --patches-only), dumps, reports
+tools/diff/patch-coverage.sh --from RUN_DIR     # from any cross-client run (they dump too)
+```
+
+* Live bytes at every CSV row's address (row = CSV line number), read 5 times ~0.3 s apart on each
+  side after join + spawn + teleport: original via the tracer's `peek`, ours via its own; unmodified
+  bytes from `re/gta/1.0-US/gta_sa.exe`. Pointer / call / jmp rows count as matching when both
+  clients redirect out of gta_sa.exe. Rows the original had not applied at the snapshot (runtime,
+  temporary, conditional, dead) and rows without plain addresses (348, 382, 383) fall back to the static
+  tables of samp-client (`csv_row` in patches.rs / sectors.rs / stores.rs, "CSV row N" comments).
+  Row 347 (sector-grid zero fill) is not live-checkable (the memory holds Players[2..] afterwards).
+* `tools/diff/patch-justifications.tsv` (row, reason, decision link): rows 61 (EU-only stub), 370 and
+  375 (dead code in samp), reasons from re10-gaps.md and the specs. Their ROADMAP decision entries
+  are still to be written by the main session.
+* Owning milestone of missing rows: re10-gaps.md "CSV rows Mx must apply".
+* Rows 0x6884C4/0x688200 (213/214/367): samp toggles them around remote-ped processing; one
+  snapshot once caught the restored bytes (before multi-snapshot dumps). Rows the tracer itself
+  rewrites in the original's lane are annotated (19, 26).
+
+## Baseline (2026-11-04, run xpatch-20261104-212400)
+
+applied/matching 173, applied (static only) 3, applied/different 0, missing 205, justified 3.
+Missing by owner: M5 70, M6 37, M7 29, M5/M6 2, M5/M7 1, not M5–M7 66 (start-up/SP-OFF/M3/UI/M8b/M9).
+To look at: row 269 (samp writes it live; sectors.rs deliberately skips it — justify or apply),
+rows 380–384 (marked dead in the CSV). But 383 (0x71A223 := 03) and 384 (0x704E8A NOP ×5,
+0x609A4E call → samp) ARE written in the original's live memory, so the "dead" label is wrong for
+them or another live path writes the same bytes: needs RE before a justification.
+348/362/364: dormant custom-model path, justify for R4 per re10-gaps.
