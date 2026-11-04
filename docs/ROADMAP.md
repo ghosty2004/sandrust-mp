@@ -15,6 +15,7 @@ differential capture against the original client, e2e script.
 | samp-client worktree par (lane main) | M2-P + M3-P (player/remote-ped parity) | UX-1 |
 | samp-client worktree m8a (lane ui) | M8a + M4-P (dialogs, textdraws, menus, scoreboard, nametags, death window; UI parity) | — |
 | tracer worktree efx (lane trace via lock) | EFX-1 effect tracer | — |
+| samp-client worktree m6 (lane veh) | M6 world entities (parity loop) | — |
 | measurement (lane trace, REA) | TRACE-6 (world entities + combat, original) | TRACE-7: remaining UI/vehicle open items |
 | harness (lanes diff + diff2) | COV-1 coverage diff | DIFF-4 visual (D3D call-stream) |
 | no-game | — (free) | NET-6 ack/resend timing; rename to sandrust-mp |
@@ -25,7 +26,6 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 
 1. PAR-AUDIT — retroactive parity loop on everything already in main (protocol/bot, M1, M2, M3, SAA-2, SP-OFF, M4, M5): re-run DIFF-2 on current main, cross-client, COV-1 coverage diff, EFX-1 effect diffs for the RPCs each feature handles, D3D diff for chat, network diffs; produce a per-feature diff list and run fix agents through the parity loop until empty or logged decisions (after COV-1 + EFX-1 land)
 2. UX-1 — SA:MP loading screen (loadscs.txd `title` from samp.saa; splash rows applied in archive mode by SAA-2 — verify vs original with D3D diff + isolated screenshots)
-3. M6 — world entities (needs TRACE-6 results): objects incl. SAMP.img models/materials, pickups, actors, checkpoints, gang zones, map icons, 3D labels
 4. M7 — combat (needs TRACE-6 results, M5 merged ✔): aim/bullet/weapons sync, damage, death
 5. M5-P — vehicle open items (train exit, remote passenger weapons/drive-by, trailer receive, aircraft remote z, plates + radar colours after the D3D proxy merge)
 6. DIFF-4 — visual parity harness (D3D call-stream diff per UI element) once M8a lands
@@ -93,7 +93,7 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | M4-core | `crates/samp-ui`: renderer-independent UI logic for M4/M8a (chat buffer + paging + F7 modes, colour-code parsing incl. alpha rule, text wrapping/limits, ~k~ expansion hook, input box editing/history, local command parser + sa-mp.cfg read/write, dialog models for all 6 styles incl. list/tablist parsing, scoreboard model, death-window model) | done | main session: 420 workspace tests pass, clippy 0; 83 unit tests from RE-5 tables; exact strings from samp.dll's string table; ~39 unknown constants listed in `docs/phase3/m4-core-notes.md` for TRACE-3 (incl. U-LIST-CODES: assumed list rows render colour codes) | no D3D; consumed by samp-client in M4 |
 | M4 | Chat window + input, local commands, game text, connect lines, cursor | done (merged a45f3d4) | main session: `tools/e2e/m4.sh` exit 0 in lane ui (chat round trip, colours, /pagesize saved, server command); agent: 3×; 432 tests, clippy 0; 1280x720 screenshot matches TRACE-3 numbers to the pixel; RPC 101/50 bytes identical to the original | deviations → M4-P |
 | M5 | Vehicles: streaming, driving, passengers, unoccupied, trailers, remote drivers | done (merged f4d480b) | main session: `tools/e2e/m5.sh` exit 0 (remote driver seated + tracking; local enter F → driver, W → 142 m server-side, exit); all e2e green after merge (saa, m1–m5, goal), 485 tests, clippy 0; tracer diff vs original matches stream-in/blips/warps/ProcessControl context/correction timing | `docs/phase3/m5-notes.md`; open: train exit, remote passenger weapons/drive-by, trailer receive, heli/plane remote z, 15 s wreck delete (unobservable vs open.mp), plates (needs D3D proxy), radar colours |
-| M6 | World entities: objects, pickups, actors, checkpoints, 3D labels, gang zones, map icons | todo | e2e | needs SA:MP assets decision |
+| M6 | World entities: objects, pickups, actors, checkpoints, 3D labels, gang zones, map icons | in-progress | e2e | needs SA:MP assets decision |
 | M7 | Combat: aim/bullet/weapons sync, damage, death | todo | e2e + differential | |
 | M4-P | UI parity from TRACE-3 batch 2 + M4 deviations: chat render-to-texture cache (2048x1024 RT like samp), per-frame HUD flag order, connect timing (Started → +3.0 s Connecting; retry every ~6.05 s with "didn't respond" line), history keeps duplicates and position across close/send, input keeps text on ESC/F6, password mask U+25CF, ctrl+A / ctrl+word moves, /fontsize recreates GUI fonts immediately, /timestamp layout, IME/clipboard | in-progress | D3D call-stream diff (tools/trace/d3d_diff.py) of chat/input scenarios = no differences | measured values in trace-notes "UI (TRACE-3)" |
 | M8a | Dialogs (6 styles), textdraws (+selection), menus, scoreboard, nametags + bars + AFK icon, death window, chat bubbles | in-progress | `tools/e2e/m8a.sh` + D3D call-stream diff vs the original | measured values: trace-notes "UI (TRACE-3)" |
