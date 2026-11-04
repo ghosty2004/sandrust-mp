@@ -16,7 +16,8 @@
 # Exit status 0 = pass. Usage: tools/e2e/m3.sh
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-export E2E_TAG=main E2E_PORT=7777 E2E_CTL_PORT=47700
+export E2E_TAG="${E2E_TAG:-main}" E2E_PORT="${E2E_PORT:-7777}" E2E_CTL_PORT="${E2E_CTL_PORT:-47700}"
+export SAMP_RS_CTL_PORT="$E2E_CTL_PORT"
 source "$ROOT/tools/wine-env.sh"
 source "$ROOT/tools/e2e/lib.sh"
 NAME=RustClient
@@ -117,7 +118,8 @@ if [[ "${1:-}" == --inner ]]; then
         e2e_shot "$ROOT/target/$SHOT-walk.png" || say "warning: walk screenshot failed"
     fi
     say "starting $BOT for $BOT_SECONDS s"
-    ( cd "$ROOT" && exec target/debug/samp-bot "127.0.0.1:$E2E_PORT" --name "$BOT" --seconds "$BOT_SECONDS" ) \
+    ( cd "$ROOT" && exec "${CARGO_TARGET_DIR:-target}/debug/samp-bot" "127.0.0.1:$E2E_PORT" --name "$BOT" --seconds "$BOT_SECONDS" \
+        --auth-table "${SAMP_RS_ROOT:-$ROOT}/data/auth_table.txt" ) \
         > "$OUT/bot.out" 2>&1 &
     BOT_PID=$!
     e2e_wait_log "\[e2e\] connect id=[0-9]+ name=$BOT" 20 || fail "bot did not connect"
@@ -207,7 +209,7 @@ say "building (i686-pc-windows-gnu release + samp-bot)"
 { (cd "$ROOT" && cargo build --release --target i686-pc-windows-gnu -p samp-client -p samp-launcher) &&
   (cd "$ROOT" && cargo build -p samp-bot); } > "$OUT/build.out" 2>&1 \
     || { cat "$OUT/build.out"; say "build failed"; exit 1; }
-[[ -f "$ROOT/data/auth_table.txt" ]] || { say "data/auth_table.txt missing (tools/extract_auth_table.py)"; exit 1; }
+[[ -f "${SAMP_RS_ROOT:-$ROOT}/data/auth_table.txt" ]] || { say "data/auth_table.txt missing (tools/extract_auth_table.py)"; exit 1; }
 if [[ -n "$(e2e_ctl ping)" ]]; then say "something already answers on port $E2E_CTL_PORT; refusing to run"; exit 1; fi
 rm -f "$CLIENT_LOG" "$ROOT"/target/"$SHOT"-*.png
 m3_server_start || exit 1

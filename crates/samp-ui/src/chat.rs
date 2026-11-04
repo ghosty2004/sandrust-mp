@@ -420,6 +420,12 @@ impl ChatWindow {
         self.pos = p as u32;
     }
 
+    /// Sets the scroll position, clamped like the scrollbar (`1..=100 − pageSize`).
+    /// Enter in the chat input sets 90 (A 0x10067390).
+    pub fn scroll_to(&mut self, pos: u32) {
+        self.pos = pos.clamp(SCROLL_MIN, self.max_pos());
+    }
+
     /// Scroll to the newest entry.
     pub fn scroll_to_bottom(&mut self) {
         self.pos = self.max_pos();
@@ -444,12 +450,17 @@ impl ChatWindow {
 
     // ----- layout -----------------------------------------------------------------------
 
-    /// Bottom of the chat (chat +0x12e) for main-font line height `h`. Unknown (notes
-    /// U-CHATBOTTOM): every page line counts, filled or not.
+    /// Bottom of the chat (chat +0x12e) for main-font line height `h`.
+    ///
+    /// The draw loop (A 0x10067940) runs once per page line, filled or not; at the end
+    /// of each iteration it advances the rect (`top += h + 1`, `bottom = top + h + 1`)
+    /// and finally stores the bottom of the rect prepared for the line *after* the
+    /// last one: `10 + (pageSize + 1)·(h + 1)`; 110 with page size 0. Verified against
+    /// a screenshot of the original (input box top at 175 for page size 10, h = 14).
     pub fn bottom(&self, h: i32) -> i32 {
         match self.page_size {
-            0 | 1 => FIRST_LINE_BOTTOM,
-            n => FIRST_LINE_TOP + (n as i32 - 1) * (h + 1) + h + 1,
+            0 => FIRST_LINE_BOTTOM,
+            n => FIRST_LINE_TOP + (n as i32 + 1) * (h + 1),
         }
     }
 
@@ -661,7 +672,7 @@ mod tests {
         assert_eq!(last.rect.top, 10 + 9 * 16);
         assert_eq!(last.items[0], TextItem { x: 45, y: 154, text: b"Bob:".to_vec(), colour: 0xFF00FF00 });
         assert_eq!(last.items[1].x, 45 + 4 * 8 + 5);
-        assert_eq!(l.bottom, 10 + 10 * 16);
+        assert_eq!(l.bottom, 10 + 11 * 16);
         assert_eq!(l.outline.len(), 4);
         c.set_timestamps(true);
         let l = c.layout(&m, 1920);

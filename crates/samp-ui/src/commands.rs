@@ -238,6 +238,8 @@ pub enum Effect {
         file: SaveFile,
         line: Vec<u8>,
         ok: Vec<u8>,
+        /// Line kind of `ok`: `/save` prints type 4, `/rs` type 8. `failed` is always type 8.
+        ok_kind: MessageKind,
         failed: Vec<u8>,
     },
     SetChatPageSize(u32),
@@ -256,8 +258,15 @@ pub enum Effect {
     Debug(DebugAction),
 }
 
+/// Type-4 line (helper A 0x10068070).
 fn info(s: impl Into<String>) -> Effect {
     Effect::Print(MessageKind::Info, s.into().into_bytes())
+}
+
+/// Type-8 line (helper A 0x100680f0). Which feedback string goes through which helper
+/// was read from the call after each string push in the 2021 build.
+fn debug(s: impl Into<String>) -> Effect {
+    Effect::Print(MessageKind::Debug, s.into().into_bytes())
 }
 
 fn persist(cfg: &mut SampCfg, out: &mut Vec<Effect>, key: &str, v: i32) {
@@ -325,6 +334,7 @@ pub fn execute(cmd: &LocalCommand, settings: &mut UiSettings, cfg: &mut SampCfg,
                         file: SaveFile::SavedPositions,
                         line: save_line(&pos, args),
                         ok: if in_car { msg::SAVED_IN_CAR } else { msg::SAVED_ON_FOOT }.into(),
+                        ok_kind: MessageKind::Info,
                         failed: msg::SAVE_OPEN_FAILED.into(),
                     }
                 } else {
@@ -332,6 +342,7 @@ pub fn execute(cmd: &LocalCommand, settings: &mut UiSettings, cfg: &mut SampCfg,
                         file: if in_car { SaveFile::RawVehicles } else { SaveFile::RawPositions },
                         line: raw_save_line(&pos, args),
                         ok: if in_car { msg::RAW_SAVED_IN_CAR } else { msg::RAW_SAVED_ON_FOOT }.into(),
+                        ok_kind: MessageKind::Debug,
                         failed: msg::RAW_OPEN_FAILED.into(),
                     }
                 };
@@ -339,8 +350,8 @@ pub fn execute(cmd: &LocalCommand, settings: &mut UiSettings, cfg: &mut SampCfg,
             }
         }
         CommandKind::Rcon => out.push(Effect::SendRcon(args.to_vec())),
-        CommandKind::Mem => out.push(info(msg::memory(game.memory_counter()))),
-        CommandKind::Interior => out.push(info(msg::interior(game.interior()))),
+        CommandKind::Mem => out.push(debug(msg::memory(game.memory_counter()))),
+        CommandKind::Interior => out.push(debug(msg::interior(game.interior()))),
         CommandKind::FpsLimit => {
             let n = atoi(args);
             if FPS_LIMIT_RANGE.contains(&n) {
@@ -359,7 +370,7 @@ pub fn execute(cmd: &LocalCommand, settings: &mut UiSettings, cfg: &mut SampCfg,
                 out.push(Effect::SetChatPageSize(n as u32));
                 persist(cfg, &mut out, keys::PAGESIZE, n);
             } else {
-                out.push(info(msg::PAGESIZE_USAGE));
+                out.push(debug(msg::PAGESIZE_USAGE));
             }
         }
         CommandKind::FontSize => {
@@ -369,7 +380,7 @@ pub fn execute(cmd: &LocalCommand, settings: &mut UiSettings, cfg: &mut SampCfg,
                 persist(cfg, &mut out, keys::FONTSIZE, n);
                 out.push(Effect::RebuildFonts(n));
             } else {
-                out.push(info(msg::FONTSIZE_USAGE));
+                out.push(debug(msg::FONTSIZE_USAGE));
             }
         }
         CommandKind::Timestamp => {
@@ -426,22 +437,22 @@ pub fn execute(cmd: &LocalCommand, settings: &mut UiSettings, cfg: &mut SampCfg,
         // Unknown (notes U-DEBUGCMDS): argument checks of the debug commands.
         CommandKind::V | CommandKind::Vehicle => match scan_ints(args, 1).first() {
             Some(&id) => out.push(Effect::Debug(DebugAction::SpawnVehicle(id))),
-            None => out.push(info(msg::USAGE_V)),
+            None => out.push(debug(msg::USAGE_V)),
         },
         CommandKind::PlayerSkin => match scan_ints(args, 1).first() {
             Some(&id) => out.push(Effect::Debug(DebugAction::PlayerSkin(id))),
-            None => out.push(info(msg::USAGE_PLAYER_SKIN)),
+            None => out.push(debug(msg::USAGE_PLAYER_SKIN)),
         },
         CommandKind::SetWeather => match scan_ints(args, 1).first() {
             Some(&id) => out.push(Effect::Debug(DebugAction::SetWeather(id))),
-            None => out.push(info(msg::USAGE_SET_WEATHER)),
+            None => out.push(debug(msg::USAGE_SET_WEATHER)),
         },
         CommandKind::SetTime => match scan_ints(args, 2)[..] {
             [h, m] if (0..=23).contains(&h) && (0..=59).contains(&m) => {
                 out.push(Effect::Debug(DebugAction::SetTime { hour: h, minute: m }))
             }
-            [_, _] => out.push(info(msg::INVALID_TIME)),
-            _ => out.push(info(msg::USAGE_SET_TIME)),
+            [_, _] => out.push(debug(msg::INVALID_TIME)),
+            _ => out.push(debug(msg::USAGE_SET_TIME)),
         },
     }
     out
@@ -586,6 +597,7 @@ mod tests {
                 file: SaveFile::RawPositions,
                 line: b"1.0000,2.0000,3.0000,180.5000 ; spot\n".to_vec(),
                 ok: msg::RAW_SAVED_ON_FOOT.into(),
+                ok_kind: MessageKind::Debug,
                 failed: msg::RAW_OPEN_FAILED.into(),
             }]
         );
@@ -606,5 +618,24 @@ mod tests {
         assert_eq!(printed(&dbg(b"/set_time 1")), vec![msg::USAGE_SET_TIME]);
         assert_eq!(dbg(b"/v 411"), vec![Effect::Debug(DebugAction::SpawnVehicle(411))]);
         assert_eq!(printed(&dbg(b"/vehicle")), vec![msg::USAGE_V]);
+    }
+
+    #[test]
+    fn feedback_line_kinds_follow_the_original_helpers() {
+        let (mut s, mut c) = (UiSettings::default(), SampCfg::default());
+        let kind = |e: &[Effect]| {
+            e.iter()
+                .find_map(|x| match x {
+                    Effect::Print(k, _) => Some(*k),
+                    _ => None,
+                })
+                .expect("a printed line")
+        };
+        assert_eq!(kind(&run(b"/pagesize 5", &mut s, &mut c)), MessageKind::Debug);
+        assert_eq!(kind(&run(b"/fontsize 9", &mut s, &mut c)), MessageKind::Debug);
+        assert_eq!(kind(&run(b"/mem", &mut s, &mut c)), MessageKind::Debug);
+        assert_eq!(kind(&run(b"/interior", &mut s, &mut c)), MessageKind::Debug);
+        assert_eq!(kind(&run(b"/fpslimit 5", &mut s, &mut c)), MessageKind::Info);
+        assert_eq!(kind(&run(b"/headmove", &mut s, &mut c)), MessageKind::Info);
     }
 }

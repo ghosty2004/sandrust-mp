@@ -27,7 +27,7 @@ cleanup() { wineserver -k 2>/dev/null || true; }
 trap cleanup EXIT
 
 # The DLL reads the auth table (third-party data, gitignored) from this path.
-AUTH_TABLE="${AUTH_TABLE:-$ROOT/data/auth_table.txt}"
+AUTH_TABLE="${AUTH_TABLE:-${SAMP_RS_ROOT:-$ROOT}/data/auth_table.txt}"
 if [[ -f "$AUTH_TABLE" ]]; then
     export SAMP_RS_AUTH_TABLE="$(winepath -w "$AUTH_TABLE")"
 else

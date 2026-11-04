@@ -47,19 +47,19 @@ Every item below is a named constant or a commented code path tagged with the sa
 | U-STRIP | `colour::strip_codes` | in-place removal; scan resumes at the same index (a code formed by a removal there is removed too) |
 | U-KEXP | `text::KEY_EXPANSION_MAX_OUTPUT` | expanded `~k~` text kept if `len <= 255` |
 | U-PAGESIZE-SCROLL | `chat::PAGESIZE_CHANGE_SCROLLS_TO_BOTTOM` | a page-size change scrolls to the bottom (alternative: only clamps) |
-| U-CHATBOTTOM | `chat::ChatWindow::bottom` | chat bottom (+0x12e) counts every page line, filled or not |
-| U-CHATLOG-NAME | `chat::ChatEntry::chatlog_line` | chatlog shows `<name>` without the stored `:` |
-| U-CHATLOG-MODE | `chat::CHATLOG_LINE_END` | lines end in `\r\n` (format string); if the file is opened in text mode the disk has CR CR LF |
+| U-CHATBOTTOM | `chat::ChatWindow::bottom` | **resolved (M4)**: `10 + (pageSize + 1)·(h + 1)`, every page line counts (A 0x10067940 loop; screenshot of the original) |
+| U-CHATLOG-NAME | `chat::ChatEntry::chatlog_line` | **confirmed (M4)**: the original logged `<OrigClient> hello world` |
+| U-CHATLOG-MODE | `chat::CHATLOG_LINE_END` | **confirmed (M4)**: the original's chatlog.txt has CR CR LF on disk (text mode); samp-client converts `\n` → `\r\n` when writing |
 | U-CHAT-LONGNAME | `chat::add_player_chat` | wrapped halves are added independently (a >24-char name drops only line 1) |
 | U-EDITKEYS | `edit` | stock DXUT edit-box keys; a word stop is a non-blank character after a blank |
 | U-MASK | `edit::PASSWORD_MASK` | password mask `*` |
 | U-INPUT-CAP | `input::EDIT_CAPACITY` | chat edit box stops at 128 chars (alternative: truncation only on Enter; same bytes sent) |
 | U-HISTORY-DUP | `input::HISTORY_SKIPS_DUPLICATES` | repeated lines are pushed again |
-| U-HISTORY-RESET | `input::ChatInput::close` | closing resets the history position to the live line |
+| U-HISTORY-RESET | `input::ChatInput::close` | **resolved (M4)**: closing keeps the text and the history position; Enter clears the text and resets the position (A 0x10069580 / 0x100699d0; seen on the original) |
 | U-F6 | `keys::key_up` | F6 opens/closes with no condition besides the input existing |
 | U-CFG-READ | `config::SampCfg::parse` | `key=value` lines, trimmed, case-sensitive keys, `"…"` = string, number with `.` = float, other numbers = int, a later duplicate wins |
 | U-CFG-CRLF | `config::LINE_END` | writer output uses CR LF (mode `"w"` is text mode) |
-| U-CFG-STARTUP | `config::apply_startup_defaults` | only `fpslimit=48` and `audioproxyoff=0` are created; new keys are appended (RE-6) |
+| U-CFG-STARTUP | `config::apply_startup_defaults` | **resolved (M4)**: `fpslimit=48` (missing or 0), `multicore=1` (missing), `audioproxyoff=0` (missing), in that order, appended; matches a file the original wrote |
 | U-FONTSIZE-STARTUP | `config::UiSettings::from_cfg` | stored `fontsize` not range-checked at start-up |
 | U-TOGOBJLIGHT | `config::UiSettings::object_light_flag` | flag starts false; visible effect unknown |
 | U-RS-ERROR | `commands::msg::RAW_OPEN_FAILED` | the single raw-save error string is used for both raw files |

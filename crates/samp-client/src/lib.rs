@@ -22,6 +22,7 @@ pub mod scmops;
 pub mod script;
 pub mod sectors;
 pub mod stores;
+pub mod ui;
 
 #[cfg(windows)]
 mod client;

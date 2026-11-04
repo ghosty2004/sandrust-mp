@@ -96,6 +96,7 @@ impl Client {
         let server = crate::netclient::resolve(&host, port).map_err(|e| format!("resolve {host}:{port}: {e}"))?;
         crate::log!("client: connecting to {server} as {name:?} (auth table {path}, {} entries)", auth.len());
         let net = NetClient::new(server, &name, auth).map_err(|e| format!("udp socket: {e}"))?;
+        crate::ui::on_netgame_start(&host, port, &name);
         let now = Instant::now();
         Ok(Self {
             net,
@@ -189,6 +190,8 @@ impl Client {
         } else if !matches!(self.net.phase(), Phase::Connected) {
             self.connecting_tick();
         }
+        // Chat input and connection lines of the in-game UI (M4).
+        crate::ui::net_tick(&mut self.net);
         // Push out what this frame queued (sync packets, RPCs) right away.
         self.net.flush(now);
         if self.last_net_log.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(5)) {
@@ -210,11 +213,13 @@ impl Client {
                     g.on_foot_rate
                 );
                 self.players.set_init_game(g.player_id, g.death_drop_money);
+                crate::ui::on_init_game(g.server_name.as_bytes(), g.player_id);
                 self.enter_class_selection(now, g.spawns_available);
             }
             Event::Rpc(r) => self.on_rpc(r),
             Event::Sync(s) => self.players.on_sync(s, now),
             Event::Closed(reason) => {
+                crate::ui::on_closed();
                 self.players.clear();
                 crate::log!("client: session closed: {reason}");
                 self.class_sel.leave();
@@ -226,6 +231,7 @@ impl Client {
     fn on_rpc(&mut self, r: Incoming) {
         use player::Incoming as P;
         let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        crate::ui::on_rpc(&r);
         match r {
             Incoming::Ui(ui::Incoming::SendClientMessage(m)) => {
                 crate::log!("[chat {:08x}] {}", m.colour, text(&m.message));

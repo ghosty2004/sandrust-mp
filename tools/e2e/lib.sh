@@ -8,6 +8,8 @@ E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Parallel test lanes: set E2E_TAG (e.g. "trace") to get a separate server dir,
 # headless env file and logs; set E2E_PORT / E2E_CTL_PORT to distinct values too.
 E2E_TAG="${E2E_TAG:-main}"
+# Checkout holding the gitignored server/ and data/ (SAMP_RS_ROOT, for git worktrees).
+E2E_DATA_ROOT="${SAMP_RS_ROOT:-$E2E_ROOT}"
 E2E_SERVER="${E2E_SERVER:-$E2E_ROOT/target/e2e-server-$E2E_TAG}"
 E2E_LOG="$E2E_SERVER/e2e-server.log"
 E2E_PORT="${E2E_PORT:-7777}"
@@ -15,7 +17,7 @@ E2E_CTL_PORT="${E2E_CTL_PORT:-47700}"
 
 e2e_server_prepare() {
     mkdir -p "$E2E_SERVER"
-    rsync -a --delete --exclude 'log.txt' --exclude 'e2e-server.log' "$E2E_ROOT/server/" "$E2E_SERVER/"
+    rsync -a --delete --exclude 'log.txt' --exclude 'e2e-server.log' "$E2E_DATA_ROOT/server/" "$E2E_SERVER/"
     ( cd "$E2E_SERVER" && LD_LIBRARY_PATH=qawno ./qawno/pawncc "$E2E_ROOT/tools/e2e/probe/e2eprobe.pwn" \
         -iqawno/include -ofilterscripts/e2eprobe.amx -d0 > /dev/null )
     python3 -I - "$E2E_SERVER/config.json" "$E2E_PORT" <<'PY'

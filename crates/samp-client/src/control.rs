@@ -13,6 +13,11 @@
 //!   samp.saa entry served so far (name, hash, size, opens, first path)
 //! * `spawn` → debugging aid: run the local spawn routine with the stored
 //!   spawn info (as if the server had answered RPC 129); not used by tests
+//! * `chat [N]` → `chat count=K …` header plus K lines `line type=… colour=…
+//!   name=… text=… runs=[…]` (the newest K ≤ N chat entries, default 20)
+//! * `input` → chat input state (`input open=… text=… caret=… …`)
+//! * `say TEXT` → debugging aid: TEXT is handled as if typed into the chat
+//!   input and sent with Enter (next frame); replies `say queued`
 //! * anything else → `error unknown command`
 
 use std::io::{ErrorKind, Read, Write};
@@ -40,6 +45,9 @@ pub enum Command {
     Files,
     Spawn,
     Quit,
+    Chat(usize),
+    Input,
+    Say(String),
     Peek { addr: u32, len: usize },
     Unknown(String),
 }
@@ -58,6 +66,9 @@ pub fn parse(line: &str) -> Option<Command> {
     if t.is_empty() {
         return None;
     }
+    if t.len() > 4 && t[..4].eq_ignore_ascii_case("say ") {
+        return Some(Command::Say(t[4..].to_string()));
+    }
     let lower = t.to_ascii_lowercase();
     let words: Vec<&str> = lower.split_whitespace().collect();
     if let ["peek", a, n] = words.as_slice()
@@ -67,6 +78,11 @@ pub fn parse(line: &str) -> Option<Command> {
     {
         return Some(Command::Peek { addr: addr as u32, len: len as usize });
     }
+    if let ["chat", n] = words.as_slice()
+        && let Ok(n) = n.parse::<usize>()
+    {
+        return Some(Command::Chat(n.min(100)));
+    }
     Some(match lower.as_str() {
         "ping" => Command::Ping,
         "state" => Command::State,
@@ -74,6 +90,8 @@ pub fn parse(line: &str) -> Option<Command> {
         "remote" => Command::Remote,
         "files" => Command::Files,
         "spawn" => Command::Spawn,
+        "chat" => Command::Chat(20),
+        "input" => Command::Input,
         "quit" | "exit" => Command::Quit,
         _ => Command::Unknown(t.to_string()),
     })
@@ -187,6 +205,11 @@ mod tests {
         assert_eq!(parse("FILES"), Some(Command::Files));
         assert_eq!(parse("Spawn\n"), Some(Command::Spawn));
         assert_eq!(parse(""), None);
+        assert_eq!(parse("chat"), Some(Command::Chat(20)));
+        assert_eq!(parse("chat 5"), Some(Command::Chat(5)));
+        assert_eq!(parse("input"), Some(Command::Input));
+        assert_eq!(parse("say Hello World"), Some(Command::Say("Hello World".into())));
+        assert_eq!(parse("SAY /pagesize 15\n"), Some(Command::Say("/pagesize 15".into())));
         assert_eq!(parse("foo bar"), Some(Command::Unknown("foo bar".into())));
         assert_eq!(parse("peek 0x53EB12 5"), Some(Command::Peek { addr: 0x53EB12, len: 5 }));
         assert_eq!(parse("peek 16 1"), Some(Command::Peek { addr: 16, len: 1 }));

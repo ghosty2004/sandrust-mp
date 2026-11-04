@@ -15,6 +15,7 @@ version = "0.1.0"
 dependencies = [
  "samp-proto",
  "samp-saa",
+ "samp-ui",
  "windows-sys",
 ]
 

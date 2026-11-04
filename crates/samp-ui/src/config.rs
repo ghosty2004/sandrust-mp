@@ -158,12 +158,21 @@ impl SampCfg {
         self.entries.iter().map(|(k, _)| k.as_str())
     }
 
-    /// Keys the client creates at start-up when missing: `fpslimit` = 48 (UR §9) and
-    /// `audioproxyoff` = 0 (UCA §41). Returns true if the file must be rewritten.
-    /// Unknown (notes U-CFG-STARTUP): other created keys and their order.
+    /// Keys the client creates at start-up, in this order (first frame A 0x100c4e4c,
+    /// then the audio set-up A 0x100664f2; confirmed by a file the original wrote:
+    /// `fpslimit=48`, `multicore=1`, `audioproxyoff=0`):
+    /// - `fpslimit` = 48 when its integer value is 0 or the key is missing (UR §9);
+    /// - `multicore` = 1 when the key is missing;
+    /// - `audioproxyoff` = 0 when the key is missing (UCA §41).
+    ///
+    /// Returns true if the file must be rewritten.
     pub fn apply_startup_defaults(&mut self) -> bool {
         let mut changed = false;
-        for (key, v) in [(keys::FPSLIMIT, DEFAULT_FPS_LIMIT), (keys::AUDIOPROXYOFF, 0)] {
+        if self.get_int(keys::FPSLIMIT).unwrap_or(0) == 0 {
+            self.set_int(keys::FPSLIMIT, DEFAULT_FPS_LIMIT);
+            changed = true;
+        }
+        for (key, v) in [(keys::MULTICORE, 1), (keys::AUDIOPROXYOFF, 0)] {
             if !self.contains(key) {
                 self.set_int(key, v);
                 changed = true;
@@ -291,6 +300,7 @@ mod tests {
         assert!(c.apply_startup_defaults());
         assert_eq!(c.get_int("fpslimit"), Some(48));
         assert_eq!(c.get_int("audioproxyoff"), Some(0));
+        assert_eq!(c.to_bytes(), b"pagesize=12\r\nfpslimit=48\r\nmulticore=1\r\naudioproxyoff=0\r\n");
         assert!(!c.apply_startup_defaults());
         let mut c = SampCfg::parse(b"fpslimit=60\n");
         c.apply_startup_defaults();

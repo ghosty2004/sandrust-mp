@@ -542,6 +542,8 @@ fn tick() {
         }
     }
     client_tick();
+    // In-game UI (M4): first-frame setup, input restore, queued UI work.
+    crate::ui::frame_entry(false);
     service_control("tick");
 }
 
@@ -615,6 +617,9 @@ fn service_control(_from: &str) {
             Ok(mut g) => g.as_mut().map(|c| c.request_debug_spawn()).unwrap_or_else(|| "error no session".into()),
             Err(_) => "error client busy".into(),
         },
+        Command::Chat(n) => crate::ui::control_chat(*n),
+        Command::Input => crate::ui::control_input(),
+        Command::Say(t) => crate::ui::control_say(t),
         Command::Quit => "bye".into(),
         Command::Unknown(c) => format!("error unknown command {c:?}"),
     });
@@ -653,7 +658,7 @@ fn frame_hook_installed() -> bool {
             .unwrap_or(false)
 }
 
-fn request_quit() {
+pub(crate) fn request_quit() {
     if QUIT.swap(true, Ordering::SeqCst) {
         return;
     }
