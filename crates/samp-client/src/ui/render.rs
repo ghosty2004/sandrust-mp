@@ -322,6 +322,8 @@ pub struct Frame<'a> {
 
 /// The renderer: D3DX objects created on the first Present.
 pub struct Renderer {
+    /// Nametag painter's state block (created on its first bars pass).
+    tags_state_block: *mut c_void,
     pub d3dx: D3dx,
     sprites: Sprites,
     pub fonts: Fonts,
@@ -352,7 +354,11 @@ impl Renderer {
                 std::ptr::null_mut()
             }
         };
+        // GUI resource manager (DXUT): its sprite's OnResetDevice, then its state block.
+        sprites.gui.on_reset();
+        dxut::set_rm_state_block(d3d::devcall::create_state_block(1));
         let mut r = Self {
+            tags_state_block: std::ptr::null_mut(),
             d3dx,
             sprites,
             fonts,
@@ -411,6 +417,15 @@ impl Renderer {
         }
         // DEFAULT-pool render target: released and rebuilt after the reset.
         self.rt = None;
+        // State blocks do not survive a reset: the GUI one is re-created on reset, the
+        // nametag one on the next bars pass.
+        // SAFETY: we own these references.
+        unsafe {
+            d3d::release(dxut::rm_state_block());
+            d3d::release(self.tags_state_block);
+        }
+        dxut::set_rm_state_block(std::ptr::null_mut());
+        self.tags_state_block = std::ptr::null_mut();
     }
 
     pub fn on_reset(&mut self) {
@@ -424,6 +439,7 @@ impl Renderer {
             a.on_reset();
             b.on_reset();
         }
+        dxut::set_rm_state_block(d3d::devcall::create_state_block(1));
         self.create_rt();
         // UR §2.2: the cursor surface is re-created after a reset.
         // SAFETY: we own the old surface.
@@ -563,8 +579,16 @@ impl Renderer {
     }
 
     /// Bars pass (A 0x10074270 / 0x1006d0a0).
-    fn tag_bars(&self, tags: &[TagDraw]) {
+    /// Bars pass (A 0x10074270): the painter's begin (A 0x1006d6b0) creates its `D3DSBT_ALL`
+    /// state block on first use (after the sprite's `OnResetDevice`) and captures it; the end
+    /// (A 0x1006cd50) applies it after the sprite's `End`.
+    fn tag_bars(&mut self, tags: &[TagDraw]) {
         let s = &self.sprites.tags;
+        if self.tags_state_block.is_null() {
+            s.on_reset();
+            self.tags_state_block = d3d::devcall::create_state_block(1);
+        }
+        d3d::state_block_capture(self.tags_state_block);
         s.begin(d3d::sprite::DONOTSAVESTATE);
         dxut::ui_states();
         for t in tags {
@@ -577,6 +601,7 @@ impl Renderer {
             }
         }
         s.end();
+        d3d::state_block_apply(self.tags_state_block);
     }
 
     /// Names pass (A 0x10075390 / 0x1006cda0) incl. the AFK icon (UR §16.3).
