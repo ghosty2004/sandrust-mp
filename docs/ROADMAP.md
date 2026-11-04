@@ -21,20 +21,19 @@ differential capture against the original client, e2e script.
 
 ## Next up (ordered queue — the scheduler takes from the top)
 
-1. PAR-AUDIT — retroactive parity loop on everything already in main (protocol/bot, M1, M2, M3, SAA-2, SP-OFF, M4, M5): re-run DIFF-2 on current main, cross-client, COV-1 coverage diff, EFX-1 effect diffs on the RPCs each feature handles, D3D diff for chat, network diffs; produce a per-feature diff list and run fix agents through the parity loop until empty or logged decisions (after COV-1 + EFX-1 land)
-2. M2-P — tracer re-diff of spawn after M3 changes; close remaining gaps
-3. UX-1 — SA:MP loading screen (needs SAA-2)
-4. TRACE-3 — measure UI behaviour at runtime for RE-5's unknowns (trace lane)
-5. M4 — chat window, input, local commands, game text (needs RE-5, TRACE-3)
-6. DIFF-3 — cross-client harness (needs M3)
-7. F5 — `tools/diff/patch-coverage.sh` (CSV vs applied patch table)
-8. TRACE-4 + M5 — vehicles (needs M3)
-9. M8a — dialogs, textdraws, menus, scoreboard, nametags (needs M4)
-10. TRACE-5 + M6 — world entities (needs SAA-2)
-11. TRACE-6 + M7 — combat (needs M3, M5)
-12. M8b, M9, M10 — remaining behaviour, audio, client features
-13. DIFF-4 — visual diff harness (needs UX-1, M4)
-14. SOAK — stability (needs M7)
+In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1, EFX-1.
+
+1. PAR-AUDIT — retroactive parity loop on everything already in main (protocol/bot, M1, M2, M3, SAA-2, SP-OFF, M4, M5): re-run DIFF-2 on current main, cross-client, COV-1 coverage diff, EFX-1 effect diffs for the RPCs each feature handles, D3D diff for chat, network diffs; produce a per-feature diff list and run fix agents through the parity loop until empty or logged decisions (after COV-1 + EFX-1 land)
+2. UX-1 — SA:MP loading screen (loadscs.txd `title` from samp.saa; splash rows applied in archive mode by SAA-2 — verify vs original with D3D diff + isolated screenshots)
+3. M6 — world entities (needs TRACE-6 results): objects incl. SAMP.img models/materials, pickups, actors, checkpoints, gang zones, map icons, 3D labels
+4. M7 — combat (needs TRACE-6 results, M5 merged ✔): aim/bullet/weapons sync, damage, death
+5. M5-P — vehicle open items (train exit, remote passenger weapons/drive-by, trailer receive, aircraft remote z, plates + radar colours after the D3D proxy merge)
+6. DIFF-4 — visual parity harness (D3D call-stream diff per UI element) once M8a lands
+7. M8b, M9, M10 — remaining behaviour (spectating, camera RPCs, animations table, SCM events), audio streams, client features (reconnect, server restart, kicks)
+8. NET-6 — RakNet ack/resend timing parity
+9. SOAK — stability (needs M7)
+10. RENAME — samp-rs → sandrust-mp (crates sandrust-*), when no worktrees are open
+11. EXT-1 — Libre-SAMP as a third client in DIFF-3 (needs the R5 installer from the user for 1:1 vs R5)
 
 ## Phase 0 — Reverse engineering (specs in `docs/re/`)
 
