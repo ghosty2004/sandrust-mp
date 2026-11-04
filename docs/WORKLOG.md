@@ -186,3 +186,23 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - Open parity (M3-P): speed magnitude/cadence vs original; SEH containment.
 - The weapon flapping seen by TRACE-4 was gungame reacting to our post-arrest state —
   removed by SP-OFF. User asked about libsamp (R5) → EXT-1; needs the R5 installer.
+
+## 2026-11-04 — Git, worktrees, more parallel work
+
+- User created github.com/ghosty2004/sandrust-mp; the project will be renamed
+  sandrust-mp (crates sandrust-*) at a quiet moment. Claude now commits (plain
+  messages, no task IDs, no session/attribution trailers); push only on request.
+  Commits so far: initial import + docs/harness/measurement commits.
+- Parallel samp-client writers via git worktrees: ~/samp-rs-wt/m4 (branch ui-render,
+  lane ui: chat/input/local commands) and ~/samp-rs-wt/m5 (branch vehicles, lane veh);
+  main checkout: samp.saa serving then single-player systems off.
+- TRACE-4 done (remote re-diff, SP-OFF baseline, vehicles). SP-OFF gaps sent to the
+  samp-client writer (max wanted level 0 + CSV rows 181/185/164/189/182/186/55/163).
+- DIFF-2 done: per-RPC harness, 131/141 ids, baseline 15/20/96 (pre-M3 build).
+- User rule: nothing uncertain is implemented without REA static analysis + tracer
+  measurement (PLAN §3b); implementation agents now file measurement requests.
+- Visual parity redefined as a Direct3D9 call-stream diff (the original's scoreboard
+  itself renders broken under Wine/DXVK — screenshot shown to the user).
+- Started: TRACE-3 (REA + tracer: D3D call logger, UI unknowns incl. M4's 8 requests,
+  then remaining vehicle cases), DIFF-3 cross-client + F5 patch coverage (lanes diff +
+  diff2), BOT-2 (bot drives/shoots).
