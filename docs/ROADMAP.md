@@ -26,7 +26,7 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 
 1. PAR-AUDIT — retroactive parity loop on everything already in main (protocol/bot, M1, M2, M3, SAA-2, SP-OFF, M4, M5): re-run DIFF-2 on current main, cross-client, COV-1 coverage diff, EFX-1 effect diffs for the RPCs each feature handles, D3D diff for chat, network diffs; produce a per-feature diff list and run fix agents through the parity loop until empty or logged decisions (after COV-1 + EFX-1 land)
 2. UX-1 — SA:MP loading screen (loadscs.txd `title` from samp.saa; splash rows applied in archive mode by SAA-2 — verify vs original with D3D diff + isolated screenshots)
-4. M7 — combat (needs TRACE-6 results, M5 merged ✔): aim/bullet/weapons sync, damage, death
+4. M7 — combat (TRACE-6 ✔ measured: docs/phase3/trace-notes.md "Combat (TRACE-6)"; starts when the player-parity worktree is merged — same damage/swap code; open measurements: local-hit suppression for remote hit type 0, remote hit type 1 in lag-comp 0/2, drive-by, projectiles): aim/bullet/weapons sync, damage, death
 5. M5-P — vehicle open items (+ COV-1: CPostEffects::SpeedFX row 177, SetDirtTextures row 62, CPed::RemoveWeaponWhenEnteringVehicle direct call on enter) (train exit, remote passenger weapons/drive-by, trailer receive, aircraft remote z, plates + radar colours after the D3D proxy merge)
 6. DIFF-4 — visual parity harness (D3D call-stream diff per UI element) once M8a lands
 7. M8b, M9, M10 — remaining behaviour (spectating, camera RPCs, animations table, SCM events), audio streams, client features (reconnect, server restart, kicks)

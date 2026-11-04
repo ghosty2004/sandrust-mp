@@ -234,3 +234,18 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   173 matching / 205 missing / 3 justified (rows 61, 370, 375 logged as decisions).
 - Started: M8a + M4-P (worktree m8a, lane ui), M2-P + M3-P (worktree par, lane main),
   TRACE-6 (world entities + combat measurements, trace lane, REA). M5 continues (m5).
+
+## 2026-11-04 — Original client measured for world entities and combat
+
+- Five live sessions on the original client: objects (create, render paths by draw distance,
+  material text render target, attachment bone formula, MoveObject/StopObject timing,
+  1000-frame RW release), pickups, checkpoints, gang zones, map icons, actors, 3D labels,
+  building removal, edit/select; combat (shot call chains, 206/115/204 order and content,
+  shotgun = one 206 + one 115, sniper and melee, 0.33 damage scaling, team rule, three
+  lag-comp modes, death/respawn timeline, remote death).
+- Trace hold sessions made private (session id + lock) after one run was driven by another
+  agent; that window's data was discarded.
+- Coverage diff (first results) lists GTA systems still running with our client (grass,
+  real-time shadows, sun/moon, idle camera, ambient gunfire audio, IPL pickups, input during
+  class selection) and the missing local head look; assigned to the player-parity and
+  world-entity work.
