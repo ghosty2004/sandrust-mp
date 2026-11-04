@@ -3,7 +3,8 @@
 # selection, ours vs the original.
 #  1. original side (only when target/visual/orig has no complete capture): tools/diff/visual.sh's
 #     original run (trace lane, under its lock);
-#  2. our side: our client in lane "ui" (under target/locks/ui.lock) with samp-tracer logging the
+#  2. our side: our client in lane "ui" (visual.sh takes target/locks/ui.lock itself; a caller that
+#     already holds it must export SAMP_RS_UI_LOCK_HELD=1) with samp-tracer logging the
 #     Direct3D call stream from the first Present (SAMP_TRACER_D3D_BOOT) and a screenshot
 #     timeline of the isolated headless display, up to the class selection (no further scenario);
 #  3. tools/diff/boot_diff.py: loading screen frame by frame (runs of identical Presents), then

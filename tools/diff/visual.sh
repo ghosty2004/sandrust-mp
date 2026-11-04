@@ -14,6 +14,16 @@
 # Output: target/visual/{orig,ours}/ (d3d-NAME.jsonl, NAME.png, boot/ timeline, logs),
 # target/visual/report.txt.
 set -uo pipefail
+
+# Takes the ui lane lock unless the caller already holds it (SAMP_RS_UI_LOCK_HELD=1), so a
+# script run inside `flock ui.lock` does not wait on its own parent.
+ui_lane_locked() {
+    if [ "${SAMP_RS_UI_LOCK_HELD:-}" = 1 ]; then
+        "$@"
+    else
+        SAMP_RS_UI_LOCK_HELD=1 flock "$SAMP_RS_ROOT/target/locks/ui.lock" "$@"
+    fi
+}
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 ROOT="$(cd "$(dirname "$SELF")/../.." && pwd)"
 if [[ -z "${SAMP_RS_ROOT:-}" && ! -d "$ROOT/wine" ]]; then
@@ -225,7 +235,7 @@ case "${1:-}" in
     --diff-only) ;;
     --ours-only)
         mkdir -p "$SAMP_RS_ROOT/target/locks"
-        flock "$SAMP_RS_ROOT/target/locks/ui.lock" bash -c "source '$SELF' --functions; run_ours" \
+        ui_lane_locked bash -c "source '$SELF' --functions; run_ours" \
             || { say "our side failed"; exit 1; }
         exit 0
         ;;
@@ -237,7 +247,7 @@ case "${1:-}" in
         fi
         say "our side (lane ui; waits for its lock)"
         mkdir -p "$SAMP_RS_ROOT/target/locks"
-        flock "$SAMP_RS_ROOT/target/locks/ui.lock" bash -c "source '$SELF' --functions; run_ours" \
+        ui_lane_locked bash -c "source '$SELF' --functions; run_ours" \
             || { say "our side failed"; exit 1; }
         ;;
 esac
