@@ -126,4 +126,5 @@ legal/publishing, system installs, irreversible actions outside the project.
 | 2026-11-04 | Do not apply CSV row 61 (RwRasterPushContext stub) | samp itself only applies it on the EU exe; not applicable to 1.0 US (re10-gaps.md) |
 | 2026-11-04 | Do not apply CSV row 370 (0x858EF0 0.95→2.0) | only referenced from unreachable code (remote-control-combat.md §10) |
 | 2026-11-04 | Do not apply CSV row 375 (CVehicle::SetupRender stub) | dead code: the stub is never referenced (re10-gaps.md) |
+| 2026-11-04 | On a refused car-enter, do NOT call samp's stale slot-0 destructor on the unconstructed task object; reproduce only the observable result (no task, no RPC) | samp quirk operating on uninitialised pool memory (TRACE-5 MR-c) |
 | 2026-11-04 | Test runs are muted (Wine audio → private null sink `samp_rs_null`) | user heard test audio; `SAMP_RS_AUDIBLE=1` restores sound for manual play |
