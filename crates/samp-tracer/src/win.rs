@@ -38,6 +38,7 @@ use crate::watch;
 use crate::x86;
 
 mod d3d;
+mod efx;
 mod remote;
 mod vehicles;
 
@@ -689,6 +690,7 @@ fn on_frame() {
     remote::frame(n);
     vehicles::frame();
     d3d::frame();
+    efx::frame();
     flush();
 }
 
@@ -967,10 +969,12 @@ fn handle(cmd: &Command) -> (String, bool) {
             emit(record("mark", None, None, None, Val::obj().with("text", text.as_str())));
             flush();
             d3d::mark(text);
+            efx::mark(text);
             ("ok".into(), false)
         }
         Command::D3d(args) if args == "busy" => ((if d3d::busy() { "busy" } else { "idle" }).into(), false),
         Command::D3d(args) => (d3d::command(args), false),
+        Command::Efx(args) => (efx::command(args), false),
         Command::Poke { addr, bytes } => {
             if !ProcMem.read(*addr, &mut vec![0u8; bytes.len()]) {
                 return (format!("error {addr:#x} is not readable"), false);
@@ -1079,6 +1083,7 @@ fn attach() {
     capture::init();
     remote::init();
     d3d::init(&dir);
+    efx::init(&dir);
     let boot = stock_boot_attach();
     let (ok, mut failed) = install_all();
     let table = install_table_thunks().unwrap_or_else(|e| {

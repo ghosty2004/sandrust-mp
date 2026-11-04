@@ -19,3 +19,8 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_System_SystemServices",
     "Win32_System_Threading",
 ] }
+
+# EFX-1 (effect tracer, src/efx.rs): a complete 32-bit decoder with operand/memory info, so every
+# memory operand of a single-stepped instruction can be computed. Decoder + instr_info only.
+[dependencies]
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info"] }

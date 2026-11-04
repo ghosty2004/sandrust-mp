@@ -234,3 +234,19 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   173 matching / 205 missing / 3 justified (rows 61, 370, 375 logged as decisions).
 - Started: M8a + M4-P (worktree m8a, lane ui), M2-P + M3-P (worktree par, lane main),
   TRACE-6 (world entities + combat measurements, trace lane, REA). M5 continues (m5).
+
+## 2026-11-04 — EFX-1: effect tracer (worktree efx, trace lane)
+
+- samp-tracer: `efx arm TARGET` single-steps a client function (RPC handler from rpc-ids.md,
+  RVA, game function, `event:frame`) through samp.dll and every game function it calls
+  (iced-x86 decoder for memory operands; return-address stub; foreign code stepped over), logging
+  game-memory writes (old/new, symbolic: player_ped+0x540 …), game calls (args, return),
+  branch-deciding reads. `efx watch SPEC` = guard-page + int3 call-hook window for our client.
+  New: src/efx.rs, src/win/efx.rs; small hooks in control.rs, win.rs, lib.rs; iced-x86 dep.
+- tools/efx: run.sh (orig|ours|both, lane lock), scenario.sh, efxfs.pwn (one RPC per
+  command), efx_diff.py (dump/spec/diff with baseline subtraction, gta-reversed names, SCM
+  opcode names). Notes: docs/phase3/efx-notes.md.
+- Results: RPC 14 identical; RPC 12 same Teleport call + matrix (diffs = original's IK look-at
+  state); RPC 153 not implemented for the local player in our client; RPC 70 same 5 script
+  commands (ours lacks GET_CURRENT_CHAR_WEAPON, changes aiming rotation).
+- Verified: cargo build --workspace, 492 tests, clippy host + i686 0 warnings; 4 lane runs.
