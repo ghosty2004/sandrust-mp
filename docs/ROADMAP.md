@@ -21,19 +21,20 @@ differential capture against the original client, e2e script.
 
 ## Next up (ordered queue — the scheduler takes from the top)
 
-3. M2-P — tracer re-diff of spawn after M3 changes; close remaining gaps
-4. UX-1 — SA:MP loading screen (needs SAA-2)
-5. TRACE-3 — measure UI behaviour at runtime for RE-5's unknowns (trace lane)
-6. M4 — chat window, input, local commands, game text (needs RE-5, TRACE-3)
-7. DIFF-3 — cross-client harness (needs M3)
-8. F5 — `tools/diff/patch-coverage.sh` (CSV vs applied patch table)
-9. TRACE-4 + M5 — vehicles (needs M3)
-10. M8a — dialogs, textdraws, menus, scoreboard, nametags (needs M4)
-11. TRACE-5 + M6 — world entities (needs SAA-2)
-12. TRACE-6 + M7 — combat (needs M3, M5)
-13. M8b, M9, M10 — remaining behaviour, audio, client features
-14. DIFF-4 — visual diff harness (needs UX-1, M4)
-15. SOAK — stability (needs M7)
+1. PAR-AUDIT — retroactive parity loop on everything already in main (protocol/bot, M1, M2, M3, SAA-2, SP-OFF, M4, M5): re-run DIFF-2 on current main, cross-client, COV-1 coverage diff, EFX-1 effect diffs on the RPCs each feature handles, D3D diff for chat, network diffs; produce a per-feature diff list and run fix agents through the parity loop until empty or logged decisions (after COV-1 + EFX-1 land)
+2. M2-P — tracer re-diff of spawn after M3 changes; close remaining gaps
+3. UX-1 — SA:MP loading screen (needs SAA-2)
+4. TRACE-3 — measure UI behaviour at runtime for RE-5's unknowns (trace lane)
+5. M4 — chat window, input, local commands, game text (needs RE-5, TRACE-3)
+6. DIFF-3 — cross-client harness (needs M3)
+7. F5 — `tools/diff/patch-coverage.sh` (CSV vs applied patch table)
+8. TRACE-4 + M5 — vehicles (needs M3)
+9. M8a — dialogs, textdraws, menus, scoreboard, nametags (needs M4)
+10. TRACE-5 + M6 — world entities (needs SAA-2)
+11. TRACE-6 + M7 — combat (needs M3, M5)
+12. M8b, M9, M10 — remaining behaviour, audio, client features
+13. DIFF-4 — visual diff harness (needs UX-1, M4)
+14. SOAK — stability (needs M7)
 
 ## Phase 0 — Reverse engineering (specs in `docs/re/`)
 
