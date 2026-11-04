@@ -109,6 +109,8 @@ repository state, deterministically:
 - Git: only the main session commits (after verifying a green build/tests), with plain
   descriptive messages; agents never commit. With commits available, implementation
   agents may run in parallel in git worktrees and the main session integrates.
+- Shared lanes are reserved with a lock: wrap every run in a lane used by more than
+  one agent as `flock target/locks/<lane>.lock <command>` (blocking).
 - Agents never kill processes outside their lane, never `pkill -f` patterns, never
   screenshot the user's desktop, never commit.
 - Budget: ≤ ~1.5M tokens per agent step; workflows only for broad sweeps.
