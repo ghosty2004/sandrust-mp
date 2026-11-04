@@ -13,6 +13,8 @@
 //!   samp.saa entry served so far (name, hash, size, opens, first path)
 //! * `vehicles` → `vehicles count=N …` followed by N lines, one per streamed vehicle (id, model, script
 //!   handle, CVehicle pointer, position, heading, health, driver player id / `local`, local occupancy)
+//! * `world` → `world count=N objects=… pickups=… actors=… …` followed by N lines, one per world entity
+//!   (objects, attached objects, pickups, actors, checkpoints, gang zones, map icons, 3D labels)
 //! * `spawn` → debugging aid: run the local spawn routine with the stored
 //!   spawn info (as if the server had answered RPC 129); not used by tests
 //! * `chat [N]` → `chat count=K …` header plus K lines `line type=… colour=…
@@ -48,6 +50,7 @@ pub enum Command {
     Vehicles,
     /// Combat counters (M7).
     Combat,
+    World,
     Spawn,
     Quit,
     Chat(usize),
@@ -98,6 +101,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "files" => Command::Files,
         "vehicles" => Command::Vehicles,
         "combat" => Command::Combat,
+        "world" => Command::World,
         "spawn" => Command::Spawn,
         "chat" => Command::Chat(20),
         "input" => Command::Input,
@@ -213,6 +217,7 @@ mod tests {
         assert_eq!(parse("net"), Some(Command::Net));
         assert_eq!(parse("remote"), Some(Command::Remote));
         assert_eq!(parse("FILES"), Some(Command::Files));
+        assert_eq!(parse("world"), Some(Command::World));
         assert_eq!(parse("Spawn\n"), Some(Command::Spawn));
         assert_eq!(parse(""), None);
         assert_eq!(parse("chat"), Some(Command::Chat(20)));

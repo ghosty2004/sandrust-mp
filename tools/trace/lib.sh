@@ -3,8 +3,11 @@
 # so it never collides with the main e2e lane (wine/prefix, 7777, 47700).
 # Source from tools/trace/*.sh.
 TRACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-export WINEPREFIX="$TRACE_ROOT/wine/prefix-trace"
-export GTA_DIR="$TRACE_ROOT/wine/gta-sa-trace"
+# From a git worktree, SAMP_RS_ROOT names the main checkout that holds wine/, server/, data/ and
+# the lane lock (target/locks/trace.lock is shared by every checkout).
+TRACE_DATA_ROOT="${SAMP_RS_ROOT:-$TRACE_ROOT}"
+export WINEPREFIX="$TRACE_DATA_ROOT/wine/prefix-trace"
+export GTA_DIR="$TRACE_DATA_ROOT/wine/gta-sa-trace"
 export E2E_TAG=trace E2E_PORT=7790 E2E_CTL_PORT=47701
 # Read by samp-tracer.dll inside the game (Wine passes the Unix environment through).
 # With the original client the tracer serves the lane's control port (DIFF-1);
@@ -15,8 +18,8 @@ trace_ports() {
     if [ "$1" = ours ]; then
         export SAMP_RS_CTL_PORT="$E2E_CTL_PORT" SAMP_TRACER_PORT=47702
         # Our client needs the auth table (third-party data, generated locally; see CLAUDE.md).
-        [ -f "$TRACE_ROOT/data/auth_table.txt" ] \
-            && SAMP_RS_AUTH_TABLE="$(winepath -w "$TRACE_ROOT/data/auth_table.txt" 2>/dev/null)" \
+        [ -f "$TRACE_DATA_ROOT/data/auth_table.txt" ] \
+            && SAMP_RS_AUTH_TABLE="$(winepath -w "$TRACE_DATA_ROOT/data/auth_table.txt" 2>/dev/null)" \
             && export SAMP_RS_AUTH_TABLE
     else
         export SAMP_TRACER_PORT="$E2E_CTL_PORT"
@@ -27,7 +30,7 @@ trace_ctl() { E2E_CTL_PORT="$SAMP_TRACER_PORT" e2e_ctl "$1"; }
 source "$TRACE_ROOT/tools/wine-env.sh"
 source "$TRACE_ROOT/tools/e2e/lib.sh"
 TRACE_OUT="$TRACE_ROOT/target/trace"
-TRACE_BIN="$TRACE_ROOT/target/i686-pc-windows-gnu/release"
+TRACE_BIN="${CARGO_TARGET_DIR:-$TRACE_ROOT/target}/i686-pc-windows-gnu/release"
 
 trace_say() { printf '[trace] %s\n' "$*"; }
 
@@ -36,8 +39,8 @@ trace_say() { printf '[trace] %s\n' "$*"; }
 # already held by a parent, e.g. tools/trace/with-lock.sh).
 trace_lock() {
     [ "${SAMP_RS_TRACE_LOCK_HELD:-0}" = 1 ] && return 0
-    mkdir -p "$TRACE_ROOT/target/locks"
-    exec 9> "$TRACE_ROOT/target/locks/trace.lock"
+    mkdir -p "$TRACE_DATA_ROOT/target/locks"
+    exec 9> "$TRACE_DATA_ROOT/target/locks/trace.lock"
     if ! flock -n 9; then
         trace_say "waiting for the trace-lane lock (target/locks/trace.lock)"
         flock 9
@@ -62,6 +65,16 @@ trace_install() {
     true
 }
 
+# trace_log_cfg — records which SA:MP client config the next launch reads (tools/wine-env.sh installs
+# tools/sa-mp.cfg.baseline or $TRACE_SAMP_CFG into the prefix): source, sha256 and content go to
+# $OUT/samp-cfg.txt when $OUT is set (TRACE-8).
+trace_log_cfg() {
+    local f="$WINEPREFIX/drive_c/users/$USER/Documents/GTA San Andreas User Files/SAMP/sa-mp.cfg"
+    [ -n "${OUT:-}" ] && [ -d "$OUT" ] && [ -f "$f" ] || return 0
+    { echo "source: ${TRACE_SAMP_CFG:-${SAMP_RS_SAMP_CFG:-baseline}}"; echo "sha256: $(sha256sum < "$f" | cut -d' ' -f1)"
+      tr -d '\r' < "$f"; } > "$OUT/samp-cfg.txt"
+}
+
 # trace_launch CLIENT NAME — runs gta_sa.exe through our launcher with the tracer
 # loaded first, then the client DLL (orig = samp.dll 0.3.7-R4, ours = samp_client.dll,
 # bare = no client: the tracer boots a stock single-player game, SAMP_TRACER_BOOT=1).
@@ -75,6 +88,7 @@ trace_launch() {
         bare) export SAMP_TRACER_BOOT=1 ;;
         *) echo "trace_launch: client must be orig, ours or bare" >&2; return 2 ;;
     esac
+    trace_log_cfg
     cd "$GTA_DIR" || return 1
     wine_launch samp-trace "$GTA_DIR/samp-rs-launcher.exe" \
         --gta "$(winepath -w "$GTA_DIR/gta_sa.exe")" "${dlls[@]}" \
@@ -94,7 +108,7 @@ trace_wait_ctl() {
 trace_mark() { trace_ctl "mark $*" > /dev/null; trace_say "mark: $*"; }
 
 # Kill only this lane's Wine processes.
-trace_wine_kill() { WINEPREFIX="$TRACE_ROOT/wine/prefix-trace" wineserver -k 2>/dev/null || true; }
+trace_wine_kill() { WINEPREFIX="$TRACE_DATA_ROOT/wine/prefix-trace" wineserver -k 2>/dev/null || true; }
 
 # trace_server_start_fs PWN NAME [DEFINES...] — like e2e_server_start, plus the filterscript
 # tools/trace/PWN compiled as filterscripts/NAME (pawncc sym=value DEFINES, e.g. IDLE_MS=300000).

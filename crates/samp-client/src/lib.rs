@@ -29,6 +29,7 @@ pub mod ui;
 pub mod vehicle;
 pub mod vehpatches;
 pub mod world;
+pub mod worldents;
 
 #[cfg(windows)]
 mod client;
@@ -41,7 +42,11 @@ mod diag;
 #[cfg(windows)]
 mod dll;
 #[cfg(windows)]
+mod entities;
+#[cfg(windows)]
 mod filehook;
+#[cfg(windows)]
+mod objects;
 #[cfg(windows)]
 mod players;
 #[cfg(windows)]
@@ -50,3 +55,5 @@ mod swap;
 mod vehhooks;
 #[cfg(windows)]
 mod vehicles;
+#[cfg(windows)]
+mod worldhooks;

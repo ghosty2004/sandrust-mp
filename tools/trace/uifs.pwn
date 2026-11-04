@@ -51,6 +51,16 @@
 //   resetw|P  forceclass|P  special|P|action  kill|P (health 0)
 //   wdata|P|slot (GetPlayerWeaponData: the server's view of the client's 204 slot records; M7)  kick|P (Kick)
 // TRACE-7: explodeN|x|y|z|type|radius|n (n explosions at once)  specoff|P (TogglePlayerSpectating off)
+//   findz|P|x|y|z (SetPlayerPosFindZ)
+// TRACE-8 (remaining behaviour, audio, client features):
+//   bounds|P|maxx|minx|maxy|miny  gravity|P|g  ggravity|g (SetGravity)  drunk|P|level  fstyle|P|style
+//   shop|P|name  wide|P|0/1  campos|P|x|y|z  camlook|P|x|y|z|cut  ipos|P|fx|fy|fz|tx|ty|tz|ms|cut
+//   ilook|P|fx|fy|fz|tx|ty|tz|ms|cut  camobj|P|OBJ  specon|P  specpl|P|TARGET|mode  specveh|P|VEH|mode
+//   anim|P|lib|name|delta|loop|lx|ly|freeze|time|sync  clranim|P|sync  sound|P|id|x|y|z
+//   audio|P|url|x|y|z|dist|usepos  audiostop|P  check|P|type|addr|offset|count (SendClientCheck)
+//   paint|VEH|pj  vmod|VEH|comp  vcolor|VEH|c1|c2  crime|P|suspect|crime  vw|P|world  wanted|P|n
+//   stunt|P|0/1  vel|P|x|y|z  money|P|n  clock|P|0/1  vehcol|P|0/1  camtarget|P|0/1  kick|P  ban|P
+//   rcon|text (SendRconCommand, e.g. gmx)
 #define FILTERSCRIPT
 #pragma dynamic 65536
 #include <open.mp>
@@ -271,10 +281,29 @@ public OnPlayerClickMap(playerid, Float:fX, Float:fY, Float:fZ)
     return 1;
 }
 
+public OnClientCheckResponse(playerid, actionid, memaddr, retndata)
+{
+    printf("[ui-fs] check-response %d type 0x%x addr 0x%x ret 0x%x (%d)", playerid, actionid, memaddr, retndata, retndata);
+    return 1;
+}
+
+public OnPlayerInteriorChange(playerid, newinteriorid, oldinteriorid)
+{
+    printf("[ui-fs] interior-change %d %d->%d", playerid, oldinteriorid, newinteriorid);
+    return 1;
+}
+
 public OnPlayerRequestSpawn(playerid)
 {
     printf("[ui-fs] request-spawn %d", playerid);
     return 1;
+}
+
+hexval2(const line[], n)
+{
+    new s[24];
+    field(line, n, s);
+    return hexval(s);
 }
 
 hexval(const s[])
@@ -536,13 +565,54 @@ Run(seq, const line[])
         for (new k = 0, n = in(line, 6); k < n; k++) CreateExplosion(fl(line, 1), fl(line, 2), fl(line, 3), in(line, 4), fl(line, 5));
     }
     else if (!strcmp(cmd, "specoff")) TogglePlayerSpectating(pl(line, 1), false);
+    else if (!strcmp(cmd, "findz")) SetPlayerPosFindZ(pl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4));
     else if (!strcmp(cmd, "armed")) SetPlayerArmedWeapon(pl(line, 1), WEAPON:in(line, 2));
     else if (!strcmp(cmd, "ammo")) SetPlayerAmmo(pl(line, 1), WEAPON:in(line, 2), in(line, 3));
     else if (!strcmp(cmd, "resetw")) ResetPlayerWeapons(pl(line, 1));
     else if (!strcmp(cmd, "forceclass")) ForceClassSelection(pl(line, 1));
     else if (!strcmp(cmd, "special")) SetPlayerSpecialAction(pl(line, 1), SPECIAL_ACTION:in(line, 2));
     else if (!strcmp(cmd, "kill")) SetPlayerHealth(pl(line, 1), 0.0);
+    else if (!strcmp(cmd, "bounds")) SetPlayerWorldBounds(pl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5));
+    else if (!strcmp(cmd, "gravity")) SetPlayerGravity(pl(line, 1), fl(line, 2));
+    else if (!strcmp(cmd, "ggravity")) SetGravity(fl(line, 1));
+    else if (!strcmp(cmd, "drunk")) SetPlayerDrunkLevel(pl(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "fstyle")) SetPlayerFightingStyle(pl(line, 1), FIGHT_STYLE:in(line, 2));
+    else if (!strcmp(cmd, "shop")) { field(line, 2, a); SetPlayerShopName(pl(line, 1), a); }
+    else if (!strcmp(cmd, "wide")) TogglePlayerWidescreen(pl(line, 1), bool:in(line, 2));
+    else if (!strcmp(cmd, "campos")) SetPlayerCameraPos(pl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4));
+    else if (!strcmp(cmd, "camlook")) SetPlayerCameraLookAt(pl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), CAM_MOVE:in(line, 5));
+    else if (!strcmp(cmd, "ipos")) InterpolateCameraPos(pl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), fl(line, 7), in(line, 8), CAM_MOVE:in(line, 9));
+    else if (!strcmp(cmd, "ilook")) InterpolateCameraLookAt(pl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), fl(line, 7), in(line, 8), CAM_MOVE:in(line, 9));
+    else if (!strcmp(cmd, "camobj")) AttachCameraToObject(pl(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "specon")) TogglePlayerSpectating(pl(line, 1), true);
+    else if (!strcmp(cmd, "specpl")) PlayerSpectatePlayer(pl(line, 1), pl(line, 2), SPECTATE_MODE:in(line, 3));
+    else if (!strcmp(cmd, "specveh")) PlayerSpectateVehicle(pl(line, 1), in(line, 2), SPECTATE_MODE:in(line, 3));
+    else if (!strcmp(cmd, "anim"))
+    {
+        new lib[64], an[64];
+        field(line, 2, lib); field(line, 3, an);
+        ApplyAnimation(pl(line, 1), lib, an, fl(line, 4), bool:in(line, 5), bool:in(line, 6), bool:in(line, 7), bool:in(line, 8), in(line, 9), FORCE_SYNC:in(line, 10));
+    }
+    else if (!strcmp(cmd, "clranim")) ClearAnimations(pl(line, 1), FORCE_SYNC:in(line, 2));
+    else if (!strcmp(cmd, "sound")) PlayerPlaySound(pl(line, 1), in(line, 2), fl(line, 3), fl(line, 4), fl(line, 5));
+    else if (!strcmp(cmd, "audio")) { field(line, 2, a); PlayAudioStreamForPlayer(pl(line, 1), a, fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), bool:in(line, 7)); }
+    else if (!strcmp(cmd, "audiostop")) StopAudioStreamForPlayer(pl(line, 1));
+    else if (!strcmp(cmd, "check")) SendClientCheck(pl(line, 1), hexval2(line, 2), hexval2(line, 3), in(line, 4), in(line, 5));
+    else if (!strcmp(cmd, "paint")) ChangeVehiclePaintjob(in(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "vmod")) AddVehicleComponent(in(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "vcolor")) ChangeVehicleColours(in(line, 1), in(line, 2), in(line, 3));
+    else if (!strcmp(cmd, "crime")) PlayCrimeReportForPlayer(pl(line, 1), pl(line, 2), in(line, 3));
+    else if (!strcmp(cmd, "vw")) SetPlayerVirtualWorld(pl(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "wanted")) SetPlayerWantedLevel(pl(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "stunt")) EnableStuntBonusForPlayer(pl(line, 1), bool:in(line, 2));
+    else if (!strcmp(cmd, "vel")) SetPlayerVelocity(pl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4));
+    else if (!strcmp(cmd, "money")) GivePlayerMoney(pl(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "clock")) TogglePlayerClock(pl(line, 1), bool:in(line, 2));
+    else if (!strcmp(cmd, "vehcol")) DisableRemoteVehicleCollisions(pl(line, 1), bool:in(line, 2));
+    else if (!strcmp(cmd, "camtarget")) EnablePlayerCameraTarget(pl(line, 1), bool:in(line, 2));
     else if (!strcmp(cmd, "kick")) Kick(pl(line, 1));
+    else if (!strcmp(cmd, "ban")) Ban(pl(line, 1));
+    else if (!strcmp(cmd, "rcon")) { field(line, 1, a); SendRconCommand(a); }
     else if (!strcmp(cmd, "wdata"))
     {
         new WEAPON:wd, wa;

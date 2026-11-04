@@ -132,6 +132,8 @@ pub struct Fonts {
     nick_w: i32,
     icon_w: i32,
     icon_h: i32,
+    /// Chat timestamp column sample width (measured once, like samp's chat window).
+    timestamp_w: i32,
 }
 
 /// Builds the font-renderer, GUI and death-window fonts (UR §3.2 table, TRACE-3).
@@ -156,6 +158,7 @@ fn build_fonts(d3dx: &D3dx, video_w: i32, fs: i32, face: &[u8], weight: u32) -> 
     let main_line = main.measure(y, dt::SINGLELINE).1;
     let small_line = small.measure(y, dt::SINGLELINE).1;
     let nick_w = death_names.measure(deathwindow::NICK_SAMPLE, 0).0;
+    let timestamp_w = main.measure_z(samp_ui::chat::TIMESTAMP_SAMPLE, dt::SINGLELINE).0;
     let (icon_w, icon_h) = death_backdrop.measure(b"G", dt::CENTER | dt::VCENTER).max(death_icon.measure(b"G", 0));
     crate::log!(
         "ui: fonts face={:?} weight={weight} main={main_h} small={small_h} gui={gui_h} aux={aux_h} (fontsize {fs}, W {video_w}); \"Y\" main {main_line} small {small_line}; death nick {nick_w} icon {icon_w}x{icon_h}",
@@ -178,6 +181,7 @@ fn build_fonts(d3dx: &D3dx, video_w: i32, fs: i32, face: &[u8], weight: u32) -> 
         nick_w,
         icon_w,
         icon_h,
+        timestamp_w,
     })
 }
 
@@ -212,6 +216,9 @@ impl TextMeasure for Fonts {
     fn measure(&self, font: FontId, text: &[u8]) -> Size {
         let (w, h) = self.font(font).measure(text, dt::SINGLELINE);
         Size { w, h }
+    }
+    fn timestamp_width(&self) -> i32 {
+        self.timestamp_w
     }
     fn line_height(&self, font: FontId) -> i32 {
         match font {
@@ -252,17 +259,6 @@ struct Sprites {
 }
 
 impl Sprites {
-    fn create(d3dx: &D3dx) -> Result<Self, String> {
-        Ok(Self {
-            text: Sprite::create(d3dx)?,
-            chat: Sprite::create(d3dx)?,
-            blit: Sprite::create(d3dx)?,
-            gui: Sprite::create(d3dx)?,
-            death: Sprite::create(d3dx)?,
-            tags: Sprite::create(d3dx)?,
-            text3d: Sprite::create(d3dx)?,
-        })
-    }
     fn all(&self) -> [&Sprite; 7] {
         [&self.text, &self.chat, &self.blit, &self.gui, &self.death, &self.tags, &self.text3d]
     }
@@ -318,6 +314,16 @@ pub struct Frame<'a> {
     pub death: Option<&'a DeathWindow>,
     pub dialog: Option<(&'a Dialog, &'a DialogLayout)>,
     pub cursor: (i32, i32),
+    /// F5 / F10 held (UR §2.3 steps 6–7): only the nametag passes are drawn.
+    pub overlay: Option<samp_ui::keys::Overlay>,
+    /// F5 text (`net_stats_text`) when the net stats overlay is shown.
+    pub net_stats: Option<&'a [u8]>,
+    /// samp's netgame object exists (created on the game frame after the UI objects): the
+    /// bubble and 3D-label passes run.
+    pub netgame_object: bool,
+    /// Netgame exists and the server's show-nametags setting is on (A 0x10074270 /
+    /// 0x10075390 guards): both nametag passes run, even with nobody to draw.
+    pub name_tag_passes: bool,
 }
 
 /// The renderer: D3DX objects created on the first Present.
@@ -338,15 +344,170 @@ pub struct Renderer {
     /// Size of the chat GUI dialog: the video mode, then `(w + 100) × (bottom + 50)`
     /// once the input was opened (UR §8).
     host_size: (i32, i32),
+    /// Objects samp creates at start-up that nothing we reproduce draws with yet.
+    unused: Unused,
+}
+
+/// Start-up objects without a reproduced user yet (kept for the call stream and lifetime;
+/// only the device-loss handling touches them).
+#[allow(dead_code)]
+struct Unused {
+    plate_font: Font,
+    logo: Logo,
+    editor_fonts: (Option<Font>, Option<Font>),
+    plate_rt: Option<RenderTarget>,
+    extra: [Sprite; 2],
+}
+
+/// The SA-MP logo (`logo.png`, samp.saa hash 0xBADDEA6B) and the state block samp records
+/// with it (B 0x10070c20): the texture is (re)created from the archive bytes, then a state
+/// block is recorded with that texture on stage 0 and fixed blend / raster / stage states.
+/// samp runs this twice at start-up; nothing in R4 draws with it in the measured flows.
+struct Logo {
+    tex: *mut c_void,
+    state_block: *mut c_void,
+}
+
+impl Logo {
+    fn create(d3dx: &D3dx) -> Logo {
+        let mut l = Logo { tex: std::ptr::null_mut(), state_block: std::ptr::null_mut() };
+        l.init(d3dx);
+        l.init(d3dx);
+        l
+    }
+
+    fn release_state_block(&mut self) {
+        // SAFETY: we own the reference.
+        unsafe { d3d::release(self.state_block) };
+        self.state_block = std::ptr::null_mut();
+    }
+
+    fn init(&mut self, d3dx: &D3dx) {
+        // SAFETY: we own the previous references.
+        unsafe {
+            d3d::release(self.tex);
+            d3d::release(self.state_block);
+        }
+        self.tex = std::ptr::null_mut();
+        self.state_block = std::ptr::null_mut();
+        if let Some(bytes) = crate::filehook::archive_read_hash(0xBADD_EA6B) {
+            self.tex = d3d::texture_from_memory(d3dx, &bytes).unwrap_or(std::ptr::null_mut());
+        }
+        self.state_block = d3d::devcall::record_state_block(|| {
+            use d3d::devcall::{set_render_state as rs, set_sampler_state as ss, set_texture, set_tss as tss};
+            set_texture(0, self.tex);
+            for (k, v) in [(27, 1), (19, 5), (20, 6), (15, 1), (24, 8), (25, 7), (8, 3), (22, 3), (52, 0), (136, 1)] {
+                rs(k, v);
+            }
+            for (k, v) in [(152, 0), (151, 0), (167, 0), (28, 0), (168, 0xF)] {
+                rs(k, v);
+            }
+            for (k, v) in [(1, 4), (2, 2), (3, 0), (4, 4), (5, 2), (6, 0), (11, 0), (24, 0)] {
+                tss(0, k, v);
+            }
+            tss(1, 1, 1);
+            tss(1, 4, 1);
+            ss(0, 6, 1);
+            ss(0, 5, 1);
+            ss(0, 7, 0);
+        });
+    }
+}
+
+impl Drop for Logo {
+    fn drop(&mut self) {
+        // SAFETY: we own these references.
+        unsafe {
+            d3d::release(self.tex);
+            d3d::release(self.state_block);
+        }
+    }
 }
 
 impl Renderer {
+    /// samp's first-frame UI construction (A 0x100c47d0, UR §1.1), run from the game-frame
+    /// entry inside GTA's scene, in the measured order (UX-1, D3D log of the original's first
+    /// UI frame): cursor hidden; font renderer (4 fonts, sprite, the 38/10 plate font, "Y"
+    /// measures); chat window (2 sprites, render target, "Y" and timestamp measures); chat
+    /// input (GUI resource manager sprite + `OnResetDevice` + `D3DSBT_ALL` state block); death
+    /// window (sprite, names font + sample measure, two GTAWEAPON3 fonts + "G" measures);
+    /// logo texture from samp.saa with its recorded state block (twice); nametag and 3D-text
+    /// sprites; object-editor SAMPAUX3 fonts; plate render target; two more sprites (object
+    /// editing/selection); `sampgui.png` and the GUI fonts; the `mouse.png` cursor; cursor
+    /// hidden again.
     pub fn new(face: &[u8], weight: u32, font_size: i32) -> Result<Self, String> {
         let d3dx = D3dx::load()?;
         let w = video_width();
-        let fonts = build_fonts(&d3dx, w, font_size, face, weight)?;
-        let sprites = Sprites::create(&d3dx)?;
+        d3d::show_cursor(false);
+        let main_h = fonts::main_height(w, font_size);
+        let small_h = fonts::small_height(w, font_size);
+        let gui_h = fonts::gui_height(font_size);
+        let aux_h = fonts::aux_height(w, font_size);
+        let args =
+            |height: i32, quality: u32| FontArgs { height, width: 0, weight, charset: 1, quality, face: face.to_vec() };
+        let sym =
+            |height: i32| FontArgs { height, width: 0, weight: 400, charset: 2, quality: 0, face: b"GTAWEAPON3".to_vec() };
+        // Font renderer (A 0x1006baf0).
+        let main = Font::create(&d3dx, args(main_h, 4))?;
+        let main_outline = Font::create(&d3dx, args(main_h, 4))?;
+        let small = Font::create(&d3dx, args(small_h, 4))?;
+        let small_outline = Font::create(&d3dx, args(small_h, 4))?;
+        let text = Sprite::create(&d3dx)?;
+        let plate_font = Font::create(
+            &d3dx,
+            FontArgs { height: 38, width: 10, weight: 700, charset: 1, quality: 4, face: b"Arial".to_vec() },
+        )?;
+        let main_line = main.measure_z(b"Y", 0).1;
+        let small_line = small.measure_z(b"Y", 0).1;
+        // Chat window (A 0x10068380): direct and blit sprites, render target, metrics.
+        let chat = Sprite::create(&d3dx)?;
+        let blit = Sprite::create(&d3dx)?;
+        let (rw, rh) = if w <= 1024 { (1024, 512) } else { (2048, 1024) };
+        let rt = match RenderTarget::create(&d3dx, rw, rh, 21) {
+            Ok(rt) => Some(rt),
+            Err(e) => {
+                crate::log!("ui: chat render target unavailable ({e}); direct drawing");
+                None
+            }
+        };
+        let _ = main.measure_z(b"Y", dt::SINGLELINE);
+        let timestamp_w = main.measure_z(samp_ui::chat::TIMESTAMP_SAMPLE, dt::SINGLELINE).0;
+        // Chat input (A 0x100693d0): its GUI dialog brings up the resource manager's sprite,
+        // whose OnResetDevice is followed by the manager's state block.
+        let gui_sprite = Sprite::create(&d3dx)?;
+        gui_sprite.on_reset();
+        dxut::set_rm_state_block(d3d::devcall::create_state_block(1));
+        // Death window (A 0x1006a650).
+        let death = Sprite::create(&d3dx)?;
+        let death_names = Font::create(&d3dx, args(aux_h, 0))?;
+        let nick_w = death_names.measure_z(deathwindow::NICK_SAMPLE, 0).0;
+        let death_icon = Font::create(&d3dx, sym(aux_h + 8))?;
+        let death_backdrop = Font::create(&d3dx, sym(aux_h + 12))?;
+        let glyph = || {
+            let mut r = Rect { left: 0, top: 0, right: 100, bottom: 100 };
+            death_backdrop.draw_n(std::ptr::null_mut(), b"G", -1, &mut r, dt::CALCRECT | dt::NOCLIP | dt::VCENTER, 0xFF00_0000);
+            (r.right - r.left, r.bottom - r.top)
+        };
+        let (icon_w, icon_h) = glyph();
+        let _ = glyph();
+        // The samp.saa logo texture and its state block (B 0x10070c20, run twice).
+        let logo = Logo::create(&d3dx);
+        // Nametag painter and 3D-text painter sprites.
+        let tags = Sprite::create(&d3dx)?;
+        let text3d = Sprite::create(&d3dx)?;
+        // Object editor fonts (A 0x10071bc0).
+        let aux_font = |h: i32| {
+            Font::create(&d3dx, FontArgs { height: h, width: 0, weight: 400, charset: 2, quality: 0, face: b"SAMPAUX3".to_vec() })
+        };
+        let editor_fonts = (aux_font(22).ok(), aux_font(28).ok());
+        // Number-plate painter render target (A 0x1006d9b0).
+        let plate_rt = RenderTarget::create(&d3dx, 128, 32, 22).ok();
+        // Object editing / selection sprites.
+        let extra = [Sprite::create(&d3dx)?, Sprite::create(&d3dx)?];
+        // GUI resource manager texture and fonts.
         let gui = dxut::load_skin(&d3dx);
+        let gui0 = Font::create(&d3dx, args(gui_h, 0))?;
+        let gui1 = Font::create(&d3dx, args(gui_h - 2, 0))?;
         let cursor = match d3d::create_cursor(&d3dx, b"mouse.png") {
             Ok(s) => s,
             Err(e) => {
@@ -354,32 +515,51 @@ impl Renderer {
                 std::ptr::null_mut()
             }
         };
-        // GUI resource manager (DXUT): its sprite's OnResetDevice, then its state block.
-        sprites.gui.on_reset();
-        dxut::set_rm_state_block(d3d::devcall::create_state_block(1));
-        let mut r = Self {
+        crate::log!(
+            "ui: fonts face={:?} weight={weight} main={main_h} small={small_h} gui={gui_h} aux={aux_h} (fontsize {font_size}, W {w}); \"Y\" main {main_line} small {small_line}; death nick {nick_w} icon {icon_w}x{icon_h}",
+            String::from_utf8_lossy(face)
+        );
+        let fonts = Fonts {
+            main,
+            main_outline,
+            small,
+            small_outline,
+            gui0,
+            gui1,
+            death_names,
+            death_icon,
+            death_backdrop,
+            main_h: main_line,
+            small_h: small_line,
+            gui0_height: gui_h,
+            gui1_height: gui_h - 2,
+            nick_w,
+            icon_w,
+            icon_h,
+            timestamp_w,
+        };
+        Ok(Self {
             tags_state_block: std::ptr::null_mut(),
             d3dx,
-            sprites,
+            sprites: Sprites { text, chat, blit, gui: gui_sprite, death, tags, text3d },
             fonts,
             aux: None,
             gui,
             cursor,
-            rt: None,
+            rt,
             rt_valid: false,
             rt_scroll: 0,
             built_for: (w, font_size),
             host_size: (w, video_height()),
-        };
-        r.create_rt();
-        Ok(r)
+            unused: Unused { plate_font, logo, editor_fonts, plate_rt, extra },
+        })
     }
 
     /// Chat render target: 1024×512 at an adapter width ≤ 1024, else 2048×1024
     /// (UR §7.6); `directmode` is not supported (TODO-unknown: config read).
     fn create_rt(&mut self) {
         let (w, h) = if video_width() <= 1024 { (1024, 512) } else { (2048, 1024) };
-        match RenderTarget::create(&self.d3dx, w, h) {
+        match RenderTarget::create(&self.d3dx, w, h, 21) {
             Ok(rt) => self.rt = Some(rt),
             Err(e) => crate::log!("ui: chat render target unavailable ({e}); direct drawing"),
         }
@@ -426,6 +606,17 @@ impl Renderer {
         }
         dxut::set_rm_state_block(std::ptr::null_mut());
         self.tags_state_block = std::ptr::null_mut();
+        // DEFAULT-pool plate target and the logo's state block must go before Reset too.
+        let u = &mut self.unused;
+        u.plate_rt = None;
+        u.logo.release_state_block();
+        u.plate_font.on_lost();
+        for f in [&u.editor_fonts.0, &u.editor_fonts.1].into_iter().flatten() {
+            f.on_lost();
+        }
+        for sp in &u.extra {
+            sp.on_lost();
+        }
     }
 
     pub fn on_reset(&mut self) {
@@ -441,6 +632,16 @@ impl Renderer {
         }
         dxut::set_rm_state_block(d3d::devcall::create_state_block(1));
         self.create_rt();
+        let u = &mut self.unused;
+        u.plate_font.on_reset();
+        for f in [&u.editor_fonts.0, &u.editor_fonts.1].into_iter().flatten() {
+            f.on_reset();
+        }
+        for sp in &u.extra {
+            sp.on_reset();
+        }
+        u.plate_rt = RenderTarget::create(&self.d3dx, 128, 32, 22).ok();
+        u.logo.init(&self.d3dx);
         // UR §2.2: the cursor surface is re-created after a reset.
         // SAFETY: we own the old surface.
         unsafe { d3d::release(self.cursor) };
@@ -604,6 +805,31 @@ impl Renderer {
         d3d::state_block_apply(self.tags_state_block);
     }
 
+    /// F5 overlay (A 0x10060d70): the whole text and "Y" measured (`DT_CALCRECT`, no sprite),
+    /// then the title `Client Network Stats` at (10, 10)–(W − 150, 10 + h) in 0xFF8888EE and
+    /// every `\n`-terminated line below it in white, each through the font renderer with its
+    /// 4-way outline and its own sprite Begin/End.
+    fn net_stats(&self, text: &[u8]) {
+        let _ = self.fonts.main.measure_z(&colour::strip_codes(text), 0);
+        let h = self.fonts.main.measure_z(b"Y", 0).1;
+        let right = video_width() - 150;
+        let line = |t: &[u8], top: i32, c: u32| {
+            let s = &self.sprites.text;
+            s.begin(d3d::sprite::ALPHABLEND);
+            let rect = Rect { left: 10, top, right, bottom: top + h };
+            Self::outlined(s, &self.fonts.main, &self.fonts.main_outline, t, rect, 0, c, &fonts::OUTLINE_4);
+            s.end();
+        };
+        line(b"Client Network Stats", 10, 0xFF88_88EE);
+        let mut top = 10 + h;
+        let mut rest = text;
+        while let Some(i) = rest.iter().position(|&b| b == b'\n') {
+            line(&rest[..i], top, 0xFFFF_FFFF);
+            top += h;
+            rest = &rest[i + 1..];
+        }
+    }
+
     /// Names pass (A 0x10075390 / 0x1006cda0) incl. the AFK icon (UR §16.3).
     fn tag_names(&mut self, tags: &[TagDraw], nametag_status: bool) {
         if !tags.is_empty() && self.aux.is_none() {
@@ -656,6 +882,32 @@ impl Renderer {
             let (x, y) = (p[0] as i32, p[1] as i32);
             let rect = Rect { left: x, top: y, right: x + 1, bottom: y + 2 };
             Self::outlined(s, &self.fonts.small, &self.fonts.small_outline, &b.text, rect, dt::CENTER, b.colour, &fonts::OUTLINE_4);
+        }
+        s.end();
+    }
+
+    /// 3D text labels (UR §2.3 step 10, §18; TRACE-6 d3d capture), one batch on the 3D-text sprite: projected
+    /// like the bubbles (skipped when z > 1), small font, the text without `{RRGGBB}` codes, four black outline
+    /// draws whose offsets move only the left/top edge (up, down, left, right), then the main draw in the label
+    /// colour; rect [x, y, x+1, y+1], format 0x101. Placement, draw distance and LOS come from `entities.rs` (M6).
+    fn labels(&self) {
+        const OUTLINE: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+        let s = &self.sprites.text3d;
+        s.begin(d3d::sprite::ALPHABLEND);
+        for l in crate::entities::label_draws() {
+            let p = self.project(l.pos);
+            if p[2] > 1.0 {
+                continue;
+            }
+            let (x, y) = (p[0] as i32, p[1] as i32);
+            let text = colour::strip_codes(&l.text);
+            let font = &self.fonts.small;
+            for (dx, dy) in OUTLINE {
+                let mut r = Rect { left: x + dx, top: y + dy, right: x + 1, bottom: y + 1 };
+                font.draw(s.ptr, &text, &mut r, dt::CENTER | dt::NOCLIP, colour::OUTLINE);
+            }
+            let mut r = Rect { left: x, top: y, right: x + 1, bottom: y + 1 };
+            font.draw(s.ptr, &text, &mut r, dt::CENTER | dt::NOCLIP, l.argb);
         }
         s.end();
     }
@@ -936,16 +1188,26 @@ impl Renderer {
     /// The Present pass after the HUD decision (UR §2.3 steps 4–12). Returns early for
     /// the scoreboard (steps 6–12 skipped).
     pub fn frame(&mut self, f: &Frame, cursor_req: &mut dyn FnMut(CursorReq)) {
-        self.tag_bars(f.tags);
-        self.tag_names(f.tags, f.nametag_status);
+        if f.name_tag_passes {
+            self.tag_bars(f.tags);
+            self.tag_names(f.tags, f.nametag_status);
+        }
         if let Some(sb) = &f.scoreboard {
             self.scoreboard(sb, f.cursor);
             return;
         }
-        self.bubbles(f.bubbles);
-        // 3D text labels (none before M6): an empty batch like the original.
-        self.sprites.text3d.begin(d3d::sprite::ALPHABLEND);
-        self.sprites.text3d.end();
+        if f.overlay.is_some() {
+            // F10's draw is empty.
+            if let Some(t) = f.net_stats {
+                self.net_stats(t);
+            }
+            return;
+        }
+        if f.netgame_object {
+            self.bubbles(f.bubbles);
+            // 3D text labels: the text3d batch, empty when there are none (like the original).
+            self.labels();
+        }
         self.chat(f.chat);
         if f.input.is_open() {
             cursor_req(CursorReq::Mode2);

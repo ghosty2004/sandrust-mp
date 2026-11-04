@@ -113,7 +113,9 @@ fn load_sprite(text: &[u8]) -> u32 {
             }
             b"vehicleprev".to_vec()
         }
-        _ if t.len() < 10 && t.starts_with(b"mdl") => return 0, // TODO-unknown: model sprites
+        // `mdlNNN` names (A 0x100b2d10): samp only treats them specially when its custom-model
+        // store (A 0x1026ea10) exists, and only the dormant RPC 179 handler creates it; in R4 they
+        // take the generic TXD path below, like any other dictionary name.
         _ => {
             let k = t[..t.len().min(10)].to_vec();
             if !ensure_txd(&k, t, false) {

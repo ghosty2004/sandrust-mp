@@ -25,6 +25,8 @@ mod textdraws;
 #[cfg(windows)]
 mod glue;
 #[cfg(windows)]
+pub mod mattext;
+#[cfg(windows)]
 mod render;
 #[cfg(windows)]
 mod wndproc;

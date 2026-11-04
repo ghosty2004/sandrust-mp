@@ -16,6 +16,7 @@
 #   rskill    remote Colt at pistol skill 0 / 1000 (screenshots)
 #   driveby   local passenger and driver drive-by (Uzi), then a remote passenger drive-by bot
 #   rmb       RemoveBuildingForPlayer(4019) then 3.3 km away and back (watch 4019,19300)
+#   world7    blanktex material (model 0), camera vs normal / no-cam-col wall, SetPlayerPosFindZ over an object
 #   respawn   death after ForceClassSelection, then death while spectating
 # COMBAT2_TARGET=TraceOurs when driving our client (bots aim at that name).
 # Decode sends: samp-dump OUT/net.pcapng --port 7790 --raw | target/debug/examples/c2s_decode --only 206,115,…
@@ -235,6 +236,63 @@ part_rskill() {
     mark rskill-done
 }
 
+# Camera position: CCamera (0xB6F028) is a CPlaceable; its matrix pointer is at +0x14, the position at matrix +0x30.
+campos() {
+    local m
+    m=$("$U" ctl 'peek 0xB6F03C 4' | awk '{printf "0x%s%s%s%s", $6, $5, $4, $3}')
+    echo "$1 $("$U" ctl "peek $(printf '0x%x' $((m + 0x30))) 12")" >> "$OUT/campos.txt"
+}
+
+# World follow-ups: material with model 0 (blanktex), camera collision with a normal / no-camera-collision
+# object (MR-6.12), SetPlayerPosFindZ over an object (ProcessVerticalLine hook, MR-6.13).
+obj_id() { "$U" fs "$1" | sed -n 's/.* object \([0-9]*\).*/\1/p'; }
+
+part_world7() {
+    reset_local
+    sleep 2
+    local o
+    o=$(obj_id 'obj|1271|1702|-2595|13.9|0|0|0|0')
+    sleep 2
+    mark w7-blanktex
+    fs "objmat|$o|0|0|none|none|FF00FF00"
+    sleep 2
+    "$U" shot w7-blanktex > /dev/null
+    mark w7-negmodel
+    fs "objmat|$o|1|-1|none|none|FF0000FF"
+    sleep 2
+    fs "objdel|$o"
+    # Camera collision: a wall between the camera and the player.
+    fs 'pos|L|1700|-2600|13.55|0'
+    sleep 2
+    campos cam-free
+    mark w7-camwall
+    o=$(obj_id 'obj|19353|1700|-2602.3|14.3|0|0|0|0')
+    sleep 2
+    campos cam-wall
+    "$U" shot w7-camwall > /dev/null
+    mark w7-camnocol
+    fs "nocamcol|$o"
+    sleep 2
+    campos cam-nocamcol
+    "$U" shot w7-camnocol > /dev/null
+    fs "objdel|$o"
+    sleep 2
+    campos cam-removed
+    # SetPlayerPosFindZ over a crate and next to it.
+    o=$(obj_id 'obj|1271|1710|-2600|13.9|0|0|0|0')
+    sleep 2
+    mark w7-findz-obj
+    fs 'findz|L|1710|-2600|60'
+    sleep 2
+    "$U" fs 'where|L' | tail -1 >> "$OUT/findz.txt"
+    mark w7-findz-ground
+    fs 'findz|L|1714|-2600|60'
+    sleep 2
+    "$U" fs 'where|L' | tail -1 >> "$OUT/findz.txt"
+    fs "objdel|$o"
+    mark w7-done
+}
+
 veh_id() { "$U" fs "$1" | sed -n 's/.*veh-created \([0-9]*\).*/\1/p'; }
 
 part_driveby() {
@@ -331,7 +389,7 @@ part_respawn() {
 
 for p in "$@"; do
     case "$p" in
-        cross|ht1|proj|satchel|rproj|gap|masks|skills|rskill|driveby|rmb|respawn) "part_$p" ;;
+        cross|ht1|proj|satchel|rproj|gap|masks|skills|rskill|driveby|rmb|respawn|world7) "part_$p" ;;
         *) echo "combat2: unknown part $p" >&2; exit 2 ;;
     esac
 done

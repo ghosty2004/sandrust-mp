@@ -90,9 +90,7 @@ fn sample_pad(m: &ProcMem) {
     }
     // CControllerState (gta-reversed ControllerState.h): RightShoulder1 +0xC (aim), Square +0x1C
     // (jump), Cross +0x20 (sprint), Circle +0x22 (fire), ShockButtonL +0x24 (crouch).
-    let btn = |base: u32| -> [i16; 5] {
-        [0xC, 0x1C, 0x20, 0x22, 0x24].map(|o| m.i16(base + o).unwrap_or(-1))
-    };
+    let btn = |base: u32| -> [i16; 5] { [0xC, 0x1C, 0x20, 0x22, 0x24].map(|o| m.i16(base + o).unwrap_or(-1)) };
     let (new, old) = (btn(gta::PAD0), btn(gta::PAD0 + 0x30));
     let flags = m.u32(ped + PED_FLAGS).unwrap_or(0);
     let mv = m.u32(ped + gta::off::PED_MOVE_STATE).unwrap_or(0);

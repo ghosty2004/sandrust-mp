@@ -150,6 +150,10 @@ fn physical_ram_mb() -> u64 {
 }
 
 fn init_thread() {
+    // samp imports d3dx9_25.dll (loaded with samp.dll, before the game's first Present) and
+    // registers its fonts at attach (UR §3.1, A 0x100c5100): done first thing here, outside
+    // the loader lock.
+    crate::ui::preload();
     let mem = ProcessMemory;
     let t0 = Instant::now();
     let mut last_state = -1;
@@ -179,10 +183,6 @@ fn init_thread() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    // samp imports d3dx9_25.dll and registers its fonts at attach (UR §3.1,
-    // A 0x100c5100); loaded here, once the game's own start-up is past the splash,
-    // so it is in before the first frame (the tracer's D3DX hooks need it then).
-    crate::ui::preload();
     let mut mem = ProcessMemory;
     {
         let mut g = PATCHER.lock().unwrap_or_else(|e| e.into_inner());
@@ -309,6 +309,11 @@ fn init_thread() {
         let failed: Vec<String> =
             hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
         crate::log!("main: vehicle hooks: {} installed, failed: {failed:?}", hooks.len() - failed.len());
+        // World entities (M6): byte rows and hooks.
+        let hooks = crate::worldhooks::install(patcher, &mut mem);
+        let failed: Vec<String> =
+            hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
+        crate::log!("main: world rows: {} applied, failed: {failed:?}", hooks.len() - failed.len());
         // CSV row 6 — retarget the Render2dStuff call in Idle to our per-frame entry.
         let hook = frame_hook as extern "C" fn() as usize as u32;
         match patcher.retarget_branch(
@@ -509,6 +514,14 @@ extern "C" fn game_process_hook() {
     if ARGS.get().is_some_and(|a| a.connect) {
         let _ = catch_unwind(frame_timer_step);
     }
+    // World-entity pre-step (objects: streaming, attachments, MoveObject; world-entities.md RE-10 §3).
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if let Ok(mut g) = CLIENT.try_lock()
+            && let Some(c) = g.as_mut()
+        {
+            c.pre_process();
+        }
+    }));
     let orig = ORIGINAL_GAME_PROCESS.load(Ordering::Relaxed);
     if orig != 0 {
         // SAFETY: `orig` is CGame::Process (void __cdecl(void)), read from the call we retargeted.
@@ -737,6 +750,10 @@ fn service_control(_from: &str) {
         Command::Files => crate::filehook::report(),
         Command::Vehicles => match CLIENT.try_lock() {
             Ok(g) => g.as_ref().map(|c| c.vehicle_lines()).unwrap_or_else(|| "vehicles count=0".into()),
+            Err(_) => "error client busy".into(),
+        },
+        Command::World => match CLIENT.try_lock() {
+            Ok(g) => g.as_ref().map(|c| c.world_lines()).unwrap_or_else(|| "world count=0".into()),
             Err(_) => "error client busy".into(),
         },
         Command::Spawn => match CLIENT.try_lock() {

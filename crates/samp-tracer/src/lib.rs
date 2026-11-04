@@ -12,6 +12,7 @@
 //! record formatting, control protocol) for tests; the Windows side lives in
 //! `win` (cfg(windows)).
 
+pub mod bass;
 pub mod control;
 pub mod cov;
 pub mod d3d;
