@@ -289,6 +289,16 @@ impl Vehicles {
         vehhooks::with_shared(|s| s.disable_collisions = on);
     }
 
+    /// Script handle of a streamed vehicle (object attachments, M6).
+    pub fn script_handle(&self, id: u16) -> Option<i32> {
+        self.get(id).map(|v| v.handle)
+    }
+
+    /// GTA vehicle pointer of a streamed vehicle (3D label attachments, M6).
+    pub fn gta_ptr(&self, id: u16) -> Option<u32> {
+        self.get(id).map(|v| vehicle_at(v.handle)).filter(|&p| p != 0)
+    }
+
     fn id_of_ptr(&self, ptr: u32) -> Option<u16> {
         if ptr == 0 {
             return None;

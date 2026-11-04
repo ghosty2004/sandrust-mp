@@ -34,6 +34,8 @@ pub mod dev {
     pub const CREATE_OFFSCREEN_PLAIN_SURFACE: usize = 36;
     pub const BEGIN_SCENE: usize = 41;
     pub const END_SCENE: usize = 42;
+    pub const CLEAR: usize = 43;
+    pub const SET_TEXTURE: usize = 65;
 }
 
 /// `ID3DXSprite` vtable slots (d3dx9_24 and later).
@@ -57,6 +59,7 @@ pub mod font {
 
 /// `DrawText` format flags.
 pub mod dt {
+    pub const CENTER: u32 = 0x1;
     pub const VCENTER: u32 = 0x4;
     pub const SINGLELINE: u32 = 0x20;
     pub const NOCLIP: u32 = 0x100;
@@ -159,13 +162,41 @@ pub fn install_device_proxy(present: PresentFn, reset: ResetFn) -> Result<(), St
         return Err("no device yet".into());
     }
     REAL_DEVICE.store(cur, Ordering::SeqCst);
-    let vt = forwarding_vtable(&REAL_DEVICE, dev::SLOTS, &[(dev::PRESENT, present), (dev::RESET, reset)])
-        .ok_or("VirtualAlloc failed")?;
+    let set_texture = proxy_set_texture as *const () as usize;
+    let vt = forwarding_vtable(
+        &REAL_DEVICE,
+        dev::SLOTS,
+        &[(dev::PRESENT, present), (dev::RESET, reset), (dev::SET_TEXTURE, set_texture)],
+    )
+    .ok_or("VirtualAlloc failed")?;
     let proxy = proxy_object(vt);
     // SAFETY: as above.
     unsafe { std::ptr::write_volatile(RW_D3D_DEVICE as usize as *mut u32, proxy as u32) };
     crate::log!("ui: device proxy {:#x} installed over the real device {cur:#x}", proxy as u32);
     Ok(())
+}
+
+/// Texture substitution for `SetTexture` (M6 material text: samp's device proxy A 0x10074BB0 swaps a material
+/// slot's original texture for the slot's text render target while the object renders). Returns the texture to
+/// set instead, or the argument unchanged.
+pub static SET_TEXTURE_FILTER: AtomicU32 = AtomicU32::new(0);
+
+type SetTextureFn = extern "system" fn(*mut c_void, u32, *mut c_void) -> HResult;
+
+/// Proxy `IDirect3DDevice9::SetTexture`: runs [`SET_TEXTURE_FILTER`] (if set) on the texture, then the real call.
+extern "system" fn proxy_set_texture(_this: *mut c_void, stage: u32, tex: *mut c_void) -> HResult {
+    let filter = SET_TEXTURE_FILTER.load(Ordering::Relaxed);
+    let tex = if filter != 0 {
+        // SAFETY: the filter is a `fn(*mut c_void) -> *mut c_void` stored by its owner.
+        let f: fn(*mut c_void) -> *mut c_void = unsafe { std::mem::transmute(filter as usize) };
+        f(tex)
+    } else {
+        tex
+    };
+    let dev = real_device();
+    // SAFETY: the real device's SetTexture.
+    let f: SetTextureFn = unsafe { vfn(dev, dev::SET_TEXTURE) };
+    f(dev, stage, tex)
 }
 
 /// Real `Present`.
@@ -515,6 +546,37 @@ pub fn draw_glyph_coloured(
         g.active = true;
     });
     font.draw(sprite.proxy, stripped, rect, flags, base);
+    GLYPHS.with(|g| {
+        let mut g = g.borrow_mut();
+        g.active = false;
+        g.next
+    })
+}
+
+/// [`draw_glyph_coloured`] through another sprite (its real `ID3DXSprite` pointer): the colour proxy forwards to
+/// it for the duration of the call.
+pub fn draw_glyph_coloured_with(
+    font: &Font,
+    real_sprite: *mut c_void,
+    stripped: &[u8],
+    rect: &mut Rect,
+    flags: u32,
+    base: u32,
+    colours: Vec<u32>,
+) -> usize {
+    let proxy = SPRITE_PROXY.load(Ordering::SeqCst) as usize as *mut c_void;
+    if proxy.is_null() {
+        return font.draw(real_sprite, stripped, rect, flags, base).max(0) as usize;
+    }
+    let saved = REAL_SPRITE.swap(real_sprite as u32, Ordering::SeqCst);
+    GLYPHS.with(|g| {
+        let mut g = g.borrow_mut();
+        g.colours = colours;
+        g.next = 0;
+        g.active = true;
+    });
+    font.draw(proxy, stripped, rect, flags, base);
+    REAL_SPRITE.store(saved, Ordering::SeqCst);
     GLYPHS.with(|g| {
         let mut g = g.borrow_mut();
         g.active = false;

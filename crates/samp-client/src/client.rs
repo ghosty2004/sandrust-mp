@@ -65,6 +65,10 @@ pub struct Client {
     players: crate::players::Players,
     /// Vehicles (M5, vehicles.rs).
     vehicles: crate::vehicles::Vehicles,
+    /// Objects (M6, objects.rs).
+    objects: crate::objects::Objects,
+    /// Pickups, actors, checkpoints, gang zones, map icons, 3D labels (M6, entities.rs).
+    entities: crate::entities::Entities,
 }
 
 /// Raw write into game data (heap objects, .data/.bss); no protection change.
@@ -118,6 +122,8 @@ impl Client {
             time_of_day: 12,
             players: crate::players::Players::default(),
             vehicles: crate::vehicles::Vehicles::default(),
+            objects: crate::objects::Objects::default(),
+            entities: crate::entities::Entities::default(),
         })
     }
 
@@ -139,6 +145,27 @@ impl Client {
     /// Control-channel `vehicles`: one header line plus one line per streamed vehicle.
     pub fn vehicle_lines(&self) -> String {
         self.vehicles.status(&self.players)
+    }
+
+    /// Control-channel `world`: one header line plus one line per world entity.
+    pub fn world_lines(&self) -> String {
+        let mut lines = Vec::new();
+        self.objects.status_lines(&mut lines);
+        self.entities.status_lines(&mut lines);
+        let mut out =
+            format!("world count={} {} {}", lines.len(), self.objects.header_fields(), self.entities.header_fields());
+        for l in lines {
+            out.push('\n');
+            out.push_str(&l);
+        }
+        out
+    }
+
+    /// CGame::Process pre-step (dll.rs): the per-frame object process (world-entities.md RE-10 §3).
+    pub fn pre_process(&mut self) {
+        if matches!(self.net.phase(), Phase::Connected) {
+            self.objects.process(&mut self.runner, &self.vehicles, &self.players);
+        }
     }
 
     /// Control-channel `spawn`: run the spawn routine on the next tick.
@@ -207,6 +234,10 @@ impl Client {
         // The vehicle pool tick follows the local player's (remote-control-vehicles §6 step 3c).
         if matches!(self.net.phase(), Phase::Connected) {
             self.vehicles.pool_tick(&mut self.runner, &mut self.net, &self.players, now);
+            // World entities (M6): hook events (RPC 131 / 177), checkpoints, pickup poll, labels.
+            self.entities.hook_events(&mut self.net);
+            self.objects.poll_escape(&mut self.net);
+            self.entities.tick(&mut self.runner, &mut self.net, &self.players, &self.vehicles);
         }
         // Push out what this frame queued (sync packets, RPCs) right away.
         self.net.flush(now);
@@ -231,12 +262,16 @@ impl Client {
                 self.players.set_init_game(g.player_id, g.death_drop_money);
                 crate::ui::on_init_game(g.server_name.as_bytes(), g.player_id);
                 self.vehicles.set_init_game(&g);
+                self.objects.set_local_id(g.player_id);
+                self.entities.set_local_id(g.player_id);
                 self.enter_class_selection(now, g.spawns_available);
             }
             Event::Rpc(r) => self.on_rpc(r),
             Event::Sync(s) => self.on_sync(s, now),
             Event::Closed(reason) => {
                 crate::ui::on_closed();
+                self.objects.clear(&mut self.runner);
+                self.entities.clear(&mut self.runner);
                 self.vehicles.clear(&mut self.runner);
                 self.players.clear(&mut self.runner);
                 crate::log!("client: session closed: {reason}");
@@ -273,6 +308,12 @@ impl Client {
             Incoming::Ui(ui::Incoming::SendGameText(g)) => crate::log!("[gametext] {}", text(&g.text)),
             Incoming::Remote(r) => {
                 use samp_proto::rpcs::remote::Incoming as R;
+                if let R::PlayerJoin(j) = &r {
+                    let (id, colour) = (j.player_id, j.colour);
+                    crate::worldhooks::with_shared(|s| {
+                        s.colours.get_or_insert_with(crate::ui::colours::PlayerColours::new).set(id, colour)
+                    });
+                }
                 let (streamed_in, quit) = match &r {
                     R::PlayerStreamIn(s) => (Some(s.player_id), None),
                     R::PlayerQuit(q) => (None, Some(q.player_id)),
@@ -287,6 +328,28 @@ impl Client {
                 }
             }
             Incoming::Vehicle(v) => self.vehicles.on_rpc(&mut self.runner, &mut self.players, v),
+            Incoming::World(w) => {
+                use samp_proto::rpcs::world::Incoming as W;
+                match w {
+                    W::CreateObject(_)
+                    | W::SetObjectPosition(_)
+                    | W::SetObjectRotation(_)
+                    | W::DestroyObject(_)
+                    | W::MoveObject(_)
+                    | W::StopObject(_)
+                    | W::AttachObjectToPlayer(_)
+                    | W::SetPlayerObjectMaterial(_)
+                    | W::SetObjectNoCameraCollision(_)
+                    | W::SetPlayerAttachedObject(_)
+                    | W::PlayerBeginObjectSelect(_)
+                    | W::PlayerCancelObjectEdit(_)
+                    | W::PlayerBeginObjectEdit(_)
+                    | W::PlayerBeginAttachedObjectEdit(_) => {
+                        self.objects.on_rpc(&mut self.runner, &mut self.net, &self.players, w)
+                    }
+                    w => self.entities.on_rpc(&mut self.runner, w),
+                }
+            }
             Incoming::Session(samp_proto::rpcs::session::Incoming::SetVehicleTyreStatus(t)) => {
                 self.vehicles.on_tyres(t.vehicle_id, t.tyres)
             }
@@ -362,6 +425,12 @@ impl Client {
                 P::SetPlayerTime(t) => self.time_of_day = t.hour,
                 P::SetPlayerWorldTime(t) => self.time_of_day = t.hour,
                 P::DisableRemoteVehicleCollisions(d) => self.vehicles.set_disable_collisions(d.disable),
+                P::RemoveBuildingForPlayer(b) => {
+                    self.objects.remove_building(b.model_id as i32, [b.pos.x, b.pos.y, b.pos.z], b.radius)
+                }
+                P::SetPlayerColor(c) => crate::worldhooks::with_shared(|s| {
+                    s.colours.get_or_insert_with(crate::ui::colours::PlayerColours::new).set(c.player_id, c.colour)
+                }),
                 P::SetPlayerArmedWeapon(w) => {
                     let ped = self.ped();
                     if let Some(h) = self.ped_handle(ped) {

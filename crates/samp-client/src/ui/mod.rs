@@ -18,6 +18,8 @@ mod d3d;
 #[cfg(windows)]
 mod glue;
 #[cfg(windows)]
+pub mod mattext;
+#[cfg(windows)]
 mod render;
 #[cfg(windows)]
 mod wndproc;

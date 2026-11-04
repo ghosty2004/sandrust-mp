@@ -261,6 +261,23 @@ impl Renderer {
         }
     }
 
+    /// 3D text labels (UR §2.3 step 10, §18; TRACE-6 d3d capture): small font, the text without `{RRGGBB}`
+    /// codes, four black outline draws whose offsets move only the left/top edge (up, down, left, right), then the
+    /// main draw in the label colour; rect [x, y, x+1, y+1], format 0x101. Positions come from `entities.rs` (M6).
+    fn draw_labels(&mut self) {
+        const OUTLINE: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+        for l in crate::entities::label_draws() {
+            let text = colour::strip_codes(&l.text);
+            let font = &self.fonts.small;
+            for (dx, dy) in OUTLINE {
+                let mut r = Rect { left: l.x + dx, top: l.y + dy, right: l.x + 1, bottom: l.y + 1 };
+                font.draw(self.sprite.ptr, &text, &mut r, dt::CENTER | dt::NOCLIP, colour::OUTLINE);
+            }
+            let mut r = Rect { left: l.x, top: l.y, right: l.x + 1, bottom: l.y + 1 };
+            font.draw(self.sprite.ptr, &text, &mut r, dt::CENTER | dt::NOCLIP, l.argb);
+        }
+    }
+
     /// Chat window (UR §7.2, §7.5; direct mode — see notes for the RT cache).
     fn draw_chat(&mut self, layout: &ChatLayout) {
         if !layout.visible {
@@ -395,6 +412,7 @@ impl Renderer {
             return;
         }
         if self.sprite.begin(d3d::sprite::ALPHABLEND) >= 0 {
+            self.draw_labels();
             self.draw_chat(&layout);
             // GUI dialog 0x1026ea9c: scrollbar, then the input edit box.
             if chat.scrollbar_visible(input.is_open()) {

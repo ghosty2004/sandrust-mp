@@ -294,6 +294,11 @@ fn init_thread() {
         let failed: Vec<String> =
             hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
         crate::log!("main: vehicle hooks: {} installed, failed: {failed:?}", hooks.len() - failed.len());
+        // World entities (M6): byte rows and hooks.
+        let hooks = crate::worldhooks::install(patcher, &mut mem);
+        let failed: Vec<String> =
+            hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
+        crate::log!("main: world rows: {} applied, failed: {failed:?}", hooks.len() - failed.len());
         // CSV row 6 — retarget the Render2dStuff call in Idle to our per-frame entry.
         let hook = frame_hook as extern "C" fn() as usize as u32;
         match patcher.retarget_branch(
@@ -484,6 +489,14 @@ pub(crate) static PED_FLAGS_DONE: AtomicBool = AtomicBool::new(false);
 /// ran), even while the screen is still faded out and `Render2dStuff` (our
 /// per-frame tick) is skipped.
 extern "C" fn game_process_hook() {
+    // World-entity pre-step (objects: streaming, attachments, MoveObject; world-entities.md RE-10 §3).
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if let Ok(mut g) = CLIENT.try_lock()
+            && let Some(c) = g.as_mut()
+        {
+            c.pre_process();
+        }
+    }));
     let orig = ORIGINAL_GAME_PROCESS.load(Ordering::Relaxed);
     if orig != 0 {
         // SAFETY: `orig` is CGame::Process (void __cdecl(void)), read from the call we retargeted.
@@ -630,6 +643,10 @@ fn service_control(_from: &str) {
         Command::Files => crate::filehook::report(),
         Command::Vehicles => match CLIENT.try_lock() {
             Ok(g) => g.as_ref().map(|c| c.vehicle_lines()).unwrap_or_else(|| "vehicles count=0".into()),
+            Err(_) => "error client busy".into(),
+        },
+        Command::World => match CLIENT.try_lock() {
+            Ok(g) => g.as_ref().map(|c| c.world_lines()).unwrap_or_else(|| "world count=0".into()),
             Err(_) => "error client busy".into(),
         },
         Command::Spawn => match CLIENT.try_lock() {
