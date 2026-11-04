@@ -124,8 +124,24 @@ pub fn ui_states() {
     devcall::set_render_state(7, 0); // ZENABLE
 }
 
+/// The GUI resource manager's `D3DSBT_ALL` state block (created with its sprite's
+/// `OnResetDevice`, A 0x1008cbc0 path, measured: `CreateStateBlock(1)` right after the GUI
+/// sprite). Every dialog render captures it first and applies it last, so the states the
+/// dialog sets (ZENABLE 0, blending, stage 0, shaders, FVF, texture, the sprite's transforms)
+/// do not leak into GTA's next frame (RenderWare caches its render states).
+static RM_STATE_BLOCK: std::sync::atomic::AtomicPtr<c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+pub fn set_rm_state_block(sb: *mut c_void) {
+    RM_STATE_BLOCK.store(sb, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn rm_state_block() -> *mut c_void {
+    RM_STATE_BLOCK.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Start of `CDXUTDialog::OnRender` for a dialog at `rect` with a uniform background.
 pub fn dialog_begin(sprite: &Sprite, rect: Rect, background: u32, gui_tex: *mut c_void) {
+    d3d::state_block_capture(rm_state_block());
     sprite.begin(d3d::sprite::DONOTSAVESTATE);
     ui_states();
     let (l, t, r, b) = (rect.left as f32, rect.top as f32, rect.right as f32, rect.bottom as f32);
@@ -149,6 +165,7 @@ pub fn dialog_begin(sprite: &Sprite, rect: Rect, background: u32, gui_tex: *mut 
 
 pub fn dialog_end(sprite: &Sprite) {
     sprite.end();
+    d3d::state_block_apply(rm_state_block());
 }
 
 fn scale_matrix(sx: f32, sy: f32) -> [f32; 16] {

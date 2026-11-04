@@ -34,6 +34,7 @@ pub mod dev {
     pub const END_SCENE: usize = 42;
     pub const CLEAR: usize = 43;
     pub const SET_TRANSFORM: usize = 44;
+    pub const CREATE_STATE_BLOCK: usize = 59;
     pub const GET_VIEWPORT: usize = 48;
     pub const SET_RENDER_STATE: usize = 57;
     pub const SET_TEXTURE: usize = 65;
@@ -287,6 +288,17 @@ pub mod devcall {
         // SAFETY: real device, SetFVF.
         let f: extern "system" fn(*mut c_void, u32) -> HResult = unsafe { vfn(d(), dev::SET_FVF) };
         f(d(), fvf);
+    }
+    /// `CreateStateBlock(type)` (1 = `D3DSBT_ALL`); null on failure.
+    pub fn create_state_block(kind: u32) -> *mut c_void {
+        let mut sb: *mut c_void = std::ptr::null_mut();
+        // SAFETY: real device, CreateStateBlock(type, IDirect3DStateBlock9**).
+        let f: extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> HResult =
+            unsafe { vfn(d(), dev::CREATE_STATE_BLOCK) };
+        if f(d(), kind, &mut sb) < 0 {
+            return std::ptr::null_mut();
+        }
+        sb
     }
     pub fn set_vertex_shader_null() {
         // SAFETY: real device, SetVertexShader(NULL).
@@ -854,5 +866,25 @@ pub fn add_font_resources() {
         // SAFETY: NUL-terminated relative path (the process directory is the GTA folder).
         let n = unsafe { AddFontResourceA(f.as_ptr()) };
         crate::log!("ui: AddFontResourceA({}) = {n}", String::from_utf8_lossy(&f[..f.len() - 1]));
+    }
+}
+
+// ---- state blocks -----------------------------------------------------------------------
+
+/// `IDirect3DStateBlock9::Capture` (slot 4); no-op for null.
+pub fn state_block_capture(sb: *mut c_void) {
+    if !sb.is_null() {
+        // SAFETY: live state block.
+        let f: extern "system" fn(*mut c_void) -> HResult = unsafe { vfn(sb, 4) };
+        f(sb);
+    }
+}
+
+/// `IDirect3DStateBlock9::Apply` (slot 5); no-op for null.
+pub fn state_block_apply(sb: *mut c_void) {
+    if !sb.is_null() {
+        // SAFETY: live state block.
+        let f: extern "system" fn(*mut c_void) -> HResult = unsafe { vfn(sb, 5) };
+        f(sb);
     }
 }
