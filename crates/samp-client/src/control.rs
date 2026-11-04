@@ -11,6 +11,8 @@
 //!   (id, name, ped slot, ped pointer, position, heading, health, last sync age)
 //! * `files` → `files mode=archive|fallback …` followed by one line per
 //!   samp.saa entry served so far (name, hash, size, opens, first path)
+//! * `vehicles` → `vehicles count=N …` followed by N lines, one per streamed vehicle (id, model, script
+//!   handle, CVehicle pointer, position, heading, health, driver player id / `local`, local occupancy)
 //! * `spawn` → debugging aid: run the local spawn routine with the stored
 //!   spawn info (as if the server had answered RPC 129); not used by tests
 //! * `chat [N]` → `chat count=K …` header plus K lines `line type=… colour=…
@@ -43,6 +45,7 @@ pub enum Command {
     Net,
     Remote,
     Files,
+    Vehicles,
     Spawn,
     Quit,
     Chat(usize),
@@ -89,6 +92,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "net" => Command::Net,
         "remote" => Command::Remote,
         "files" => Command::Files,
+        "vehicles" => Command::Vehicles,
         "spawn" => Command::Spawn,
         "chat" => Command::Chat(20),
         "input" => Command::Input,

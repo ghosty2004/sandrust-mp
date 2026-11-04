@@ -279,6 +279,21 @@ fn init_thread() {
             }
             Err(e) => crate::log!("main: CGame::Process hook FAILED: {e}"),
         }
+        // Vehicles (M5): init-main byte rows, the 256-colour palette (rows 148–154) and the hooks.
+        let r = crate::vehpatches::apply(patcher, &mut mem, crate::vehpatches::INIT);
+        let c = crate::vehpatches::apply_colour_table(patcher, &mut mem);
+        for (row, addr, e) in r.failed.iter().chain(c.failed.iter()) {
+            crate::log!("main: vehicle row {row} at {addr:#x} SKIPPED: {e}");
+        }
+        crate::log!(
+            "main: vehicle rows applied: {} byte patches, {} colour-table operands",
+            r.applied.len(),
+            c.applied.len()
+        );
+        let hooks = crate::vehhooks::install(patcher, &mut mem);
+        let failed: Vec<String> =
+            hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
+        crate::log!("main: vehicle hooks: {} installed, failed: {failed:?}", hooks.len() - failed.len());
         // CSV row 6 — retarget the Render2dStuff call in Idle to our per-frame entry.
         let hook = frame_hook as extern "C" fn() as usize as u32;
         match patcher.retarget_branch(
@@ -613,6 +628,10 @@ fn service_control(_from: &str) {
             Err(_) => "error client busy".into(),
         },
         Command::Files => crate::filehook::report(),
+        Command::Vehicles => match CLIENT.try_lock() {
+            Ok(g) => g.as_ref().map(|c| c.vehicle_lines()).unwrap_or_else(|| "vehicles count=0".into()),
+            Err(_) => "error client busy".into(),
+        },
         Command::Spawn => match CLIENT.try_lock() {
             Ok(mut g) => g.as_mut().map(|c| c.request_debug_spawn()).unwrap_or_else(|| "error no session".into()),
             Err(_) => "error client busy".into(),

@@ -63,6 +63,8 @@ pub struct Client {
     time_of_day: u8,
     /// Remote players (M3, players.rs).
     players: crate::players::Players,
+    /// Vehicles (M5, vehicles.rs).
+    vehicles: crate::vehicles::Vehicles,
 }
 
 /// Raw write into game data (heap objects, .data/.bss); no protection change.
@@ -115,6 +117,7 @@ impl Client {
             first_frame_done: false,
             time_of_day: 12,
             players: crate::players::Players::default(),
+            vehicles: crate::vehicles::Vehicles::default(),
         })
     }
 
@@ -130,7 +133,12 @@ impl Client {
 
     /// Control-channel `remote`: one header line plus one line per remote player.
     pub fn remote_lines(&self) -> String {
-        self.players.status(Instant::now())
+        self.players.status(Instant::now(), |p| self.vehicles.remote_fields(p))
+    }
+
+    /// Control-channel `vehicles`: one header line plus one line per streamed vehicle.
+    pub fn vehicle_lines(&self) -> String {
+        self.vehicles.status(&self.players)
     }
 
     /// Control-channel `spawn`: run the spawn routine on the next tick.
@@ -176,6 +184,8 @@ impl Client {
                 self.runner.run(op::SET_CHAR_SUFFERS_CRITICAL_HITS, &[Arg::Int(h), Arg::Int(0)]);
             }
             self.runner.run(op::DISPLAY_ZONE_NAMES, &[Arg::Int(0)]);
+            // CSV row 356: skills to 1000, then SetStatValue := RET (vehicles.md RE-10 "Driving skills").
+            self.vehicles.first_frame();
         }
         // Every frame, like the original: the server's time of day and the
         // pre-loading of the animation blocks and models samp uses.
@@ -183,6 +193,8 @@ impl Client {
         self.preload();
         // Remote players before the local player's tick and send (onfoot §6 step 5b).
         self.players.tick(now);
+        self.vehicles.remote_tick(&mut self.runner, &mut self.players);
+        self.vehicles.hook_events(&mut self.runner, &mut self.net);
         if self.class_sel.is_active() {
             self.class_selection_tick(now);
         } else if self.spawned {
@@ -192,6 +204,10 @@ impl Client {
         }
         // Chat input and connection lines of the in-game UI (M4).
         crate::ui::net_tick(&mut self.net);
+        // The vehicle pool tick follows the local player's (remote-control-vehicles §6 step 3c).
+        if matches!(self.net.phase(), Phase::Connected) {
+            self.vehicles.pool_tick(&mut self.runner, &mut self.net, &self.players, now);
+        }
         // Push out what this frame queued (sync packets, RPCs) right away.
         self.net.flush(now);
         if self.last_net_log.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(5)) {
@@ -214,17 +230,35 @@ impl Client {
                 );
                 self.players.set_init_game(g.player_id, g.death_drop_money);
                 crate::ui::on_init_game(g.server_name.as_bytes(), g.player_id);
+                self.vehicles.set_init_game(&g);
                 self.enter_class_selection(now, g.spawns_available);
             }
             Event::Rpc(r) => self.on_rpc(r),
-            Event::Sync(s) => self.players.on_sync(s, now),
+            Event::Sync(s) => self.on_sync(s, now),
             Event::Closed(reason) => {
                 crate::ui::on_closed();
-                self.players.clear();
+                self.vehicles.clear(&mut self.runner);
+                self.players.clear(&mut self.runner);
                 crate::log!("client: session closed: {reason}");
                 self.class_sel.leave();
                 self.spawned = false;
             }
+        }
+    }
+
+    /// Sync packets: 207/203 go to the player pool; 200/211 are stored and 209/210 applied by the vehicle pool.
+    fn on_sync(&mut self, s: samp_proto::sync::IncomingSync, now: Instant) {
+        use samp_proto::sync::IncomingSync as S;
+        match s {
+            S::Foot { ref sync, .. } if Some(sync.player_id) != self.net.player_id() => {
+                let id = sync.player_id;
+                self.players.on_sync(s, now);
+                self.vehicles.after_foot_store(&mut self.runner, &mut self.players, id);
+            }
+            S::Vehicle { .. } | S::Passenger(_) | S::Unoccupied(_) | S::Trailer(_) => {
+                self.vehicles.on_sync(&mut self.runner, &mut self.players, s, now)
+            }
+            s => self.players.on_sync(s, now),
         }
     }
 
@@ -237,7 +271,28 @@ impl Client {
                 crate::log!("[chat {:08x}] {}", m.colour, text(&m.message));
             }
             Incoming::Ui(ui::Incoming::SendGameText(g)) => crate::log!("[gametext] {}", text(&g.text)),
-            Incoming::Remote(r) => self.players.on_rpc(&mut self.runner, r),
+            Incoming::Remote(r) => {
+                use samp_proto::rpcs::remote::Incoming as R;
+                let (streamed_in, quit) = match &r {
+                    R::PlayerStreamIn(s) => (Some(s.player_id), None),
+                    R::PlayerQuit(q) => (None, Some(q.player_id)),
+                    _ => (None, None),
+                };
+                self.players.on_rpc(&mut self.runner, r);
+                if let Some(id) = streamed_in {
+                    self.vehicles.after_stream_in(&mut self.runner, &mut self.players, id);
+                }
+                if let Some(id) = quit {
+                    self.vehicles.forget_player(id);
+                }
+            }
+            Incoming::Vehicle(v) => self.vehicles.on_rpc(&mut self.runner, &mut self.players, v),
+            Incoming::Session(samp_proto::rpcs::session::Incoming::SetVehicleTyreStatus(t)) => {
+                self.vehicles.on_tyres(t.vehicle_id, t.tyres)
+            }
+            Incoming::Session(samp_proto::rpcs::session::Incoming::SetVehicleParamsForPlayerOld(p)) => {
+                self.vehicles.on_old_params(p.vehicle_id, p.objective, p.doors_locked)
+            }
             Incoming::Player(p) => match p {
                 P::PlayerRequestClassResponse(c) => {
                     crate::log!(
@@ -306,6 +361,7 @@ impl Client {
                 }
                 P::SetPlayerTime(t) => self.time_of_day = t.hour,
                 P::SetPlayerWorldTime(t) => self.time_of_day = t.hour,
+                P::DisableRemoteVehicleCollisions(d) => self.vehicles.set_disable_collisions(d.disable),
                 P::SetPlayerArmedWeapon(w) => {
                     let ped = self.ped();
                     if let Some(h) = self.ped_handle(ped) {
@@ -458,6 +514,7 @@ impl Client {
         // 8./9. state and RPC 52.
         self.spawned = true;
         self.spawned_once = true;
+        self.vehicles.set_spawned();
         self.sender.reset();
         self.last_stats = None;
         self.net.send_rpc(&player::PlayerSpawn, Reliability::ReliableOrdered);
@@ -478,7 +535,10 @@ impl Client {
         {
             return;
         }
-        if state != PEDSTATE_DRIVING {
+        // In-car packets (200/210/211/106, passenger poll); on-foot sync only in ped states 1 and 12, so nothing
+        // is sent while entering a seat from the server's warp or during the exit animation (TRACE-4 §4).
+        let in_car = self.vehicles.local_tick(&mut self.runner, &mut self.net, self.players.streamed(), now);
+        if !in_car && state != PEDSTATE_DRIVING {
             match game::read_local_sample(&mem, ped) {
                 Ok(sample) => {
                     let keys = footsync::key_word(&sample.pad, sample.key_ctx);

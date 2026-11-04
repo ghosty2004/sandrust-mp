@@ -47,6 +47,37 @@ pub mod op {
     pub const SWITCH_RANDOM_TRAINS: u16 = 0x06D7;
     pub const CAMERA_RESET_NEW_SCRIPTABLES: u16 = 0x0925;
     pub const CAMERA_PERSIST_POS: u16 = 0x0930;
+    // Vehicles (M5; names via gta-reversed eScriptCommands.h, parameter lists via the SCM opcode database).
+    pub const CREATE_CAR: u16 = 0x00A5;
+    pub const DELETE_CAR: u16 = 0x00A6;
+    pub const POINT_CAMERA_AT_CAR: u16 = 0x0158;
+    pub const ADD_BLIP_FOR_CAR_OLD: u16 = 0x0161;
+    pub const REMOVE_BLIP: u16 = 0x0164;
+    pub const CHANGE_BLIP_COLOUR: u16 = 0x0165;
+    pub const CHANGE_BLIP_SCALE: u16 = 0x0168;
+    pub const SET_CAR_HEADING: u16 = 0x0175;
+    pub const SET_CAR_PROOFS: u16 = 0x02AC;
+    pub const IS_CAR_IN_WATER: u16 = 0x02BF;
+    pub const WARP_CHAR_FROM_CAR_TO_COORD: u16 = 0x0362;
+    pub const WARP_CHAR_INTO_CAR: u16 = 0x036A;
+    pub const WARP_CHAR_INTO_CAR_AS_PASSENGER: u16 = 0x0430;
+    pub const SET_CAN_BURST_CAR_TYRES: u16 = 0x053F;
+    pub const TASK_ENTER_CAR_AS_PASSENGER: u16 = 0x05CA;
+    pub const TASK_ENTER_CAR_AS_DRIVER: u16 = 0x05CB;
+    pub const TASK_LEAVE_CAR: u16 = 0x05CD;
+    pub const CREATE_MISSION_TRAIN: u16 = 0x06D8;
+    pub const ADD_VEHICLE_MOD: u16 = 0x06E7;
+    pub const REMOVE_VEHICLE_MOD: u16 = 0x06E8;
+    pub const REQUEST_VEHICLE_MOD: u16 = 0x06E9;
+    pub const HAS_VEHICLE_MOD_LOADED: u16 = 0x06EA;
+    pub const GIVE_VEHICLE_PAINTJOB: u16 = 0x06ED;
+    pub const DETACH_TRAILER_FROM_CAB: u16 = 0x07AC;
+    pub const DELETE_MISSION_TRAIN: u16 = 0x07BD;
+    pub const SET_MISSION_TRAIN_COORDINATES: u16 = 0x07C7;
+    pub const SET_CAR_HYDRAULICS: u16 = 0x07FF;
+    pub const SET_VEHICLE_AREA_VISIBLE: u16 = 0x0840;
+    pub const ATTACH_TRAILER_TO_CAB: u16 = 0x0893;
+    pub const SET_PETROL_TANK_WEAKPOINT: u16 = 0x09C4;
 }
 
 /// One script command parameter.
