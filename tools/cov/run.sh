@@ -42,6 +42,8 @@ zpath() { local p; p="$(readlink -m "$1")"; printf 'Z:%s' "${p//\//\\}"; }
 put() { rm -f "$2/$3"; cp "$1" "$2/$3"; }   # never write through a hard link
 
 WHICH=both; SKIP_BUILD=0; NO_COV=0
+# COV_CLIENT_DLL=/path/samp_client.dll measures another build of our client (e.g. a worktree).
+CLIENT_DLL="${COV_CLIENT_DLL:-$BIN/samp_client.dll}"
 while [ $# -gt 0 ]; do
     case "$1" in
         both|orig|ours|calib) WHICH="$1"; shift ;;
@@ -62,7 +64,8 @@ if [ "$SKIP_BUILD" != 1 ]; then
         cat "$COV_OUT/build.out"; say "build failed"; exit 1
     fi
 fi
-for f in samp_tracer.dll samp-launcher.exe samp_client.dll; do
+[ -f "$CLIENT_DLL" ] || { say "missing $CLIENT_DLL"; exit 1; }
+for f in samp_tracer.dll samp-launcher.exe; do
     [ -f "$BIN/$f" ] || { say "missing $BIN/$f"; exit 1; }
 done
 for p in "$A_TPORT" "$B_CPORT" "$B_TPORT"; do
@@ -71,7 +74,7 @@ done
 for g in "$A_GTA" "$B_GTA"; do
     put "$BIN/samp_tracer.dll" "$g" samp-tracer.dll
     put "$BIN/samp-launcher.exe" "$g" samp-rs-launcher.exe
-    put "$BIN/samp_client.dll" "$g" samp_client.dll
+    put "$CLIENT_DLL" "$g" samp_client.dll
     put "$COV_OUT/arm.txt" "$g" cov-arm.txt
     rm -f "$g/trace.jsonl" "$g/samp-tracer.log" "$g/samp-rs.log" "$g/d3d.jsonl"
 done
@@ -79,7 +82,7 @@ done
 OUT="$COV_OUT/runs/$WHICH-$(date +%Y%m%d-%H%M%S)"
 [ "$NO_COV" = 1 ] && OUT="$OUT-nocov"
 mkdir -p "$OUT"
-sha256sum "$BIN/samp_tracer.dll" "$A_GTA/samp.dll" "$BIN/samp_client.dll" "$COV_OUT/arm.txt" > "$OUT/binaries.sha256"
+sha256sum "$BIN/samp_tracer.dll" "$A_GTA/samp.dll" "$CLIENT_DLL" "$COV_OUT/arm.txt" > "$OUT/binaries.sha256"
 (cd "$ROOT" && git rev-parse HEAD && git status --short crates) > "$OUT/source.txt" 2>/dev/null
 RCON_PASS="cov$RANDOM$RANDOM"
 
