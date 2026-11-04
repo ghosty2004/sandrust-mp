@@ -58,3 +58,12 @@ if [ "${E2E_HEADLESS:-0}" = 1 ] && [ -f "$ROOT/tools/trace/setmode.py" ]; then
     _samp_rs_set="$WINEPREFIX/drive_c/users/$USER/Documents/GTA San Andreas User Files/gta_sa.set"
     [ -f "$_samp_rs_set" ] && python3 -I "$ROOT/tools/trace/setmode.py" "$_samp_rs_set" 32 > /dev/null 2>&1 || true
 fi
+# Every headless run starts from the same sa-mp.cfg (the client rewrites it, and tests change
+# it): the baseline, or a test cfg given in SAMP_RS_SAMP_CFG / TRACE_SAMP_CFG.
+if [ "${E2E_HEADLESS:-0}" = 1 ]; then
+    _samp_rs_cfg_src="${SAMP_RS_SAMP_CFG:-${TRACE_SAMP_CFG:-$ROOT/tools/sa-mp.cfg.baseline}}"
+    _samp_rs_cfg_dir="$WINEPREFIX/drive_c/users/$USER/Documents/GTA San Andreas User Files/SAMP"
+    if [ -f "$_samp_rs_cfg_src" ]; then
+        mkdir -p "$_samp_rs_cfg_dir" && cp "$_samp_rs_cfg_src" "$_samp_rs_cfg_dir/sa-mp.cfg"
+    fi
+fi
