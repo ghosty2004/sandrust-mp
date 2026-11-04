@@ -16,7 +16,8 @@
 # Exit status 0 = pass. Usage: tools/e2e/m3.sh
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-export E2E_TAG=main E2E_PORT=7777 E2E_CTL_PORT=47700
+export E2E_TAG="${E2E_TAG:-main}" E2E_PORT="${E2E_PORT:-7777}" E2E_CTL_PORT="${E2E_CTL_PORT:-47700}"
+export SAMP_RS_CTL_PORT="$E2E_CTL_PORT"
 source "$ROOT/tools/wine-env.sh"
 source "$ROOT/tools/e2e/lib.sh"
 NAME=RustClient

@@ -18,6 +18,8 @@ pub mod remote;
 pub mod scm;
 pub mod script;
 pub mod sectors;
+pub mod vehicle;
+pub mod vehpatches;
 
 #[cfg(windows)]
 mod client;
@@ -29,3 +31,7 @@ mod dll;
 mod players;
 #[cfg(windows)]
 mod swap;
+#[cfg(windows)]
+mod vehhooks;
+#[cfg(windows)]
+mod vehicles;

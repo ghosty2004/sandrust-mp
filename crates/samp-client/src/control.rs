@@ -9,6 +9,8 @@
 //! * `net`   → connection phase, player id, last RPC ids, packet counters
 //! * `remote` → `remote count=N …` followed by N lines, one per remote player
 //!   (id, name, ped slot, ped pointer, position, heading, health, last sync age)
+//! * `vehicles` → `vehicles count=N …` followed by N lines, one per streamed vehicle (id, model, script
+//!   handle, CVehicle pointer, position, heading, health, driver player id / `local`, local occupancy)
 //! * `spawn` → debugging aid: run the local spawn routine with the stored
 //!   spawn info (as if the server had answered RPC 129); not used by tests
 //! * anything else → `error unknown command`
@@ -35,6 +37,7 @@ pub enum Command {
     State,
     Net,
     Remote,
+    Vehicles,
     Spawn,
     Quit,
     Peek { addr: u32, len: usize },
@@ -69,6 +72,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "state" => Command::State,
         "net" => Command::Net,
         "remote" => Command::Remote,
+        "vehicles" => Command::Vehicles,
         "spawn" => Command::Spawn,
         "quit" | "exit" => Command::Quit,
         _ => Command::Unknown(t.to_string()),
