@@ -24,7 +24,7 @@ use crate::netclient::NetClient;
 use crate::players::Players;
 use crate::script::{Arg, Runner, op as sop};
 use crate::vehicles::Vehicles;
-use crate::world::{self, GangZone, op};
+use crate::worldents::{self as world, GangZone, op};
 use crate::worldhooks::{self as wh, Event, g, rd, wr};
 
 /// `IS_LINE_OF_SIGHT_CLEAR` (gta-reversed eScriptCommands.h); samp descriptor A 0x100ea618 "ffffffiiiii".
@@ -130,8 +130,8 @@ struct Label {
 /// One label to draw this frame (screen position from the client tick, drawn in the Present pass).
 #[derive(Clone, Debug)]
 pub struct LabelDraw {
-    pub x: i32,
-    pub y: i32,
+    /// World position (projected in the Present pass like samp's 3D-text painter).
+    pub pos: [f32; 3],
     pub text: Vec<u8>,
     pub argb: u32,
 }
@@ -549,7 +549,6 @@ impl Entities {
     /// 3D label placement (A 0x10001350) and screen projection for the Present pass.
     fn labels_tick(&mut self, runner: &mut Runner, players: &Players, vehicles: &Vehicles) {
         let cam = rd_v3(g::CAMERA_POS);
-        let proj = Projection::current();
         let mut out = Vec::new();
         for l in self.labels.values() {
             let pos = if l.player != rw::INVALID_ID {
@@ -582,7 +581,6 @@ impl Entities {
             if world::dist3(pos, cam) > l.draw_distance {
                 continue;
             }
-            let Some((x, y)) = proj.as_ref().and_then(|p| p.project(pos)) else { continue };
             if l.los {
                 let c = rd_v3(LOS_CAMERA_POS);
                 // One test per label and frame (parity run orig-20261104-233854: 189 frames × 1 call).
@@ -604,7 +602,7 @@ impl Entities {
                     continue;
                 }
             }
-            out.push(LabelDraw { x, y, text: l.text.clone(), argb: world::label_argb(l.colour) });
+            out.push(LabelDraw { pos, text: l.text.clone(), argb: world::label_argb(l.colour) });
         }
         if let Ok(mut g) = LABEL_DRAWS.lock() {
             *g = out;
@@ -813,58 +811,4 @@ fn head_position(ped: u32) -> Option<[f32; 3]> {
     };
     let mats: u32 = rd(hier + 8);
     (idx >= 0 && mats != 0).then(|| rd_v3(mats + 0x40 * idx as u32 + 0x30))
-}
-
-/// D3DXVec3Project with the device's view and projection transforms and viewport (samp A 0x1006BC90).
-struct Projection {
-    m: [[f32; 4]; 4],
-    vp: [f32; 6],
-}
-
-impl Projection {
-    fn current() -> Option<Self> {
-        let dev: u32 = rd(g::RW_D3D_DEVICE);
-        if dev == 0 {
-            return None;
-        }
-        let vt: u32 = rd(dev);
-        let mut view = [0f32; 16];
-        let mut proj = [0f32; 16];
-        let mut vp = [0u32; 6];
-        // SAFETY: IDirect3DDevice9::GetTransform (vtable +0xB4) and GetViewport (+0xC0), stdcall, into locals.
-        unsafe {
-            let gt: extern "system" fn(u32, u32, *mut f32) -> i32 = std::mem::transmute(rd::<u32>(vt + 0xB4) as usize);
-            let gv: extern "system" fn(u32, *mut u32) -> i32 = std::mem::transmute(rd::<u32>(vt + 0xC0) as usize);
-            if gt(dev, 2, view.as_mut_ptr()) < 0 || gt(dev, 3, proj.as_mut_ptr()) < 0 || gv(dev, vp.as_mut_ptr()) < 0 {
-                return None;
-            }
-        }
-        let mut m = [[0f32; 4]; 4];
-        for (i, row) in m.iter_mut().enumerate() {
-            for (j, c) in row.iter_mut().enumerate() {
-                *c = (0..4).map(|k| view[i * 4 + k] * proj[k * 4 + j]).sum();
-            }
-        }
-        let vpf =
-            [vp[0] as f32, vp[1] as f32, vp[2] as f32, vp[3] as f32, f32::from_bits(vp[4]), f32::from_bits(vp[5])];
-        Some(Self { m, vp: vpf })
-    }
-
-    /// Screen position (truncated like `_ftol`), or None when z > 1.
-    fn project(&self, p: [f32; 3]) -> Option<(i32, i32)> {
-        let v = [p[0], p[1], p[2], 1.0];
-        let c: [f32; 4] = std::array::from_fn(|j| (0..4).map(|k| v[k] * self.m[k][j]).sum());
-        if c[3] == 0.0 {
-            return None;
-        }
-        let (x, y, z) = (c[0] / c[3], c[1] / c[3], c[2] / c[3]);
-        let [vx, vy, vw, vh, zmin, zmax] = self.vp;
-        let sx = vx + (1.0 + x) * vw * 0.5;
-        let sy = vy + (1.0 - y) * vh * 0.5;
-        let sz = zmin + z * (zmax - zmin);
-        if sz > 1.0 {
-            return None;
-        }
-        Some((sx as i32, sy as i32))
-    }
 }

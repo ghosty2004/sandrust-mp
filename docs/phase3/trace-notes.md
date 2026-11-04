@@ -1057,6 +1057,382 @@ minus the per-frame background). About 49 game frames per second.
   36 frames. Class selection locks again until the spawn.
 
 
+## World entities (TRACE-6)
+
+Original client (samp.dll 0.3.7-R4 build B), `run.sh orig hold` with `uifs.pwn` (TRACE-6 commands: `obj`, `objmove`,
+`objmat`, `objtext`, `att`, `pickup`, `actor`, `cp`, `rcp`, `gz…`, `icon`, `label`, `rmb`, …; list at the top of the file),
+driven by `ui.sh`. Runs: `target/trace/orig-20261104-220730` (objects, pickups, checkpoints, zones, icons, actors,
+labels) and `orig-20261104-222115` (material colour, attachments, RemoveBuilding, combat). LS airport tarmac, about 49
+frames/s. The server is open.mp 1.6.7, which never sends RPC 84; see 44 below.
+
+**Tracer additions** (`crates/samp-tracer/src/win/world.rs`, hooks in `hooks.rs`):
+* `robj` / `robj_gone`: every object whose entity flags have bit 31 set. The record is written whenever the sampled state
+  changes: position, matrix rows, move/turn speed, RW object present, area, flags, attachment, `ms_fTimeStep`. Sampled at
+  `CGame::Process` entry.
+* `orender`: which objects were drawn in the last frame, and through which function (`object` = `CObject::Render`,
+  `entity` = `CEntity::Render`, `nonroad` = `CRenderer::RenderOneNonRoad`), with the return addresses above the call.
+  Written when that set changes, and every 500 frames.
+* `hp`: health, armour, ped state, current weapon slot/type/state/clip/ammo of the local ped, every remote ped and every
+  other ped (actors), on change.
+* `los`: every `CWorld::ProcessLineOfSight` call made from a client module, with its result (hit, entity, colpoint) and
+  the GTA return addresses (call site).
+* Opt-in:
+  * `SAMP_TRACER_BONES=2,6`: per-frame `bones` record with the ped matrix and the world LTM of those `ePedNode` bones
+    (RpHAnim matrix of `CPed::m_apBones[id]`'s node).
+  * `SAMP_TRACER_WATCH_MODELS=4019,…`: `wmodel` records for building/dummy/object pool entries of those models, every
+    25 frames.
+* New hooks: `CObject::Render`, `CEntity::Render`, `CRenderer::RenderOneNonRoad` (aggregated),
+  `CEntity::Create/DeleteRwObject`, `CRadar::DrawAreaOnRadar`, `CWeapon::Fire` / `FireInstantHit` / `FireSniper` /
+  `DoBulletImpact`, `CCamera::Find3rdPersonCamTargetVector`, `CWorld::ProcessLineOfSight` (wrapped),
+  `CWorld::GetIsLineOfSightClear`, `CPedDamageResponseCalculator` ctor and `ComputeWillKillPed`, `CPed::RemoveBodyPart`.
+  * `CProjectileInfo::AddProjectile` can't be hooked: the exe's protection code reads its entry bytes.
+  * `ComputeDamageResponse`, `AddEntityToRenderList` and `LoadObjectInstance` are samp patch sites. Their effect is read
+    through the hooks around them instead (the damage-calc ctor, `ComputeWillKillPed`, the render-path hooks, the
+    watched-model records).
+* `crates/samp-bot/examples/c2s_decode.rs`: decodes the client→server hex in `samp-dump --raw` output (RPCs through
+  `rpcs::decode_outgoing`, sync packets through their readers). `--only 206,115,…`, `--c2s`.
+* `ui.sh mouse …` / `ui.sh fire [MS]`: mouse buttons and relative moves. RMB aims, LMB fires; mouse Y is inverted
+  relative to xdotool (move −y to aim lower). `TRACE_LAGCOMP=0|1|2` sets the server's `lag_compensation_mode`.
+
+### Objects (44/45/46/47/99/122)
+* **RPC 44**, one frame:
+  * `0x0107 CREATE_OBJECT(model, x, y, z)`, then `0x0453 SET_OBJECT_ROTATION(rx, ry, rz)`.
+  * The RW object is created 1–3 frames later. `CEntity::CreateRwObject` is called from samp's CObject vtable hook
+    (`samp.dll+0xa4b30` in B), and is sometimes repeated for 2–3 frames while the model streams.
+  * Entity flags of a samp object: 0x88000085 typical; 0x80004085 for 19325 (glass); bit 15 is set for one frame
+    after creation.
+  * Bit 31 is not exclusive to samp: GTA's own pickup objects have it too (0x98220084).
+* **Material changes**:
+  * open.mp implements SetObjectMaterial / SetObjectMaterialText by **re-sending RPC 44** for the same object id, with
+    the material records. RPC 84 never appears.
+  * For an existing id, the client runs `DELETE_OBJECT(old handle)` and `CREATE_OBJECT` (new handle) in the same frame,
+    then streams it like a new object.
+* **Render path** (return addresses of the draw calls):
+
+  | object | path |
+  |---|---|
+  | 1271, draw distance 0, no material | GTA render list: `CRenderer::RenderEverythingBarRoads` → `RenderOneNonRoad` → `CObject::Render` (rets 0x553c57, 0x553308) |
+  | 1271, draw distance 500 | samp's pass in its `RenderScene` hook after `RenderEverythingBarRoads`: samp calls `RenderOneNonRoad` itself (rets 0x53dfe2 / 0x553308) |
+  | 19325 glass (draw-last), dd 500 | samp's second pass, after `RenderFadingInEntities` (ret 0x53e01e) |
+  | 19353 with material text, dd 0 | samp's first pass (0x53dfe2) |
+  | 1271 with a material **colour** (index 0, 0xFFFF0000) | entity bit 28 set (flags 0x98000085). Drawn once through samp's first pass, then never again through `RenderOneNonRoad`, `CEntity::Render` or `CObject::Render`, although it stays visible. samp draws it at RW level from its own pass |
+
+* **Static check of the manual draw** (A 0x100A9FD0; it explains the last row):
+  * Object without materials, or whose flag +0x1CF is clear, closer than 600: entity vtable slot +0x44, then
+    `CRenderer::RenderOneNonRoad(entity)`. This is the "samp's pass" path above.
+  * Object with materials and +0x1CF set (the material-colour object), closer than 600:
+    1. set entity bit 28 and call entity vtable slot +0x4C (+0x1194 := 1, A 0x100A9080);
+    2. render the RW object directly: atomic or clump by its RW type byte (A 0x100B6370);
+    3. undo the step-1 setup (A 0x100A90C0).
+  * 600 or farther: direct RW render without that setup.
+  * Material pre-/post-pass (A 0x100A8C40 / 0x100A9EB0) around all of these, from the second render on (+0x118F).
+
+* **Streaming out of range**:
+  * The player was moved 400 m away for 35 s. Only the samp-drawn object whose draw distance was exceeded (the
+    material-text object, dd 0) lost its RW object, exactly 1000 frames after it left range (`DeleteRwObject` from
+    samp, `robj.rw` false).
+  * dd 500 objects at 400 m kept theirs. The GTA-list object (dd 0, no material) is GTA's business.
+  * Back in range, the RW object was recreated 5 frames after the teleport.
+* **MoveObject (99)**, object 1271 moved +10 m z at speed 2.0, then back with rotation (0, 0, 90):
+  * Motion starts 4 frames after the RPC.
+  * Move speed = speed × 0.02 exactly (0.04), constant (no schedule correction was needed at 50 fps).
+  * Every frame the position advances by move speed × `CTimer::ms_fTimeStep`. Checked frame by frame: Δz = 0.038 at
+    timestep 0.95, 0.036 at 0.9, so samp writes the matrix itself.
+  * The 5.0 s move took 263 frames (4.98 s). In the arrival frame the position is exactly the target and move/turn
+    speed are 0. `OnObjectMoved` fired on the server after 5000 ms.
+  * With rotation: turn speed z = 0.001 (the clamp) every frame. The forward vector is slerped by progress and is
+    exactly the target rotation at arrival.
+  * **StopObject (122)**: the object stops where it is (move speed 0, no snap).
+  * open.mp sends 122 immediately before a new 99 when the object is still moving. RPC 99 carries the server's
+    estimate of the current position (15.70 vs the client's 15.695). The new move continued from the client position.
+    The spec's "snap to the old target when a move is still running" is not reachable with open.mp.
+
+### Attached objects (113), bones
+* RPC 113 → `0x0107 CREATE_OBJECT(model, ped position)` + `0x0453(rx, ry, rz)`. From the next frame the matrix is
+  rewritten every frame.
+* **Matrix formula**, verified on 1300 frames each, with `SAMP_TRACER_BONES=2,6`. Same-frame sample; the bone LTM and
+  the object match with lag 0.
+  * slot 0: 18645, bone 2, offset (0.1, 0, 0), rotation (0, 90, 0). Max error 0.0012 (position) / 0.0005 (rows).
+  * slot 1: 336, bone 6, rotation (10, 20, 30), scale (2, 1, 1). Max error 0.0014.
+  * With B = bone LTM rows (right, up, at) and RwMatrix row-vector convention:
+    * position = B.pos + ox·B.right + oy·B.up + oz·B.at (offset in the bone frame, before rotation);
+    * rows = S · Rz(rz) · Ry(ry) · Rx(rx) · B, where Rx(a) = [[1,0,0],[0,c,s],[0,−s,c]],
+      Ry(a) = [[c,0,−s],[0,1,0],[s,0,c]], Rz(a) = [[c,s,0],[−s,c,0],[0,0,1]]. That is: rotate about the local X first,
+      then Y, then Z (pre-concatenated). S scales row i by scale i (right × sx, up × sy, at × sz).
+  * The object matrix rows map 1:1 onto the CMatrix rows (right, forward, up).
+
+### Pickups (95/63/131)
+* RPC 95 → `0x0213 CREATE_PICKUP(model, type, x, y, z)` in the RPC frame.
+* Walking through type 2 (1240) and type 19 (1212): **RPC 131 rel 9 (RELIABLE_ORDERED) ch 0**, the collision path.
+  * Sent ~1.1 s after starting to walk 4 m.
+  * The pickup id is the per-player id the server put in 95 (it differs from the server-side id).
+* Type 14 (vehicle pickup) is never collected on foot.
+* samp polls only the type-14 pickup with `0x0214 HAS_PICKUP_BEEN_COLLECTED(handle)`, **every 7 frames** (313 of 313
+  gaps). Types 2/19 are never polled.
+
+### Checkpoints (107/37/38/39)
+* **107**:
+  * every frame: `0x00FE LOCATE_CHAR_ANY_MEANS_3D(player, x, y, z, size, size, size, 1)`;
+  * once: `0x04CE` blip (sprite 0), `0x0165 CHANGE_BLIP_COLOUR(1005)` (0x3ED) and `0x0168 CHANGE_BLIP_SCALE(3)`.
+* **37**: `0x0164 REMOVE_BLIP`; the per-frame `0x00FE` stops.
+* Enter/leave send nothing to the server (open.mp detects them from sync).
+* **38** (types 0, 1, 3):
+  * first: `0x06D5 CREATE_CHECKPOINT(type, x, y, z, nx, ny, nz, size)`, then `0x04CE` / `0x0165(1005)` / `0x0168(3)`;
+  * replacing: `0x0164` (old blip), new blip ops, `0x06D6 DELETE_CHECKPOINT(old)`, `0x06D5(new)`;
+  * nothing per frame.
+* **39**: `0x0164` + `0x06D6`.
+
+### Gang zones (108/120/121/85)
+* `CRadar::DrawAreaOnRadar(rect, rgba, false)` is called by samp every frame per shown zone, in zone-id order.
+* rect = [minX, maxY, maxX, minY].
+* The CRGBA bytes are the server RRGGBBAA unchanged (0xFF000080 → R ff, G 00, B 00, A 80).
+* **Flash**: the colour alternates every ~514 ms (27 frames), the flash colour first (~27 frames after 121).
+* 85: normal colour from the next frame. 120: no longer drawn.
+* Pause map: MEASURED in TRACE-7, see "World entities: TRACE-7 additions".
+
+### Map icons (56/144)
+* Opcode by style: 0 → `0x04CE`, 1 → `0x02A8`, 2 → `0x0570`, 3 → `0x02A7` (x, y, z, type).
+* Type 0 only:
+  * `0x0165(colour as int)` (0xFF0000FF → −16776961; 5, 1500, 3999 and 4000 are passed unchanged);
+  * then `0x0168` scale 3, except scale **2 for colour 5**. This confirms the spec rule (scale 2 when colour < 1004,
+    else 3) and shows that the comparison is **unsigned**: 0xFF0000FF (negative as int) → 3.
+* Type ≠ 0: no colour or scale calls.
+* 144: `0x0164`.
+
+### Actors (171–178)
+* **171**:
+  * `0x0248`/`0x0247`/`0x038B` model load, then `0x009A CREATE_CHAR(5, model, x, y, z − 1.0)` (→ CPed ctor,
+    SetModelIndex, SetPosn at the real z, `CWorld::Add`);
+  * `0x0173` heading, `0x0446(h, 0)`, `0x060B(h, 65542)`;
+  * `0x02AB` proofs: (1, 1, 1, 1, 1) when invulnerable, (0, 0, 0, 1, 0) when vulnerable.
+* open.mp's SetActorInvulnerable re-streams the actor: 172 + 171, CPed dtor + a new CREATE_CHAR.
+* 173 → `0x04EE(lib)` + `0x0812 TASK_PLAY_ANIM_NON_INTERRUPTABLE(h, name, lib, delta, loop, lx, ly, freeze, time)`.
+* 174: no script command (direct `FlushImmediately`).
+* **178 health 0** (MR-6.7):
+  * `0x0321 EXPLODE_CHAR_HEAD` → damage calc (damager null, 1000.0, weapon 34, piece 9). `ComputeWillKillPed` is
+    **not** reached (samp cancels the response).
+  * The ped's health is 0 at once and ped state goes 1 → 54 → 55 (died) within 2 frames; the weapons are cleared
+    30 frames later.
+  * `CPed::RemoveBodyPart` is never called: the actor falls dead with its head on.
+  * Same for invulnerable and vulnerable actors. An actor re-created with stored health 0 gets `0x0321` right after
+    `0x060B`, before its proofs.
+  * Setting health 100 afterwards changes the health but the actor stays dead (state 55).
+* **Local player shoots a vulnerable actor** (Colt, 4 hits):
+  * GTA builds the damage calc (25.0, pieces 3/5), then nothing: `ComputeWillKillPed` is not called and the actor's
+    health stays 100.
+  * Per hit, in this order: 206 (hit_type 0, hit_id 0xFFFF, offset = hit_pos = world hit point, rel 7 ch 0); RPC 177
+    (rel 9 ch 0, damage 25.0 **unscaled**, weapon 22, body part 3/5); 204 (target_actor = actor id + the slot's new
+    ammo).
+  * Aim released → 204 with target_actor 0xFFFF and no slot records.
+
+### RemoveBuildingForPlayer (43)
+* `RemoveBuildingForPlayer(4019, 1777.8, −1773.9, 12.5, 0.25)` with the building streamed in, with
+  `SAMP_TRACER_WATCH_MODELS=4019`:
+  * within 18 frames the building entity has area 1 and z − 2000 in both placement and matrix
+    (12.52 → −1987.48);
+  * its RW object is kept and the entity is not deleted.
+* The player went 2.8 km away: the IPL instance was freed 22 frames later. After coming back, no model-4019 instance
+  was loaded again. This is consistent with the 19300 replacement of `LoadObjectInstance`; the 19300 instance itself
+  was not watched.
+
+### 3D text labels (36)
+* Drawn in samp's Present pass with the small font (Arial 14, wt700, q4):
+  * 4-way outline (0,−1), (0,+1), (−1,0), (+1,0) in 0xFF000000, then the main pass;
+  * the text is stripped of `{RRGGBB}` codes; rect [x, y, x+1, y+1], fmt 0x101 (centre, no clip);
+  * colour = label RGBA → ARGB.
+* Beyond the draw distance (48 m for 30) the label is not drawn.
+* **LOS flag**: a label behind an object is not drawn; the same position without the flag is drawn.
+* The test is not a `ProcessLineOfSight` call from samp (`GetIsLineOfSightClear` is hooked since run 2 to confirm).
+
+### Material text (44 with text records), run `orig-20261104-225641`, `tools/trace/world2.sh`
+`SetObjectMaterialText(19353, "RE10 {FF0000}red", index 0, size 130 = 256x128, "Arial", 24, bold, FFFFFFFF on
+FF000000, centre)`. One render, in the frame after the RPC, from samp's object pass (`samp.dll+0xa9f77` in B):
+1. `D3DXCreateTexture(512, 256, 1, RENDERTARGET, X8R8G8B8, DEFAULT)` and
+   `D3DXCreateRenderToSurface(512, 256, X8R8G8B8, depth, D16)`. The render target is **twice** the material size
+   (256x128 → 512x256).
+2. `D3DXCreateFontA("Arial", h 24, w 0, weight 700, mip 1, italic 0, charset 1, out-precision 0, quality 0, pitch 0)`.
+   The font size is passed unchanged.
+3. `rts.BeginScene` → `Clear(colour = background ARGB 0xFF000000)` → `sprite.Begin(0x10)`.
+4. `DrawTextA(stripped text, rect [0, 0, 512, 256], fmt 0x105, 0xFFFFFFFF)`. With alignment 1 (centre) the format is
+   DT_CENTER | DT_VCENTER | DT_NOCLIP. The colour codes are applied per glyph (the glyphs after `{FF0000}` are
+   0xFFFF0000).
+5. `sprite.Flush`, `rts.EndScene`.
+
+Not redrawn on later frames. The texture is then substituted at render time (RE-10 §4).
+
+### Edit / select (117 / 116 / 27), `world2.sh`
+* `EditObject` → ESC: OnPlayerEditObject response 0 (cancel) with the object's current position and rotation.
+* `EditAttachedObject` → ESC: OnPlayerEditAttachedObject response 0 with the slot's current model, bone, offset,
+  rotation and scale.
+* `SelectObject` → mouse move onto the object + left click: OnPlayerSelectObject type 1 (global object), id, model,
+  position.
+* Screenshots: `w-objedit.png`, `w-attedit.png`, `w-objsel*.png`. Drag updates (response 2 rate) were not measured.
+
+### 3D label LOS and attachment
+* LOS test, per frame, twice: `0x06BD IS_LINE_OF_SIGHT_CLEAR(label pos → camera pos, buildings 1, vehicles 0,
+  peds 0, objects 1, particles 0)`. Nametags use the same opcode with the remote ped's head as the start.
+* A per-player label attached to the local player itself (`CreatePlayer3DTextLabel(L, …, attachedplayer = L)`) is not
+  drawn for that player.
+
+### World entities: TRACE-7 additions (run `orig-20261104-234135`, `tools/trace/combat2.sh rmb` + manual `ui.sh` steps)
+
+* **Edit-object drag (117 response 2) — MEASURED.** `EditObject` on a 1271 crate, then the X handle of the gizmo was
+  dragged with the left button held (xdotool: press on the handle, 100 relative moves of 2 px every 30 ms, release):
+  * 13 RPC 117 with response 2 in 3.65 s, rel 9 ch 0. Intervals 250–287 ms (frame-quantised just above 250 ms), which
+    confirms the static 250 ms `GetTickCount` limit (`world-entities.md` §117 C→S).
+  * The first one is sent 126 ms after the button press, still at the unchanged position (1702.5); later ones carry the
+    current matrix position (1702.64, 1702.80, … 1704.32), rotation unchanged (0, 0, 0).
+  * Clicking the save icon of the gizmo bar sends response 1 with the final position (1704.48, i.e. newer than the
+    last response-2 update). The cancel case (response 0) is in TRACE-6.
+  * Screenshots `e-edit.png`, `e-drag.png`. The attached-object editor (116) drag was not repeated; it shares the
+    editor loop (static), so the same rate is expected but is **not measured**.
+* **Pause-map gang zones — MEASURED.** Gang zone (1650, −2650)–(1750, −2550) shown in 0xFF000080:
+  * In the pause menu's MAP page samp calls `CRadar::DrawAreaOnRadar(rect, colour, in_menu = true)` once per shown zone
+    per frame (797 frames, one call each), from the same samp site as the radar pass (`samp.dll+0xa1469` in B), with the
+    same rect ([minX, maxY, maxX, minY]) and the unchanged colour bytes. The zone is drawn on the map (`pm-map.png`).
+  * On the other pause-menu pages (the menu list) no gang-zone call is made at all; in game the radar pass resumes
+    (`in_menu = false`).
+* **RemoveBuilding 19300 substitution — MEASURED** (`SAMP_TRACER_WATCH_MODELS=4019,19300`):
+  * `RemoveBuildingForPlayer(4019, 1777.8, −1773.9, 12.5, 0.25)` → within 10 frames the streamed building has area 1 and
+    z −1987.48 (as in TRACE-6).
+  * Player moved to (1500, 1500) (3.3 km): the lowered 4019 entity is freed 18 frames after the teleport.
+  * Back at the airport: 27 frames after the teleport a **building of model 19300** appears at the exact original spot
+    (1777.84, −1773.91, 12.52), area 0, not lowered, RW object present; no model-4019 instance is loaded again.
+  * 19300 is `blankmodel` in `SAMP/SAMP.ide` (`19300, blankmodel, MatTextures, 100, 0`). So the IPL hook swaps the
+    model id and leaves position, area and everything else of the instance unchanged.
+
+### Still open (M6)
+* Camera collision (MR-6.12), `ProcessVerticalLine` (MR-6.13): not measured (outside TRACE-7's list).
+* 116 (attached-object editor) drag rate: not measured (see above).
+
+## Combat (TRACE-6)
+
+Original client, `run.sh orig hold`, LS airport tarmac. Bots are samp-bot `--mode idle|shoot`. Runs:
+`orig-20261104-220730` (actor shots), `orig-20261104-222115` (gungame, first bot fights), and `orig-20261104-223133`
+(neutral `TRACE_GAMEMODE=tracegm`, lag-comp 1, `combat.sh`). The server's lag-comp mode 1 means samp's selector S = 0
+(`remote-control-combat.md` §3.4); modes 0 and 2 are in "Lag-comp modes" below.
+* Sends were decoded with `samp-dump --raw | c2s_decode`.
+* Aiming in the headless display: RMB = `ui.sh mouse mousedown 3`, relative mouse moves (−y aims lower).
+* The camera pitch persists across aims and is reset by a weapon change.
+* An un-aimed shot is LMB alone.
+
+### Local player shooting
+* **Call chain**:
+  1. `CWeapon::Fire` (from `CTaskSimpleUseGun`, ret 0x61ECD2).
+  2. samp's replacement of the `FireInstantHit` call site.
+  3. GTA `FireInstantHit`, called by samp (`samp.dll+0xb6515` in B) with **origin = right-hand bone position**.
+     With dual Colts the left pistol's shot also gets the right-hand origin; `Fire`'s own start differs.
+  4. Aimed (RMB): `Find3rdPersonCamTargetVector(range)` (Colt 105, shotguns 120), then `ProcessLineOfSight` at site
+     0x740721.
+  5. Un-aimed (LMB only): `ProcessLineOfSight` at site 0x740B69, along the ped's facing, with the weapon range as
+     length (Deagle 35, M4 ~91).
+  6. `DoBulletImpact` (start = muzzle).
+* **206 is sent only when that samp-hooked LOS hit something**:
+
+  | hit | 206 |
+  |---|---|
+  | remote ped | hit_type 1, hit_id = player id, offset in the victim's local frame (e.g. (0.156, 0.091, −0.779) for a leg) |
+  | ground / building / actor | hit_type 0, hit_id 0xFFFF, offset = hitPos = world point |
+  | nothing (sky), sniper | no 206 |
+  | nothing (sky), any other instant-hit weapon | 206 hit_type 0, offset (0, 0, 0), hitPos = stale colpoint (TRACE-7 correction) |
+
+  * 206 is rel 7 (unreliable sequenced) ch 0, in the shot frame.
+  * Quirk: the first missed Deagle shot after a sniper sky-miss sent a 206 with hit_type 0, offset (0, 0, 0) and a
+    garbage hitPos (an uninitialised colpoint). **TRACE-7:** this is the normal miss path, not a quirk: every missed
+    non-sniper shot sends such a 206 (measured for every drive-by miss; static B 0x10006bb0 drops only weapon 34 without a
+    hit entity). The TRACE-6 "sky → no 206" observation was the sniper.
+* **Shotguns** (25, 27):
+  * one samp-hooked LOS (the main ray), then 6–7 `DoBulletImpact` pellets handled inside GTA, then **one** damage
+    calc with the summed damage (90 / 105 / 120);
+  * → exactly one 206 and one 115 per blast (115 damage = 0.33 × sum, e.g. 29.7).
+* **Sniper** (34): `FireSniper` → the bullet is created at 50× velocity.
+  * Sky miss: samp's LOS hook (site 0x736247 in `CBulletInfo::Update`) traces the flying bullet every frame for ~53
+    frames, until it leaves the world. No 206.
+  * Ground hit: 206 hit_type 0.
+* **Melee** (fists, 2 punches): two 115 (taking 0, weapon 0, damage 1.32, part 3); no 206.
+* **Damage to a remote**:
+  * GTA's damage calc (Deagle 140, Colt 25, shotgun pellet sum) → the original response runs. `ComputeWillKillPed`
+    sees the damage × 0.33 (player-ped victim).
+  * The remote ped's health stays forced (no `hp` change).
+  * Order in the same frame: 206, RPC 115 (rel 9 ch 0, taking 0, victim id, 0.33 × damage, weapon, body part from the
+    colpoint), 204 (rel 6) with the slot's new ammo.
+* **Same team** (`SetPlayerTeam` 1 for both): 206 and 115 (39.6) are still sent, but the response is cancelled
+  (`ComputeWillKillPed` not called). Confirmed in a clean run, see "Lag-comp modes".
+* **Actors**: see "World entities (TRACE-6) / Actors". 177 is unscaled; the response is always cancelled.
+* **204** (rel 6, unreliable):
+  * on aim: target_player = remote id (target_actor = actor id when aiming at an actor);
+  * a slot record (slot, weapon, ammo) after every shot (ammo change) and on a new weapon;
+  * on release: targets 0xFFFF, no slots.
+* Every frame samp makes its own LOS from the local ped (`samp.dll+0xacabb`): z−0.25 → z−2.0, buildings + vehicles
+  only (flags 01010000). This is a ground probe under the ped.
+
+### Remote player shooting the local player (MR-7.2), lag-comp 1
+* **206 hit_type 1 at our id, offset (0, 0, 0.3), Deagle**:
+  1. First 206: in the packet frame samp gives the remote ped the weapon (`GiveWeapon(24, 9999)` +
+     `SetCurrentWeapon`).
+  2. GTA `FireInstantHit(remote ped)`, called by samp with **PlayerInFocus = 0**: the camera swap does not touch
+     PlayerInFocus.
+  3. LOS (site 0x740B69) start = the remote's hand origin, end = 2P − start with P = local ped matrix × offset.
+     The ray hits the local ped (redirect confirmed).
+  4. `DoBulletImpact(victim local)` → damage calc 140 → `ComputeWillKillPed` 46.2 → local health −46.2.
+  5. RPC 115 taking 1 (attacker id, 46.2, weapon 24, part 3) ~19 ms after the 206 arrived. It is sent from the
+     traced client; the bot's own 115 is separate.
+* **206 hit_type 0** (hitPos = our torso): `FireInstantHit` → `Find3rdPersonCamTargetVector` → LOS at site 0x740721.
+  The ray is built from the remote's synced camera (the 206 hitPos is not used). With the bot's aim it passed above
+  the local ped and hit a building 50 m away. No damage, no 115. The suppression case (a ray that really crosses the
+  local ped) is not reproduced yet.
+* While the bot holds AIM, `Find3rdPersonCamTargetVector` runs every frame with PlayerInFocus = the bot's slot (the
+  remote ped's aiming task). The remote `CWeapon::Fire` from the injected FIRE key runs with PlayerInFocus = slot, and
+  samp drops its `FireInstantHit` (no bullet; damage comes only from 206).
+
+### Lag-comp modes (`TRACE_LAGCOMP`, `tools/trace/lagcomp.sh`; runs `orig-20261104-224449` = 0, `orig-20261104-225641` = 2)
+
+| server mode | InitGame lagcomp | local 206 | local hit → 206 offset | samp LOS hook / FireInstantHit suppression |
+|---|---|---|---|---|
+| 1 (S 0) | 1 | sent on any hit | victim's local frame: (−0.096, 0.296, 0.469) for a bot facing 180° | active |
+| 2 (S 1) | 2 | sent on any hit | hitPos − victim position, world axes: (0.097, −0.293, 0.469), the same hit unrotated | active |
+| 0 (S 2) | 0 | **never sent**, only 115 | — | **inactive**: no LOS call from samp at all; remote peds' `CWeapon::Fire` → `FireInstantHit` → `DoBulletImpact` run in GTA (17 remote shots simulated locally from keys/aim) |
+
+* Mode 0: the server relayed no 206 to the traced client.
+* Mode 2, hit_type 0 from the bot: the same camera-ray behaviour as mode 1 (passed above the local ped, no damage).
+* The bot's hit-type-1 run in modes 0 and 2 produced no shots (bot-side), so remote hit_type 1 is measured only in
+  mode 1.
+* **Same team**, repeated cleanly in the mode-2 session: team 1 for both → 206 + 115 (39.6) sent, response cancelled
+  (no `ComputeWillKillPed`). Teams reset to 255 → the response runs (`ComputeWillKillPed` 39.6).
+
+Note: in run `orig-20261104-223133` another agent drove the session after 22:37:00 (teleport + its own bot). Nothing
+measured after that time in that run is used here.
+
+### Death and respawn
+* **Local, `SetPlayerHealth(0)`**:
+  * frame 0 (RPC 14): `0x01B4(0, 1)`, `MakePlayerSafe(false, 10)`, `0x04D7(1, 0)`, `CPed::Teleport` to its own
+    position, task reset, Remove/Add (samp's health-0 handling);
+  * frame +1: GTA damages the ped with weapon 54 / 10.0 (damager null, from `CPlayerPed::ProcessControl`) → ped state
+    54. **RPC 53 (reason 255, killer 0xFFFF)** is sent 21 ms after the RPC 14 arrived. **RPC 115** (taking 1, attacker
+    0xFFFF, weapon 54, 3.3, part 3) follows 15 ms after 53;
+  * +31 frames: state 55;
+  * +189 frames: respawn in one frame: `ClearWeapons`, `MakePlayerSafe(false, 10000)`, ped state 1, `Teleport` to
+    spawn z + 1, camera `SetCameraDirectlyBehind…` + `RestoreWithJumpCut`, `LoadScene`, then samp's spawn sequence
+    (0x04E4, 11 × `RequestModel` flags 24, 0x016C, `SetModelIndex`, `ClearWeapons`, 0x06D7, `Teleport` spawn z+0.5,
+    0x0173 …);
+  * **RPC 52 3.62 s after 53**. No 129 (class info valid).
+* **Killed by the bot's Deagle**: 115 taking 1 (46.2) for each hit; 53 (reason 24, killer = bot id) 2 ms after the
+  fatal 115; then the weapon-54 115 (3.3).
+* **Remote death (RPC 166)**, same frame:
+  * `CPed::Teleport(own position)`, task reset, Remove/Add;
+  * `0x0321 EXPLODE_CHAR_HEAD` under PlayerInFocus = slot → damage calc (null, 1000, 34, head) → `ComputeWillKillPed`
+    **is reached** (330);
+  * next frame: health 0, `SetPedState(54)`;
+  * no `RemoveBodyPart`: the head stays on.
+
+### Still open (M7)
+* Remote hit_type 0 with a ray that really crosses the local ped (the local-hit suppression, modes 1/2).
+* Remote hit_type 1 in modes 0/2 (the bot produced no shots there).
+* Drive-by (MR-7.6), carry/cuffs masks (MR-7.12), projectiles/satchels from keys (MR-7.11; `AddProjectile` can't be
+  hooked), the one-frame health gap (MR-7.10), respawn after `ForceClassSelection` or while spectating (MR-7.9),
+  skills after RPC 34 (MR-7.5).
+* The garbage-colpoint 206 after a sniper sky-miss: seen once, not reproduced.
+
 ## Open problems / notes
 
 * `origin` stack scanning is heuristic. For samp's script commands the first two entries

@@ -22,6 +22,12 @@ pub mod op {
     pub const REQUEST_ANIMATION: u16 = 0x04ED;
     pub const HAS_ANIMATION_LOADED: u16 = 0x04EE;
     pub const SET_CHAR_DROPS_WEAPONS_WHEN_DEAD: u16 = 0x087E;
+    // Parity pass: local per-frame polls (TRACE-1 "Walking") and special actions.
+    pub const SET_PLAYER_DRUNKENNESS: u16 = 0x052C;
+    pub const GET_CURRENT_CHAR_WEAPON: u16 = 0x0470;
+    pub const GET_AREA_VISIBLE: u16 = 0x077E;
+    pub const TASK_HANDS_UP: u16 = 0x05C4;
+    pub const TASK_USE_MOBILE_PHONE: u16 = 0x0729;
     pub const DISPLAY_ZONE_NAMES: u16 = 0x09BA;
     pub const SET_TIME_OF_DAY: u16 = 0x00C0;
     pub const SWITCH_ROADS_OFF: u16 = 0x01E8;

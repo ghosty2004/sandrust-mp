@@ -390,7 +390,8 @@ fn install(dev_slot_obj: u32) -> Result<String, String> {
     // Real device: GetSwapChain(0) (slot 14) → IDirect3DSwapChain9::GetDevice (slot 8).
     let mut sc = 0u32;
     // SAFETY: the object in _RwD3DDevice implements IDirect3DDevice9 (directly or as a proxy).
-    let gsc = unsafe { vcall::<extern "system" fn(u32, u32, *mut u32) -> i32>(dev_slot_obj, 14) }.ok_or("GetSwapChain")?;
+    let gsc =
+        unsafe { vcall::<extern "system" fn(u32, u32, *mut u32) -> i32>(dev_slot_obj, 14) }.ok_or("GetSwapChain")?;
     if gsc(dev_slot_obj, 0, &mut sc) < 0 || sc == 0 {
         return Err("GetSwapChain failed".into());
     }
@@ -508,7 +509,8 @@ fn install_d3dx(dev: u32) -> String {
         let face = b"Arial\0";
         // SAFETY: D3DXCreateFontA signature (12 stdcall args).
         let f: FnCreateFont = unsafe { std::mem::transmute(cf as usize) };
-        if f(dev, 10, 0, 400, 1, 0, 1, 0, 0, 0, face.as_ptr() as usize as u32, &mut font as *mut u32 as usize as u32) >= 0
+        if f(dev, 10, 0, 400, 1, 0, 1, 0, 0, 0, face.as_ptr() as usize as u32, &mut font as *mut u32 as usize as u32)
+            >= 0
             && font != 0
         {
             if let Err(e) = hook_vtable(Iface::Font, font) {
@@ -678,7 +680,10 @@ fn on_call(idx: usize, r: &Regs) {
         }
         draw_extras(meth, &mut rec, &arg);
         if meth.sp == Sp::Present {
-            rec.put("hud", Val::List(vec![m.u8(HUD_ON).map(u32::from).into(), m.u8(HUD_NO_RADAR).map(u32::from).into()]));
+            rec.put(
+                "hud",
+                Val::List(vec![m.u8(HUD_ON).map(u32::from).into(), m.u8(HUD_NO_RADAR).map(u32::from).into()]),
+            );
         }
         d3d_emit(rec);
     }
@@ -757,7 +762,16 @@ fn draw_extras(meth: &Method, rec: &mut Val, arg: &dyn Fn(u32) -> u32) {
                 let list: Vec<Val> = ib
                     .chunks(isz as usize)
                     .take(dd::MAX_DECODED)
-                    .map(|c| Val::Int(if isz == 4 { u32::from_le_bytes([c[0], c[1], c[2], c[3]]) } else { u32::from(u16::from_le_bytes([c[0], c[1]])) }.into()))
+                    .map(|c| {
+                        Val::Int(
+                            if isz == 4 {
+                                u32::from_le_bytes([c[0], c[1], c[2], c[3]])
+                            } else {
+                                u32::from(u16::from_le_bytes([c[0], c[1]]))
+                            }
+                            .into(),
+                        )
+                    })
                     .collect();
                 rec.put("indices", Val::List(list));
             }
@@ -931,8 +945,7 @@ type FnCreateFontInd = extern "system" fn(u32, u32, u32) -> i32;
 type FnCreateSprite = extern "system" fn(u32, u32) -> i32;
 type FnCreateRts = extern "system" fn(u32, u32, u32, u32, u32, u32, u32) -> i32;
 type FnCreateTexture = extern "system" fn(u32, u32, u32, u32, u32, u32, u32, u32) -> i32;
-type FnTexFromFileEx =
-    extern "system" fn(u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) -> i32;
+type FnTexFromFileEx = extern "system" fn(u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) -> i32;
 type FnTexFromMemEx =
     extern "system" fn(u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) -> i32;
 type FnLoadSurface = extern "system" fn(u32, u32, u32, u32, u32, u32, u32, u32) -> i32;
@@ -971,13 +984,26 @@ fn log_font(name: &str, hr: i32, pp: u32, label: String) {
         st(|s| s.labels.insert(font, label.clone()));
         let _ = hook_vtable(Iface::Font, font);
     }
-    d3d_emit(caller_rec(name).with("hr", Val::Str(format!("{hr:#x}"))).with("font", label).with("obj_ptr", Val::Hex(font)));
+    d3d_emit(
+        caller_rec(name).with("hr", Val::Str(format!("{hr:#x}"))).with("font", label).with("obj_ptr", Val::Hex(font)),
+    );
     flush();
 }
 
 #[allow(clippy::too_many_arguments)]
 extern "system" fn create_font_a(
-    dev: u32, h: i32, w: u32, wt: u32, mip: u32, it: u32, cs: u32, op: u32, q: u32, pf: u32, face: u32, pp: u32,
+    dev: u32,
+    h: i32,
+    w: u32,
+    wt: u32,
+    mip: u32,
+    it: u32,
+    cs: u32,
+    op: u32,
+    q: u32,
+    pf: u32,
+    face: u32,
+    pp: u32,
 ) -> i32 {
     // SAFETY: trampoline of D3DXCreateFontA.
     let f: FnCreateFont = unsafe { std::mem::transmute(export_tramp("D3DXCreateFontA")) };
@@ -985,7 +1011,12 @@ extern "system" fn create_font_a(
     if outer {
         let _ = catch_unwind(AssertUnwindSafe(|| {
             let fc = ProcMem.cstr(face, 64).unwrap_or_default();
-            log_font("D3DXCreateFontA", hr, pp, format!("{fc} h{h} w{w} wt{wt} mip{mip} it{it} cs{cs} op{op} q{q} pf{pf}"));
+            log_font(
+                "D3DXCreateFontA",
+                hr,
+                pp,
+                format!("{fc} h{h} w{w} wt{wt} mip{mip} it{it} cs{cs} op{op} q{q} pf{pf}"),
+            );
         }));
     }
     hr
@@ -993,7 +1024,18 @@ extern "system" fn create_font_a(
 
 #[allow(clippy::too_many_arguments)]
 extern "system" fn create_font_w(
-    dev: u32, h: i32, w: u32, wt: u32, mip: u32, it: u32, cs: u32, op: u32, q: u32, pf: u32, face: u32, pp: u32,
+    dev: u32,
+    h: i32,
+    w: u32,
+    wt: u32,
+    mip: u32,
+    it: u32,
+    cs: u32,
+    op: u32,
+    q: u32,
+    pf: u32,
+    face: u32,
+    pp: u32,
 ) -> i32 {
     // SAFETY: trampoline of D3DXCreateFontW.
     let f: FnCreateFont = unsafe { std::mem::transmute(export_tramp("D3DXCreateFontW")) };
@@ -1001,7 +1043,12 @@ extern "system" fn create_font_w(
     if outer {
         let _ = catch_unwind(AssertUnwindSafe(|| {
             let fc = dd::wide_str(&ProcMem, face, -1, 64).unwrap_or_default();
-            log_font("D3DXCreateFontW", hr, pp, format!("{fc} h{h} w{w} wt{wt} mip{mip} it{it} cs{cs} op{op} q{q} pf{pf}"));
+            log_font(
+                "D3DXCreateFontW",
+                hr,
+                pp,
+                format!("{fc} h{h} w{w} wt{wt} mip{mip} it{it} cs{cs} op{op} q{q} pf{pf}"),
+            );
         }));
     }
     hr
@@ -1054,7 +1101,12 @@ extern "system" fn create_sprite(dev: u32, pp: u32) -> i32 {
                 st(|s| s.labels.insert(sp, label.clone()));
                 let _ = hook_vtable(Iface::Sprite, sp);
             }
-            d3d_emit(caller_rec("D3DXCreateSprite").with("hr", Val::Str(format!("{hr:#x}"))).with("sprite", label).with("obj_ptr", Val::Hex(sp)));
+            d3d_emit(
+                caller_rec("D3DXCreateSprite")
+                    .with("hr", Val::Str(format!("{hr:#x}")))
+                    .with("sprite", label)
+                    .with("obj_ptr", Val::Hex(sp)),
+            );
             flush();
         }));
     }
@@ -1075,7 +1127,15 @@ extern "system" fn create_rts(dev: u32, w: u32, h: u32, fmt: u32, depth: u32, df
             d3d_emit(
                 caller_rec("D3DXCreateRenderToSurface")
                     .with("hr", Val::Str(format!("{hr:#x}")))
-                    .with("args", Val::obj().with("w", w).with("h", h).with("format", fmt).with("depth", depth).with("depth_format", dfmt))
+                    .with(
+                        "args",
+                        Val::obj()
+                            .with("w", w)
+                            .with("h", h)
+                            .with("format", fmt)
+                            .with("depth", depth)
+                            .with("depth_format", dfmt),
+                    )
                     .with("obj_ptr", Val::Hex(o)),
             );
             flush();
@@ -1114,7 +1174,13 @@ extern "system" fn create_texture(dev: u32, w: u32, h: u32, mip: u32, usage: u32
                 hr,
                 pp,
                 Some(format!("d3dx-tex {w}x{h}")),
-                Val::obj().with("w", w).with("h", h).with("mip", mip).with("usage", Val::Str(format!("{usage:#x}"))).with("format", fmt).with("pool", pool),
+                Val::obj()
+                    .with("w", w)
+                    .with("h", h)
+                    .with("mip", mip)
+                    .with("usage", Val::Str(format!("{usage:#x}")))
+                    .with("format", fmt)
+                    .with("pool", pool),
             );
         }));
     }
@@ -1125,10 +1191,12 @@ fn tex_file(wide: bool, a: [u32; 14]) -> i32 {
     let name = if wide { "D3DXCreateTextureFromFileExW" } else { "D3DXCreateTextureFromFileExA" };
     // SAFETY: trampoline of D3DXCreateTextureFromFileExA/W.
     let f: FnTexFromFileEx = unsafe { std::mem::transmute(export_tramp(name)) };
-    let (hr, outer) = factory(|| f(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13]));
+    let (hr, outer) =
+        factory(|| f(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13]));
     if outer {
         let _ = catch_unwind(AssertUnwindSafe(|| {
-            let path = if wide { dd::wide_str(&ProcMem, a[1], -1, 260) } else { ProcMem.cstr(a[1], 260) }.unwrap_or_default();
+            let path =
+                if wide { dd::wide_str(&ProcMem, a[1], -1, 260) } else { ProcMem.cstr(a[1], 260) }.unwrap_or_default();
             log_texture(
                 name,
                 hr,
@@ -1153,7 +1221,19 @@ fn tex_file(wide: bool, a: [u32; 14]) -> i32 {
 
 #[allow(clippy::too_many_arguments)]
 extern "system" fn tex_from_file_a(
-    a0: u32, a1: u32, a2: u32, a3: u32, a4: u32, a5: u32, a6: u32, a7: u32, a8: u32, a9: u32, a10: u32, a11: u32, a12: u32,
+    a0: u32,
+    a1: u32,
+    a2: u32,
+    a3: u32,
+    a4: u32,
+    a5: u32,
+    a6: u32,
+    a7: u32,
+    a8: u32,
+    a9: u32,
+    a10: u32,
+    a11: u32,
+    a12: u32,
     a13: u32,
 ) -> i32 {
     tex_file(false, [a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13])
@@ -1161,7 +1241,19 @@ extern "system" fn tex_from_file_a(
 
 #[allow(clippy::too_many_arguments)]
 extern "system" fn tex_from_file_w(
-    a0: u32, a1: u32, a2: u32, a3: u32, a4: u32, a5: u32, a6: u32, a7: u32, a8: u32, a9: u32, a10: u32, a11: u32, a12: u32,
+    a0: u32,
+    a1: u32,
+    a2: u32,
+    a3: u32,
+    a4: u32,
+    a5: u32,
+    a6: u32,
+    a7: u32,
+    a8: u32,
+    a9: u32,
+    a10: u32,
+    a11: u32,
+    a12: u32,
     a13: u32,
 ) -> i32 {
     tex_file(true, [a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13])
@@ -1169,21 +1261,42 @@ extern "system" fn tex_from_file_w(
 
 #[allow(clippy::too_many_arguments)]
 extern "system" fn tex_from_mem(
-    dev: u32, data: u32, len: u32, w: u32, h: u32, mip: u32, usage: u32, fmt: u32, pool: u32, filter: u32, mfilter: u32,
-    ck: u32, info: u32, pal: u32, pp: u32,
+    dev: u32,
+    data: u32,
+    len: u32,
+    w: u32,
+    h: u32,
+    mip: u32,
+    usage: u32,
+    fmt: u32,
+    pool: u32,
+    filter: u32,
+    mfilter: u32,
+    ck: u32,
+    info: u32,
+    pal: u32,
+    pp: u32,
 ) -> i32 {
     // SAFETY: trampoline of D3DXCreateTextureFromFileInMemoryEx.
     let f: FnTexFromMemEx = unsafe { std::mem::transmute(export_tramp("D3DXCreateTextureFromFileInMemoryEx")) };
     let (hr, outer) = factory(|| f(dev, data, len, w, h, mip, usage, fmt, pool, filter, mfilter, ck, info, pal, pp));
     if outer {
         let _ = catch_unwind(AssertUnwindSafe(|| {
-            let hash = read_bytes(data, len.min(16 << 20) as usize).map(|b| format!("{:08x}", dd::fnv1a(&b))).unwrap_or_default();
+            let hash = read_bytes(data, len.min(16 << 20) as usize)
+                .map(|b| format!("{:08x}", dd::fnv1a(&b)))
+                .unwrap_or_default();
             log_texture(
                 "D3DXCreateTextureFromFileInMemoryEx",
                 hr,
                 pp,
                 Some(format!("mem:{len}B#{hash}")),
-                Val::obj().with("len", len).with("hash", hash.as_str()).with("w", w).with("h", h).with("format", fmt).with("pool", pool),
+                Val::obj()
+                    .with("len", len)
+                    .with("hash", hash.as_str())
+                    .with("w", w)
+                    .with("h", h)
+                    .with("format", fmt)
+                    .with("pool", pool),
             );
         }));
     }
@@ -1191,7 +1304,16 @@ extern "system" fn tex_from_mem(
 }
 
 #[allow(clippy::too_many_arguments)]
-extern "system" fn load_surface_a(surf: u32, pal: u32, rect: u32, path: u32, src: u32, filter: u32, ck: u32, info: u32) -> i32 {
+extern "system" fn load_surface_a(
+    surf: u32,
+    pal: u32,
+    rect: u32,
+    path: u32,
+    src: u32,
+    filter: u32,
+    ck: u32,
+    info: u32,
+) -> i32 {
     // SAFETY: trampoline of D3DXLoadSurfaceFromFileA.
     let f: FnLoadSurface = unsafe { std::mem::transmute(export_tramp("D3DXLoadSurfaceFromFileA")) };
     let (hr, outer) = factory(|| f(surf, pal, rect, path, src, filter, ck, info));
@@ -1202,7 +1324,15 @@ extern "system" fn load_surface_a(surf: u32, pal: u32, rect: u32, path: u32, src
             d3d_emit(
                 caller_rec("D3DXLoadSurfaceFromFileA")
                     .with("hr", Val::Str(format!("{hr:#x}")))
-                    .with("args", Val::obj().with("path", p.as_str()).with("dst_rect", rect_val(rect)).with("src_rect", rect_val(src)).with("filter", Val::Str(format!("{filter:#x}"))).with("colorkey", Val::Str(format!("{ck:#x}"))))
+                    .with(
+                        "args",
+                        Val::obj()
+                            .with("path", p.as_str())
+                            .with("dst_rect", rect_val(rect))
+                            .with("src_rect", rect_val(src))
+                            .with("filter", Val::Str(format!("{filter:#x}")))
+                            .with("colorkey", Val::Str(format!("{ck:#x}"))),
+                    )
                     .with("surface", resource_desc(surf))
                     .with("obj_ptr", Val::Hex(surf)),
             );

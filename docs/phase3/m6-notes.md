@@ -27,8 +27,9 @@ materials), 65 (LoadObjectInstance → 19300), 66 + 371 (escalator constants aro
 (CreateRwObject with the AddEntity call NOPed), 68/69 + 373 (DeleteRwObject keeps escalators running), 75
 (PositionAttachedEntity: sync rotation 0), 76/77 (samp's own passes), 78 (render-list filter), 79 (roadsign null
 guard), 82 (vehicle camera collision off while RPC 167 disabled collisions), 83 (camera ignores attached objects),
-113 (object pool 3000), 208 (no interior pickups), 211 (pickup visibility 10000).
-Row 172 (LoadPickup := ret, no IPL pickups) is owned by the player-parity branch (boot / SP-OFF fixes), which M6
+113 (object pool 3000), 211 (pickup visibility 10000).
+Rows 172 (LoadPickup := ret, no IPL pickups) and 208 (no interior pickups) are applied by the player-parity work
+(patches.rs) (boot / SP-OFF fixes), which M6
 depends on for IPL-pickup parity. Already applied before M6: 108/109/119/131 (patches.rs), 128 (archive mode), 132/248–261 (stores.rs), 379 (UI device
 proxy).
 

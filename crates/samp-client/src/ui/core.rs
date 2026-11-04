@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 
-use samp_proto::rpcs::{Incoming, player, remote, ui};
+use samp_proto::rpcs::{Incoming, player, remote, session, ui};
 use samp_ui::chat::{ChatEntry, ChatWindow, ClientMessageResult, DisplayMode, EntryType, LocalTime};
 use samp_ui::colour;
 use samp_ui::commands::{self, Effect, GameInfo, MessageKind};
@@ -21,7 +21,13 @@ use samp_ui::config::{self, SampCfg, UiSettings};
 use samp_ui::edit::{CharResult, EditKey, Mods};
 use samp_ui::gametext::GameText;
 use samp_ui::input::{ChatInput, Submit};
+use samp_ui::bubbles::ChatBubbles;
+use samp_ui::deathwindow::DeathWindow;
+use samp_ui::dialog::{Button, Dialogs, ShowOutcome};
 use samp_ui::keys::{self, Action, Event, UiState};
+use samp_ui::menu::{MenuBuild, Menus};
+use samp_ui::scoreboard::{PlayerInfo, Scoreboard};
+use samp_ui::textdraw::TextDraws;
 use samp_ui::text::KeyNameExpander;
 
 use super::colours::PlayerColours;
@@ -49,6 +55,15 @@ pub mod msg {
 
 /// Chat scroll position set by Enter in the input (A 0x10067390).
 const SUBMIT_SCROLL_POS: u32 = 90;
+/// "Connecting to" follows "Started" by 3.0 s; with no answer the connect tick prints
+/// "The server didn't respond. Retrying.." and a new "Connecting to" every ~6.05 s
+/// (TRACE-3 U-CONNECT-TIMING).
+pub const CONNECT_DELAY_MS: u64 = 3000;
+pub const CONNECT_RETRY_MS: u64 = 6050;
+/// A 0x100e59b4 (TRACE-3: printed before each retry).
+pub const RETRY_LINE: &str = "The server didn't respond. Retrying..";
+/// `INVALID_PLAYER_ID`.
+const INVALID_PLAYER: u16 = 0xFFFF;
 
 /// A message the UI wants sent (drained by the network session every frame).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +74,47 @@ pub enum Outgoing {
     Command(Vec<u8>),
     /// Packet 201 PlayerRconCommand.
     Rcon(Vec<u8>),
+    /// RPC 62 OnPlayerDialogResponse (reliability 9).
+    DialogResponse(ui::OnPlayerDialogResponse),
+    /// RPC 83 OnPlayerSelectTextDraw (reliability 9).
+    SelectTextDraw(u16),
+    /// RPC 132 OnPlayerSelectedMenuRow (reliability 8).
+    MenuRow(u8),
+    /// RPC 140 OnPlayerExitedMenu (reliability 8).
+    MenuExit,
+    /// RPC 155 OnPlayerRequestScoresAndPings (reliability 8, empty).
+    ScoresRequest,
+}
+
+/// A remote player as the UI needs it (published by the player pool every tick).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RemoteUi {
+    pub id: u16,
+    /// `CPed*` (0 = not streamed in).
+    pub ped: u32,
+    pub state: u8,
+    pub health: f32,
+    pub armour: f32,
+    pub npc: bool,
+    /// Milliseconds since the last sync (u64::MAX = never).
+    pub ms_since_sync: u64,
+}
+
+/// Cursor/input-lock requests (UR §5) the host executes in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorRequest {
+    /// Mode 0 with the 10-frame delay (dialog close) or immediately.
+    Mode0 { immediate: bool },
+    /// Mode 3 (scoreboard open).
+    Mode3,
+}
+
+/// GTA menu work for the host (script commands).
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuRequest {
+    /// Delete the current GTA menu (0x08DA), then build this one if given.
+    Show { delete_previous: bool, build: MenuBuild },
+    Delete,
 }
 
 /// Host-side requests collected while handling input or commands.
@@ -72,6 +128,10 @@ pub struct HostRequests {
     pub game_text: Option<(u8, u32, Vec<u8>)>,
     /// Focus loss: run the input-restore step (UR §6.3 `WM_KILLFOCUS`).
     pub input_restore: bool,
+    pub cursor: Vec<CursorRequest>,
+    pub menus: Vec<MenuRequest>,
+    /// F8: take a screenshot at the next Present.
+    pub screenshot: bool,
 }
 
 /// One accepted game text, for the control channel.
@@ -94,6 +154,7 @@ pub struct UiCore {
     names: BTreeMap<u16, Vec<u8>>,
     local_name: Vec<u8>,
     local_id: Option<u16>,
+    connect_host: String,
     pub colours: PlayerColours,
     /// A netgame object exists (client started with `-c`).
     pub netgame: bool,
@@ -104,6 +165,34 @@ pub struct UiCore {
     outgoing: Vec<Outgoing>,
     pub requests: HostRequests,
     pub last_game_text: Option<ShownGameText>,
+    pub dialogs: Dialogs,
+    /// Bumped whenever a dialog opens (the renderer caches its layout).
+    pub dialog_serial: u64,
+    pub scoreboard: Scoreboard,
+    /// RPC 155 records: id → (score, ping).
+    pub scores: BTreeMap<u16, (i32, u32)>,
+    pub deaths: DeathWindow,
+    pub bubbles: ChatBubbles,
+    pub textdraws: TextDraws,
+    pub menus: Menus,
+    /// RPC 80 per player (default shown).
+    pub hidden_tags: std::collections::BTreeSet<u16>,
+    /// InitGame name-tag settings.
+    pub show_name_tags: bool,
+    pub name_tag_distance: f32,
+    pub name_tag_los: bool,
+    pub server_name: Vec<u8>,
+    /// Connect-line timing: ms since the netgame started, next connect tick.
+    connect_started: Option<std::time::Instant>,
+    next_connect_ms: Option<u64>,
+    pub responses_sent: u32,
+    /// Screen rects for click routing (set by the renderer side).
+    pub input_rect: samp_ui::Rect,
+    pub scoreboard_rect: samp_ui::Rect,
+    /// Class selection running (blocks the scoreboard).
+    pub class_selection: bool,
+    /// Rows visible in the open list dialog (set by the renderer side).
+    pub dialog_page_rows: usize,
 }
 
 /// Local wall-clock time for chat entries.
@@ -126,6 +215,12 @@ pub fn local_time_now() -> LocalTime {
         let day = unix.rem_euclid(86_400);
         LocalTime { unix, hour: (day / 3600) as u8, minute: (day / 60 % 60) as u8, second: (day % 60) as u8 }
     }
+}
+
+/// Milliseconds since the UI started (samp uses `GetTickCount`).
+pub fn tick_ms() -> u32 {
+    static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    T0.get_or_init(std::time::Instant::now).elapsed().as_millis() as u32
 }
 
 /// What a C stream opened in text mode writes for `b`: every `\n` becomes `\r\n`.
@@ -191,6 +286,7 @@ impl UiCore {
             names: BTreeMap::new(),
             local_name: Vec::new(),
             local_id: None,
+            connect_host: String::new(),
             colours: PlayerColours::new(),
             netgame: false,
             connected: false,
@@ -198,6 +294,26 @@ impl UiCore {
             outgoing: Vec::new(),
             requests: HostRequests::default(),
             last_game_text: None,
+            dialogs: Dialogs::new(),
+            dialog_serial: 0,
+            scoreboard: Scoreboard::new(),
+            scores: BTreeMap::new(),
+            deaths: DeathWindow::new(),
+            bubbles: ChatBubbles::new(),
+            textdraws: TextDraws::new(),
+            menus: Menus::new(),
+            hidden_tags: Default::default(),
+            show_name_tags: true,
+            name_tag_distance: 70.0,
+            name_tag_los: true,
+            server_name: Vec::new(),
+            connect_started: None,
+            next_connect_ms: None,
+            responses_sent: 0,
+            input_rect: samp_ui::Rect::default(),
+            scoreboard_rect: samp_ui::Rect::default(),
+            class_selection: false,
+            dialog_page_rows: 10,
         };
         if cfg_dirty {
             ui.write_config();
@@ -252,13 +368,38 @@ impl UiCore {
 
     // ---- session -----------------------------------------------------------------
 
-    /// The netgame object is created (connect started): "Started", then the
-    /// first "Connecting to" line.
+    /// The netgame object is created: "Started"; the connect tick prints
+    /// "Connecting to" 3.0 s later ([`Self::connect_tick`]).
     pub fn on_netgame_start(&mut self, host: &str, port: u16, name: &[u8]) {
         self.netgame = true;
         self.local_name = name.to_vec();
+        self.connect_host = format!("{host}:{port}");
         self.print_debug(msg::STARTED.as_bytes());
-        self.print_debug(msg::connecting(host, port).as_bytes());
+        self.connect_started = Some(std::time::Instant::now());
+        self.next_connect_ms = Some(CONNECT_DELAY_MS);
+    }
+
+    /// Connect tick (A 0x1000896d): "Connecting to" at +3.0 s, then, while no answer
+    /// came, "The server didn't respond. Retrying.." + "Connecting to" every 6.05 s.
+    /// Returns true when the session should (re)start connecting now.
+    pub fn connect_tick(&mut self, answered: bool) -> bool {
+        let (Some(t0), Some(due)) = (self.connect_started, self.next_connect_ms) else { return false };
+        let now = t0.elapsed().as_millis() as u64;
+        if now < due {
+            return false;
+        }
+        let first = due == CONNECT_DELAY_MS;
+        if !first {
+            if answered {
+                self.next_connect_ms = None;
+                return false;
+            }
+            self.print_debug(RETRY_LINE.as_bytes());
+        }
+        let line = format!("Connecting to {}...", self.connect_host);
+        self.print_debug(line.as_bytes());
+        self.next_connect_ms = Some(due + CONNECT_RETRY_MS);
+        true
     }
 
     /// `0x22` accepted: PlayerConnect is being sent.
@@ -267,10 +408,31 @@ impl UiCore {
     }
 
     /// RPC 139 InitGame: netgame state 5.
-    pub fn on_init_game(&mut self, server_name: &[u8], player_id: u16) {
+    pub fn on_init_game(&mut self, g: &samp_proto::session::InitGame) {
         self.connected = true;
-        self.local_id = Some(player_id);
-        self.print_debug(&msg::connected_to(server_name));
+        self.next_connect_ms = None;
+        self.local_id = Some(g.player_id);
+        self.show_name_tags = g.show_name_tags;
+        self.name_tag_distance = g.name_tag_distance;
+        self.name_tag_los = g.name_tag_los;
+        self.server_name = g.server_name.as_bytes().to_vec();
+        self.print_debug(&msg::connected_to(g.server_name.as_bytes()));
+    }
+
+    pub fn local_id(&self) -> Option<u16> {
+        self.local_id
+    }
+
+    pub fn local_name(&self) -> &[u8] {
+        &self.local_name
+    }
+
+    pub fn name(&self, id: u16) -> Option<&[u8]> {
+        if Some(id) == self.local_id { Some(&self.local_name) } else { self.names.get(&id).map(Vec::as_slice) }
+    }
+
+    pub fn remote_ids(&self) -> impl Iterator<Item = u16> + '_ {
+        self.names.keys().copied()
     }
 
     /// The session ended.
@@ -280,6 +442,10 @@ impl UiCore {
         }
         self.connected = false;
         self.names.clear();
+        self.dialogs.close();
+        self.scoreboard.close();
+        self.textdraws.clear();
+        self.menus.clear();
     }
 
     // ---- RPCs --------------------------------------------------------------------
@@ -313,7 +479,71 @@ impl UiCore {
             }
             Incoming::Remote(remote::Incoming::PlayerQuit(q)) => {
                 self.names.remove(&q.player_id);
+                self.bubbles.clear(q.player_id);
+                self.hidden_tags.remove(&q.player_id);
+                self.scores.remove(&q.player_id);
             }
+            Incoming::Remote(remote::Incoming::ShowPlayerNameTagForPlayer(t)) => {
+                if t.show != 0 {
+                    self.hidden_tags.remove(&t.player_id);
+                } else {
+                    self.hidden_tags.insert(t.player_id);
+                }
+            }
+            Incoming::Remote(remote::Incoming::SetPlayerChatBubble(b)) => {
+                if self.names.contains_key(&b.player_id) {
+                    self.bubbles.set(b.player_id, b.colour, b.draw_distance, b.expire_time, &b.text, tick_ms());
+                }
+            }
+            Incoming::Ui(ui::Incoming::ShowDialog(d)) => match self.dialogs.show(d) {
+                ShowOutcome::Opened => {
+                    self.input.close();
+                    self.dialog_serial += 1;
+                }
+                ShowOutcome::Closed { was_open: true } => {
+                    self.requests.cursor.push(CursorRequest::Mode0 { immediate: false })
+                }
+                _ => {}
+            },
+            Incoming::Ui(ui::Incoming::PlayerShowTextDraw(t)) => {
+                if t.text.len() >= samp_ui::textdraw::TEXT_MAX {
+                    self.print_debug(format!("Warning: ignoring large TextDraw size={}", t.text.len()).as_bytes());
+                } else {
+                    self.textdraws.show(t.textdraw_id, t.data, &t.text);
+                }
+            }
+            Incoming::Ui(ui::Incoming::PlayerHideTextDraw(t)) => self.textdraws.hide(t.textdraw_id),
+            Incoming::Ui(ui::Incoming::PlayerTextDrawSetString(t)) => {
+                self.textdraws.set_string(t.textdraw_id, &t.text);
+            }
+            Incoming::Ui(ui::Incoming::PlayerBeginTextDrawSelect(s)) => {
+                if s.enable {
+                    self.textdraws.begin_select(s.hover_colour);
+                } else {
+                    self.cancel_textdraw_select();
+                }
+            }
+            Incoming::Ui(ui::Incoming::PlayerInitMenu(m)) => {
+                self.menus.init(m);
+            }
+            Incoming::Ui(ui::Incoming::PlayerShowMenu(m)) => {
+                if let Some((delete_previous, build)) = self.menus.show(m.menu_id) {
+                    self.requests.menus.push(MenuRequest::Show { delete_previous, build });
+                }
+            }
+            Incoming::Ui(ui::Incoming::PlayerHideMenu(m)) => {
+                if self.menus.hide(m.menu_id) {
+                    self.requests.menus.push(MenuRequest::Delete);
+                }
+            }
+            Incoming::Session(session::Incoming::SendPlayerScoresAndPings(s)) => {
+                for p in &s.players {
+                    if p.player_id < 1004 {
+                        self.scores.insert(p.player_id, (p.score, p.ping));
+                    }
+                }
+            }
+            Incoming::Player(player::Incoming::SendDeathMessage(d)) => self.on_death_message(d),
             Incoming::Remote(remote::Incoming::SetPlayerName(n)) => {
                 if Some(n.player_id) == self.local_id {
                     self.local_name = n.name.clone();
@@ -328,6 +558,58 @@ impl UiCore {
                 self.colours.set(c.player_id, c.colour);
             }
             _ => {}
+        }
+    }
+
+    /// RPC 55 (player-state §55): names and colours of the ids; victim 0xFFFF drops it.
+    fn on_death_message(&mut self, d: &player::SendDeathMessage) {
+        if d.victim_id == INVALID_PLAYER {
+            return;
+        }
+        let who = |u: &Self, id: u16| -> (Vec<u8>, u32) {
+            match u.name(id) {
+                Some(n) if id != INVALID_PLAYER => (n.to_vec(), u.colours.chat_argb(id)),
+                _ => (Vec::new(), 0),
+            }
+        };
+        let (kn, kc) = who(self, d.killer_id);
+        let (vn, vc) = who(self, d.victim_id);
+        self.deaths.add(&kn, kc, &vn, vc, d.reason);
+    }
+
+    /// The textdraw-selection disable path (UCA §83): mode off, cursor mode 0, chat
+    /// input closed, RPC 83 with 0xFFFF.
+    pub fn cancel_textdraw_select(&mut self) {
+        self.textdraws.cancel_select();
+        self.requests.cursor.push(CursorRequest::Mode0 { immediate: true });
+        self.input.close();
+        self.outgoing.push(Outgoing::SelectTextDraw(samp_ui::textdraw::NONE));
+    }
+
+    /// Answers the open dialog (UCA §62) and closes it (cursor mode 0, 10-frame delay).
+    pub fn dialog_respond(&mut self, button: Button) {
+        if !self.dialogs.is_open() {
+            return;
+        }
+        if let Some(r) = self.dialogs.respond(button) {
+            self.responses_sent += 1;
+            self.outgoing.push(Outgoing::DialogResponse(r));
+        }
+        self.requests.cursor.push(CursorRequest::Mode0 { immediate: false });
+    }
+
+    /// Scoreboard rows (local first) from the names, colours and RPC 155 records.
+    pub fn rebuild_scoreboard(&mut self) {
+        let info = |u: &Self, id: u16, name: &[u8]| {
+            let (score, ping) = u.scores.get(&id).copied().unwrap_or((0, 0));
+            PlayerInfo { id, name: name.to_vec(), score, ping, colour_rgba: u.colours.rgba(id), is_npc: false }
+        };
+        let local = info(self, self.local_id.unwrap_or(0), &self.local_name);
+        let remotes: Vec<PlayerInfo> = self.names.iter().map(|(&id, n)| info(self, id, n)).collect();
+        self.scoreboard.rebuild(&local, &remotes);
+        // TRACE-3: the first row is selected (selection bar on the local player's row).
+        if self.scoreboard.selected().is_none() && !self.scoreboard.rows().is_empty() {
+            self.scoreboard.set_selected(Some(0));
         }
     }
 
@@ -355,15 +637,18 @@ impl UiCore {
 
     /// Routing state for `samp_ui::keys::route`.
     pub fn key_state(&self, gta_menu: bool) -> UiState {
+        let d = self.dialogs.current();
         UiState {
+            textdraw_select: self.textdraws.selection.active,
+            dialog_is_list: d.is_some_and(|d| d.style.is_list()),
             input_exists: self.netgame,
             input_open: self.input.is_open(),
-            input_rect: samp_ui::Rect::default(),
-            dialog_open: false,
-            dialog_has_edit: false,
-            scoreboard_exists: false,
-            scoreboard_open: false,
-            scoreboard_rect: samp_ui::Rect::default(),
+            input_rect: self.input_rect,
+            dialog_open: d.is_some(),
+            dialog_has_edit: d.is_some_and(|d| d.style.has_edit()),
+            scoreboard_exists: self.netgame,
+            scoreboard_open: self.scoreboard.is_open(),
+            scoreboard_rect: self.scoreboard_rect,
             class_selection_visible: false,
             other_modal: false,
             gta_menu,
@@ -396,18 +681,96 @@ impl UiCore {
                     self.chat.cycle_mode();
                 }
                 Action::InputRestore => self.requests.input_restore = true,
-                // No scoreboard, dialog or class-selection GUI before M8a.
-                Action::CloseScoreboard | Action::CursorModeZeroImmediate => {}
+                Action::DialogChar(c) => {
+                    if let Some(d) = self.dialogs.current_mut() {
+                        // Enter in the edit box: response 1 (UCA §62).
+                        if d.edit.char(c) == CharResult::Enter {
+                            self.dialog_respond(Button::Ok);
+                        }
+                    }
+                }
+                Action::DialogListKey(k) => {
+                    if let Some(d) = self.dialogs.current_mut() {
+                        d.list_key(k, self.dialog_page_rows);
+                    }
+                }
+                Action::DialogResponse(b) => self.dialog_respond(b),
+                Action::CancelTextDrawSelect => self.cancel_textdraw_select(),
+                Action::ToggleScoreboard => {
+                    let was = self.scoreboard.is_open();
+                    let open = self.scoreboard.toggle(self.class_selection);
+                    if open && !was {
+                        self.rebuild_scoreboard();
+                        self.requests.cursor.push(CursorRequest::Mode3);
+                    } else if was && !open {
+                        self.requests.cursor.push(CursorRequest::Mode0 { immediate: true });
+                    }
+                }
+                Action::CloseScoreboard => {
+                    if self.scoreboard.is_open() {
+                        self.scoreboard.close();
+                        self.requests.cursor.push(CursorRequest::Mode0 { immediate: true });
+                    }
+                }
+                Action::ToggleDeathWindow => {
+                    self.deaths.toggle_visible();
+                }
+                Action::Screenshot => self.requests.screenshot = true,
+                Action::CursorModeZeroImmediate => self.requests.cursor.push(CursorRequest::Mode0 { immediate: true }),
                 other => crate::log!("ui: action {other:?} not handled in M4"),
             }
         }
     }
 
-    /// Edit-box key-down while the input is open (DXUT edit box; UR §8).
-    pub fn edit_key(&mut self, key: EditKey, mods: Mods) {
+    /// Edit-box key-down while the input or a dialog edit box has focus (DXUT edit box).
+    pub fn edit_key(&mut self, key: EditKey, mods: Mods) -> bool {
         if self.input.is_open() {
             let _ = self.input.key(key, mods);
+            true
+        } else if let Some(d) = self.dialogs.current_mut()
+            && d.style.has_edit()
+            && !self.scoreboard.is_open()
+        {
+            let _ = d.edit.key(key, mods);
+            true
+        } else {
+            false
         }
+    }
+
+    /// `ui` control report.
+    pub fn ui_report(&self) -> String {
+        let mut s = String::from("ui");
+        match self.dialogs.current() {
+            Some(d) => {
+                let sel = d.selected().map_or(-1, |v| v as i32);
+                s.push_str(&format!(
+                    " dialog_open=1 dialog_id={} dialog_style={:?} dialog_rows={} dialog_columns={} dialog_selected={sel} dialog_text={}",
+                    d.id,
+                    d.style,
+                    d.rows().len(),
+                    d.columns(),
+                    quote(d.edit.text())
+                ));
+            }
+            None => s.push_str(" dialog_open=0"),
+        }
+        s.push_str(&format!(
+            " responses={} scoreboard_open={} scoreboard_rows={} textdraws={} textdraw_ids={:?} select={} hovered={} menu={} deaths={} death_visible={} bubbles={} hidden_tags={}",
+            self.responses_sent,
+            self.scoreboard.is_open() as u8,
+            self.scoreboard.rows().len(),
+            self.textdraws.count(),
+            self.textdraws.ids(),
+            self.textdraws.selection.active as u8,
+            self.textdraws.selection.hovered.map_or(-1, i32::from),
+            self.menus.current().map_or(-1, i32::from),
+            self.deaths.rows().count(),
+            self.deaths.visible() as u8,
+            (0..samp_ui::bubbles::SLOTS as u16).filter(|&i| self.bubbles.get(i).is_some()).count(),
+            self.hidden_tags.len(),
+        ));
+        s
     }
 
     /// Routes one window event; returns whether it is consumed.
@@ -473,6 +836,10 @@ impl UiCore {
             // Stored in `settings`; their game effects belong to later milestones.
             other => crate::log!("ui: effect {other:?} stored only (not applied in M4)"),
         }
+    }
+
+    pub fn push_outgoing(&mut self, o: Outgoing) {
+        self.outgoing.push(o);
     }
 
     /// Takes the queued network messages.
@@ -583,7 +950,11 @@ mod tests {
     fn connected_ui(dir: Option<PathBuf>) -> UiCore {
         let mut u = UiCore::new(dir, false);
         u.on_netgame_start("127.0.0.1", 7777, b"RustClient");
-        u.on_init_game(b"srv", 0);
+        // The connect tick fires 3 s later; force it.
+        u.connect_started = std::time::Instant::now().checked_sub(std::time::Duration::from_millis(3100));
+        assert!(u.connect_tick(false));
+        let g = samp_proto::session::InitGame { server_name: "srv".into(), player_id: 0, ..Default::default() };
+        u.on_init_game(&g);
         u
     }
 

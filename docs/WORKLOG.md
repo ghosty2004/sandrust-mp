@@ -185,7 +185,7 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   `cargo test --workspace` 337 passed; clippy 0 host + i686.
 - Open parity (M3-P): speed magnitude/cadence vs original; SEH containment.
 - The weapon flapping seen by TRACE-4 was gungame reacting to our post-arrest state —
-  removed by SP-OFF. User asked about libsamp (R5) → EXT-1; needs the R5 installer.
+  removed by SP-OFF.
 
 ## 2026-11-04 — Git, worktrees, more parallel work
 
@@ -234,3 +234,47 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   173 matching / 205 missing / 3 justified (rows 61, 370, 375 logged as decisions).
 - Started: M8a + M4-P (worktree m8a, lane ui), M2-P + M3-P (worktree par, lane main),
   TRACE-6 (world entities + combat measurements, trace lane, REA). M5 continues (m5).
+
+## 2026-11-04 — Original client measured for world entities and combat
+
+- Five live sessions on the original client: objects (create, render paths by draw distance,
+  material text render target, attachment bone formula, MoveObject/StopObject timing,
+  1000-frame RW release), pickups, checkpoints, gang zones, map icons, actors, 3D labels,
+  building removal, edit/select; combat (shot call chains, 206/115/204 order and content,
+  shotgun = one 206 + one 115, sniper and melee, 0.33 damage scaling, team rule, three
+  lag-comp modes, death/respawn timeline, remote death).
+- Trace hold sessions made private (session id + lock) after one run was driven by another
+  agent; that window's data was discarded.
+- Coverage diff (first results) lists GTA systems still running with our client (grass,
+  real-time shadows, sun/moon, idle camera, ambient gunfire audio, IPL pickups, input during
+  class selection) and the missing local head look; assigned to the player-parity and
+  world-entity work.
+
+## 2026-11-04 — Dialogs, textdraws, menus, nametags and scoreboard merged
+
+- Merged the UI branch (86dfabc). Conflicts in client.rs / players.rs resolved keeping both
+  sides (vehicle pool + UI snapshots).
+- Verified on merged main by the main session in lane ui: m1 (headless), saa, m2, m3, goal,
+  m5, m8a exit 0; m4 first failed because a queued m4 from the UI agent ran concurrently
+  without my run holding the lane lock — rerun under `flock target/locks/ui.lock`: exit 0.
+  496 workspace tests, clippy 0 (host + i686).
+- D3D call-stream diffs vs the original: 0 lines for all dialog styles, input, textdraws +
+  sprite selection, menus, nametags + bubbles, death window, scoreboard.
+- m1.sh now re-runs itself on the isolated headless display (it had opened game windows on
+  the user's desktop when run directly; no screenshots were taken).
+- Lesson: the main session's own lane runs also take the lane lock.
+## 2026-11-04 — EFX-1: effect tracer (worktree efx, trace lane)
+
+- samp-tracer: `efx arm TARGET` single-steps a client function (RPC handler from rpc-ids.md,
+  RVA, game function, `event:frame`) through samp.dll and every game function it calls
+  (iced-x86 decoder for memory operands; return-address stub; foreign code stepped over), logging
+  game-memory writes (old/new, symbolic: player_ped+0x540 …), game calls (args, return),
+  branch-deciding reads. `efx watch SPEC` = guard-page + int3 call-hook window for our client.
+  New: src/efx.rs, src/win/efx.rs; small hooks in control.rs, win.rs, lib.rs; iced-x86 dep.
+- tools/efx: run.sh (orig|ours|both, lane lock), scenario.sh, efxfs.pwn (one RPC per
+  command), efx_diff.py (dump/spec/diff with baseline subtraction, gta-reversed names, SCM
+  opcode names). Notes: docs/phase3/efx-notes.md.
+- Results: RPC 14 identical; RPC 12 same Teleport call + matrix (diffs = original's IK look-at
+  state); RPC 153 not implemented for the local player in our client; RPC 70 same 5 script
+  commands (ours lacks GET_CURRENT_CHAR_WEAPON, changes aiming rotation).
+- Verified: cargo build --workspace, 492 tests, clippy host + i686 0 warnings; 4 lane runs.

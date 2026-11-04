@@ -1,5 +1,6 @@
-//! In-game UI (milestone M4): chat window, chat input, local commands, game
-//! text and client messages.
+//! In-game UI (milestones M4/M8a): chat window, chat input, local commands, game
+//! text, client messages, dialogs, textdraws, menus, scoreboard, nametags, death
+//! window and chat bubbles.
 //!
 //! - [`core`]: platform-independent state on top of `samp-ui` (host-tested).
 //! - [`colours`]: the player colour table used for chat names.
@@ -15,6 +16,12 @@ pub mod inputlock;
 
 #[cfg(windows)]
 mod d3d;
+#[cfg(windows)]
+mod dxut;
+#[cfg(windows)]
+mod menus;
+#[cfg(windows)]
+mod textdraws;
 #[cfg(windows)]
 mod glue;
 #[cfg(windows)]

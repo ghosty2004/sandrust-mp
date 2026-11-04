@@ -82,7 +82,7 @@ pub fn make_serial(seed_hex: &str) -> String {
 }
 
 /// RPC 139 InitGame, fields in wire order (handshake.md §5).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct InitGame {
     pub zone_names: bool,
     pub cj_walk: bool,

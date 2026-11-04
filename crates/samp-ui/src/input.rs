@@ -50,7 +50,6 @@ pub struct ChatInput {
     history: VecDeque<Vec<u8>>,
     /// −1 = the live line.
     index: isize,
-    live: Vec<u8>,
 }
 
 impl Default for ChatInput {
@@ -61,7 +60,7 @@ impl Default for ChatInput {
 
 impl ChatInput {
     pub fn new() -> Self {
-        Self { open: false, edit: LineEdit::new(EDIT_CAPACITY), history: VecDeque::new(), index: -1, live: Vec::new() }
+        Self { open: false, edit: LineEdit::new(EDIT_CAPACITY), history: VecDeque::new(), index: -1 }
     }
 
     pub fn is_open(&self) -> bool {
@@ -112,27 +111,25 @@ impl ChatInput {
         self.edit.set_text(t);
     }
 
-    /// Up: save the live line the first time, then show older entries (A 0x10069630).
+    /// Up: older entries (A 0x10069630). TRACE-3 U-HISTORY-RESET: the live line is
+    /// not saved.
     pub fn history_older(&mut self) {
         let next = self.index + 1;
         if (next as usize) < self.history.len() {
-            if self.index == -1 {
-                self.live = self.edit.text().to_vec();
-            }
             self.index = next;
             let t = self.history[next as usize].clone();
             self.edit.set_text(&t);
         }
     }
 
-    /// Down: newer entries; past the newest restores the live line (A 0x100696a0).
+    /// Down: newer entries; past the newest shows an empty line (A 0x100696a0;
+    /// TRACE-3 U-HISTORY-RESET).
     pub fn history_newer(&mut self) {
         match self.index {
             -1 => {}
             0 => {
                 self.index = -1;
-                let t = std::mem::take(&mut self.live);
-                self.edit.set_text(&t);
+                self.edit.clear();
             }
             i => {
                 self.index = i - 1;
@@ -152,7 +149,7 @@ impl ChatInput {
     }
 
     /// Enter (input processor A 0x100699d0): take up to 128 chars; a non-empty line is
-    /// pushed to the history (position reset to the live line) and classified; then
+    /// pushed to the history (the position is kept) and classified; then
     /// the edit box is cleared and the input closed. The caller also scrolls the chat
     /// (position 90, clamped by the scrollbar) when the input was open.
     pub fn submit(&mut self, netgame: bool, debug_mode: bool) -> Submit {
@@ -160,9 +157,8 @@ impl ChatInput {
         let out = if line.is_empty() {
             Submit::Empty
         } else {
+            // TRACE-3 U-HISTORY-RESET: the history position survives sending.
             self.push_history(&line);
-            self.index = -1;
-            self.live.clear();
             if split_command(&line).is_none() {
                 if netgame { Submit::Chat(PlayerRequestChatMessage { message: line }) } else { Submit::Nothing }
             } else if let Some(cmd) = LocalCommand::parse(&line, debug_mode) {
@@ -237,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn ur_8_history_10_entries_live_line_restored() {
+    fn ur_8_history_10_entries_live_line_not_kept() {
         let mut i = ChatInput::new();
         for n in 0..12 {
             typed(&mut i, format!("line{n}").as_bytes());
@@ -259,9 +255,10 @@ mod tests {
         for _ in 0..9 {
             i.history_newer();
         }
-        assert_eq!(i.text(), b"draft");
+        // TRACE-3 U-HISTORY-RESET: past the newest entry the line is empty.
+        assert_eq!(i.text(), b"");
         i.history_newer();
-        assert_eq!(i.text(), b"draft");
+        assert_eq!(i.text(), b"");
     }
 
     #[test]
@@ -289,8 +286,13 @@ mod tests {
         i.open();
         assert_eq!(i.text(), b"one");
         i.history_newer();
-        assert_eq!(i.text(), b"not sent");
+        assert_eq!(i.text(), b"");
+        typed(&mut i, b"two");
         i.submit(true, false);
         assert_eq!(i.text(), b"");
+        // The position (−1 here) survives sending: Up shows the newest entry.
+        i.open();
+        i.history_older();
+        assert_eq!(i.text(), b"two");
     }
 }

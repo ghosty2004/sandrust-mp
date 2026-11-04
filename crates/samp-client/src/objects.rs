@@ -25,7 +25,7 @@ use crate::players::Players;
 use crate::remote::{normalise, rows_from_quat, slerp};
 use crate::script::{Arg, Runner};
 use crate::vehicles::Vehicles;
-use crate::world::{self, MATERIAL_SLOTS, Motion, MotionStep, op};
+use crate::worldents::{self as world, MATERIAL_SLOTS, Motion, MotionStep, op};
 use crate::worldhooks::{self as wh, MatSlot, ObjInfo, g, rd, wr};
 
 /// Atomic-type model-info vtables (A 0x100B4520: CAtomicModelInfo and its derived classes).

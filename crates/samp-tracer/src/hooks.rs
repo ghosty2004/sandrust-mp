@@ -59,6 +59,14 @@ pub enum Special {
     /// GTA's window procedure (`__MainWndProc`): only keyboard messages (0x100–0x109) are
     /// written, to see which keys a client lets through to the game (TRACE-3).
     WndProc,
+    /// `CObject::Render`, `CEntity::Render`, `CRenderer::RenderOneNonRoad` (entity = first
+    /// argument): not logged per call; for objects, counted per (function, object, render path) and
+    /// summarised once per frame as `orender` (TRACE-6, which objects GTA's render list
+    /// draws and which the client draws itself).
+    ObjRender,
+    /// `CWorld::ProcessLineOfSight`: wrapped so calls made by a client module are written
+    /// with their result (hit entity and colpoint) as one `los` record (TRACE-6).
+    Los,
 }
 
 /// How to render one argument. Stack slots count from the first argument
@@ -84,6 +92,18 @@ pub enum Arg {
     Vtable(usize, &'static str),
     /// A pointer value kept in diffs (e.g. to see whether a buffer is static).
     Addr(usize, &'static str),
+    /// Pointer to 4 floats (e.g. a `CRect`).
+    F32x4Ptr(usize, &'static str),
+    /// Pointer to a 32-bit value, logged as hex (e.g. a `CRGBA`).
+    HexPtr(usize, &'static str),
+    /// `this` is a `CWeapon`: type, state, ammo in clip, total ammo.
+    WeaponThis,
+    /// `this` is a `CPedDamageResponseCalculator`: damager, damage, body part, weapon.
+    DamageCalcThis,
+    /// Pointer to a `CColPoint`: point, piece type A/B, surface A/B.
+    ColPoint(usize, &'static str),
+    /// A byte of game memory at a fixed address (e.g. `CWorld::PlayerInFocus`).
+    AbsU8(u32, &'static str),
 }
 
 /// `CTaskManager::m_pPed` (5 primary + 6 secondary task pointers precede it; gta-reversed TaskManager.h).
@@ -392,18 +412,28 @@ pub static HOOKS: &[HookSpec] = &[
     h("CCopPed::CCopPed", 0x5DDC60, &[0x6A, 0xFF, 0x68, 0x88, 0xD7, 0x83, 0x00], Always, &[I32(0, "cop_type")]),
     h("CVehicle::CVehicle", 0x6D5F10, &[0x6A, 0xFF, 0x68, 0x06, 0x87, 0x84, 0x00], Always, &[I32(0, "created_by")]),
     h("CPopulation::AddToPopulation", 0x614720, &[0x6A, 0xFF, 0x68, 0x8E, 0xEF, 0x83, 0x00], Count, &[]),
-    h("CPopulation::AddPedInCar", 0x613A00, &[0x83, 0xEC, 0x18, 0x53, 0x56], Always, &[
-        Entity(0, "vehicle"),
-        Bool(1, "driver"),
-    ]),
+    h(
+        "CPopulation::AddPedInCar",
+        0x613A00,
+        &[0x83, 0xEC, 0x18, 0x53, 0x56],
+        Always,
+        &[Entity(0, "vehicle"), Bool(1, "driver")],
+    ),
     h("CPopulation::AddPedAtAttractor", 0x614210, &[0x64, 0xA1, 0x00, 0x00, 0x00, 0x00], Always, &[I32(0, "model")]),
-    h("CPopulation::CreateWaitingCoppers", 0x6133F0, &[0x64, 0xA1, 0x00, 0x00, 0x00, 0x00], Always, &[VecVal(
-        0, "pos",
-    )]),
-    h("CPopulation::PopulateInterior", 0x616470, &[0xD9, 0x44, 0x24, 0x10, 0x83, 0xEC, 0x24], Always, &[
-        I32(0, "num_peds"),
-        VecVal(1, "pos"),
-    ]),
+    h(
+        "CPopulation::CreateWaitingCoppers",
+        0x6133F0,
+        &[0x64, 0xA1, 0x00, 0x00, 0x00, 0x00],
+        Always,
+        &[VecVal(0, "pos")],
+    ),
+    h(
+        "CPopulation::PopulateInterior",
+        0x616470,
+        &[0xD9, 0x44, 0x24, 0x10, 0x83, 0xEC, 0x24],
+        Always,
+        &[I32(0, "num_peds"), VecVal(1, "pos")],
+    ),
     h("CPopulation::Update", 0x616650, &[0x0F, 0xBF, 0x05, 0x14, 0x13, 0xC8, 0x00], Count, &[]),
     h("CPopulation::GeneratePedsAtAttractors", 0x615970, &[0x81, 0xEC, 0x2C, 0x08, 0x00, 0x00], Count, &[]),
     h("CPopulation::ManagePopulation", 0x616190, &[0x83, 0xEC, 0x1C, 0xA1, 0x90, 0x44, 0xB7, 0x00], Count, &[]),
@@ -424,30 +454,43 @@ pub static HOOKS: &[HookSpec] = &[
     h("CWanted::Update", 0x562C90, &[0x83, 0xEC, 0x14, 0x53, 0x55], Count, &[]),
     h("CWanted::SetWantedLevel", 0x562470, &[0xA0, 0x71, 0x91, 0x96, 0x00], Always, &[I32(0, "level")]),
     h("CWanted::SetWantedLevelNoDrop", 0x562570, &[0x56, 0x8B, 0xF1, 0x8B, 0x46, 0x30], Always, &[I32(0, "level")]),
-    h("CWanted::RegisterCrime", 0x562410, &[0x8B, 0x44, 0x24, 0x10, 0x8B, 0x54, 0x24, 0x08], Always, &[
-        I32(0, "crime"),
-        VecPtr(1, "pos"),
-    ]),
-    h("CWanted::RegisterCrime_Immediately", 0x562430, &[0x8B, 0x44, 0x24, 0x0C, 0x53], Always, &[
-        I32(0, "crime"),
-        VecPtr(1, "pos"),
-    ]),
+    h(
+        "CWanted::RegisterCrime",
+        0x562410,
+        &[0x8B, 0x44, 0x24, 0x10, 0x8B, 0x54, 0x24, 0x08],
+        Always,
+        &[I32(0, "crime"), VecPtr(1, "pos")],
+    ),
+    h(
+        "CWanted::RegisterCrime_Immediately",
+        0x562430,
+        &[0x8B, 0x44, 0x24, 0x0C, 0x53],
+        Always,
+        &[I32(0, "crime"), VecPtr(1, "pos")],
+    ),
     h("CWanted::UpdateWantedLevel", 0x561C90, &[0x51, 0xA1, 0xE8, 0xDE, 0x8C, 0x00], Always, &[]),
-    h("CWanted::SetMaximumWantedLevel", 0x561E70, &[0x8B, 0x44, 0x24, 0x04, 0x83, 0xF8, 0x06], Always, &[I32(
-        0, "level",
-    )]),
-    h("CAEPoliceScannerAudioEntity::AddAudioEvent", 0x4E71E0, &[0x83, 0xEC, 0x30, 0x8B, 0x44, 0x24, 0x34], Always, &[
-        I32(0, "event"),
-        I32(1, "crime"),
-        VecPtr(2, "pos"),
-    ]),
+    h(
+        "CWanted::SetMaximumWantedLevel",
+        0x561E70,
+        &[0x8B, 0x44, 0x24, 0x04, 0x83, 0xF8, 0x06],
+        Always,
+        &[I32(0, "level")],
+    ),
+    h(
+        "CAEPoliceScannerAudioEntity::AddAudioEvent",
+        0x4E71E0,
+        &[0x83, 0xEC, 0x30, 0x8B, 0x44, 0x24, 0x34],
+        Always,
+        &[I32(0, "event"), I32(1, "crime"), VecPtr(2, "pos")],
+    ),
     // --- UI (TRACE-3) ------------------------------------------------------------------
-    h("CMessages::AddBigMessage", 0x69F2B0, &[0x81, 0xEC, 0x20, 0x03, 0x00, 0x00], Always, &[
-        CStr(0, "text"),
-        Addr(0, "text_addr"),
-        I32(1, "time"),
-        I32(2, "style"),
-    ]),
+    h(
+        "CMessages::AddBigMessage",
+        0x69F2B0,
+        &[0x81, 0xEC, 0x20, 0x03, 0x00, 0x00],
+        Always,
+        &[CStr(0, "text"), Addr(0, "text_addr"), I32(1, "time"), I32(2, "style")],
+    ),
     HookSpec {
         name: "__MainWndProc",
         addr: 0x747EB0,
@@ -463,6 +506,191 @@ pub static HOOKS: &[HookSpec] = &[
         Always,
         &[],
     ),
+    // --- world entities and combat (TRACE-6) ---------------------------------------------
+    HookSpec {
+        name: "CObject::Render",
+        addr: 0x59F180,
+        prologue: &[0x56, 0x8B, 0xF1, 0x8B, 0x8E, 0x40, 0x01, 0x00, 0x00],
+        policy: Count,
+        special: Special::ObjRender,
+        args: &[],
+    },
+    HookSpec {
+        name: "CEntity::Render",
+        addr: 0x534310,
+        prologue: &[0x51, 0x56, 0x8B, 0xF1, 0x8B, 0x46, 0x18],
+        policy: Count,
+        special: Special::ObjRender,
+        args: &[],
+    },
+    HookSpec {
+        name: "CRenderer::RenderOneNonRoad",
+        addr: 0x553260,
+        prologue: &[0x56, 0x8B, 0x74, 0x24, 0x08],
+        policy: Count,
+        special: Special::ObjRender,
+        args: &[Entity(0, "entity")],
+    },
+    h("CEntity::CreateRwObject", 0x533D30, &[0x56, 0x8B, 0xF1, 0x8B, 0x46, 0x1C], Relevant, &[ThisEntity]),
+    h("CEntity::DeleteRwObject", 0x534030, &[0x56, 0x8B, 0xF1, 0x57, 0x8B, 0x7E, 0x18], Relevant, &[ThisEntity]),
+    h(
+        "CRadar::DrawAreaOnRadar",
+        0x5853D0,
+        &[0x8A, 0x44, 0x24, 0x0C, 0x8B, 0x4C, 0x24, 0x04],
+        Relevant,
+        &[F32x4Ptr(0, "rect"), HexPtr(1, "rgba"), Bool(2, "in_menu")],
+    ),
+    h(
+        "CWeapon::Fire",
+        0x742300,
+        &[0x83, 0xEC, 0x3C, 0x53, 0x56],
+        Relevant,
+        &[
+            WeaponThis,
+            Entity(0, "by"),
+            VecPtr(1, "start"),
+            VecPtr(2, "barrel"),
+            Entity(3, "target"),
+            VecPtr(4, "target_pos"),
+            VecPtr(5, "alt"),
+            AbsU8(gta::PLAYER_IN_FOCUS, "pif"),
+        ],
+    ),
+    h(
+        "CWeapon::FireInstantHit",
+        0x73FB10,
+        &[0x6A, 0xFF, 0x68, 0xBB, 0x8E, 0x84, 0x00],
+        Relevant,
+        &[
+            WeaponThis,
+            Entity(0, "by"),
+            VecPtr(1, "origin"),
+            VecPtr(2, "muzzle"),
+            Entity(3, "target"),
+            VecPtr(4, "target_pos"),
+            VecPtr(5, "driveby_origin"),
+            Bool(6, "arg6"),
+            Bool(7, "effects"),
+            AbsU8(gta::PLAYER_IN_FOCUS, "pif"),
+        ],
+    ),
+    h(
+        "CWeapon::FireSniper",
+        0x73AAC0,
+        &[0x6A, 0xFF, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00],
+        Relevant,
+        &[
+            WeaponThis,
+            Entity(0, "shooter"),
+            Entity(1, "victim"),
+            VecPtr(2, "target"),
+            AbsU8(gta::PLAYER_IN_FOCUS, "pif"),
+        ],
+    ),
+    h(
+        "CCamera::Find3rdPersonCamTargetVector",
+        0x514970,
+        &[0x83, 0xEC, 0x10, 0x0F, 0xB6, 0x41, 0x59],
+        Always,
+        &[F32(0, "range"), VecVal(1, "source"), AbsU8(gta::PLAYER_IN_FOCUS, "pif")],
+    ),
+    HookSpec {
+        name: "CWorld::ProcessLineOfSight",
+        addr: 0x56BA00,
+        prologue: &[0x83, 0xEC, 0x60, 0x66, 0x81, 0x3D, 0x78, 0xCD, 0xB7, 0x00, 0xFF, 0xFF],
+        policy: Count,
+        special: Special::Los,
+        args: &[],
+    },
+    h(
+        "CWorld::GetIsLineOfSightClear",
+        0x56A490,
+        &[0x83, 0xEC, 0x5C, 0x66, 0x81, 0x3D, 0x78, 0xCD, 0xB7, 0x00, 0xFF, 0xFF],
+        Relevant,
+        &[
+            VecPtr(0, "start"),
+            VecPtr(1, "end"),
+            Bool(2, "buildings"),
+            Bool(3, "vehicles"),
+            Bool(4, "peds"),
+            Bool(5, "objects"),
+            Bool(6, "dummies"),
+        ],
+    ),
+    h(
+        "CWeapon::DoBulletImpact",
+        0x73B550,
+        &[0x6A, 0xFF, 0x68, 0x50, 0x8E, 0x84, 0x00],
+        Relevant,
+        &[
+            WeaponThis,
+            Entity(0, "owner"),
+            Entity(1, "victim"),
+            VecPtr(2, "start"),
+            VecPtr(3, "end"),
+            ColPoint(4, "hit"),
+            I32(5, "arg5"),
+            AbsU8(gta::PLAYER_IN_FOCUS, "pif"),
+        ],
+    ),
+    h(
+        "CPedDamageResponseCalculator::CPedDamageResponseCalculator",
+        0x4AD3F0,
+        &[0x8B, 0x54, 0x24, 0x08, 0x8B, 0xC1],
+        Always,
+        &[Entity(0, "damager"), F32(1, "damage"), I32(2, "weapon"), I32(3, "piece"), Bool(4, "speak")],
+    ),
+    h(
+        "CPedDamageResponseCalculator::ComputeWillKillPed",
+        0x4B3210,
+        &[0x53, 0x55, 0x56, 0x8B, 0x74, 0x24, 0x10],
+        Always,
+        &[DamageCalcThis, Entity(0, "victim"), AbsU8(gta::PLAYER_IN_FOCUS, "pif")],
+    ),
+    h(
+        "CPed::RemoveBodyPart",
+        0x5F0140,
+        &[0x53, 0x8B, 0x5C, 0x24, 0x08],
+        Always,
+        &[ThisEntity, I32(0, "node"), I32(1, "local_dir")],
+    ),
+    // CProjectileInfo::AddProjectile (0x737C80) cannot be hooked: the exe's protection code reads its
+    // entry bytes (a 32-bit value 0x737C82 in the image).
+    // --- projectiles, explosions, mid-frame health (TRACE-7) -----------------------------
+    h(
+        "CWeapon::FireProjectile",
+        0x741360,
+        &[0x6A, 0xFF, 0xE9, 0xB2, 0x28, 0xCC, 0xFF],
+        Relevant,
+        &[
+            WeaponThis,
+            Entity(0, "by"),
+            VecPtr(1, "origin"),
+            Entity(2, "target"),
+            VecPtr(3, "target_pos"),
+            F32(4, "force"),
+            AbsU8(gta::PLAYER_IN_FOCUS, "pif"),
+        ],
+    ),
+    h(
+        "CExplosion::AddExplosion",
+        0x736A50,
+        &[0x83, 0xEC, 0x1C, 0x53, 0x55],
+        Always,
+        &[
+            Entity(0, "victim"),
+            Entity(1, "creator"),
+            I32(2, "type"),
+            VecVal(3, "pos"),
+            I32(6, "lifetime"),
+            Bool(7, "sound"),
+            F32(8, "shake"),
+            Bool(9, "invisible"),
+            AbsU8(gta::PLAYER_IN_FOCUS, "pif"),
+        ],
+    ),
+    // Sampling point after CWorld::Process (`hp_mid` records, win/combat.rs); counted only.
+    h("CCamera::Process", 0x52B730, &[0x81, 0xEC, 0xA0, 0x00, 0x00, 0x00], Count, &[]),
 ];
 
 /// Register/stack view of a hooked call at function entry.
@@ -479,11 +707,22 @@ impl Call {
     }
 }
 
-fn vec3<M: Mem>(m: &M, a: u32) -> Val {
+pub fn vec3<M: Mem>(m: &M, a: u32) -> Val {
     match (m.f32(a), m.f32(a + 4), m.f32(a + 8)) {
         (Some(x), Some(y), Some(z)) => Val::List(vec![x.into(), y.into(), z.into()]),
         _ => Val::Null,
     }
+}
+
+/// `CColPoint` (gta-reversed ColPoint.h): point +0x0, normal +0x10, surface/piece A +0x20/+0x21,
+/// surface/piece B +0x24/+0x25, depth +0x28.
+pub fn colpoint<M: Mem>(m: &M, p: u32) -> Val {
+    Val::obj()
+        .with("point", vec3(m, p))
+        .with("surf_a", m.u8(p + 0x20).map(u32::from))
+        .with("piece_a", m.u8(p + 0x21).map(u32::from))
+        .with("surf_b", m.u8(p + 0x24).map(u32::from))
+        .with("piece_b", m.u8(p + 0x25).map(u32::from))
 }
 
 /// Renders the arguments of `spec` for one call into a JSON object.
@@ -515,6 +754,32 @@ pub fn render_args<M: Mem>(m: &M, spec: &HookSpec, c: &Call) -> Val {
                 v.put(k, if p == 0 { Val::Null } else { m.u32(p).map(Val::Hex).unwrap_or(Val::Null) });
             }
             Addr(i, k) => v.put(k, m.u32(c.slot_addr(i)).map(Val::Hex).unwrap_or(Val::Null)),
+            F32x4Ptr(i, k) => {
+                let p = m.u32(c.slot_addr(i)).unwrap_or(0);
+                let f: Vec<Val> = (0..4).filter_map(|j| m.f32(p + 4 * j)).map(Val::from).collect();
+                v.put(k, if p == 0 || f.len() < 4 { Val::Null } else { Val::List(f) });
+            }
+            HexPtr(i, k) => {
+                let p = m.u32(c.slot_addr(i)).unwrap_or(0);
+                v.put(k, if p == 0 { Val::Null } else { m.u32(p).map(Val::Hex).unwrap_or(Val::Null) });
+            }
+            WeaponThis => {
+                v.put("wtype", m.i32(c.ecx));
+                v.put("wstate", m.i32(c.ecx + 4));
+                v.put("clip", m.i32(c.ecx + 8));
+                v.put("ammo", m.i32(c.ecx + 12));
+            }
+            DamageCalcThis => {
+                v.put("damager", gta::describe_entity(m, m.u32(c.ecx).unwrap_or(0)));
+                v.put("damage", m.f32(c.ecx + 4));
+                v.put("piece", m.i32(c.ecx + 8));
+                v.put("weapon", m.i32(c.ecx + 12));
+            }
+            ColPoint(i, k) => {
+                let p = m.u32(c.slot_addr(i)).unwrap_or(0);
+                v.put(k, if p == 0 { Val::Null } else { colpoint(m, p) });
+            }
+            AbsU8(a, k) => v.put(k, m.u8(a).map(u32::from)),
             ScriptIp(i, k) => {
                 let p = m.u32(c.slot_addr(i)).unwrap_or(0);
                 let off = p.wrapping_sub(gta::SCRIPT_SPACE);

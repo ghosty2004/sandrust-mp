@@ -17,9 +17,8 @@ use std::ffi::c_void;
 use std::sync::Mutex;
 
 use samp_ui::colour;
-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
 
-use super::d3d::{self, D3dx, Font, FontArgs, Rect, dt};
+use super::d3d::{self, D3dx, Font, FontArgs, Rect, Sprite, dt};
 
 /// One text slot as RPC 44 gave it.
 #[derive(Clone, Debug)]
@@ -154,25 +153,21 @@ fn substitute(tex: *mut c_void) -> *mut c_void {
         .unwrap_or(tex)
 }
 
-type CreateTextureFn = extern "system" fn(*mut c_void, u32, u32, u32, u32, u32, u32, *mut *mut c_void) -> d3d::HResult;
-type CreateRtsFn = extern "system" fn(*mut c_void, u32, u32, u32, i32, u32, *mut *mut c_void) -> d3d::HResult;
-
-fn d3dx_fn(name: &[u8]) -> Result<usize, String> {
-    // SAFETY: LoadLibraryA / GetProcAddress with NUL-terminated names.
-    unsafe {
-        let h = LoadLibraryA(d3d::D3DX_DLL.as_ptr());
-        if h.is_null() {
-            return Err("d3dx9_25.dll not loaded".into());
-        }
-        GetProcAddress(h, name.as_ptr()).map(|f| f as usize).ok_or_else(|| "missing D3DX export".to_string())
-    }
-}
-
 const D3DUSAGE_RENDERTARGET: u32 = 1;
 const D3DFMT_X8R8G8B8: u32 = 22;
 const D3DFMT_D16: u32 = 80;
 const D3DPOOL_DEFAULT: u32 = 0;
 const D3DCLEAR_TARGET: u32 = 1;
+/// `IDirect3DDevice9` BeginScene / EndScene slots.
+const BEGIN_SCENE: usize = 41;
+const END_SCENE: usize = 42;
+
+fn device_call0(slot: usize) -> d3d::HResult {
+    let dev = d3d::real_device();
+    // SAFETY: the real device's argument-less BeginScene / EndScene.
+    let f: extern "system" fn(*mut c_void) -> d3d::HResult = unsafe { d3d::vfn(dev, slot) };
+    f(dev)
+}
 
 /// Creates and fills one render target (see the module header).
 fn render(spec: &TextSpec) -> Result<u32, String> {
@@ -183,20 +178,13 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
         return Err("no device".into());
     }
     let d3dx = D3dx::load()?;
-    // SAFETY: documented D3DX signatures (D3DXCreateTexture, D3DXCreateRenderToSurface).
-    let (create_tex, create_rts): (CreateTextureFn, CreateRtsFn) = unsafe {
-        (
-            std::mem::transmute::<usize, CreateTextureFn>(d3dx_fn(b"D3DXCreateTexture\0")?),
-            std::mem::transmute::<usize, CreateRtsFn>(d3dx_fn(b"D3DXCreateRenderToSurface\0")?),
-        )
-    };
     let mut tex = std::ptr::null_mut();
-    let hr = create_tex(dev, w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT, &mut tex);
+    let hr = (d3dx.create_texture)(dev, w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT, &mut tex);
     if hr < 0 || tex.is_null() {
         return Err(format!("D3DXCreateTexture failed {hr:#x}"));
     }
     let mut rts = std::ptr::null_mut();
-    let hr = create_rts(dev, w, h, D3DFMT_X8R8G8B8, 1, D3DFMT_D16, &mut rts);
+    let hr = (d3dx.create_render_to_surface)(dev, w, h, D3DFMT_X8R8G8B8, 1, D3DFMT_D16, &mut rts);
     if hr < 0 || rts.is_null() {
         // SAFETY: we own `tex`.
         unsafe { d3d::release(tex) };
@@ -213,17 +201,9 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
             face: spec.font.clone(),
         },
     )?;
-    let mut sprite = std::ptr::null_mut();
-    if (d3dx.create_sprite)(dev, &mut sprite) < 0 || sprite.is_null() {
-        // SAFETY: we own these references.
-        unsafe {
-            d3d::release(rts);
-            d3d::release(tex);
-        }
-        return Err("D3DXCreateSprite failed".into());
-    }
+    let sprite = Sprite::create(&d3dx)?;
     // SAFETY: COM calls on objects created above: IDirect3DTexture9::GetSurfaceLevel (slot 18),
-    // ID3DXRenderToSurface::BeginScene (slot 5) / EndScene (slot 6), IDirect3DDevice9::Clear, ID3DXSprite.
+    // ID3DXRenderToSurface::BeginScene (slot 5) / EndScene (slot 6), IDirect3DDevice9::Clear.
     unsafe {
         let get_level: extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> d3d::HResult = d3d::vfn(tex, 18);
         let mut surf = std::ptr::null_mut();
@@ -231,23 +211,19 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
             let begin: extern "system" fn(*mut c_void, *mut c_void, *const c_void) -> d3d::HResult = d3d::vfn(rts, 5);
             let end: extern "system" fn(*mut c_void, u32) -> d3d::HResult = d3d::vfn(rts, 6);
             // Called from inside the 3D scene (samp's object pass): the device scene is closed around the
-            // render-to-surface scene and reopened afterwards (D3D9 allows no nested BeginScene).
+            // render-to-surface scene and reopened afterwards (D3D9 allows no nested BeginScene; the chat render
+            // target of the UI is updated outside the scene, from the CGame::Process hook).
             let mut reopened = false;
             let mut hb = begin(rts, surf, std::ptr::null());
-            if hb < 0 && d3d::end_scene() >= 0 {
+            if hb < 0 && device_call0(END_SCENE) >= 0 {
                 reopened = true;
                 hb = begin(rts, surf, std::ptr::null());
             }
             if hb < 0 {
                 crate::log!("mattext: {}x{} slot {}: render-to-surface BeginScene failed {hb:#x}", w, h, spec.slot);
-            }
-            if hb >= 0 {
-                let clear: extern "system" fn(*mut c_void, u32, *const c_void, u32, u32, f32, u32) -> d3d::HResult =
-                    d3d::vfn(dev, d3d::dev::CLEAR);
-                clear(dev, 0, std::ptr::null(), D3DCLEAR_TARGET, spec.background, 1.0, 0);
-                let sb: extern "system" fn(*mut c_void, u32) -> d3d::HResult = d3d::vfn(sprite, d3d::sprite::BEGIN);
-                let se: extern "system" fn(*mut c_void) -> d3d::HResult = d3d::vfn(sprite, d3d::sprite::END);
-                sb(sprite, d3d::sprite::ALPHABLEND);
+            } else {
+                d3d::devcall::clear(D3DCLEAR_TARGET, spec.background, 1.0, 0);
+                sprite.begin(d3d::sprite::ALPHABLEND);
                 let stripped = colour::strip_codes(&spec.text);
                 let glyphs: Vec<u32> =
                     colour::glyph_colours(&spec.text, spec.font_colour).iter().map(|g| g.colour).collect();
@@ -257,26 +233,27 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
                     _ => 0,
                 };
                 let mut r = Rect { left: 0, top: 0, right: w as i32, bottom: h as i32 };
-                d3d::draw_glyph_coloured_with(
+                d3d::draw_glyph_coloured(
                     &font,
-                    sprite,
+                    &sprite,
                     &stripped,
                     &mut r,
                     align | dt::VCENTER | dt::NOCLIP,
                     spec.font_colour,
                     glyphs,
                 );
-                se(sprite);
+                sprite.flush();
+                sprite.end();
                 end(rts, 0);
             }
             if reopened {
-                d3d::begin_scene();
+                device_call0(BEGIN_SCENE);
             }
             d3d::release(surf);
         }
-        d3d::release(sprite);
         d3d::release(rts);
     }
+    drop(sprite);
     drop(font);
     Ok(tex as u32)
 }

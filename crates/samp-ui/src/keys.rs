@@ -4,7 +4,7 @@
 
 use crate::Rect;
 use crate::chat::DisplayMode;
-use crate::dialog::Button;
+use crate::dialog::{Button, ListKey};
 
 /// Virtual keys the UI cares about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +67,10 @@ pub enum Event {
 /// UI state the routing depends on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UiState {
+    /// Textdraw selection mode on.
+    pub textdraw_select: bool,
+    /// The open dialog is a list (styles 2, 4, 5).
+    pub dialog_is_list: bool,
     pub input_exists: bool,
     pub input_open: bool,
     pub input_rect: Rect,
@@ -89,6 +93,8 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            textdraw_select: false,
+            dialog_is_list: false,
             input_exists: true,
             input_open: false,
             input_rect: Rect::default(),
@@ -121,6 +127,10 @@ pub enum Action {
     HistoryNewer,
     /// Character for the dialog edit box.
     DialogChar(u8),
+    /// List navigation in a list dialog (key-down, DXUT list box).
+    DialogListKey(ListKey),
+    /// ESC while textdraw selection is on: the cancel path (RPC 83 0xFFFF).
+    CancelTextDrawSelect,
     DialogResponse(Button),
     ToggleScoreboard,
     CloseScoreboard,
@@ -168,6 +178,8 @@ pub fn route(ev: Event, s: &UiState) -> Routed {
                 Routed::one(Action::CloseScoreboard)
             } else if s.dialog_open {
                 Routed::one(Action::DialogResponse(Button::Cancel))
+            } else if s.textdraw_select {
+                Routed::one(Action::CancelTextDrawSelect)
             } else {
                 Routed::none()
             }
@@ -192,10 +204,33 @@ pub fn route(ev: Event, s: &UiState) -> Routed {
         Event::Char(_) => Routed::none(),
         Event::KeyDown(Vk::Escape) => Routed {
             actions: Vec::new(),
-            consumed: s.input_open || s.scoreboard_open || s.dialog_open || s.class_selection_visible || s.other_modal,
+            consumed: s.input_open
+                || s.scoreboard_open
+                || s.dialog_open
+                || s.class_selection_visible
+                || s.other_modal
+                || s.textdraw_select,
         },
+        // TRACE-3 U-EDITKEY-CONSUME: with the input open no key-down reaches GTA.
+        Event::KeyDown(_) if s.input_open => Routed { actions: Vec::new(), consumed: true },
+        Event::KeyDown(k) if s.dialog_open && !s.scoreboard_open && !s.gta_menu => {
+            let lk = match k {
+                Vk::Up => Some(ListKey::Up),
+                Vk::Down => Some(ListKey::Down),
+                Vk::PageUp => Some(ListKey::PageUp),
+                Vk::PageDown => Some(ListKey::PageDown),
+                Vk::Other(0x24) => Some(ListKey::Home),
+                Vk::Other(0x23) => Some(ListKey::End),
+                _ => None,
+            };
+            match lk {
+                Some(l) if s.dialog_is_list => Routed::one(Action::DialogListKey(l)),
+                _ => Routed { actions: Vec::new(), consumed: s.dialog_has_edit },
+            }
+        }
         Event::KeyDown(_) => Routed::none(),
-        Event::KeyUp(k) => key_up(k, s),
+        // TRACE-3 U-EDITKEY-CONSUME: every key-up reaches GTA (actions still run).
+        Event::KeyUp(k) => Routed { consumed: false, ..key_up(k, s) },
         Event::SysKeyUp(Vk::Enter) => Routed::one(Action::ToggleWindowed),
         Event::SysKeyUp(_) => Routed::none(),
         Event::Wheel(n) if s.input_open && s.chat_mode.chat_visible() => Routed::one(Action::ChatWheel(n)),
@@ -388,8 +423,14 @@ mod tests {
         let d = UiState { dialog_open: true, ..st() };
         assert_eq!(route(Event::KeyUp(Vk::Enter), &d).actions, vec![Action::DialogResponse(Button::Ok)]);
         let both = UiState { input_open: true, ..d };
+        // TRACE-3 U-EDITKEY-CONSUME: key-ups always reach GTA; key-downs not while typing.
         let r = route(Event::KeyUp(Vk::Enter), &both);
-        assert!(r.actions.is_empty() && r.consumed);
+        assert!(r.actions.is_empty() && !r.consumed);
+        assert!(route(Event::KeyDown(Vk::Other(0x41)), &both).consumed);
+        let list = UiState { dialog_is_list: true, ..d };
+        assert_eq!(route(Event::KeyDown(Vk::Down), &list).actions, vec![Action::DialogListKey(ListKey::Down)]);
+        let sel = UiState { textdraw_select: true, ..st() };
+        assert_eq!(route(Event::Char(0x1B), &sel).actions, vec![Action::CancelTextDrawSelect]);
         let de = UiState { dialog_has_edit: true, ..d };
         assert_eq!(route(Event::Char(b'x'), &de).actions, vec![Action::DialogChar(b'x')]);
         assert!(route(Event::Char(b't'), &d).actions.is_empty());

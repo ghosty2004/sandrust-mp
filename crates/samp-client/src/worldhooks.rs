@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::patch::{Memory, PatchError, Patcher, ProcessMemory};
-use crate::world::{self, FlashPhase, GangZone, MATERIAL_SLOTS};
+use crate::worldents::{self as world, FlashPhase, GangZone, MATERIAL_SLOTS};
 
 /// GTA addresses (names via gta-reversed / plugin-sdk).
 pub mod g {
@@ -1150,10 +1150,13 @@ type ByteRow = (u32, u32, &'static [u8], &'static [u8], &'static str);
 /// (row, site, slot, handler, original bytes, label).
 type IndirectRow = (u32, u32, u32, u32, &'static [u8], &'static str);
 
-const BYTE_ROWS: &[ByteRow] = &[
-    (113, 0x551097, &[0xB8, 0x0B, 0x00, 0x00], &[0x5E, 0x01, 0x00, 0x00], "CPools::Initialise object pool 350 -> 3000"),
-    (208, 0x593D7C, &[0x90; 5], &[0xE8, 0x0F, 0xE2, 0xFF, 0xFF], "Interior_c::Init: no AddPickups"),
-];
+const BYTE_ROWS: &[ByteRow] = &[(
+    113,
+    0x551097,
+    &[0xB8, 0x0B, 0x00, 0x00],
+    &[0x5E, 0x01, 0x00, 0x00],
+    "CPools::Initialise object pool 350 -> 3000",
+)];
 
 /// Installs every M6 row. Returns (row, result) per CSV row for the log.
 pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Result<(), PatchError>)> {

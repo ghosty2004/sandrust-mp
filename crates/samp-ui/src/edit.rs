@@ -37,9 +37,9 @@ pub enum CharResult {
     Ignored,
 }
 
-/// Masking character for password edit boxes (dialog style 3).
-/// Unknown (notes U-MASK): the DXUT masked edit box character.
-pub const PASSWORD_MASK: u8 = b'*';
+/// Masking character for password edit boxes (dialog style 3): U+25CF `●`, drawn
+/// with `DrawTextW` (TRACE-3 U-MASK).
+pub const PASSWORD_MASK: u16 = 0x25CF;
 
 /// The edit buffer: bytes in the ANSI code page, caret and selection anchor.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,9 +86,15 @@ impl LineEdit {
         self.caret.min(self.anchor)..self.caret.max(self.anchor)
     }
 
-    /// Text as drawn: masked boxes show one mask character per byte.
-    pub fn display_text(&self) -> Vec<u8> {
-        if self.masked { vec![PASSWORD_MASK; self.text.len()] } else { self.text.clone() }
+    /// Text as drawn (UTF-16, `DrawTextW`): masked boxes show one U+25CF per byte;
+    /// otherwise `to_wide` converts the ANSI bytes (the host's code page).
+    pub fn display_wide(&self, to_wide: impl Fn(&[u8]) -> Vec<u16>) -> Vec<u16> {
+        if self.masked { vec![PASSWORD_MASK; self.text.len()] } else { to_wide(&self.text) }
+    }
+
+    /// Selection anchor (DXUT `m_nSelStart`).
+    pub fn anchor(&self) -> usize {
+        self.anchor
     }
 
     /// Replaces the text (truncated to the maximum) and puts the caret at the end.
@@ -214,6 +220,32 @@ impl LineEdit {
     }
 }
 
+/// DXUT edit box `PlaceCaret`: the first visible character after moving the caret to
+/// `caret` (TRACE-3 U-EDIT-SCROLL: the view scrolls only when the caret leaves the
+/// text rect). `x_of(cp)` = pixel x of the leading edge of character `cp` (width of
+/// the text before it); `len` = text length; `width` = text rect width.
+pub fn place_caret(first_visible: usize, caret: usize, len: usize, width: i32, x_of: &dyn Fn(usize) -> i32) -> usize {
+    let first = first_visible.min(len);
+    let caret = caret.min(len);
+    let x_first = x_of(first);
+    let x = x_of(caret);
+    // Trailing edge of the caret character (leading edge at the end of the text).
+    let x2 = if caret == len { x } else { x_of(caret + 1) };
+    if x < x_first {
+        return caret;
+    }
+    if x2 > x_first + width {
+        let new_left = x2 - width;
+        // XtoCP: the character containing `new_left`.
+        let mut cp = (0..len).find(|&i| x_of(i + 1) > new_left).unwrap_or(len);
+        if x_of(cp) < new_left {
+            cp += 1;
+        }
+        return cp;
+    }
+    first
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,7 +319,21 @@ mod tests {
     fn password_mask() {
         let mut e = typed(b"secret", 128);
         e.set_masked(true);
-        assert_eq!(e.display_text(), b"******");
+        assert_eq!(e.display_wide(|b| b.iter().map(|&c| u16::from(c)).collect()), vec![0x25CF; 6]);
         assert_eq!(e.text(), b"secret");
+    }
+
+    #[test]
+    fn dxut_first_visible() {
+        // 10 px per char, 100 px box.
+        let x = |cp: usize| cp as i32 * 10;
+        // Caret at the end of 30 chars: last 10 visible.
+        assert_eq!(place_caret(0, 30, 30, 100, &x), 20);
+        // Caret moves left inside the box: no scroll.
+        assert_eq!(place_caret(20, 25, 30, 100, &x), 20);
+        // Caret left of the first visible char: it becomes the first.
+        assert_eq!(place_caret(20, 4, 30, 100, &x), 4);
+        // Caret right of the box: trailing edge brought to the right border.
+        assert_eq!(place_caret(0, 12, 30, 100, &x), 3);
     }
 }

@@ -8,6 +8,13 @@
 # Exit status 0 = pass, 1 = fail. No screenshots: logs + control channel only.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# Never open game windows on the user's desktop: re-run on the isolated headless
+# display unless already there (SAMP_RS_VISIBLE=1 opts out for manual runs).
+if [ "${E2E_HEADLESS:-}" != 1 ] && [ "${SAMP_RS_VISIBLE:-}" != 1 ]; then
+    source "$ROOT/tools/e2e/lib.sh"
+    e2e_headless_run bash "$0" "$@"
+    exit $?
+fi
 source "$ROOT/tools/wine-env.sh"
 LOG="$GTA_DIR/samp-rs.log"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/samp-rs-m1.XXXXXX")"

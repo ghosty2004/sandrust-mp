@@ -29,6 +29,27 @@
 //   where|P                                prints position, vehicle, state, health
 //   manual                                 ManualVehicleEngineAndLights()
 //   stats|P                                prints health, armour, weapon
+// TRACE-6 (world entities, combat); ids are printed as "[ui-fs] SEQ <what> ID":
+//   obj|model|x|y|z|rx|ry|rz|dd            CreateObject          objdel|ID  objstop|ID
+//   objmove|ID|x|y|z|speed[|rx|ry|rz]      MoveObject            objpos|ID|x|y|z  objrot|ID|rx|ry|rz
+//   objmat|ID|index|model|txd|tex|AARRGGBB SetObjectMaterial     nocamcol|ID
+//   objtext|ID|index|text|size|font|fsize|bold|AARRGGBB|AARRGGBB|align   SetObjectMaterialText
+//   objattveh|ID|VEH|ox|oy|oz|rx|ry|rz     objattobj|ID|PARENT|ox|oy|oz|rx|ry|rz|sync  objattpl|ID|P|ox|oy|oz|rx|ry|rz
+//   objedit|P|ID  objsel|P  editcancel|P   EditObject / SelectObject / CancelEdit
+//   att|P|slot|model|bone|ox|oy|oz|rx|ry|rz|sx|sy|sz   SetPlayerAttachedObject   attdel|P|slot  attedit|P|slot
+//   pickup|model|type|x|y|z  pickdel|ID    CreatePickup / DestroyPickup
+//   actor|skin|x|y|z|angle  actdel|ID  actinv|ID|0/1  acthp|ID|hp  actpos|ID|x|y|z  actface|ID|a
+//   actanim|ID|lib|name|delta|loop|lx|ly|freeze|time   actclear|ID
+//   cp|P|x|y|z|size  cpoff|P  rcp|P|type|x|y|z|nx|ny|nz|size  rcpoff|P
+//   gz|minx|miny|maxx|maxy (GangZoneCreate)  gzshow|P|ID|RRGGBBAA  gzflash|P|ID|RRGGBBAA  gzstop|P|ID  gzhide|P|ID
+//   icon|P|iconid|x|y|z|type|RRGGBBAA-or-decimal|style   icondel|P|iconid
+//   label|text|RRGGBBAA|x|y|z|dist|los     Create3DTextLabel     labeldel|ID
+//   labelpl|ID|P|ox|oy|oz  labelveh|ID|VEH|ox|oy|oz           Attach3DTextLabelToPlayer / ToVehicle
+//   plabel|P|text|RRGGBBAA|x|y|z|dist|attplayer|attveh|los    CreatePlayer3DTextLabel
+//   rmb|P|model|x|y|z|radius               RemoveBuildingForPlayer
+//   team|P|team  skill|P|skill|level  explode|x|y|z|type|radius  armed|P|weapon  ammo|P|weapon|ammo
+//   resetw|P  forceclass|P  special|P|action  kill|P (health 0)
+// TRACE-7: explodeN|x|y|z|type|radius|n (n explosions at once)  specoff|P (TogglePlayerSpectating off)
 #define FILTERSCRIPT
 #pragma dynamic 65536
 #include <open.mp>
@@ -62,6 +83,14 @@ public OnPlayerConnect(playerid)
 public OnPlayerDisconnect(playerid, reason)
 {
     if (playerid == gLocal) gLocal = INVALID_PLAYER_ID;
+    // Keep "B1".."B4" = connected bots in join order.
+    for (new i = 0; i < gNumBots; i++)
+    {
+        if (gBots[i] != playerid) continue;
+        for (new j = i; j < gNumBots - 1; j++) gBots[j] = gBots[j + 1];
+        gBots[--gNumBots] = INVALID_PLAYER_ID;
+        break;
+    }
     printf("[ui-fs] disconnect %d %d", playerid, reason);
     return 1;
 }
@@ -177,6 +206,76 @@ public OnPlayerGiveDamage(playerid, damagedid, Float:amount, WEAPON:weaponid, bo
     return 1;
 }
 
+public OnPlayerPickUpPickup(playerid, pickupid)
+{
+    printf("[ui-fs] pickup-collected %d pickup %d", playerid, pickupid);
+    return 1;
+}
+
+public OnPlayerEnterCheckpoint(playerid) { printf("[ui-fs] cp-enter %d", playerid); return 1; }
+public OnPlayerLeaveCheckpoint(playerid) { printf("[ui-fs] cp-leave %d", playerid); return 1; }
+public OnPlayerEnterRaceCheckpoint(playerid) { printf("[ui-fs] rcp-enter %d", playerid); return 1; }
+public OnPlayerLeaveRaceCheckpoint(playerid) { printf("[ui-fs] rcp-leave %d", playerid); return 1; }
+
+public OnPlayerWeaponShot(playerid, WEAPON:weaponid, BULLET_HIT_TYPE:hittype, hitid, Float:fX, Float:fY, Float:fZ)
+{
+    new Float:ox, Float:oy, Float:oz, Float:hx, Float:hy, Float:hz;
+    GetPlayerLastShotVectors(playerid, ox, oy, oz, hx, hy, hz);
+    printf("[ui-fs] shot %d weapon %d hittype %d hitid %d offset %.4f %.4f %.4f origin %.3f %.3f %.3f hitpos %.3f %.3f %.3f",
+        playerid, _:weaponid, _:hittype, hitid, fX, fY, fZ, ox, oy, oz, hx, hy, hz);
+    return 1;
+}
+
+public OnPlayerGiveDamageActor(playerid, damaged_actorid, Float:amount, WEAPON:weaponid, bodypart)
+{
+    new Float:hp;
+    GetActorHealth(damaged_actorid, hp);
+    printf("[ui-fs] actor-damage %d actor %d %.4f weapon %d part %d actor-health %.2f", playerid, damaged_actorid, amount, _:weaponid, bodypart, hp);
+    return 1;
+}
+
+public OnActorStreamIn(actorid, forplayerid)
+{
+    printf("[ui-fs] actor-streamin %d for %d", actorid, forplayerid);
+    return 1;
+}
+
+public OnPlayerSelectObject(playerid, SELECT_OBJECT:type, objectid, modelid, Float:fX, Float:fY, Float:fZ)
+{
+    printf("[ui-fs] select-object %d type %d obj %d model %d pos %.3f %.3f %.3f", playerid, _:type, objectid, modelid, fX, fY, fZ);
+    return 1;
+}
+
+public OnPlayerEditObject(playerid, playerobject, objectid, EDIT_RESPONSE:response, Float:fX, Float:fY, Float:fZ, Float:fRotX, Float:fRotY, Float:fRotZ)
+{
+    printf("[ui-fs] edit-object %d playerobj %d obj %d response %d pos %.3f %.3f %.3f rot %.3f %.3f %.3f", playerid, playerobject, objectid, _:response, fX, fY, fZ, fRotX, fRotY, fRotZ);
+    return 1;
+}
+
+public OnPlayerEditAttachedObject(playerid, EDIT_RESPONSE:response, index, modelid, boneid, Float:fOffsetX, Float:fOffsetY, Float:fOffsetZ, Float:fRotX, Float:fRotY, Float:fRotZ, Float:fScaleX, Float:fScaleY, Float:fScaleZ)
+{
+    printf("[ui-fs] edit-attached %d response %d index %d model %d bone %d off %.3f %.3f %.3f rot %.3f %.3f %.3f scale %.3f %.3f %.3f", playerid, _:response, index, modelid, boneid, fOffsetX, fOffsetY, fOffsetZ, fRotX, fRotY, fRotZ, fScaleX, fScaleY, fScaleZ);
+    return 1;
+}
+
+public OnObjectMoved(objectid)
+{
+    printf("[ui-fs] object-moved %d tick %d", objectid, GetTickCount());
+    return 1;
+}
+
+public OnPlayerClickMap(playerid, Float:fX, Float:fY, Float:fZ)
+{
+    printf("[ui-fs] click-map %d %.2f %.2f %.2f", playerid, fX, fY, fZ);
+    return 1;
+}
+
+public OnPlayerRequestSpawn(playerid)
+{
+    printf("[ui-fs] request-spawn %d", playerid);
+    return 1;
+}
+
 hexval(const s[])
 {
     new v = 0;
@@ -232,6 +331,15 @@ player(const s[])
     if (s[0] == '-') return INVALID_PLAYER_ID;
     if (s[0] == 'B') { new k = strval(s[1]) - 1; return (k >= 0 && k < gNumBots) ? gBots[k] : INVALID_PLAYER_ID; }
     return strval(s);
+}
+
+// a colour field: hex (RRGGBBAA) or, with a leading '#', decimal (e.g. a player id for map icons)
+colour(const line[], n)
+{
+    new b[32];
+    field(line, n, b);
+    if (b[0] == '#') return strval(b[1]);
+    return hexval(b);
 }
 
 Float:fl(const line[], n)
@@ -338,6 +446,101 @@ Run(seq, const line[])
         GetPlayerPos(p, x, y, z); GetPlayerHealth(p, hp); GetPlayerFacingAngle(p, ang);
         printf("[ui-fs] %d where %d pos %.3f %.3f %.3f angle %.3f veh %d seat %d state %d health %.1f", seq, p, x, y, z, ang, GetPlayerVehicleID(p), GetPlayerVehicleSeat(p), _:GetPlayerState(p), hp);
     }
+    else if (!strcmp(cmd, "obj"))
+        printf("[ui-fs] %d object %d", seq, CreateObject(in(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), fl(line, 7), fl(line, 8)));
+    else if (!strcmp(cmd, "objdel")) DestroyObject(in(line, 1));
+    else if (!strcmp(cmd, "objstop")) StopObject(in(line, 1));
+    else if (!strcmp(cmd, "objmove"))
+    {
+        new rb[16], Float:rx = -1000.0, Float:ry = -1000.0, Float:rz = -1000.0;
+        if (field(line, 6, rb) && rb[0]) { rx = fl(line, 6); ry = fl(line, 7); rz = fl(line, 8); }
+        printf("[ui-fs] %d move-time %d tick %d", seq, MoveObject(in(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), rx, ry, rz), GetTickCount());
+    }
+    else if (!strcmp(cmd, "objpos")) SetObjectPos(in(line, 1), fl(line, 2), fl(line, 3), fl(line, 4));
+    else if (!strcmp(cmd, "objrot")) SetObjectRot(in(line, 1), fl(line, 2), fl(line, 3), fl(line, 4));
+    else if (!strcmp(cmd, "objmat"))
+    {
+        field(line, 4, c); field(line, 5, d);
+        SetObjectMaterial(in(line, 1), in(line, 2), in(line, 3), c, d, colour(line, 6));
+    }
+    else if (!strcmp(cmd, "objtext"))
+    {
+        field(line, 3, a); unescape(a); field(line, 5, c);
+        SetObjectMaterialText(in(line, 1), a, in(line, 2), OBJECT_MATERIAL_SIZE:in(line, 4), c, in(line, 6), bool:in(line, 7), colour(line, 8), colour(line, 9), OBJECT_MATERIAL_TEXT_ALIGN:in(line, 10));
+    }
+    else if (!strcmp(cmd, "nocamcol")) SetObjectNoCameraCol(in(line, 1));
+    else if (!strcmp(cmd, "objattveh")) AttachObjectToVehicle(in(line, 1), in(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), fl(line, 7), fl(line, 8));
+    else if (!strcmp(cmd, "objattobj")) AttachObjectToObject(in(line, 1), in(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), fl(line, 7), fl(line, 8), bool:in(line, 9));
+    else if (!strcmp(cmd, "objattpl")) AttachObjectToPlayer(in(line, 1), pl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), fl(line, 7), fl(line, 8));
+    else if (!strcmp(cmd, "objedit")) EditObject(pl(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "objsel")) SelectObject(pl(line, 1));
+    else if (!strcmp(cmd, "editcancel")) CancelEdit(pl(line, 1));
+    else if (!strcmp(cmd, "att"))
+        SetPlayerAttachedObject(pl(line, 1), in(line, 2), in(line, 3), in(line, 4), fl(line, 5), fl(line, 6), fl(line, 7), fl(line, 8), fl(line, 9), fl(line, 10), fl(line, 11), fl(line, 12), fl(line, 13));
+    else if (!strcmp(cmd, "attdel")) RemovePlayerAttachedObject(pl(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "attedit")) EditAttachedObject(pl(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "pickup"))
+        printf("[ui-fs] %d pickup %d", seq, CreatePickup(in(line, 1), in(line, 2), fl(line, 3), fl(line, 4), fl(line, 5)));
+    else if (!strcmp(cmd, "pickdel")) DestroyPickup(in(line, 1));
+    else if (!strcmp(cmd, "actor"))
+        printf("[ui-fs] %d actor %d", seq, CreateActor(in(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5)));
+    else if (!strcmp(cmd, "actdel")) DestroyActor(in(line, 1));
+    else if (!strcmp(cmd, "actinv")) SetActorInvulnerable(in(line, 1), bool:in(line, 2));
+    else if (!strcmp(cmd, "acthp")) SetActorHealth(in(line, 1), fl(line, 2));
+    else if (!strcmp(cmd, "actpos")) SetActorPos(in(line, 1), fl(line, 2), fl(line, 3), fl(line, 4));
+    else if (!strcmp(cmd, "actface")) SetActorFacingAngle(in(line, 1), fl(line, 2));
+    else if (!strcmp(cmd, "actanim"))
+    {
+        field(line, 2, c); field(line, 3, d);
+        ApplyActorAnimation(in(line, 1), c, d, fl(line, 4), bool:in(line, 5), bool:in(line, 6), bool:in(line, 7), bool:in(line, 8), in(line, 9));
+    }
+    else if (!strcmp(cmd, "actclear")) ClearActorAnimations(in(line, 1));
+    else if (!strcmp(cmd, "cp")) SetPlayerCheckpoint(pl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5));
+    else if (!strcmp(cmd, "cpoff")) DisablePlayerCheckpoint(pl(line, 1));
+    else if (!strcmp(cmd, "rcp"))
+        SetPlayerRaceCheckpoint(pl(line, 1), CP_TYPE:in(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), fl(line, 7), fl(line, 8), fl(line, 9));
+    else if (!strcmp(cmd, "rcpoff")) DisablePlayerRaceCheckpoint(pl(line, 1));
+    else if (!strcmp(cmd, "gz"))
+        printf("[ui-fs] %d gangzone %d", seq, GangZoneCreate(fl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4)));
+    else if (!strcmp(cmd, "gzshow")) GangZoneShowForPlayer(pl(line, 1), in(line, 2), colour(line, 3));
+    else if (!strcmp(cmd, "gzflash")) GangZoneFlashForPlayer(pl(line, 1), in(line, 2), colour(line, 3));
+    else if (!strcmp(cmd, "gzstop")) GangZoneStopFlashForPlayer(pl(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "gzhide")) GangZoneHideForPlayer(pl(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "icon"))
+        SetPlayerMapIcon(pl(line, 1), in(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), in(line, 6), colour(line, 7), MAPICON:in(line, 8));
+    else if (!strcmp(cmd, "icondel")) RemovePlayerMapIcon(pl(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "label"))
+    {
+        field(line, 1, a); unescape(a);
+        printf("[ui-fs] %d label %d", seq, _:Create3DTextLabel(a, colour(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), 0, bool:in(line, 7)));
+    }
+    else if (!strcmp(cmd, "labeldel")) Delete3DTextLabel(Text3D:in(line, 1));
+    else if (!strcmp(cmd, "labelpl")) Attach3DTextLabelToPlayer(Text3D:in(line, 1), pl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5));
+    else if (!strcmp(cmd, "labelveh")) Attach3DTextLabelToVehicle(Text3D:in(line, 1), in(line, 2), fl(line, 3), fl(line, 4), fl(line, 5));
+    else if (!strcmp(cmd, "plabel"))
+    {
+        field(line, 2, a); unescape(a);
+        new ap[16], ap_id = INVALID_PLAYER_ID, av = INVALID_VEHICLE_ID;
+        field(line, 8, ap); if (ap[0] && ap[0] != '-') ap_id = player(ap);
+        field(line, 9, ap); if (ap[0] && ap[0] != '-') av = strval(ap);
+        printf("[ui-fs] %d plabel %d", seq, _:CreatePlayer3DTextLabel(pl(line, 1), a, colour(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), fl(line, 7), ap_id, av, bool:in(line, 10)));
+    }
+    else if (!strcmp(cmd, "rmb")) RemoveBuildingForPlayer(pl(line, 1), in(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6));
+    else if (!strcmp(cmd, "team")) SetPlayerTeam(pl(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "skill")) SetPlayerSkillLevel(pl(line, 1), WEAPONSKILL:in(line, 2), in(line, 3));
+    else if (!strcmp(cmd, "explode")) CreateExplosion(fl(line, 1), fl(line, 2), fl(line, 3), in(line, 4), fl(line, 5));
+    else if (!strcmp(cmd, "explodeN"))
+    {
+        // TRACE-7: N explosions in the same server tick (one packet burst, so the client applies them in one frame).
+        for (new k = 0, n = in(line, 6); k < n; k++) CreateExplosion(fl(line, 1), fl(line, 2), fl(line, 3), in(line, 4), fl(line, 5));
+    }
+    else if (!strcmp(cmd, "specoff")) TogglePlayerSpectating(pl(line, 1), false);
+    else if (!strcmp(cmd, "armed")) SetPlayerArmedWeapon(pl(line, 1), WEAPON:in(line, 2));
+    else if (!strcmp(cmd, "ammo")) SetPlayerAmmo(pl(line, 1), WEAPON:in(line, 2), in(line, 3));
+    else if (!strcmp(cmd, "resetw")) ResetPlayerWeapons(pl(line, 1));
+    else if (!strcmp(cmd, "forceclass")) ForceClassSelection(pl(line, 1));
+    else if (!strcmp(cmd, "special")) SetPlayerSpecialAction(pl(line, 1), SPECIAL_ACTION:in(line, 2));
+    else if (!strcmp(cmd, "kill")) SetPlayerHealth(pl(line, 1), 0.0);
     else printf("[ui-fs] %d unknown command '%s'", seq, cmd);
     printf("[ui-fs] %d done %s", seq, cmd);
 }

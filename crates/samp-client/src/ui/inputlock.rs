@@ -64,10 +64,10 @@ impl Default for InputLock {
 }
 
 impl InputLock {
-    /// TODO-unknown (m4-notes U-LOCK-INIT): the countdown's initial value; −1 means
-    /// no restore runs before the first mode change.
+    /// TRACE-3 U-LOCK-INIT: a restore runs at start-up (a poked NOP at 0x541DF5 was
+    /// restored within the first frames), so the countdown starts at 0.
     pub fn new() -> Self {
-        Self { mode: 0, countdown: -1 }
+        Self { mode: 0, countdown: 0 }
     }
 
     pub fn mode(&self) -> u8 {
@@ -158,6 +158,8 @@ mod tests {
     #[test]
     fn mode2_then_immediate_restore_on_next_frame() {
         let mut l = InputLock::new();
+        // TRACE-3 U-LOCK-INIT: a restore runs at start-up.
+        assert!(!l.frame().is_empty());
         assert!(l.frame().is_empty());
         let ops = l.request_mode2();
         assert!(ops.contains(&Op::Write(KEYBOARD_TO_PAD, NOP5.to_vec())));
