@@ -35,8 +35,12 @@ else
 fi
 
 cd "$GTA_DIR"
+# SAMP_RS_PRE_DLL=<file in GTA_DIR>: a DLL loaded before ours (e.g. samp-tracer.dll for
+# D3D call-stream logs of our client).
+pre=()
+[[ -n "${SAMP_RS_PRE_DLL:-}" ]] && pre=(--dll "$(winepath -w "$SAMP_RS_PRE_DLL")")
 rc=0
 wine_launch samp-rs "$GTA_DIR/samp-rs-launcher.exe" \
-    --gta "$(winepath -w "$GTA_DIR/gta_sa.exe")" --dll "$(winepath -w "$GTA_DIR/samp_client.dll")" \
+    --gta "$(winepath -w "$GTA_DIR/gta_sa.exe")" "${pre[@]}" --dll "$(winepath -w "$GTA_DIR/samp_client.dll")" \
     --name "$NAME" --host "$HOST" --port "$PORT" || rc=$?
 exit "$rc"

@@ -178,6 +178,10 @@ fn init_thread() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
+    // samp imports d3dx9_25.dll and registers its fonts at attach (UR §3.1,
+    // A 0x100c5100); loaded here, once the game's own start-up is past the splash,
+    // so it is in before the first frame (the tracer's D3DX hooks need it then).
+    crate::ui::preload();
     let mut mem = ProcessMemory;
     {
         let mut g = PATCHER.lock().unwrap_or_else(|e| e.into_inner());
@@ -478,6 +482,8 @@ extern "C" fn game_process_hook() {
     if !PED_FLAGS_DONE.load(Ordering::Relaxed) {
         let _ = catch_unwind(AssertUnwindSafe(first_frame_ped_flags));
     }
+    // The 0x53E981 hook also updates the chat render target (UR §2.5).
+    crate::ui::game_frame();
 }
 
 fn first_frame_ped_flags() {
@@ -499,7 +505,10 @@ fn first_frame_ped_flags() {
 }
 
 /// Replaces the `call Render2dStuff` in `Idle` (cdecl, no arguments).
+/// samp's order (UR §2.4): pre-step (netgame tick, UI work), `Render2dStuff`,
+/// textdraws, input-restore countdown.
 extern "C" fn frame_hook() {
+    let _ = catch_unwind(AssertUnwindSafe(tick));
     let orig = ORIGINAL_RENDER_2D.load(Ordering::Relaxed);
     if orig != 0 {
         // SAFETY: `orig` is the game's Render2dStuff (void __cdecl(void)),
@@ -507,7 +516,7 @@ extern "C" fn frame_hook() {
         let f: extern "C" fn() = unsafe { std::mem::transmute(orig as usize) };
         f();
     }
-    let _ = catch_unwind(AssertUnwindSafe(tick));
+    crate::ui::frame_after_2d();
 }
 
 struct TickStats {
@@ -619,6 +628,7 @@ fn service_control(_from: &str) {
         },
         Command::Chat(n) => crate::ui::control_chat(*n),
         Command::Input => crate::ui::control_input(),
+        Command::Ui => crate::ui::control_ui(),
         Command::Say(t) => crate::ui::control_say(t),
         Command::Quit => "bye".into(),
         Command::Unknown(c) => format!("error unknown command {c:?}"),
