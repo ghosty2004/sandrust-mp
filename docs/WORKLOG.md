@@ -294,3 +294,19 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   m5, m8a exit 0; 513 tests; clippy 0 (host + i686). Spawn screenshot renders the world.
 - Found by looking at screenshots: class selection renders a black world in our client
   (assigned to the UI owner); row 165 broke world rendering and is not applied.
+
+## 2026-11-05 — UX-1, DIFF-4 harness, M8a leftovers (worktree ui2, branch ui-loading)
+
+- Tracer: Direct3D logging from the first Present (`SAMP_TRACER_D3D_BOOT`), `game_state`
+  records, late D3DX hooks. Trace-lane scripts accept `SAMP_RS_ROOT` (worktree runs share the lock).
+- Measured the original's boot, first UI frame, input-lock modes, F1/F5/F8/F10, clipboard,
+  `mdl` sprites and a remote driver's nametag (sessions orig-20261104-235122 / -235538, visual/orig).
+- Fixed: missing D3DSBT_ALL state blocks (black class-selection world; patch merged by main as
+  831455f); first-frame UI construction in samp's order inside the game scene; nametag/bubble
+  passes gated like samp; class-selection lock from the game frame; sampgui.png mip levels;
+  timestamp width measured once; F1 help, F5 net stats, F10, F8 screenshots (+ SAMP\screens),
+  clipboard (DXUT semantics), `mdl` names, driver nametag anchor, all input-lock setter modes.
+- New: `tools/diff/visual.sh` (+ scenario, visual_diff.py, boot_diff.py, decisions TSV),
+  `tools/e2e/ux1.sh` (+ ux1_shots.py), original-side session scripts.
+- Verified (lane ui under ui.lock, trace lane under trace.lock): visual.sh exit 0 (all 25 elements
+  clean, glyph splits covered), ux1.sh exit 0, m1/saa/m4/m8a exit 0, 517 tests, clippy 0 host + i686.

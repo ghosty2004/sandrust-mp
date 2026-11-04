@@ -132,6 +132,87 @@ pub struct HostRequests {
     pub menus: Vec<MenuRequest>,
     /// F8: take a screenshot at the next Present.
     pub screenshot: bool,
+    /// DXUT edit box Ctrl+C / Ctrl+X / Ctrl+Insert with a selection: put this on the clipboard.
+    pub clipboard_copy: Option<Vec<u8>>,
+    /// DXUT edit box Ctrl+V / Shift+Insert: paste the clipboard into the focused edit box
+    /// ([`UiCore::paste`]).
+    pub paste: bool,
+}
+
+/// Values of the F5 overlay (A 0x10060d70). Fields our client has no counter for stay 0.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NetStats {
+    pub download_kbs: f32,
+    pub upload_kbs: f32,
+    pub vehicles: u32,
+    pub vehicle_models: u32,
+    pub vehicle_models_loaded: u32,
+    pub rw_objects: u32,
+    pub ped_slots_used: u32,
+    pub object_slots_used: u32,
+    pub shot_comp_mode: u32,
+    pub free_ides: u32,
+    pub in_car: bool,
+    pub send_rate: u32,
+    pub streaming_mb: u32,
+    pub streaming_total_mb: u32,
+    pub system_mb: u32,
+    pub process_kb: u32,
+    pub working_set_kb: u32,
+    pub messages_in_send_buffer: u32,
+    pub messages_sent: u32,
+    pub bytes_sent: u32,
+    pub acks_sent: u32,
+    pub acks_in_send_buffer: u32,
+    pub messages_waiting_for_ack: u32,
+    pub messages_resent: u32,
+    pub bytes_resent: u32,
+    pub packet_loss: f32,
+    pub messages_received: u32,
+    pub bytes_received: u32,
+    pub acks_received: u32,
+    pub duplicate_acks_received: u32,
+}
+
+/// The F5 text, line by line as samp concatenates it (A 0x10060d70; the labels and their
+/// order measured on the original): rates, the pool block, the send rate, memory, then the
+/// network statistics block. Every line ends with `\n`.
+pub fn net_stats_text(s: &NetStats) -> Vec<u8> {
+    let mut t = format!("Download Rate: {:.2} KB/s\nUpload Rate: {:.2} KB/s\n", s.download_kbs, s.upload_kbs);
+    t += &format!(
+        "Vehicles: {}\nVehicle Models: {}\nVehicle Models Loaded: {}\nRWObjects: {}\nPedSlotsUsed: {}\nObjectSlotsUsed: {}\nShotCompMode: {}\nFreeIDEs: {}\n",
+        s.vehicles,
+        s.vehicle_models,
+        s.vehicle_models_loaded,
+        s.rw_objects,
+        s.ped_slots_used,
+        s.object_slots_used,
+        s.shot_comp_mode,
+        s.free_ides
+    );
+    t += &format!("{} Send Rate: {}\n", if s.in_car { "InCar" } else { "OnFoot" }, s.send_rate);
+    t += &format!(
+        "Streaming Mem: {}MB Total: {}MB System: {}MB\n",
+        s.streaming_mb, s.streaming_total_mb, s.system_mb
+    );
+    t += &format!("Process Mem: {}KB Working Set: {}KB\n", s.process_kb, s.working_set_kb);
+    t += &format!(
+        "Messages in Send buffer: {}\nMessages sent: {}\nBytes sent: {}\nAcks sent: {}\nAcks in send buffer: {}\nMessages waiting for ack: {}\nMessages resent: {}\nBytes resent: {}\nPacketloss: {:.1}%\nMessages received: {}\nBytes received: {}\nAcks received: {}\nDuplicate acks received: {}\n",
+        s.messages_in_send_buffer,
+        s.messages_sent,
+        s.bytes_sent,
+        s.acks_sent,
+        s.acks_in_send_buffer,
+        s.messages_waiting_for_ack,
+        s.messages_resent,
+        s.bytes_resent,
+        s.packet_loss,
+        s.messages_received,
+        s.bytes_received,
+        s.acks_received,
+        s.duplicate_acks_received
+    );
+    t.into_bytes()
 }
 
 /// One accepted game text, for the control channel.
@@ -303,7 +384,9 @@ impl UiCore {
             textdraws: TextDraws::new(),
             menus: Menus::new(),
             hidden_tags: Default::default(),
-            show_name_tags: true,
+            // The netgame settings are zero until InitGame (measured: samp's nametag passes
+            // first run after RPC 139).
+            show_name_tags: false,
             name_tag_distance: 70.0,
             name_tag_los: true,
             server_name: Vec::new(),
@@ -351,6 +434,45 @@ impl UiCore {
     pub fn print_info(&mut self, text: &[u8]) {
         let l = self.chat.add_info(text, local_time_now());
         self.log_lines(l);
+    }
+
+    /// F1 held (A 0x1006bb30): the local help dialog through the normal show path (A 0x10070010,
+    /// which closes an open chat input first), only when no dialog is open.
+    pub fn open_help(&mut self) -> bool {
+        if !self.dialogs.open_help() {
+            return false;
+        }
+        self.input.close();
+        self.dialog_serial += 1;
+        true
+    }
+
+    /// F8 file name (A 0x10062270): the first `<user dir>\screens\sa-mp-%03i.png` (index
+    /// 0..999) that does not exist. When all exist the loop ends at 1000 with the name of 999
+    /// still in the buffer, so the file 999 is overwritten and the message says 1000.
+    pub fn screenshot_target(&self) -> (PathBuf, u32) {
+        let dir = self.user_dir.clone().unwrap_or_default().join("screens");
+        let name = |i: u32| dir.join(format!("sa-mp-{i:03}.png"));
+        let mut i = 0;
+        loop {
+            let p = name(i);
+            if std::fs::metadata(&p).is_err() {
+                return (p, i);
+            }
+            i += 1;
+            if i >= 1000 {
+                return (p, i);
+            }
+        }
+    }
+
+    /// F8 result line (A 0x10075620): type 4 on success, type 8 when the front buffer
+    /// could not be read (the save result itself is not checked).
+    pub fn screenshot_done(&mut self, index: Option<u32>) {
+        match index {
+            Some(i) => self.print_info(format!("Screenshot Taken - sa-mp-{i:03}.png").as_bytes()),
+            None => self.print_debug(b"Unable to save screenshot."),
+        }
     }
 
     /// Type-8 line in the debug colour (A 0x100680f0).
@@ -667,9 +789,11 @@ impl UiCore {
                     self.input.open();
                 }
                 Action::CloseInput => self.input.close(),
+                Action::InputChar(0x16) => self.requests.paste = true,
                 Action::InputChar(c) => match self.input.char(c) {
                     CharResult::Enter => self.submit(game),
-                    CharResult::Edited | CharResult::Ignored | CharResult::Copy(_) => {}
+                    CharResult::Copy(sel) => self.copy(sel),
+                    CharResult::Edited | CharResult::Ignored => {}
                 },
                 Action::SubmitInput => self.submit(game),
                 Action::HistoryOlder => self.input.history_older(),
@@ -681,11 +805,14 @@ impl UiCore {
                     self.chat.cycle_mode();
                 }
                 Action::InputRestore => self.requests.input_restore = true,
+                Action::DialogChar(0x16) => self.requests.paste = true,
                 Action::DialogChar(c) => {
                     if let Some(d) = self.dialogs.current_mut() {
                         // Enter in the edit box: response 1 (UCA §62).
-                        if d.edit.char(c) == CharResult::Enter {
-                            self.dialog_respond(Button::Ok);
+                        match d.edit.char(c) {
+                            CharResult::Enter => self.dialog_respond(Button::Ok),
+                            CharResult::Copy(sel) => self.copy(sel),
+                            _ => {}
                         }
                     }
                 }
@@ -724,17 +851,39 @@ impl UiCore {
 
     /// Edit-box key-down while the input or a dialog edit box has focus (DXUT edit box).
     pub fn edit_key(&mut self, key: EditKey, mods: Mods) -> bool {
-        if self.input.is_open() {
-            let _ = self.input.key(key, mods);
-            true
+        let copied = if self.input.is_open() {
+            self.input.key(key, mods)
         } else if let Some(d) = self.dialogs.current_mut()
             && d.style.has_edit()
             && !self.scoreboard.is_open()
         {
-            let _ = d.edit.key(key, mods);
-            true
+            d.edit.key(key, mods)
         } else {
-            false
+            return false;
+        };
+        if let Some(sel) = copied {
+            self.copy(sel);
+        } else if key == EditKey::Insert && mods.shift && !mods.ctrl {
+            self.requests.paste = true;
+        }
+        true
+    }
+
+    /// DXUT `CopyToClipboard`: only when something is selected.
+    fn copy(&mut self, sel: Vec<u8>) {
+        if !sel.is_empty() {
+            self.requests.clipboard_copy = Some(sel);
+        }
+    }
+
+    /// DXUT `PasteFromClipboard` into the focused edit box (chat input, else a dialog edit box).
+    pub fn paste(&mut self, clip: &[u8]) {
+        if self.input.is_open() {
+            self.input.paste(clip);
+        } else if let Some(d) = self.dialogs.current_mut()
+            && d.style.has_edit()
+        {
+            d.edit.paste(clip);
         }
     }
 
@@ -1018,6 +1167,55 @@ mod tests {
         );
         u.say(b"/rcon login x", &Game);
         assert_eq!(u.take_outgoing(), vec![Outgoing::Rcon(b"login x".to_vec())]);
+    }
+
+    #[test]
+    fn net_stats_text_matches_the_measured_labels() {
+        let t = String::from_utf8(net_stats_text(&NetStats { send_rate: 30, ..NetStats::default() })).unwrap();
+        let lines: Vec<&str> = t.split('\n').collect();
+        assert_eq!(lines.len(), 27, "{t}");
+        assert_eq!(lines[0], "Download Rate: 0.00 KB/s");
+        assert_eq!(lines[10], "OnFoot Send Rate: 30");
+        assert_eq!(lines[11], "Streaming Mem: 0MB Total: 0MB System: 0MB");
+        assert_eq!(lines[21], "Packetloss: 0.0%");
+        assert_eq!(lines[25], "Duplicate acks received: 0");
+        assert_eq!(lines[26], "");
+    }
+
+    #[test]
+    fn clipboard_requests_from_the_input() {
+        let mut u = UiCore::new(None, false);
+        u.netgame = true;
+        u.apply(&[Action::OpenInput], &Game, 3);
+        u.apply(&[Action::InputChar(0x16)], &Game, 3);
+        assert!(std::mem::take(&mut u.requests.paste));
+        u.paste(b"clip text 1");
+        assert_eq!(u.input.edit().text(), b"clip text 1");
+        // Nothing selected: Ctrl+C copies nothing (DXUT CopyToClipboard).
+        u.apply(&[Action::InputChar(0x03)], &Game, 3);
+        assert_eq!(u.requests.clipboard_copy, None);
+        u.edit_key(EditKey::Home, Mods { shift: true, ctrl: false });
+        u.apply(&[Action::InputChar(0x03)], &Game, 3);
+        assert_eq!(u.requests.clipboard_copy.take(), Some(b"clip text 1".to_vec()));
+        u.edit_key(EditKey::Insert, Mods { shift: true, ctrl: false });
+        assert!(u.requests.paste);
+    }
+
+    #[test]
+    fn screenshot_index_is_the_first_free_name() {
+        let d = tmpdir("shots");
+        let mut u = UiCore::new(Some(d.clone()), false);
+        std::fs::create_dir_all(d.join("screens")).unwrap();
+        assert_eq!(u.screenshot_target(), (d.join("screens").join("sa-mp-000.png"), 0));
+        std::fs::write(d.join("screens").join("sa-mp-000.png"), b"x").unwrap();
+        std::fs::write(d.join("screens").join("sa-mp-002.png"), b"x").unwrap();
+        assert_eq!(u.screenshot_target().1, 1);
+        u.screenshot_done(Some(1));
+        assert_eq!(u.chat.last().unwrap().text, b"Screenshot Taken - sa-mp-001.png");
+        assert_eq!(u.chat.last().unwrap().kind, EntryType::Info);
+        u.screenshot_done(None);
+        assert_eq!(u.chat.last().unwrap().text, b"Unable to save screenshot.");
+        assert_eq!(u.chat.last().unwrap().kind, EntryType::Debug);
     }
 
     #[test]

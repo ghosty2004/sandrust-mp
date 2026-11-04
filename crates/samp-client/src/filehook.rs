@@ -56,6 +56,12 @@ pub fn archive_active() -> bool {
     matches!(MODE.get(), Some(Mode::Archive))
 }
 
+/// An archive entry by its name hash (samp reads `logo.png` this way, hash 0xBADDEA6B).
+pub fn archive_read_hash(hash: u32) -> Option<Vec<u8>> {
+    let g = REDIRECTOR.lock().ok()?;
+    g.as_ref()?.archive().read_hash(hash)
+}
+
 /// Reply of the `files` control command.
 pub fn report() -> String {
     match MODE.get() {

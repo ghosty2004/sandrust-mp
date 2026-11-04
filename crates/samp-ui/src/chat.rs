@@ -468,7 +468,7 @@ impl ChatWindow {
     /// `video_w`.
     pub fn layout(&self, m: &dyn TextMeasure, video_w: i32) -> ChatLayout {
         let h = m.line_height(FontId::Main);
-        let tw = m.measure(FontId::Main, TIMESTAMP_SAMPLE).w;
+        let tw = m.timestamp_width();
         let mut lines = Vec::with_capacity(self.page_size as usize);
         for (k, e) in self.visible().enumerate() {
             let top = FIRST_LINE_TOP + k as i32 * (h + 1);
