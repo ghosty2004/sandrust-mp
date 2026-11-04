@@ -1260,6 +1260,25 @@ FF000000, centre)`. One render, in the frame after the RPC, from samp's object p
 
 Not redrawn on later frames. The texture is then substituted at render time (RE-10 §4).
 
+**TRACE-7, exact D3D order** (run `orig-20261105-000102`, `ui.sh d3d all`; request from the world-entity implementer).
+The render does **not** happen inside a scene: it runs in samp's `CGame::Process` wrapper (B 0x100a2670, A 0x100a26a0, before the original `CGame::Process`) → object-pool
+pass 0x10012ae0 → per object whose first-render flag +0x118B is set → 0x100a9ef0 → 0x100708e0), i.e. after the previous
+frame's `EndScene` + `Present` and before RenderWare's `BeginScene` of the new frame. `samp.dll+0xa9f77` is that call, not
+the render pass (TRACE-6 wording corrected). In one frame:
+1. previous frame: `dev.EndScene`, sprite/UI passes, `dev.Present`;
+2. `dev.CreateTexture(512, 256, 1, RENDERTARGET, X8R8G8B8, DEFAULT)` (from `D3DXCreateTexture`),
+   `D3DXCreateRenderToSurface(512, 256, X8R8G8B8, depth 1, D16)`, `D3DXCreateFontA`;
+3. `rts.BeginScene(rt surface, viewport null)`, which issues on the device: `BeginStateBlock`, `SetViewport(0,0,512,256)`,
+   `EndStateBlock` (D3DX's state capture), `SetRenderTarget(0, rt 512x256)`, `SetDepthStencilSurface(D16 512x256)`,
+   `SetViewport(0,0,512,256,0,1)`, `BeginScene`;
+4. `dev.Clear(0 rects, TARGET|ZBUFFER, 0xFF000000 = background ARGB, z 0.0, stencil 0)`;
+5. `sprite.Begin(0x10)` (+ the sprite's own state blocks), `font.DrawTextA(…, 0x105)` (the font creates its 256x256
+   glyph texture here), `sprite.End`, `sprite.Flush` (draws the glyph quads: one `DrawIndexedPrimitive`);
+6. `rts.EndScene(mip filter 0)`, which issues: `dev.EndScene`, `SetRenderTarget(0, back buffer 1280x720)`,
+   `SetDepthStencilSurface(original 1280x720 D24S8)`;
+7. then RenderWare's frame: `SetViewport(0,0,1280,720)`, `Clear(ZBUFFER|STENCIL, z 1.0)`, `SetViewport`, `BeginScene`.
+So samp never nests scenes: the RT scene opens and closes completely between two RenderWare frames.
+
 ### Edit / select (117 / 116 / 27), `world2.sh`
 * `EditObject` → ESC: OnPlayerEditObject response 0 (cancel) with the object's current position and rotation.
 * `EditAttachedObject` → ESC: OnPlayerEditAttachedObject response 0 with the slot's current model, bone, offset,
@@ -1301,9 +1320,41 @@ Not redrawn on later frames. The texture is then substituted at render time (RE-
   * 19300 is `blankmodel` in `SAMP/SAMP.ide` (`19300, blankmodel, MatTextures, 100, 0`). So the IPL hook swaps the
     model id and leaves position, area and everything else of the instance unchanged.
 
+* **blanktex — MEASURED** (run `orig-20261105-001923`, `combat2.sh world7`; static B 0x100a8540 / 0x100b2ba0):
+  * Source: the loose file `SAMP\blanktex.txd` (not SAMP.img). samp's TXD helper creates a TXD slot named `blanktex`
+    (`CTxdStore::AddTxdSlot("blanktex")`, slot 3801 here) and loads it with `CTxdStore::LoadTxd(slot, "SAMP\blanktex.txd")`
+    (the helper's other directory prefix is `models\txd\`), then takes texture `blanktex` from it. Loaded once, on first
+    use, 4 frames after the RPC; the texture pointer is cached in a global and never released with the object.
+  * When: `SetObjectMaterial` with **model 0** (`objmat|ID|0|0|none|none|FF00FF00`). Model > 0 loads that model's TXD and
+    texture instead (with a bounded wait: up to 250 × `Sleep(2)`); model < 0 (−1) stores no texture and loads nothing
+    (measured: no TXD activity).
+* **Camera collision (CSV rows 81–83, MR-6.12)**:
+  * Static (B): row 81 (call of `BuildCacheOfCameraCollision` in `CameraConeCastVsWorldCollision`, B 0x100a5960) runs
+    the original first; only when it found nothing and the camera spheres are inside ±3000 units does samp add its own
+    tests: client objects (pool 1), per-player objects (pool 2), and vehicles unless netgame byte +0x232 is set. The
+    per-object no-camera-collision flag is consulted only in samp's own object test. Row 82 (`CheckCameraCollisionVehicles`
+    call, B 0x100a5ad0): skipped (returns 0) when netgame byte +0x232 is set. Row 83 (`CameraToIgnoreThisObject` call in
+    `CheckCameraCollisionObjects`, B 0x100a5b00): objects attached to an entity (+0xFC ≠ 0) are always ignored.
+  * Live: player at (1700, −2600) facing north, camera behind at y −2603.50 (CCamera matrix position, peek 0xB6F9CC).
+    Wall 19353 at y −2602.3 → camera pulled in to y −2600.58 (z 14.32 → 14.18). The same wall re-created by open.mp with
+    `no_camera_collision = 1` (open.mp re-sends RPC 44 for `SetObjectNoCameraCol`) → camera **still** at −2600.58 after a
+    camera reset. Wall removed → −2603.50 again. So for an object GTA's own camera pass already sees, the flag changes
+    nothing (consistent with the static reading: it only affects samp's supplementary test). Which objects GTA's own pass
+    misses (the case the flag is for) and the +0x232 byte's source are **not measured**. Note: the camera stays pulled in
+    while the player stands still; it is re-evaluated after `SetCameraBehindPlayer` / movement.
+* **ProcessVerticalLine (CSV row 96, MR-6.13) — MEASURED**:
+  * Static (B 0x100a5fd0): for every caller except return address 0x59E8F9 (`BreakObject_c::Init`), when the
+    `buildings` argument is set samp forces the `objects` argument to true, then runs the original.
+  * Live: `SetPlayerPosFindZ(1710, −2600, 60)` with a 1271 crate at (1710, −2600, 13.9): RPC 13 → SCM 0x02CE
+    `GET_GROUND_Z_FOR_3D_COORD` → `CWorld::FindGroundZFor3DCoord` (which itself asks for buildings + dummies only) → ground
+    z = **14.250 (top of the crate)** → `CPed::Teleport(z + 1.5 = 15.75)`. Four metres away (no object): 12.547 → 14.047.
+    So every building-ground query (ground-Z opcodes, car generators, shadows/point lights, weather, camera ground checks,
+    explosion ground checks) also hits client objects.
+
 ### Still open (M6)
-* Camera collision (MR-6.12), `ProcessVerticalLine` (MR-6.13): not measured (outside TRACE-7's list).
 * 116 (attached-object editor) drag rate: not measured (see above).
+* Camera collision: which objects GTA's own camera pass misses (where samp's no-camera-collision flag matters) and the
+  source of netgame byte +0x232 (vehicle camera collision off): not measured.
 
 ## Combat (TRACE-6)
 
@@ -1396,7 +1447,7 @@ Original client, `run.sh orig hold`, LS airport tarmac. Bots are samp-bot `--mod
 * Mode 0: the server relayed no 206 to the traced client.
 * Mode 2, hit_type 0 from the bot: the same camera-ray behaviour as mode 1 (passed above the local ped, no damage).
 * The bot's hit-type-1 run in modes 0 and 2 produced no shots (bot-side), so remote hit_type 1 is measured only in
-  mode 1.
+  mode 1. **TRACE-7:** measured in modes 0 and 2, see "TRACE-7 additions".
 * **Same team**, repeated cleanly in the mode-2 session: team 1 for both → 206 + 115 (39.6) sent, response cancelled
   (no `ComputeWillKillPed`). Teams reset to 255 → the response runs (`ComputeWillKillPed` 39.6).
 
@@ -1425,13 +1476,128 @@ measured after that time in that run is used here.
   * next frame: health 0, `SetPedState(54)`;
   * no `RemoveBodyPart`: the head stays on.
 
+### TRACE-7 additions (runs `orig-20261104-231851`, `orig-20261104-234135` lag-comp 1; `orig-20261104-235739` mode 2; `orig-20261105-000102` mode 0)
+
+Tools: `tools/trace/combat2.sh PART…` (parts `cross ht1 proj satchel rproj gap masks skills driveby rmb respawn`, header
+of the script), `uifs.pwn` commands `explodeN` / `specoff`, tracer records `proj` / `proj_end` / `pad` / `hp_mid` and hooks
+`CWeapon::FireProjectile`, `CExplosion::AddExplosion`, `CCamera::Process` (counted; `hp_mid` sampling point after
+`CWorld::Process`), all in `crates/samp-tracer/src/win/combat.rs` / `hooks.rs`; plus `CTxdStore::LoadTxd(file)` /
+`AddTxdSlot` and `CWorld::FindGroundZFor3DCoord` for the world follow-ups, and the `combat2.sh world7` part (`findz` uifs
+command). `CTxdStore::LoadTxd(file)` steals only its first 5 bytes: the protection code reads 0x7320B5.
+
+#### Remote 206 hit type 0 whose ray crosses the local ped — MEASURED (mode 1)
+* Geometry: the shooting bot (Deagle, 10 m ahead, facing the local player) aims its 203 front at a second bot that stands
+  2.2 m below ground 8 m behind the local player. GTA's crosshair ray is the synced front turned 4.57° up and 2.56° to the
+  right (measured from TRACE-6's ray), so the ray passes through the local ped's torso.
+* Per 206 (4 of 4): `FireInstantHit(remote, pif 0)` → `Find3rdPersonCamTargetVector(105)` → original LOS (site 0x740721)
+  **hits the local ped** (col point ≈ (1700.0, −2599.84, 13.66), torso) → samp clears the result: `DoBulletImpact` gets
+  victim null and hit point (0, 0, 0). No damage calc, no `ComputeWillKillPed`, no 115, health unchanged.
+* So the local-hit suppression of `remote-control-combat.md` §3.4 is confirmed live: a remote shot that did not report
+  the local player never hurts him, even when its ray goes through him.
+* **Mode 2** (selector S 1, run `orig-20261104-235739`): identical, 5 of 5 shots: the original LOS hits the local ped
+  (torso col point), `DoBulletImpact` gets victim null / hit (0, 0, 0), no damage.
+* **Mode 0** (selector S 2, run `orig-20261105-000102`): the server relays **no 206** (0 received). samp's LOS hook is
+  inactive; the bot's FIRE key alone makes GTA fire for the remote ped (`FireInstantHit` from `CWeapon::Fire`'s site
+  0x74254D, PlayerInFocus = remote slot, 26 shots, one every ~0.72 s = Deagle rate) along the synced camera ray. With the
+  crossing geometry 12 of them hit the local ped: damage 140 → 46.2 each, RPC 115 taking 1 (attacker = bot id, body part
+  3/6/4 from the col point), death 53 (reason 24, killer = bot id) after three hits.
+
+#### Remote 206 hit type 1 in modes 0 and 2 — MEASURED
+* TRACE-6's mode-0/2 bot runs failed for a script reason: the previous idle bot had not left yet, so `weapon|B1` armed the
+  wrong bot. `combat2.sh` now waits for the server's disconnect line before starting the next bot.
+* **Mode 2**: 206 hit type 1 at the local id with offset (0, 0, 0.3) (world axes): `FireInstantHit(remote, pif 0)` →
+  LOS start = remote hand origin, end = 2P − start with **P = local ped position + offset** (1700.0, −2600.0, 13.847) →
+  hits the local ped → damage 140 → `ComputeWillKillPed` 46.2 → 115 taking 1 (46.2, weapon 24, part 3) per 206; death 53
+  (24, bot id) after the third.
+* **Mode 0**: no 206 reaches the client. The bot's own key-driven shots are simulated locally (35 `FireInstantHit`, pif =
+  remote slot); with the bot aiming its camera front at our torso the crosshair ray passes above the head, so none hit
+  (35 × `DoBulletImpact` victim null), no damage, no 115.
+
+#### Projectiles — MEASURED (local and remote)
+* **Local** (grenade 16, molotov 18, satchel 39 + detonator 40, RPG 35, heat seeker 36; `combat2.sh proj` / `satchel`):
+  * nothing combat-specific is sent: **no 206, no 115** (no other player was hit); only 207/203 and a 204 slot record
+    after each ammo change. The detonator appears as slot 12, weapon 40, ammo = satchels thrown.
+  * GTA path, all with PlayerInFocus 0: `CWeapon::Fire` (thrown: from the throw task, ret 0x62B12F; rockets: from the
+    gun task, ret 0x61ECD2) → `CWeapon::FireProjectile` (force 0.76–0.90 for thrown, 0.0 for rockets) → a
+    `gaProjectileInfo` entry the next frame. Rockets and heat seekers are stored as weapon type **19** (model 345);
+    grenade 342, molotov 344, satchel 363. Initial move speed: grenade (0, 0.347, 0.263), molotov (0, 0.347, 0.201),
+    satchel (0, 0.16, 0.11), rocket (0, 0.400, −0.020) units/frame.
+  * Explosion types (`CExplosion::AddExplosion`, creator = local ped): grenade 0, molotov 1, rocket/HS 2, satchel 0.
+    Grenade/molotov explode ~105/61 frames after the throw, rockets on impact (~45 frames at 25 m).
+  * Satchel: with two satchels a second LMB throws the second one (no detonation). With one satchel the next LMB fires
+    the detonator: `CWeapon::Fire(40)` → `AddExplosion(type 0)` at the satchel in the same frame (caller 0x7388BC,
+    `RemoveDetonatorProjectiles`), entry gone the next frame. The local player's thrown satchels are removed when he
+    respawns (both `proj_end` in the respawn frame).
+* **Remote** (`combat2.sh rproj`: a bot holding AIM+FIRE with weapon 16 / 35 / 39 for two 900 ms "shots"):
+  * Created locally from the keys, inside the remote's processing: `CWeapon::Fire` and `CWeapon::FireProjectile` run
+    with **PlayerInFocus = the remote slot** (2), creator = the remote ped; one projectile per FIRE press (GTA ammo for
+    the remote is 9999). Rockets fly along the remote's synced camera front.
+  * Their explosion damages the local ped through GTA: grenade 196.24 and RPG 250.0 per damage event, and there are
+    **two damage events for one explosion** in the same frame → two RPC 115 (taking 1, attacker = the bot's id, weapon
+    51, 64.758 / 82.5 each = 0.33 × damage), then 53 (reason 51, killer = bot id) 6 ms later, then 115 (weapon 54, 3.3)
+    from the fall. Nothing comes from the network for these projectiles.
+  * A remote's satchel lies at the throw spot with the remote as creator; it was removed (`proj_end`, no explosion) when
+    the bot left the server. Remote detonation not measured (the bot cannot switch to the detonator).
+
+#### MR-7.10 one-frame health gap — MEASURED (unreachable by explosions)
+* `CreateExplosion` type 7 (1× and 3× in one server tick) and type 6 (6× in one tick, 0.5 m from the ped) at an idle
+  remote ped: `AddExplosion` runs (via SCM 0x0948) but the remote ped gets **no damage event at all** (no damage calc,
+  no movement, health stays 1000, no `hp_mid` record).
+* Reason: at stream-in samp runs SCM 0x02AB `SET_CHAR_PROOFS(ped, bullet 0, fire 0, explosion 1, collision 0, melee 0)`
+  on every remote player. Peeked physical flags of a remote ped: 0x10800212 (bit 23 `bExplosionProof` set; uses-collision
+  bit of +0x1C set). GTA's explosion code skips explosion-proof entities.
+* `hp_mid` (remote health ≤ 0 or state 54/55 after `CWorld::Process`) never fired in either run (gunfire, melee from
+  TRACE-6 scenarios, explosions). The gap stays theoretical; no measured path reaches it.
+
+#### Carry / cuffs masks (MR-7.12) — MEASURED (`combat2.sh masks`, `pad` records = `Pads[0]` at frame start)
+| action | sprint (Space → Cross) | jump (Shift → Square) | crouch (C → ShockL) | weapon |
+|---|---|---|---|---|
+| none | Cross 255, move state 7 | Square 255, in air | ShockL 255, ducking | — |
+| 25 carry | Cross stays 0 (new and old), move state 6 | Square 0, never in air | ShockL 0, never ducking | — |
+| 24 cuffs | Cross stays 0, move state 6 | works (in air) | works (ducking) | Deagle given while cuffed → armed weapon reset to fists the next frame (`SetCurrentWeapon(0)`); after special action 0 a new Deagle stays |
+
+#### Weapon skills (MR-7.5) — MEASURED
+* `peek 0xB79494 44` (the 11 weapon-skill stats): all 1000.0 after spawn and after every respawn; RPC 34 writes the exact
+  value (pistol 500 → 500.0, silenced 0 → 0.0). RPC 40 (session reset to 999) not measured (needs a reconnect).
+* Remote Colt (bot aiming, `SetPlayerSkillLevel(bot, 0, n)` → RPC 34 for the bot): skill 0 → one pistol, the other arm
+  down; 999 and 1000 → dual pistols (999 is already GTA's top level). So the per-slot skill table filled by RPC 34 drives
+  the remote ped's dual wield. Screenshots `s-remote-colt-{0,999,1000,1000b}.png`.
+
+#### Drive-by (MR-7.6) — MEASURED except remote firing (`combat2.sh driveby`, police car 596, Uzi 28)
+* **Local passenger**: LMB alone does nothing. The in-car horn key (H → `Pads[0].ShockButtonL`) starts it: in the same
+  frame samp re-arms the weapon (`SetCurrentWeapon(28)`) and runs SCM 0x0713 `TASK_DRIVE_BY(ped, −1, −1, 0.0, 0.0, 0.0,
+  300.0, 8, 1, 20)`. Static (B 0x10007b76 / 0x100acfa0): start when ShockL is pressed, not active and the ped is in a
+  vehicle; weapon 46 → armed 0, no task; active flag cleared (task deleted) when the weapon is 0 or a weapon type > 15
+  (≠ 46) has no total ammo.
+  * Sync: 211 `drive_by` bit set from the start frame on; 203 cam_mode 55, zoom 63, weapon_state 2, sent about every
+    110 ms while the camera moves (identical ones dropped by the 501 ms duplicate gate, so ~1/s when still).
+  * Shots: `CWeapon::Fire` from the gang drive-by task (ret 0x62832D) → samp's `FireInstantHit` site (0x74254D) → samp
+    LOS hook (site 0x740721) → 206 for every shot (9 frames apart), plus 204 slot records. Misses send 206 hit type 0
+    with offset (0, 0, 0) and a garbage hitPos (see the correction in "Local player shooting").
+* **Local driver** (Q or E held + LMB / Ctrl): GTA fires through `FireInstantHitFromCar2` (`DoBulletImpact` caller
+  0x73CD97), not through `CWeapon::Fire` → no samp LOS hook, **no 206**. 200 keys 256 + 4 (look left + fire) and 64 + 1
+  (look right + action); 203 cam_mode 18 about every 1 s with the front pointing to the side; shots every 4 frames.
+* **Remote passenger** (bot bit 6): samp gives the weapon (`GiveWeapon(28, 9999)` + `SetCurrentWeapon`), then SCM 0x0713
+  with the same parameters; from then on `Find3rdPersonCamTargetVector` runs every frame with PlayerInFocus = the remote
+  slot (the synced camera aims the drive-by). Firing not measured (the bot cannot press FIRE as a passenger); remote
+  driver drive-by not measured.
+
+#### Respawn variants (MR-7.9) — MEASURED (`combat2.sh respawn`)
+* `ForceClassSelection` then health 0: 53 (reason 255, killer 0xFFFF) 11 ms after RPC 14, 115 (weapon 54, 3.3) +17 ms,
+  then **RPC 128 (request class 0) 3.63 s after 53** instead of 52; spawn only after Shift (129 → 52).
+* Health 0 while spectating: the client sends **52 first** (23 ms after RPC 14), then 53 and 115 (weapon 54) in the same
+  burst, and a normal 52 again 3.61 s later. After `TogglePlayerSpectating(0)` nothing more is sent.
+
 ### Still open (M7)
-* Remote hit_type 0 with a ray that really crosses the local ped (the local-hit suppression, modes 1/2).
-* Remote hit_type 1 in modes 0/2 (the bot produced no shots there).
-* Drive-by (MR-7.6), carry/cuffs masks (MR-7.12), projectiles/satchels from keys (MR-7.11; `AddProjectile` can't be
-  hooked), the one-frame health gap (MR-7.10), respawn after `ForceClassSelection` or while spectating (MR-7.9),
-  skills after RPC 34 (MR-7.5).
-* The garbage-colpoint 206 after a sniper sky-miss: seen once, not reproduced.
+* All TRACE-6 open items are measured (see TRACE-7 additions). Remaining, each TODO-unknown with the reason:
+  * remote passenger drive-by **firing** and remote driver drive-by: samp-bot cannot press FIRE while seated;
+  * remote satchel detonation: samp-bot cannot switch to the detonator;
+  * RPC 40 resetting the skill stats to 999: needs a reconnect inside one session (not scripted);
+  * the 116 (attached-object editor) drag rate (world entities).
+* Hazards seen in the trace lane (original client): entering a Sultan as a passenger crashed in GTA's radio stream
+  thread (division by zero at 0x4F1464, `CAEStreamThread`); a `ui.sh d3d all` capture across a material-text render
+  ended in a crash in the next frame (EIP 0x222C3330, ESI = the D3DX font's glyph texture). Use emergency vehicles for
+  passenger tests and `ui` / `text` d3d modes for long captures.
 
 ## Open problems / notes
 

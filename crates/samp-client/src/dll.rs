@@ -150,6 +150,10 @@ fn physical_ram_mb() -> u64 {
 }
 
 fn init_thread() {
+    // samp imports d3dx9_25.dll (loaded with samp.dll, before the game's first Present) and
+    // registers its fonts at attach (UR §3.1, A 0x100c5100): done first thing here, outside
+    // the loader lock.
+    crate::ui::preload();
     let mem = ProcessMemory;
     let t0 = Instant::now();
     let mut last_state = -1;
@@ -179,10 +183,6 @@ fn init_thread() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    // samp imports d3dx9_25.dll and registers its fonts at attach (UR §3.1,
-    // A 0x100c5100); loaded here, once the game's own start-up is past the splash,
-    // so it is in before the first frame (the tracer's D3DX hooks need it then).
-    crate::ui::preload();
     let mut mem = ProcessMemory;
     {
         let mut g = PATCHER.lock().unwrap_or_else(|e| e.into_inner());

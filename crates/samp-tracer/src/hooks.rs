@@ -691,6 +691,23 @@ pub static HOOKS: &[HookSpec] = &[
     ),
     // Sampling point after CWorld::Process (`hp_mid` records, win/combat.rs); counted only.
     h("CCamera::Process", 0x52B730, &[0x81, 0xEC, 0xA0, 0x00, 0x00, 0x00], Count, &[]),
+    // World / material requests (TRACE-7 follow-ups): TXD loads by file name (samp's material textures,
+    // `SAMP\blanktex.txd`), TXD slot creation, and ground-height queries (SetPlayerPosFindZ).
+    h(
+        "CTxdStore::LoadTxd(file)",
+        0x7320B0,
+        &[0x8B, 0x44, 0x24, 0x08, 0x90],
+        Always,
+        &[I32(0, "slot"), CStr(1, "path")],
+    ),
+    h("CTxdStore::AddTxdSlot", 0x731C80, &[0x8B, 0x0D, 0x0C, 0x80, 0xC8, 0x00], Always, &[CStr(0, "name")]),
+    h(
+        "CWorld::FindGroundZFor3DCoord",
+        0x5696C0,
+        &[0x83, 0xEC, 0x38, 0x8B, 0x44, 0x24, 0x3C],
+        Always,
+        &[VecVal(0, "pos")],
+    ),
 ];
 
 /// Register/stack view of a hooked call at function entry.
