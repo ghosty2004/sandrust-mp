@@ -1599,6 +1599,352 @@ command). `CTxdStore::LoadTxd(file)` steals only its first 5 bytes: the protecti
   ended in a crash in the next frame (EIP 0x222C3330, ESI = the D3DX font's glyph texture). Use emergency vehicles for
   passenger tests and `ui` / `text` d3d modes for long captures.
 
+## Remaining behaviour (TRACE-8)
+
+Original client (samp.dll 0.3.7-R4 build B), `SAMP_TRACER_BASS=1 TRACE_GAMEMODE=tracegm run.sh orig hold`, run
+`target/trace/orig-20261105-003749` (LS airport tarmac, ~53 frames/s), driven with `ui.sh` and the TRACE-8 `uifs.pwn`
+commands (list at the top of the file). Statics are build B addresses (`B 0x…`). "Per frame" means once per
+`CGame::Process`. Unless stated otherwise every script command below is issued by samp.dll through its executor.
+
+**Tracer additions (TRACE-8, additive):** hooks `CAEAmbienceTrackManager::Play/StopSpecialMissionAmbienceTrack`
+(0x4D6D50/0x4D6D60), `CAudioEngine::StartRadio/StopRadio` (0x507DC0/0x506F70, client callers only), `CShopping::LoadShop`
+(0x49BBE0), `CEntryExit::TransitionStarted/TransitionFinished` (0x43FFD0/0x4404A0), `CCamera::SetCamPositionForFixedMode`
+(0x50BEC0), `TakeControlNoEntity` (0x50C8B0), `VectorMoveLinear` / `VectorTrackLinear` (0x50D160/0x50D1D0; GTA's first
+argument is the END point); the opt-in BASS call log (`Audio (TRACE-8)`); `tools/trace/icyserve.py` (local stream server).
+`uifs.pwn` TRACE-8 commands (bounds, gravity, drunk, fstyle, shop, wide, campos/camlook/ipos/ilook/camobj,
+specon/specpl/specveh, anim/clranim, sound, audio/audiostop, check, paint/vmod/vcolor, crime, vw, wanted, stunt, vel,
+money, clock, vehcol, camtarget, kick, ban, rcon) plus `OnClientCheckResponse` / `OnPlayerInteriorChange` logging.
+Every trace launch writes the SA:MP client config it used (source, sha256, content) to `$OUT/samp-cfg.txt`
+(`trace_log_cfg`); cfg experiments pass `TRACE_SAMP_CFG=/path` (installed by `tools/wine-env.sh`), never edit the
+prefix.
+
+### Camera RPCs — MEASURED
+* **157 SetPlayerCameraPos**: `0x0925`, then `0x015F(x, y, z, 0, 0, 0)` → `CCamera::SetCamPositionForFixedMode(pos, up=0)`.
+  No camera-mode change until the look-at arrives.
+* **158 SetPlayerCameraLookAt**: `0x0925`, then `0x0160(x, y, z, cut)` → `TakeControlNoEntity(pos, switch = cut, who = 1)`;
+  `cam_mode` becomes 15 (fixed) in the next frame. Cut 0 was sent as 2 (`0x0160 … 2`), cut 1 stays 1 (switch 1 =
+  interpolate), 2 = jump cut.
+* **162 SetCameraBehindPlayer**: `0x0930(0)`, `0x0925`, `0x0373` → `SetCameraDirectlyBehindForFollowPed_CamOnAString`,
+  `0x02EB` → `RestoreWithJumpCut`; `cam_mode` 4 next frame. SetPlayerPos (12) from the filterscript is always followed
+  by this sequence because `uifs.pwn` calls SetCameraBehindPlayer.
+* **82 InterpolateCameraPos** (`isPosition` = 1): `0x0925`, `0x0930`, `0x0936(from, to, ms, cut)` →
+  `VectorMoveLinear(end = to, start = from, time_ms = ms, ease = 1)` in the same frame. Cut 1 and cut 2 both give
+  ease = 1 at the GTA level. **InterpolateCameraLookAt** (`isPosition` = 0): `0x092F(1)` then `0x0920(from, to, ms, cut)`
+  → `VectorTrackLinear(end = to, start = from, ms, 1)`. time = 0 → nothing at all (no script command).
+* **81 AttachCameraToObject**: from the next frame on, **every frame** while attached: `0x0925`, `0x0930`,
+  `0x0936(objpos, objpos, 100, 1)` → `VectorMoveLinear(objpos, objpos, 100 ms, 1)` with the object's current position
+  (it follows a moving object frame by frame; observed during MoveObject). Ends with 162.
+* **111 TogglePlayerWidescreen**: chat line `Widescreen = 1` / `Widescreen = 0` (also in chatlog.txt), `0x02A3(v)` →
+  `CCamera::SetWideScreenOn/Off` in the same frame; `watch widescreen` flips one frame later.
+
+### Spectating (124/126/127) — MEASURED (bot `SpecBot` walking, police car 596)
+* **124 on**: the first spectator tick (2 frames after the RPC) teleports the local ped to the camera matrix
+  position + (0, 0, 20), then with no target: `0x0925`, `0x015F(50, 50, 50, 0, 0, 0)`, `0x0160(60, 60, 50, 2)`
+  (cam_mode 15). **Every frame** afterwards the local ped is teleported to (camera position + 20 m on z) — with this
+  camera (50, 50, 70); `CTaskComplexInAirAndLand` (vtable 0x8704AC) is set on it each frame because it is falling.
+  The server then streams everything out (the synced position is at 50,50).
+* **126 PlayerSpectatePlayer**: once the target is streamed in (here 5 frames later, after the server streamed the bot
+  back in): `0x04BB(0)`, `0x0860(ped, 0)` (interior 0, no scene load at the target), then
+  `0x0159(target handle, mode, 2)` → `CCamera::TakeControl(target ped, mode, switch 2, who 1)`. Modes measured:
+  NORMAL → 4, FIXED → 15, SIDE → 14 (cam_mode follows next frame). When the target streams out the client falls back
+  to the (50,50,50) → (60,60,50) view (seen in the FIXED step).
+* **127 PlayerSpectateVehicle**: `0x04BB(0)`, `0x0860(ped, 0)`, `0x0158(vehicle handle, mode, 2)` →
+  `TakeControl(vehicle, mode, 2, 1)`; NORMAL → 3, FIXED → 15.
+* **124 off**: `0x02EB` → `RestoreWithJumpCut` (×2), `0x0930(0)`, `0x0925`, `0x0373`, then the spawn request (RPC 52 path:
+  `0x0053` create at the spawn point) 2–3 frames later; cam_mode 4.
+
+### World bounds (17) — MEASURED (static B 0x10003F40 on foot, 0x10003FB0 in a vehicle; helper B 0x1009F450)
+* The RPC only stores the four floats. The check runs from the local player's sync update, **only when
+  `0x077E GET_AREA_VISIBLE` returns 0** (outside interiors; measured: in interior 1 no reaction while outside the
+  bounds, in interior 0 immediate reaction).
+* Out of bounds (strict compare: x > maxX, else x < minX, else y > maxY, else y < minY): if the entity's move speed on
+  that axis is non-zero it is set to ∓0.2 on that axis (towards the inside) and speed z := 0.1; the entity's matrix is
+  then re-set with position z += 0.04; on foot `0x01B9(player char, 0)` (SET_CURRENT_CHAR_WEAPON fist); then
+  `0x00BE` + `CMessages::AddBigMessage("Stay within the ~r~world boundries", 1000 ms, style 5)`.
+* Rate: every frame while walking against the boundary (135 messages in 2.6 s); while standing still outside it ran
+  only 3 times in 4 s (the check is tied to the on-foot send cadence). Walking north into maxY = −2595 bounced the
+  player up to z ≈ 23.5 and back south.
+
+### Gravity (146 and SetGravity) — MEASURED
+* `SetPlayerGravity(0.002)` → float at 0x863984 = 0x3B03126F (0.002) the next frame; global `SetGravity(0.005)` →
+  0x3BA3D70A; 0.008 = 0x3C03126F is the default. No script command, no other write.
+
+### Interiors (156, enex) — MEASURED
+* **156 SetPlayerInterior(i)**: `0x04BB(i)`, `0x0860(player char, i)`, `0x04E4(x, y)` (load scene at the ped) in the
+  same frame; `watch cur_area/player_area` follow; the client then sends **RPC 118** (rel 8, payload = interior byte)
+  once per change (seen 01 then 00).
+* **Entry-exit walk-in** (Alhambra `BAR1`, outside 1833.4,−1681.75): GTA's own flow, **no samp script command in it**:
+  `CEntryExit::TransitionStarted(player)` → camera `SetCamPositionForFixedMode` + `TakeControlNoEntity(switch 2)`,
+  `controls_disabled` = 8, then `CTaskComplexGotoDoorAndOpen` (vtable 0x86FFC0) set as primary task;
+  `CEntryExit::TransitionFinished` is then called every frame during the fade (55 frames ≈ 1.0 s); `cur_area` = 17
+  one frame after the start; at the end `CTaskSimpleUninterruptable`, `RestoreWithJumpCut`, `CStreaming::LoadScene`,
+  `CPed::Teleport` into the interior (493.39, −22.72, 1000.69), the `vending` script starts. What samp changes in the
+  flow is only static (CSV rows: `GenerateAmbientPeds` NOP in TransitionFinished, `Interior_c::AddPickups` NOP,
+  `InteriorGroup_c::Exit` NOP) plus InitGame's "disable enter/exits" (B 0x100A1570 clears the flags word +0x30 of
+  every `CEntryExitManager::mp_poolEntryExits` entry when Settings+0x1A is set). RPC 118 reports area 17.
+* Walking out runs the same functions in reverse (TransitionStarted → GotoDoorAndOpen → TransitionFinished × N →
+  LoadScene + Teleport to the outside marker, `vending` shut down).
+
+### Animations (86/87) and the 207 animation table — MEASURED
+* **86 ApplyAnimation**, library loaded: `0x04EE(lib)` (HAS_ANIMATION_LOADED) then
+  `0x0812(player char, name, lib, delta, loop, lockX, lockY, freeze, time)` (flags in this order as script params;
+  e.g. `WALK_DRUNK 4.1 1 1 1 0 0`, `KO_skid_front 4.1 0 1 1 1 0`, `IDLE_CHAT 4.1 0 0 0 1 1500`) →
+  `CTaskManager::SetTask(CTaskSimpleRunNamedAnim 0x86D54C, primary 3)` next frame.
+* Library **not loaded** (first `DANCING` call): `0x04EE` false → `0x04ED(lib)` (REQUEST_ANIMATION →
+  `CStreaming::RequestModel(25631, 4)`) → 16 more `0x04EE` polls with `Sleep(1)` inside the same frame (~15 ms) →
+  gives up: **no 0x0812, the animation is not played**. The same RPC a few seconds later (block now loaded) plays.
+* Library `SEX` → nothing at all. Unknown library (`NOSUCHLIB`) → nothing at all (no script command).
+* **87 ClearAnimations** (local): `CPed::Teleport` to its own position (flushes tasks; `CTaskSimplePlayerOnFoot`
+  0x8708EC re-set), nothing else.
+* **Anim-name table (where samp gets it, how it is used):** a static 1812 × 36-byte table of `"LIBRARY:NAME"`
+  upper-case strings in samp.dll's `.data` at **B 0x101039E8** (index 1 = `AIRPORT:THRW_BARL_THRW`, 1660 =
+  `VENDING:VEND_USE`, 1812 = `SAMP:FISHINGIDLE`); 1-based (accessor B 0x1009CF00 returns `0x101039C4 + 36·i` for
+  1 ≤ i ≤ 0x714). At start-up (B 0x1009CF30, from B 0x100A091F) samp computes for every entry
+  `CKeyGen::GetUppercaseKey(NAME part)` (GTA 0x53CF30) into a 1812-dword array (B 0x10149190).
+  * Sending (207 animation field): the local clump's `CAnimManager::AddAnimation/BlendAnimation` hooks record
+    (group, id); `CAnimManager::GetAnimAssociation(group, id)` (GTA 0x4D3A60) → hierarchy hash (`+0x10 → +0`) →
+    first table index with that hash (B 0x1009D000; names that exist in several libraries resolve to the first).
+    While a script anim (`CTaskSimpleRunNamedAnim`) runs, the index comes from a linear upper-case
+    `"LIB:NAME"` string search instead (B 0x1009CE20) and the flags carry loop/lock/freeze/time.
+  * Measured sent values (index, upper 16 bits): IDLE_STANCE 1189 / 0x80E8 (idle), RUN_PLAYER 1231 / 0x80E8,
+    FALL_LAND 1133 / 0x8064, WALK_DRUNK 1260 / 0x1704 (scripted: delta 4, loop+lockX+lockY, time code 1),
+    KO_SKID_FRONT 1209 / 0x1E04 (lockX+lockY+freeze), IDLE_CHAT 1184 / 0x2804 (freeze, time code 2 = time > 0),
+    DNCE_M_A 411 / 0x1104 (loop). Bit 15 set = "plain blend anim" (no script flags).
+  * Remote side: `remote-control-onfoot.md` §4.1 (index → name via the same table, played with `0x0812`).
+
+### Drunk (35) — MEASURED
+* samp issues `0x052C(player 0, value)` **every frame** (value 0 when sober). Level > 2000: value = level / 50
+  (5000 → 100, 2100 → 42), the level drops by 1 per frame (value 100 → 99 → … one step per ~50 frames); at ≤ 2000
+  the value becomes 0 (2100 reached 0 after ~100 frames).
+* Driving (Sultan, level 5000→4900, W held): the vehicle's turn speed z gets ±0.012 added by the client between
+  frames, every ~11 frames (≈ 210 ms; some 22-frame gaps), only while moving (speed 0.09–0.51 observed). The ±0.015
+  (level ≥ 5000) case was not seen (the level is below 5000 one frame after the RPC).
+
+### Fighting style, shop name, controllable, misc — MEASURED
+* **89**: `0x07FE(player char, style, 6)` (style 6 and 4 measured).
+* **33 SetPlayerShopName**: `"FDPIZA"` → `CShopping::LoadShop("FDPIZA")` (opens `data\shopping.dat` twice); an
+  11-char name → no LoadShop; **empty name → `LoadShop("")`** too (length ≤ 8 includes 0).
+* **15 TogglePlayerControllable 0**: `0x01B4(0, 0)` → `CPlayerInfo::MakePlayerSafe(1, 10.0)` (sets
+  `CTaskSimpleStandStill`-type task 0x86DD2C), `0x04D7(char, 1)`; `controls_disabled` = 32. **1**: `0x01B4(0, 1)` →
+  `MakePlayerSafe(0, 10.0)`, `0x04D7(char, 0)`, then `CPed::Teleport` to its own position.
+* **133 wanted 3** → byte 0x58DB60 = 3 (HUD only); **104 stunt 1/0** → dword 0xA4A474 = 1/0; **18 money 500** →
+  `0x0109(0, 500)` (both money fields at 0xB7CE50 = 500); **30 clock 1/0** → byte 0x52CF10 = 0x56 / 0xC3;
+  **90 velocity (0,0,0.5)** → no script command (direct write; the ped was launched and fall damage followed);
+  **167 / 170** → no GTA-side effect in the trace (flags only; no RPC 168 was sent: nothing targeted).
+* **96 SCM events (S→C)**: open.mp sends them with player id 0xFFFF (paintjob: arg2 = garbage). On a streamed-in
+  Sultan, same frame as the RPC:
+  * type 1 paintjob 1 → `0x06ED(car, 1)`;
+  * type 2 component 1010 → `0x06EA(1010)` (HAS_VEHICLE_MOD_LOADED, false), `0x0247(1010)` →
+    `RequestModel(1010, 12)` + `RequestModel(20064, 12)`, `0x038B` → `LoadAllRequestedModels(0)`, `0x06EA` ×2,
+    `0x06E9(1010)`, `0x06E7(car, 1010, out)` (ADD_VEHICLE_MOD); 1080 the same;
+  * type 3 colour (3, 6) → no script command and no hooked call: static B 0x100B72F0 writes the colours directly to
+    `CVehicle+0x434/+0x435` (primary/secondary) and keeps them in samp's vehicle object (+0x79/+0x7A, flag +0x7B);
+    a per-vehicle tick (B 0x100B7340) re-writes them whenever GTA's bytes differ, except while the car is in a
+    mod shop (+0x71);
+  * after a stream-out/in the re-created car gets the components (`0x06EA`/`0x06E7`) and `0x06ED(car, 1)` in its
+    creation frame.
+* **103 ClientCheck** — layout and reply behaviour measured (`check|L|type|arg|offset|count`; replies seen in
+  `OnClientCheckResponse` and in the capture, rel 9 ch 0, sent one frame (~16 ms) after the request):
+  * reply payload = `u8 type, u32 arg, u8 result` (e.g. `02 12020010 01`).
+  * type 2 (no inputs used): arg = the local ped's (on foot) or vehicle's (in a vehicle) dword at entity +0x40
+    (measured 0x10000212 on foot, 0x10000202 driving), result = 1 on foot / 2 in a vehicle.
+  * type 5: arg = a gta_sa.exe address in [0x400000, 0x856E00] (else no reply), result = an 8-bit checksum of
+    `count` bytes at arg + offset (0x400000/0/4 → 0x84).
+  * type 0x45: arg ≤ 800000 = offset into samp.dll's image; same checksum (0/0/4 → 0x84, the "MZ" header like 5).
+  * type 0x46: arg = model id; checksum over that model-info entry (411/0/4 → 0x88).
+  * type 0x47: arg = model id; the model is requested and loaded (Sleep(1) polling up to 1000 ms, then released if
+    unused); checksum over its collision data (411/0/4 → 0x0C).
+  * type 0x48: no inputs; arg = `(tick count & 0x0FFFFFFF) | 0x30000000` (two requests 2.1 s apart differed by 0x83B),
+    result 0.
+  * no reply: offset > 256, count > 256 (count 300 measured), count < 2, any other type (0 measured).
+  * The checksum function (B 0x1000EA50) is not described here (anti-cheat; derivation intentionally not recorded,
+    as in `session-misc.md`); TODO-unknown for an implementation that wants to answer types 5/0x45/0x46/0x47.
+* Not sent by open.mp 1.6.7 in these steps: 48 (SetPlayerVirtualWorld — the server streams instead), 112
+  (PlayCrimeReportForPlayer with a bot suspect) → TODO-unknown (needs a server that sends them).
+
+### Per-frame noise seen in every window
+samp runs these script commands every frame regardless of the scenario (exclude them when diffing):
+`0x00C0(12, 0)` (time, while the clock is server-held), `0x04EE` for PARACHUTE, BAR, GANGS, PAULNMAC, VENDING,
+FIGHT_B…E, `0x0248` for models 3131, 1485, 1486, 1543, 1546, 343, 342, 344, 330, `0x052C(0, drunk)`, `0x09BA(0)`,
+`0x0470(1, …)`, `0x077E` (GET_AREA_VISIBLE, 2–3×).
+
+## Audio (TRACE-8)
+
+Same run (`orig-20261105-003749`). Audio stayed inaudible: Wine output goes to the private `samp_rs_null` sink
+(`tools/wine-env.sh`); everything below comes from the BASS call log, not from listening.
+
+**Tool:** `SAMP_TRACER_BASS=1` makes the tracer redirect the client module's 17 `bass.dll` import-address-table slots
+to logging wrappers (`crates/samp-tracer/src/win/audio.rs`, decoding in `src/bass.rs`; neither samp.dll's code nor
+bass.dll is modified). Record `bass`: `call`, decoded arguments, return value, `dur_ms`, `thread` (`main` = the
+`CGame::Process` thread, `worker` = samp's stream thread). Calls identical to the previous call of the same function
+are folded (`repeats_before`, `repeat_span_ms`). `tools/trace/icyserve.py PORT FILE LOG` serves `/plain.mp3`
+(plain HTTP), `/icy.mp3` (`ICY 200 OK`) and `/icyh.mp3` (Icecast-style `HTTP/1.0 200 OK` + `icy-*` headers +
+`StreamTitle` metadata every 8192 bytes, title changes every 10 s) and logs each request.
+
+### BASS imports and start-up — MEASURED
+* samp.dll imports from bass.dll (static import): SetEAXParameters, SetConfig, SetConfigPtr, Init, Free, StreamFree,
+  ChannelGetTags, StreamGetFilePosition, ChannelSetSync, ChannelPlay, StreamCreateURL, ChannelStop, Apply3D,
+  ChannelSet3DPosition, ChannelSet3DAttributes, Set3DPosition, Set3DFactors.
+* The five 3D functions are referenced only from B 0x10066B90 (Set3DFactors(1, 1, 2), Set3DPosition from the camera,
+  Set3DAttributes(mode 1, min 10, max 100, 360, 360, 1.0), ChannelSet3DPosition, Apply3D, with debug prints), which has
+  **no caller** (dead code); **none was called at runtime**. 3D falloff is done by volume (below).
+* Boot (frame 34, main thread, from the boot routine B 0x100C47B0 after the D3D device exists): `BASS_Free()`,
+  `BASS_Init(-1, 44100, 0, NULL, NULL)` = 1 (6 ms), `SetConfigPtr(NET_AGENT, "SA-MP/0.3")`,
+  `SetConfig(GVOL_STREAM, radioVolume × 7000)` (= 7000 with radio volume 1.0), `SetConfig(NET_PLAYLIST, 1)`,
+  `SetConfig(NET_TIMEOUT, 10000)`, `SetEAXParameters(-1, 0.0, -1.0, -1.0)` (EAX off). With `audioproxyoff=1` the
+  client also calls `SetConfigPtr(NET_PROXY, NULL)` (static, B 0x100664E8; not exercised: default 0).
+* HTTP request seen by the server: `GET /x.mp3 HTTP/1.1`, `Host: …`, `User-Agent: SA-MP/0.3`, `Icy-MetaData: 1`.
+
+### PlayAudioStreamForPlayer (41) / StopAudioStream (42) — MEASURED
+* Chat line `Audio stream: <url>` (also in chatlog.txt) unless `audiomsgoff`. The RPC starts the worker
+  (2–4 frames ≈ 60–150 ms later the first BASS call appears). Worker sequence:
+  `StreamCreateURL(url, 0, 0x940000 = BLOCK|STATUS|AUTOFREE, NULL, NULL)` (52–82 ms, blocking) →
+  `ChannelPlay(h, 0)` → `ChannelGetTags(h, ICY)` → `ChannelGetTags(h, HTTP)` → `ChannelGetTags(h, META)` →
+  `ChannelGetTags(h, OGG)` → `ChannelSetSync(h, META, 0, proc, 0)` → `ChannelSetSync(h, OGG_CHANGE, 0, proc, 0)`, then
+  a loop every **20 ms**: `StreamGetFilePosition(h, 4 = BASS_FILEPOS_CONNECTED)` + `SetConfig(GVOL_STREAM, v)`
+  (479 iterations in 9.59 s).
+* Station / title: with the Icecast-style answer `ChannelGetTags(HTTP)` returned the `icy-name`/`icy-url` lines and
+  `META` returned `StreamTitle='Trace Artist - Title 0';`; the META sync callback then calls `ChannelGetTags(META)`
+  on every metadata block (~0.46 s here). The bottom-left line `Trace Artist - Title 0 - TraceStation` was drawn
+  (screenshot `audio_icyh.png`, x ≈ 16, y ≈ 700 at 1280x720; exact rect TODO-unknown: no d3d text capture). With the
+  Shoutcast `ICY 200 OK` answer BASS returned no ICY/META tags (only `HTTP/1.0 200 OK`), so no title line.
+* Volume (`SetConfig(GVOL_STREAM)` values written by the worker):
+  * no position: 7000 (= radio volume 1.0 × 7000);
+  * with position, distance 50: 7945 at d ≈ 0.33 m, 4799 at d = 20 m, **0 at 60 m**, 7991/7992 back at ≈ 0.1 m —
+    i.e. `8000 × (1 − d/distance)` for d < distance, else 0 (linear falloff, no BASS 3D);
+  * GTA menu open (Esc): 0 within one 20 ms tick; back to 7000 one tick after the menu closed.
+* **Replace** (second 41 one second after the first): the worker of the old stream calls `ChannelStop(old)`
+  (130 ms), the main thread `StreamFree(0)` (handle already cleared), then the new worker starts; the old HTTP
+  connection closes ~0.3 s after the new request arrives.
+* **42 StopAudioStream**: worker `ChannelStop(h)` = 0 and main thread `StreamFree(h)` = 1 (119–213 ms, it blocks the
+  main thread that long); the server sees the disconnect.
+* Unreachable URL: `StreamCreateURL` returns 0 after 16 ms; samp still calls ChannelPlay/GetTags/SetSync with handle 0
+  and keeps looping `StreamGetFilePosition(0, 4)` (= −1) every 20 ms until 42 / the next 41 (no chat error).
+* **Radio:** while a stream is "playing" (from the RPC until stop, also for a failed URL) samp calls, **every frame**,
+  `CAudioEngine::StartRadio(-1, 0)` and then `CAudioEngine::StopRadio(NULL, 0)` (B 0x10066A40). In a Sultan
+  (Radio Los Santos shown on entry) the station name did not reappear after 42; samp makes no radio call after the
+  stop (whether GTA's radio resumes by itself: TODO-unknown — needs an audio-level check). samp does not otherwise
+  disable the radio (no patch in the CSV touches the radio code).
+
+### PlayerPlaySound (16) — MEASURED (Audio object method B 0x100A22D0)
+* 1000–1999 (1052 at a position): `0x018C(x, y, z, id)` (ADD_ONE_OFF_SOUND), same frame.
+* 2…999 (5): `CAEAmbienceTrackManager::PlaySpecialMissionAmbienceTrack(5)` (direct call, this = 0x8AC15C).
+* 0: `CAEAmbienceTrackManager::StopSpecialMissionAmbienceTrack()`; if a mission sound was started before, `0x040D(1)`
+  first (CLEAR_MISSION_AUDIO).
+* 1: no observable call (sets a flag byte).
+* ≥ 2000 (2000, 3200 at a position): `0x040D(1)`, `0x03CF(1, id)` (LOAD_MISSION_AUDIO), `0x03D7(1, x, y, z)`
+  (SET_MISSION_AUDIO_POSITION) in the RPC frame, then **per frame** `0x03D0(1)` (HAS_MISSION_AUDIO_LOADED) until it
+  returns true (3 frames here) and then `0x03D1(1)` (PLAY_MISSION_AUDIO) once.
+
+## Client features (TRACE-8)
+
+Runs: `orig-20261105-003749` (local commands, F8, /quit), `orig-20261105-010108` (test sa-mp.cfg at boot, gmx,
+lost connection), `orig-20261105-011721` (no-server start, full, kick; own server `max_players` 1 on UDP 7790) and `orig-20261105-012511` (`TRACE_SAMP_CFG` with a quoted fontface; server password). Statics are build B.
+
+### sa-mp.cfg — MEASURED (boot routine B 0x100C47B0, parser B 0x10065F00, writer B 0x10066040)
+* Path `<user files>\SAMP\sa-mp.cfg` (`%s\sa-mp.cfg`, same folder as `chatlog.txt`, `screens\`). Lines `key=value`
+  written with CR LF. Value types: `"…"` (double-quoted) = string, contains `.` = float, else integer (atol).
+  An unquoted string (`fontface=Courier New`) is an integer 0: the face fell back to Arial and the client later
+  rewrote the file with `fontface=0`. The client rewrites the whole file whenever it stores a key (local commands,
+  creation of missing defaults).
+* Created with defaults at boot when missing: `fpslimit=48` (B 0x100C4E4E), `multicore=1`, `audioproxyoff=0`
+  (this is the content of a fresh prefix).
+* Boot effects measured with a test cfg (`fpslimit=30 multicore=0 audioproxyoff=1 disableheadmove=1
+  nonametagstatus=1 timestamp=1 audiomsgoff=1 logurls=1 nohudscalefix=1 pagesize=15 fontsize=1 fontweight=1
+  directmode=1`):
+  * `fpslimit=N` (20–90, else ignored): samp keeps N (Game+0x5D) and sets GTA's own limiter `RsGlobal.frameLimit`
+    (0xC1704C) to 200, i.e. samp limits the frame rate itself. Measured CGame::Process rates: 48 → 53–54/s,
+    30 → 31–32/s, 90 → 62/s (renderer-bound). `/fpslimit N` applies immediately.
+  * `multicore=0` → `SetProcessAffinityMask(GetCurrentProcess(), 1)` (affinity of gta_sa.exe was `1`; other
+    lanes' games `fffffff`).
+  * `audioproxyoff=1` → `BASS_SetConfigPtr(NET_PROXY, NULL)` at boot (returned 0 under Wine).
+  * `directmode=1` → chat line `ChatWindow: Using direct drawing mode.` printed **before** the `SA-MP … Started`
+    line; the chat render-to-texture is not created (B 0x10068210, flag +0x63B2 = 0).
+  * `fontsize=1` → main chat font 18 (base 16 at width 1280: < 1024 → 14, < 1400 → 16, < 1600 → 18, else 20;
+    plus 2·fontsize), small 16, death-window 16, GTAWEAPON3 24/28, GUI 22/20; SAMPAUX3 22/28 and the plate font
+    38/w10 unchanged.
+  * `fontweight`: 1 → weight 400 for the main/small fonts (measured), any other value or missing → 700.
+  * `fontface="Courier New"` (quoted) → main 16/14, death 14, GUI 20/18 fonts created as `Courier New`; the plate
+    font (Arial 38/w10), GTAWEAPON3 and SAMPAUX3 keep their faces. Default `Arial` (B 0x1011748C).
+    `fontweight=2` → 700.
+  * `timestamp=1` → chat shows `[HH:MM:SS] ` prefixes on screen (screenshot); `pagesize=15` → 15-line page.
+  * `nonametagstatus=1` → NetGame+0x234 = 0 at connect (AFK/status icon off); `disableheadmove=1` → Game+0x59 = 0
+    (head tracking off); `nohudscalefix=1` → flag B 0x10117470 = 0 (aspect-ratio fix of `gta-patches.md` off);
+    `audiomsgoff=1` → no `Audio stream:` line; `logurls=1` → `[url 0x%X]: %s` lines for HTTP model downloads
+    (dormant in R4). Their visual effects (head, HUD scale, icons) were not screenshot-compared.
+* Local commands (run 003749; chat lines and cfg keys written): `/fpslimit N` → `-> Frame Limiter: N` (fpslimit),
+  `/headmove` → `-> Head movements disabled|enabled` (disableheadmove 1/0), `/nametagstatus` →
+  `NameTag Player Status: OFF|ON` (nonametagstatus 1/0), `/timestamp` → **no chat line** (timestamp 1/0),
+  `/audiomsg` → `Audio messages: Off|On` (audiomsgoff), `/logurls` → `URL messages: On|Off` (logurls),
+  `/hudscalefix` → no line (nohudscalefix), `/togobjlight` → no line, no cfg key, `/mem` → `Memory: 1073741824`,
+  `/interior` → `Current Interior: 0`, `/cmpstat` → nothing.
+* `/save [c]` → `<user files>\SAMP\savedpositions.txt` (`AddStaticVehicle(560,1655.3934,-2514.9600,13.2516,
+  38.5217,3,6); // tr8` in a car, CR LF); `/rs [c]` on foot → `<user files>\SAMP\rawpositions.txt`
+  (`x,y,z,heading ; comment`), **in a car → `rawvehicles.txt` in the game's current directory** (relative path,
+  B string `rawvehicles.txt`; `560,1655.3934,-2514.9600,13.2516,38.5217,3,6 ; tr8`), chat `-> InCar pos saved`.
+
+### chatlog.txt — MEASURED
+* `<user files>\SAMP\chatlog.txt`, truncated at every client start (each run's file begins with the first line of
+  that run). One line per chat-window line: `[HH:MM:SS] ` (local time; always, independent of `timestamp`) + the
+  text **with embedded `{RRGGBB}` codes kept** (the line's own colour is not written) + `\r\r\n` (text-mode file
+  given `\r\n`). Debug/info lines (`Connecting to …`, `Audio stream: …`, `Widescreen = 1`, `Screenshot Taken - …`,
+  command feedback) are logged like server messages. Written as the lines are added (visible in the file while
+  the game runs).
+
+### F8 screenshot — MEASURED
+* F8 → `<user files>\SAMP\screens\sa-mp-NNN.png` (`%s\screens\sa-mp-%03i.png`, NNN = next free number; 003 and
+  004 after 000–002 existed), chat line `Screenshot Taken - sa-mp-003.png` (error text `Unable to save screenshot.`).
+  PNG, 1280x720 (the back buffer size), 8-bit RGB without alpha, ~580 KB, no text chunks. It captures the frame
+  including samp's UI (chat). Two presses 2 s apart → two files.
+
+### Connection lifecycle — MEASURED
+* **Start**: `SA-MP 0.3.7-R4 Started`, state 1 with the last-attempt time = construction time, so the first
+  `Connecting to H:P...` comes 3.0 s later (main loop B 0x1000B5A0 → B 0x10008930: state 1 and > 3000 ms since the
+  last attempt → print, RakClient Connect, state 2).
+* **No answer**: each attempt opens a new UDP socket (new source port) and sends the 12-byte open-connection
+  request 6 times at 1.0 s intervals; after ~6.05 s RakNet reports connection-attempt-failed (0x1D) →
+  `The server didn't respond. Retrying..` and state 1 → the next `Connecting to …` immediately (6 s since the last
+  attempt > 3 s). Cadence measured: 6.05–6.07 s per attempt (8 attempts).
+* **Lost connection** (server process stopped with SIGSTOP 60 s): the client kept resending (~90 ms) on the old
+  socket; 12.0 s after the last server packet RakNet reported connection lost (0x21) → in one frame:
+  RakClient Disconnect(0), `Lost connection to the server. Reconnecting..`, the RPC 40 reset routine (B 0x1000A530:
+  prints `The server is restarting..` too), deletion of all remote players, audio stream stop (wait), state 1 →
+  `Connecting to …` in the same second, then the 6-s retry cadence above. When the server resumed, the pending
+  attempt connected (`Connected. Joining the game...`) but open.mp still had the old player (timed out 10 s later,
+  reason 0), so the join got `CONNECTION REJECTED: Unacceptable NickName` + 3 hint lines
+  (`Please choose another nick between and 3-20 characters`, `Please use only a-z, A-Z, 0-9`,
+  `Use /quit to exit or press ESC and select Quit Game`) and the client **stopped retrying** (stayed on the
+  connecting camera, dead ped).
+* **Server restart (gmx, RPC 40)**: chat `The server is restarting..`; same frame: `0x04BB(0)`, `0x0860(char, 0)`,
+  `0x04E4` at the ped, `0x0321(player char)` (EXPLODE_CHAR_HEAD: the local ped is killed, damage 1000 weapon 34),
+  then **every frame** the "not connected" scene: local ped teleported to (1133.05, −2038.403, 69.1), `0x0925`,
+  `0x015F(1093, −2036, 90)`, `0x0160(384, −1557, 20, 2)`. No reconnect (same RakNet connection); 12.0 s later
+  open.mp re-sent InitGame (139) → `Connected to {B9C9BF}open.mp server`, model preload checks (`0x0248` for 400…)
+  and class selection again.
+* Packet handler texts (B 0x1000B250, statically): 0x1F no free incoming → `The server is full. Retrying...` and
+  state 1; 0x20 disconnection notification → `Server closed the connection.`, audio stop (wait), RakClient
+  Disconnect(2000 ms); 0x23 → `Failed to initialize encryption.`; 0x24 banned → `You are banned from this server.`
+  (no state change); 0x25 invalid password → `Wrong server password.` + Disconnect(0).
+* **Server full** (max_players 1, the client's old slot still taken after a lost connection): the server answers
+  the open-connection request at once (10-byte reply) → `The server is full. Retrying...`, state 1 → next attempt
+  (new socket) **3.04 s** later (37.18 → 40.22 → 43.26 → 46.30 → 49.33 s), until a slot is free; then a normal join
+  (`Connected. Joining the game...`, InitGame, class selection).
+* **Kicked** (`Kick()`): server disconnection notification (16 bytes) → client ack 2 ms later →
+  `Server closed the connection.`; the audio stream stops (per-frame radio calls end); **no reconnect, no reset, no
+  script command** for 30 s observed: the ped stays where it was (state IDLE, health 100), the world is frozen in
+  its last network state. Server reason 2 (kick).
+* **Wrong password** (server `password: secret`, client without one): cookie exchange, connection request,
+  server reply (16 bytes) 18 ms later → `Wrong server password.`; RakClient Disconnect(0); **no retry** (35 s observed).
+* **Banned / wrong version**: TODO-unknown live — open.mp 1.6.7 wrote `127.0.0.1` to bans.json on `banip` but did
+  not refuse the loopback reconnect (the client got "full" then joined), and it accepts the R4 version string, so
+  neither 0x24 nor RPC 130 reason 1 could be produced locally; texts and handlers are static (above and
+  `session-misc.md` RPC 130).
+* Attempts with no server running at all (fresh start, run 011721): `Connecting to …` 3.0 s after `Started`, then
+  `The server didn't respond. Retrying..` + `Connecting to …` every 6 s.
+* **/quit**: the client sends the RakNet disconnection notification (0x20, rel 6) — the server logged reason 1
+  (quit) — and tears down its pools first (vehicles deleted, `0x0362` remove char from car, ped teleport), then
+  the game exits.
+
 ## Open problems / notes
 
 * `origin` stack scanning is heuristic. For samp's script commands the first two entries

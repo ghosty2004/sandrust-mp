@@ -708,6 +708,54 @@ pub static HOOKS: &[HookSpec] = &[
         Always,
         &[VecVal(0, "pos")],
     ),
+    // --- TRACE-8: sounds, radio, shop name, crime reports, enex transitions, scripted camera ----------
+    h(
+        "CAEAmbienceTrackManager::PlaySpecialMissionAmbienceTrack",
+        0x4D6D50,
+        &[0x8B, 0x44, 0x24, 0x04, 0x89, 0x41, 0x0C],
+        Always,
+        &[I32(0, "track")],
+    ),
+    h("CAEAmbienceTrackManager::StopSpecialMissionAmbienceTrack", 0x4D6D60, &[0x8B, 0x41, 0x08, 0x33, 0xD2], Always, &[]),
+    h("CAudioEngine::StartRadio", 0x507DC0, &[0xB9, 0x54, 0xE5, 0x8A, 0x00], Relevant, &[I32(0, "station"), I32(1, "bass")]),
+    h("CAudioEngine::StopRadio", 0x506F70, &[0xB9, 0xF8, 0xB6, 0x8C, 0x00], Relevant, &[Addr(0, "settings"), Bool(1, "duck")]),
+    h("CShopping::LoadShop", 0x49BBE0, &[0x83, 0xEC, 0x20, 0x56, 0x8B, 0x74, 0x24, 0x28], Always, &[CStr(0, "name")]),
+    h(
+        "CEntryExit::TransitionStarted",
+        0x43FFD0,
+        &[0x6A, 0xFF, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00],
+        Always,
+        &[Entity(0, "ped")],
+    ),
+    h("CEntryExit::TransitionFinished", 0x4404A0, &[0x6A, 0xFF, 0x68, 0x06, 0x78, 0x83, 0x00], Always, &[Entity(0, "ped")]),
+    h(
+        "CCamera::SetCamPositionForFixedMode",
+        0x50BEC0,
+        &[0x8B, 0x54, 0x24, 0x04, 0x56],
+        Always,
+        &[VecPtr(0, "pos"), VecPtr(1, "up")],
+    ),
+    h(
+        "CCamera::TakeControlNoEntity",
+        0x50C8B0,
+        &[0x8B, 0x44, 0x24, 0x0C, 0x83, 0xF8, 0x02],
+        Always,
+        &[VecPtr(0, "pos"), I32(1, "switch"), I32(2, "who")],
+    ),
+    h(
+        "CCamera::VectorMoveLinear",
+        0x50D160,
+        &[0x51, 0xA1, 0x84, 0xCB, 0xB7, 0x00],
+        Always,
+        &[VecPtr(0, "end"), VecPtr(1, "start"), F32(2, "time_ms"), Bool(3, "ease")],
+    ),
+    h(
+        "CCamera::VectorTrackLinear",
+        0x50D1D0,
+        &[0x51, 0xA1, 0x84, 0xCB, 0xB7, 0x00],
+        Always,
+        &[VecPtr(0, "end"), VecPtr(1, "start"), F32(2, "time_ms"), Bool(3, "ease")],
+    ),
 ];
 
 /// Register/stack view of a hooked call at function entry.

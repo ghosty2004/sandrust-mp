@@ -37,6 +37,7 @@ use crate::scm;
 use crate::watch;
 use crate::x86;
 
+mod audio;
 mod combat;
 mod cov;
 mod d3d;
@@ -400,6 +401,7 @@ fn tid() -> u32 {
 }
 
 fn on_call(idx: usize, r: &Regs) {
+    audio::poll();
     if idx & TABLE_TAG != 0 {
         return stock_cmd(r);
     }
@@ -697,6 +699,7 @@ fn on_frame() {
     vehicles::frame();
     world::frame(n);
     combat::frame();
+    audio::on_frame();
     d3d::frame();
     efx::frame();
     flush();
@@ -1100,6 +1103,7 @@ fn attach() {
     remote::init();
     d3d::init(&dir);
     efx::init(&dir);
+    audio::init();
     let boot = stock_boot_attach();
     let (ok, mut failed) = install_all();
     let table = install_table_thunks().unwrap_or_else(|e| {

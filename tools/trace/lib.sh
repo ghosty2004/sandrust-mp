@@ -65,6 +65,16 @@ trace_install() {
     true
 }
 
+# trace_log_cfg — records which SA:MP client config the next launch reads (tools/wine-env.sh installs
+# tools/sa-mp.cfg.baseline or $TRACE_SAMP_CFG into the prefix): source, sha256 and content go to
+# $OUT/samp-cfg.txt when $OUT is set (TRACE-8).
+trace_log_cfg() {
+    local f="$WINEPREFIX/drive_c/users/$USER/Documents/GTA San Andreas User Files/SAMP/sa-mp.cfg"
+    [ -n "${OUT:-}" ] && [ -d "$OUT" ] && [ -f "$f" ] || return 0
+    { echo "source: ${TRACE_SAMP_CFG:-${SAMP_RS_SAMP_CFG:-baseline}}"; echo "sha256: $(sha256sum < "$f" | cut -d' ' -f1)"
+      tr -d '\r' < "$f"; } > "$OUT/samp-cfg.txt"
+}
+
 # trace_launch CLIENT NAME — runs gta_sa.exe through our launcher with the tracer
 # loaded first, then the client DLL (orig = samp.dll 0.3.7-R4, ours = samp_client.dll,
 # bare = no client: the tracer boots a stock single-player game, SAMP_TRACER_BOOT=1).
@@ -78,6 +88,7 @@ trace_launch() {
         bare) export SAMP_TRACER_BOOT=1 ;;
         *) echo "trace_launch: client must be orig, ours or bare" >&2; return 2 ;;
     esac
+    trace_log_cfg
     cd "$GTA_DIR" || return 1
     wine_launch samp-trace "$GTA_DIR/samp-rs-launcher.exe" \
         --gta "$(winepath -w "$GTA_DIR/gta_sa.exe")" "${dlls[@]}" \
