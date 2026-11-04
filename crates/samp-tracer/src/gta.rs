@@ -244,6 +244,32 @@ pub fn format_state(s: &Snapshot, ticks: u64) -> String {
     out
 }
 
+/// `remote` reply of the control channel (DIFF-3 cross-client): a header line
+/// `remote count=N`, then one line per remote player ped `(slot, CPed*)` from
+/// the frame-boundary cache. Like samp-client's `remote` (header + one line per
+/// player), but the tracer only sees GTA: no player id or name, just the slot
+/// and what the ped holds. Unreadable fields print `-`.
+pub fn format_remote<M: Mem>(m: &M, peds: &[(u32, u32)]) -> String {
+    let mut out = format!("remote count={}", peds.len());
+    for &(slot, ped) in peds {
+        let model = m.i16(ped + off::ENTITY_MODEL).map(|v| v.to_string());
+        let pos = entity_pos(m, ped).map(|p| format!("{:.3},{:.3},{:.3}", p[0], p[1], p[2]));
+        let heading = m.f32(ped + off::PED_HEADING).map(|v| format!("{v:.4}"));
+        let health = m.f32(ped + off::PED_HEALTH).map(|v| format!("{v:.1}"));
+        let armour = m.f32(ped + off::PED_ARMOUR).map(|v| format!("{v:.1}"));
+        let dash = || "-".to_string();
+        out.push_str(&format!(
+            "\nremote slot={slot} ped={ped:#x} model={} pos={} heading={} health={} armour={}",
+            model.unwrap_or_else(dash),
+            pos.unwrap_or_else(dash),
+            heading.unwrap_or_else(dash),
+            health.unwrap_or_else(dash),
+            armour.unwrap_or_else(dash),
+        ));
+    }
+    out
+}
+
 /// Names of the scripts in `CTheScripts::pActiveScripts`, in list order.
 pub fn active_scripts<M: Mem>(m: &M) -> Vec<String> {
     let mut out = Vec::new();
@@ -322,5 +348,26 @@ mod tests {
         m.set(b + script::NAME, b"intro\0\0\0");
         m.set(b + script::IS_MISSION, &[1]);
         assert_eq!(active_scripts(&m), vec!["main".to_string(), "intro*".to_string()]);
+    }
+
+    #[test]
+    fn remote_reply_lists_cached_peds() {
+        let mut m = FakeMem::default();
+        let (ped, mat) = (0x400_0000u32, 0x400_1000u32);
+        m.set(ped + off::ENTITY_MODEL, &60i16.to_le_bytes());
+        m.set_u32(ped + off::PLACEABLE_MATRIX, mat);
+        m.set_f32(mat + 0x30, 1958.5);
+        m.set_f32(mat + 0x34, 1343.25);
+        m.set_f32(mat + 0x38, 15.375);
+        m.set_f32(ped + off::PED_HEADING, -1.5);
+        m.set_f32(ped + off::PED_HEALTH, 64.0);
+        m.set_f32(ped + off::PED_ARMOUR, 37.0);
+        assert_eq!(format_remote(&m, &[]), "remote count=0");
+        assert_eq!(
+            format_remote(&m, &[(2, ped), (3, 0x500_0000)]),
+            "remote count=2\n\
+             remote slot=2 ped=0x4000000 model=60 pos=1958.500,1343.250,15.375 heading=-1.5000 health=64.0 armour=37.0\n\
+             remote slot=3 ped=0x5000000 model=- pos=- heading=- health=- armour=-"
+        );
     }
 }

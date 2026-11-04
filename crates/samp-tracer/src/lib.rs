@@ -13,6 +13,7 @@
 //! `win` (cfg(windows)).
 
 pub mod control;
+pub mod d3d;
 pub mod gta;
 pub mod hooks;
 pub mod json;

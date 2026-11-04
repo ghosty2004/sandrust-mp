@@ -1,6 +1,8 @@
 //! Control channel, same line protocol as samp-client (`ping`, `state`,
-//! `quit`, `peek ADDR LEN`) plus tracer-only `mark TEXT` (writes a marker
-//! record into the trace, used by scenario scripts to label steps).
+//! `quit`, `peek ADDR LEN`, `remote`) plus tracer-only `mark TEXT` (writes a
+//! marker record into the trace, used by scenario scripts to label steps).
+//! `remote` answers a header line plus one line per remote player ped, like
+//! samp-client's (DIFF-3).
 //!
 //! Served from a background thread with blocking sockets, so it also answers
 //! while the game is loading or paused.
@@ -19,6 +21,12 @@ pub enum Command {
     Quit,
     Peek { addr: u32, len: usize },
     Mark(String),
+    Remote,
+    /// `d3d off|on|ui|all|text [FRAMES]` (Direct3D call-stream logger, `crate::d3d`).
+    D3d(String),
+    /// `poke ADDR HEXBYTES`: writes bytes (test harness only, e.g. to see whether a client
+    /// rewrites a flag every frame).
+    Poke { addr: u32, bytes: Vec<u8> },
     Unknown(String),
 }
 
@@ -38,6 +46,17 @@ pub fn parse(line: &str) -> Option<Command> {
         return Some(Command::Mark(rest.trim().to_string()));
     }
     let lower = t.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("d3d ") {
+        return Some(Command::D3d(rest.trim().to_string()));
+    }
+    if let ["poke", a, hex] = lower.split_whitespace().collect::<Vec<_>>().as_slice()
+        && let Some(addr) = parse_num(a).filter(|&a| a <= u64::from(u32::MAX))
+        && hex.len() % 2 == 0
+        && (2..=2 * MAX_PEEK).contains(&hex.len())
+        && let Some(bytes) = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok()).collect()
+    {
+        return Some(Command::Poke { addr: addr as u32, bytes });
+    }
     let words: Vec<&str> = lower.split_whitespace().collect();
     if let ["peek", a, n] = words.as_slice()
         && let (Some(addr), Some(len)) = (parse_num(a), parse_num(n))
@@ -49,6 +68,7 @@ pub fn parse(line: &str) -> Option<Command> {
     Some(match lower.as_str() {
         "ping" => Command::Ping,
         "state" => Command::State,
+        "remote" => Command::Remote,
         "quit" | "exit" => Command::Quit,
         _ => Command::Unknown(t.to_string()),
     })
@@ -101,10 +121,14 @@ mod tests {
         assert_eq!(parse("ping\r\n"), Some(Command::Ping));
         assert_eq!(parse(" STATE "), Some(Command::State));
         assert_eq!(parse("quit"), Some(Command::Quit));
+        assert_eq!(parse("Remote\n"), Some(Command::Remote));
         assert_eq!(parse(""), None);
         assert_eq!(parse("mark class selection"), Some(Command::Mark("class selection".into())));
         assert_eq!(parse("peek 0x53EB12 5"), Some(Command::Peek { addr: 0x53EB12, len: 5 }));
         assert!(matches!(parse("peek 0x10 999"), Some(Command::Unknown(_))));
+        assert_eq!(parse("d3d all 3"), Some(Command::D3d("all 3".into())));
+        assert_eq!(parse("poke 0xBA6769 00ff"), Some(Command::Poke { addr: 0xBA6769, bytes: vec![0, 0xFF] }));
+        assert!(matches!(parse("poke 0xBA6769 0"), Some(Command::Unknown(_))));
         assert_eq!(port_from_env(Some("47701")), 47701);
         assert_eq!(port_from_env(Some("x")), DEFAULT_PORT);
         assert_eq!(port_from_env(None), DEFAULT_PORT);

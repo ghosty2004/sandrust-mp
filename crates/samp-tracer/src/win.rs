@@ -37,6 +37,7 @@ use crate::scm;
 use crate::watch;
 use crate::x86;
 
+mod d3d;
 mod remote;
 mod vehicles;
 
@@ -411,6 +412,11 @@ fn on_call(idx: usize, r: &Regs) {
         Special::PedProcessControl => return remote::on_pc_call(r),
         Special::WorldProcess => return,
         Special::VehProcessControl => return vehicles::on_vpc_call(r),
+        Special::WndProc => {
+            if !(0x100..=0x109).contains(&ProcMem.u32(r.esp + 8).unwrap_or(0)) {
+                return;
+            }
+        }
         Special::None => {}
     }
     match spec.addr {
@@ -682,6 +688,7 @@ fn on_frame() {
     drop(g);
     remote::frame(n);
     vehicles::frame();
+    d3d::frame();
     flush();
 }
 
@@ -955,10 +962,29 @@ fn handle(cmd: &Command) -> (String, bool) {
                 (format!("error {addr:#x}+{len} is not readable"), false)
             }
         }
+        Command::Remote => (gta::format_remote(&ProcMem, &gta::scan_cached_remote()), false),
         Command::Mark(text) => {
             emit(record("mark", None, None, None, Val::obj().with("text", text.as_str())));
             flush();
+            d3d::mark(text);
             ("ok".into(), false)
+        }
+        Command::D3d(args) if args == "busy" => ((if d3d::busy() { "busy" } else { "idle" }).into(), false),
+        Command::D3d(args) => (d3d::command(args), false),
+        Command::Poke { addr, bytes } => {
+            if !ProcMem.read(*addr, &mut vec![0u8; bytes.len()]) {
+                return (format!("error {addr:#x} is not readable"), false);
+            }
+            let mut old = 0u32;
+            // SAFETY: test-harness write to a committed, readable range (made writable for the store).
+            unsafe {
+                let p = *addr as usize as *mut c_void;
+                VirtualProtect(p, bytes.len(), PAGE_EXECUTE_READWRITE, &mut old);
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, bytes.len());
+                VirtualProtect(p, bytes.len(), old, &mut old);
+            }
+            emit(record("poke", None, None, None, Val::obj().with("addr", Val::Hex(*addr)).with("bytes", bytes.len() as u32)));
+            (format!("ok poke {addr:#x} {}", bytes.len()), false)
         }
         Command::Quit => {
             request_quit();
@@ -978,6 +1004,7 @@ fn request_quit() {
     remote::summaries();
     emit(record("quit", None, None, None, Val::obj()));
     flush();
+    d3d::flush();
     // SAFETY: RsGlobal.quit is a plain int in the game's .data.
     unsafe { std::ptr::write_volatile(gta::RS_GLOBAL_QUIT as usize as *mut u32, 1) };
     let _ = std::thread::Builder::new().name("tracer-quit".into()).spawn(|| {
@@ -1005,6 +1032,7 @@ fn flusher_thread() {
         let _ = catch_unwind(|| {
             refresh_client_modules();
             flush();
+            d3d::flush();
         });
     }
 }
@@ -1050,6 +1078,7 @@ fn attach() {
     }
     capture::init();
     remote::init();
+    d3d::init(&dir);
     let boot = stock_boot_attach();
     let (ok, mut failed) = install_all();
     let table = install_table_thunks().unwrap_or_else(|e| {

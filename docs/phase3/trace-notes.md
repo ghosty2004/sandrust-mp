@@ -763,6 +763,300 @@ This section confirms that spec at runtime and refines it.
   * 203 about once per second.
 * Not measured yet: passengers (211), trailers, trains, bikes, aircraft, damage. They need more scenario steps.
 
+## UI (TRACE-3)
+
+Everything here was measured on the ORIGINAL client (samp.dll 0.3.7-R4 build B, as installed in
+`wine/gta-sa-trace`) in the trace lane. GTA ran at 1280x720 (video mode 32, see below) with
+`fontsize` 0 and `pagesize` 10 unless stated otherwise. Rects are `[left, top, right, bottom]`.
+Quads are written as `x0,y0–x1,y1` and come from the decoded vertices of the actual draw calls.
+`B+0x…` = samp.dll build B offset.
+
+### Tools
+
+* **D3D call-stream logger** (`crates/samp-tracer/src/d3d.rs` tables/decoding, `src/win/d3d.rs` runtime).
+  It is installed from the first `CGame::Process` that finds a device in `_RwD3DDevice` (0xC97C28).
+  * It reaches the **real** device through `GetSwapChain(0)` → `GetDevice`, so a client proxy in
+    0xC97C28 is bypassed. It patches the device vtable (calls made by d3d9.dll itself are
+    ignored). It finds the D3DX font, sprite and render-to-surface vtables and the driver's
+    vertex-buffer vtable by creating one throw-away object of each class (class vtables are shared).
+  * It inline-hooks the D3DX factories of the loaded `d3dx9_NN.dll` (hot-patch prologue):
+    `D3DXCreateFont{A,W,IndirectA,IndirectW}`, `D3DXCreateSprite`, `D3DXCreateRenderToSurface`,
+    `D3DXCreateTexture`, `D3DXCreateTextureFromFileEx{A,W}`, `D3DXCreateTextureFromFileInMemoryEx`
+    and `D3DXLoadSurfaceFromFileA`. These calls are logged with their arguments, and textures and
+    fonts are labelled by file name or face.
+  * Output: `d3d.jsonl`. Records have `pr` (Present count), `f` (game frame), `sc` (scene:
+    `game` = begun by GTA/proxy, `d3dx` = D3DX render-to-surface, `none` = outside any scene,
+    which is where samp's Present pass runs), `fn`, `by` (caller module+offset), `org`
+    (client return addresses) and `args`.
+    * Draws carry `vertices`: decoded `x,y,z[,rhw] #AARRGGBB u,v` up to 1024 vertices, otherwise
+      a hash. This works for FVF and vertex-declaration formats. Dynamic VB contents are shadowed
+      from Lock/Unlock while logging.
+    * They also carry `tex0`: the stage-0 texture as `tex WxH fFMT … file:NAME`.
+    * `font.DrawText{A,W}` records the font descriptor, text, count, rect, fmt and colour, then a
+      `.ret` record with the height (and the rect for DT_CALCRECT). The glyph `sprite.Draw`s
+      between the two belong to that text.
+  * Always logged: factories, cursor calls (`ShowCursor` de-duplicated with `repeats_before`),
+    Reset, GetFrontBufferData, state-block recording (`recording_stateblock`). Everything else
+    only while logging is on.
+  * Logging is switched with the control command `d3d ui|all|text [FRAMES]` / `d3d off`
+    (`d3d busy` → busy/idle). It runs from Present to Present. `ui` = calls outside GTA's scenes
+    + D3DX scenes + every font/sprite call. `all` = everything. `text` = DrawText only.
+  * Each Present record carries `hud` = bytes 0xBA6769 / 0xBAA3FB.
+  * The install record lists RenderWare's video-mode table.
+* New GTA hooks: `CMessages::AddBigMessage` (0x69F2B0, with `text_addr`), and `__MainWndProc`
+  (0x747EB0; only keyboard messages 0x100–0x109 are written).
+* New control commands: `poke ADDR HEX` (test harness) and `d3d …`.
+* `tools/trace/run.sh orig|ours hold|holdjoin` starts an interactive session. The server runs
+  `tools/trace/uifs.pwn`; holdjoin only boots; `TRACE_NO_SERVER=1` starts no server.
+  `tools/trace/ui.sh` drives it: key/type/shot/ctl/mark, `fs 'cmd|args'` (filterscript commands
+  through `scriptfiles/uicmd.txt`), `d3d MODE N NAME`, `d3d-start`/`d3d-collect`, bots, stop.
+  `tools/trace/uicap.sh` adds `cap NAME FRAMES MODE -- ACTION`.
+* `tools/trace/d3d_diff.py dump|diff|texts|quads`: readable listing with render/TSS/sampler
+  states named; a normalised diff of one logged frame per side; all DrawTexts; draws as screen
+  rects with texel rects.
+* `tools/trace/setmode.py GTA_SA_SET INDEX` sets `m_nDisplayVideoMode`.
+  * Under headless gamescope 1280x720 the RW list is: 0 = 1280x720x32 (windowed), 1–16 = the
+    16-bit modes, 17–32 = the 32-bit modes. 27 = 864x486, **32 = 1280x720**.
+  * The shared gta_sa.set had 27, so earlier headless runs rendered at 864x486.
+* Lane hygiene found on the way:
+  * `drive_c/users/$USER/Documents` was a symlink to the user's `~/Documents` in prefix,
+    prefix-trace and prefix-diff, so all three shared gta_sa.set, sa-mp.cfg and chatlog.txt.
+    They are now private per prefix (main session fixed the others).
+  * `run.sh` now holds `target/locks/trace.lock` for the whole run (`tools/trace/with-lock.sh`
+    for wrappers).
+
+### U-constants (docs/phase3/m4-core-notes.md) and RE-5 unknowns
+
+| id / item | measured |
+|---|---|
+| U-HEXCASE | lowercase hex digits are accepted (`{00ff00}` colours) |
+| U-CHATBOTTOM | input box top = 10 + (pageSize+1)·(h+1): 197 (page 10, h 16), 282 (page 15), 241 (fontsize 2, h 20); the GUI host dialog is (inputW+100) × (that + 50) |
+| U-HISTORY-DUP | duplicates are pushed |
+| U-HISTORY-RESET | no reset: the history index survives close/reopen and sending; the live line is not saved (Down past the newest entry shows an empty line) |
+| input close | ESC/F6 close does **not** clear the edit text (reopen shows it, caret at end, a selection survives); only sending clears it |
+| U-EDITKEYS | ctrl+A select all; ctrl+Left/Right stop at word starts (stock DXUT); Home/End/Delete stock. Insert not measured |
+| U-EDIT-SCROLL | DXUT first-visible-char scrolling: DrawTextW gets the text from the first visible char, rect fixed [49,206,799,232]; scroll happens only when the caret leaves the box (examples in "Chat input") |
+| U-EDITKEY-CONSUME | input open: no WM_KEYDOWN/WM_CHAR reaches GTA's `__MainWndProc`; every WM_KEYUP does |
+| U-MASK | password mask U+25CF `●` |
+| edit colour slots | 0xFF969696 = caret, 0xFFB92228 = selection background, 0xFF0A0A0F = selected text; the caret does not blink |
+| U-LIST-CODES | list rows (styles 2/4/5) **do** apply `{RRGGBB}` per glyph; the text drawn is stripped; base colour 0xFFFFFFFF. Dialog captions apply codes too |
+| U-LIST-TRAILING | neither a trailing `\n` nor an inner empty line makes a row (`a\n\nb` = 2 rows) |
+| U-LIST-BORDER | first row at list top + 6; row pitch 18 (GUI font 1) |
+| U-TAB-EDGES | leading tab: no cell; trailing tab: no extra cell; runs of tabs = one separator |
+| U-TAB-COLUMNS | style-4 column count = the **first** row's cell count; extra cells of later rows are dropped (tested 3-cell and 2-cell first rows) |
+| U-SB-FIRST-REQUEST | RPC 155 (rel8, 0 bits) on the opening frame, then every 3.008 s while open |
+| U-BUBBLE-WRAP | wrap at the last space before 36 chars, counting `{RRGGBB}` chars; the codes stay in the text and are coloured |
+| U-DW-SLOTS / death window | first row top = round(0.3·H); row step 31 (icon height 26 + 5); see "Nametags, scoreboard, death window" |
+| U-GAMETEXT-DURATION | not measured visually (GTA-owned); args reach `AddBigMessage` unchanged |
+| AFK icon rect (RE-5 §21.5) | glyph `C` (SAMPAUX3 22, black) at [nameLeft−7, Y+28, +1, +2] and `E` (SAMPAUX3 20, 0xFFE3E1E3) at (−1,−2), DT_CENTER\|DT_VCENTER\|DT_NOCLIP, i.e. left of the bars |
+| U-CONNECT-TIMING | "Connecting to …" 3.00 s after "Started" (chat created at frame 33, first drawn frame 37); server down: every ~6.05 s "The server didn't respond. Retrying.." then a new "Connecting to …" |
+| U-HUD-STEP9 | Present writes 0xBA6769=1 / 0xBAA3FB=0 every frame from the 2nd Present on (connecting screen, class selection, spawned); F7 mode 0 → 0/1 from the next frame |
+| U-LOCK-INIT | an input-lock restore runs at start-up (a poked NOP at 0x541DF5 was restored within the first 36 frames); class selection then locks until spawn |
+| U-SAVE-HEADING | /save heading = ped heading in degrees (`AddPlayerClass(0,x,y,z,123.0000,0,0,0,0,0,0); // comment`); /rs writes `x,y,z,heading ; comment` where x,y,z is **not** the ped position (camera position) |
+| font sizes (RE-5 §3.2) | confirmed at W 864 and 1280; `/fontsize` also rebuilds the GUI fonts immediately |
+| D3D cursor | `CreateOffscreenPlainSurface(32,32,A8R8G8B8,SYSTEMMEM)`, `D3DXLoadSurfaceFromFileA("mouse.png", filter 1)`, `SetCursorProperties(0,0,…)`; `ShowCursor(TRUE)` every frame while the input is open; one FALSE on close |
+| game text (RPC 73) | `0x00BE` then `CMessages::AddBigMessage(text, time, style)` in the same frame, unchanged values, the same static samp buffer every time |
+
+### Fonts (D3DXCreateFontA; width 0, mip 1, italic 0, out-precision 0, pitch 0)
+
+W = 1280: main Arial 16/700/cs1/q4 (×2), small 14 (×2), plate Arial 38 w10, death names Arial 14 q0,
+GTAWEAPON3 22 and 26 (wt400 cs2 q0), GUI font0 Arial 20 q0, font1 18 q0. SAMPAUX3 22 and 28 are created at
+start by the object-editor constructor (B 0x10071b90), not lazily for the AFK icon. W = 864: main 14,
+small 12, aux 12 (GTAWEAPON3 20/24). `/fontsize 2` at 1280: main 20, small 18, death 18, GTAWEAPON3 26/30,
+GUI 24/22 (all recreated at once).
+
+### Chat window
+
+* Render target: `D3DXCreateTexture(2048,1024,1,RENDERTARGET,A8R8G8B8,DEFAULT)` +
+  `D3DXCreateRenderToSurface(2048,1024,A8R8G8B8,depth,D16)`. It is redrawn only when dirty or
+  scrolled. The Present pass blits it: sprite `Begin(0x10)`, `Draw(src null, pos null,
+  0xFFFFFFFF)`, i.e. one quad 0,0–2048,1024.
+* Each line is one DrawTextA per pass on the **stripped** text, main font, fmt 0x120, rect
+  `[45, top, 550, bottom]`.
+  * Line 0 is [45,10,550,110]; line k>0 is `[45, 10+k·(h+1), 550, top+h+1]` (h 16).
+  * Mode 2 (W ≤ 1280): 4 outline passes, in the order (0,−1), (0,+1), (−1,0), (+1,0), colour
+    0xFF000000. Only left/top move.
+  * Mode 1: the main pass only. Mode 0: nothing.
+* Glyphs: one sprite `Draw` per visible glyph (none for spaces or codes): tex = 256x256 glyph
+  atlas, src = glyph rect, center = cell/2, pos = glyph centre. Example "ab {FF0000}cd": 4 Draws
+  per pass; main pass a,b 0xFFFFFFFF, c,d 0xFFFF0000. One flush draws the quads with integer
+  pixel corners.
+* RPC 93 colour alpha is forced to FF (0x00FF0011 → 0xFF00FF00). `{GGGGGG}` prints literally.
+  In a run of codes the last one wins. A 135-char message is one unwrapped line. open.mp drops
+  longer client messages.
+* Player chat: the name is measured with `DrawTextA(DT_CALCRECT)` ("TraceOrig:" → 71); text at
+  45+71+5.
+* `/timestamp`: `[HH:MM:SS]` at 45 in the entry colour, content at 118 (tw = 68).
+* `/timestamp`, `/pagesize N` and `/fontsize N` print no chat line on success.
+* Plate painter (M5): at start `XYZSR998` is drawn into the 128x32 X8R8G8B8 RT. Outline at
+  (0,1), (2,3), (0,5), (−2,3) in 0xB4F0EEE4, then the main pass at (0,3) in 0xEE444470, fmt 0x105.
+
+### Chat input, scrollbar, cursor
+
+* Edit box (input open, "hello", page 10): outer 40,197–808,241 (W = min(800, 0.6·1280) = 768,
+  H = 14 + 1.5·20 = 44). Nine sampgui pieces, border 5 px, all 0xFFFFFFFF except the centre:
+  * corners (8,82,14,90), (241,82,246,90), (8,113,14,121), (241,113,246,121);
+  * edges (14,82,241,90), (8,90,14,113), (241,90,246,113), (14,113,241,121);
+  * centre 45,202–803,236 tex (14,90,241,113) in 0xF0050505.
+* Text: DrawTextW, GUI font0, rect [49,206,799,232] (inset 4), fmt 0x4, 0xFFFFFFFF.
+  * The caret is a DrawPrimitiveUP fan (FVF 0x144) from caretX−1.5 to caretX+0.5, y 205.5–231.5,
+    0xFF969696. Always on (no blink over 3 s).
+  * Selection: a 0xFFB92228 quad over the selected run (48.5–90.5 × 205.5–231.5), then the full
+    text, then the selected substring again in 0xFF0A0A0F, then the caret.
+* 90-char text: at the end the first visible char is 18 (caret 788.5); Home → 0 (47.5);
+  Right×75 → 4 (778.5); End → 18; Left×30 from the end → still 18 (479.5).
+* Scrollbar (shown with the input open):
+  * up 10,40–30,60 tex (243,124,265,144); track 10,60–30,(40+(h+1)·page−60−20) tex
+    (243,144,265,155); down below the track tex (243,155,265,176); all 0xFFFFFFFF.
+  * Thumb: tex (266,123,286,167), 0xFFB92228, 20 wide, height max(8, trunc(trackH·page/100)),
+    top = trackTop + trunc((pos−1)·(trackH−thumbH)/89) for page 10. pos 90 → 122, 60 → 101, 50 → 94.
+  * PageUp from the bottom: 90 → 80 → 70 → 60 → 50.
+* Cursor: see the table. Cursor-mode setter B+0xa0791 (show), close B+0xa08ae (hide).
+
+### Dialogs (centred in the 1280x720 client rect, C = 20)
+
+* Common:
+  * Background: DrawPrimitiveUP fan 0xDC050505 over the whole dialog.
+  * Caption bar: sampgui (17,269,241,287) in 0xC80A0A0A, 20 tall. Caption text: GUI font1,
+    rect [X+5,Y,X+W,Y+20], fmt 0x4, 0xFFD2D2D2, codes applied.
+  * Buttons 100x30, face (0,0,136,54) in 0xC8FFFFFF. Label: GUI font0, fmt 0x5, 0xFFC8C8C8,
+    drawn twice. y = Y+H−35.
+  * Two buttons at X+W/2−110 and X+W/2+10; a single button at X+W/2−50.
+* Style 0 ("Line one\nLine {00FF00}two\tTabbed"): 525,309–755,412. W = 230 (minimum),
+  H = 20+28+25+30. Body: small font, rect [X+20,Y+C+5,X+W,Y+H], fmt 0x140, 0xFFA9C4E4,
+  4-way outline.
+* Style 1 / 3 (one body line): H = 131. The extra term is 42 = trunc(1.6·18+14), not round.
+  * Edit box: X+5, Y+C+27, 220x44, same pieces as the chat input; text rect inset 9; focused
+    caret.
+  * Responses: 'hi there' (style 1), 'abc' (style 3, drawn `●●●`).
+* Style 2: W = 400, H = 265 (LH = 200 minimum).
+  * List box 445,253–835,453 tex (13,124,241,265) in 0xC8FFFFFF.
+  * Selection X+11,top–X+373,top+18, tex (17,269,241,287), 0xFFB92228.
+  * Rows: DrawText GUI font1, rect [X+16, top, X+368, top+18], fmt 0x40.
+  * Scrollbar 16 wide at the right inner edge; thumb colour 0xFF95B0D0 (not drawn when nothing
+    scrolls).
+  * Response: listitem + stripped row text.
+* Style 4: cells at x 456 / 671 / 754 (X+16, then + column widths) for the rows used.
+* Style 5: headers in the small font, fmt 0x120, 0xFFA9C4E4, at (X+16+Σw, Y+C+3). Header height
+  14 (H 279, list top Y+C+19). Response text = first cell.
+
+
+### 1920x1080 (mode 56 under a 1920x1080 gamescope; `E2E_RES=1920x1080 TRACE_VIDEO_MODE=56 run.sh …`)
+
+* Fonts: main 20, small 18, death 14, GUI 20/18.
+* Chat: pitch 21. Eight outline passes in the order (0,−2), (−1,−1), (+1,−1), (0,+2), (−1,+1),
+  (+1,+1), (−2,0), (+2,0); the whole rect shifts (at ≤ 1280 only left/top move).
+* Input: 40,241–840,285 (width 800); host 900x291.
+* Dialog style 0 (2 body lines): 230x113 with a 24-px caption.
+* Scoreboard at (560,240).
+* Death-window origin round(0.75·1920) = 1440, reason box at 1627.
+
+### Nametags, scoreboard, death window, bubbles
+
+* **Nametag bars** (FVF 0x44 DrawPrimitiveUP fans, z 0, rhw 1): exactly as RE-5 §16.2.
+  * Without armour: border X−20..X+21 × Y+18..Y+24; bg X−19..X+19 × Y+19..Y+23 in 0xFF4B0B14;
+    fill X−19..X−19+hp·0.3846154 in 0xFFB92228.
+  * With armour: health moves down 8, and the armour set (black / 0xFF282828 / 0xFFC8C8C8) is
+    drawn at Y+18.
+  * Render states are set directly before the batch (no state-block Apply).
+  * hp is the remote's synced value: server hp 50 showed 56, because the on-foot sync quantises
+    it.
+* **Name**: `"%s (%d)"`, small font. First a DT_CALCRECT measure, then 4 outline passes + main,
+  fmt 0x100, colour = player colour | FF000000. Rect left = X − w/2, top = Y+3 (bottom = Y).
+* **AFK icon**: SAMPAUX3 20/22 are created lazily on the first nametag frame (B+0x69ba0). Every
+  tag measures "C" (CALCRECT, colour 0) each frame. After ≥ 3 s without updates the two glyphs
+  are drawn (see the table). A bot paused 6 s was dropped by open.mp.
+* **Scoreboard** (800x600 at W > 800, X = W/2−400, Y = H/2−300):
+  * List box at (X, Y+60), rows in GUI font1, fmt 0x40, pitch 18, cells at X+11/+79/+429/+641.
+  * All cells are drawn in the player colour | FF000000; the local player is first.
+  * Server name and `Players: N` (left = X+800−width("Players: 10000")) in 0xFFBEBEBE; headers in
+    0xFF95B0D0 at y Y+43; all small font with outline.
+  * HUD flags 0/1 while open; nametags are still drawn below it.
+  * Cursor: one ShowCursor(TRUE) on open (mode 3), FALSE on close.
+* **Death window** at 1280x720:
+  * Killer name right-aligned to x 1062 (= round(0.75·W) + nickW).
+  * Icon box at 1065: GTAWEAPON3 26 `G` black, drawn twice (fmt 0x100, 0x500).
+  * Reason glyph GTAWEAPON3 22 at [1065, top−5, 1099, top+21], fmt 0x105 (white; 200 →
+    0xFF1111AA, 201 → 0xFFAA1111).
+  * Victim name at x 1099; with no killer, the victim takes the killer slot.
+  * Names use the death font (Arial 14 q0) with a 4-way outline.
+* **Chat bubble**: the pre-wrapped text (with `\n`), 4-way outline + main, small font, rect
+  [px, py, px+1, py+2], fmt 0x101, colour = bubble RGBA → ARGB.
+* **/save**:
+  * On foot: `AddPlayerClass(0,x,y,z,heading,0,0,0,0,0,0); // comment` with the ped heading in
+    degrees.
+  * In a vehicle: `AddStaticVehicle(model,x,y,z,vehHeading,c1,c2); // comment`.
+  * Chat lines `-> OnFoot position saved` / `-> InCar position saved`.
+* **/rs**:
+  * On foot: `<user files>\SAMP\rawpositions.txt` gets `x,y,z,heading ; comment` (x,y,z not the
+    ped position).
+  * In a vehicle: `rawvehicles.txt` **in the game directory** gets
+    `model,x,y,z,heading,c1,c2 ; comment`.
+  * Chat `-> OnFoot pos saved` / `-> InCar pos saved`.
+
+## Vehicles II (TRACE-5)
+
+Original client, `run.sh orig hold` with `uifs.pwn` (`veh`, `putin`, `params`, `vhp`, `attachtrailer`), samp-bot
+`--mode idle` as a driver, key presses through `ui.sh`. Sends were decoded from the loopback capture (`samp-dump --raw`). They
+were aligned to trace frames through `mark … wall=EPOCH` records and `capinfos` (`tools/trace/events.py` lists a mark window
+minus the per-frame background). About 49 game frames per second.
+
+* **Passenger enter (G)**:
+  * The WM_KEYDOWN reaches GTA in frame +1. Two frames later samp runs `0x05CA TASK_ENTER_CAR_AS_PASSENGER(1, car, 3000, −1)`.
+  * The next frame `SetTask(3, CTaskComplexEnterCarAsPassengerTimed)`.
+  * RPC 26 (rel10 ch0, passenger 1) is sent ~0.24 s after the key.
+  * 207 continues (~38 ms) until the seating frame (`SetPedState 50`, `CTaskSimpleCarDrive`); from then on 211 at the same
+    cadence (duplicates suppressed when parked).
+  * 203 every 1.0 s, 205 every 1.0 s.
+  * Per-frame client commands as passenger: 0x0470 +1, 0x077E −1, otherwise unchanged.
+* **Passenger exit (F)**:
+  * GTA's own input: `SetTask(3, CTaskComplexLeaveCar)` 2 frames after the key, ped state 0.
+  * RPC 154 ~0.17 s after the key. No sync at all for ~1.56 s, then 207.
+  * `CTaskSimplePlayerOnFoot` ~82 frames later.
+* **Locked car** (`SetVehicleParamsEx` doors 1):
+  * F → nothing (no task, no RPC).
+  * G → not blocked: 0x05CA, RPC 26 passenger 1, `CTaskComplexWalkRoundCar`, seated as passenger after ~3.3 s.
+* **Driver enter gate refusal** (static, A 0x100A3860):
+  * The ctor body never runs. samp reads the first dword of the freshly allocated task, i.e. a
+    stale pool content, and calls its slot 0 with 1 when non-zero.
+  * It then drops the 2 arguments and jumps to 0x570A9E.
+* **Damage**:
+  * RPC 106 (rel8) is sent at each panel/door/light/tyre change while driving (5 sends in 1.8 s
+    in a wall crash), interleaved with 200.
+* **Vehicle death** (server SetVehicleHealth 0):
+  * With the player driving: the car burns ~5 s and explodes; RPC 53, then 11 ms later 136 (rel10 ch0).
+  * With the player as the last driver standing 25 m away: 136 too.
+  * open.mp re-creates dead vehicles after 6–10 s (RPC 165+164 in one frame) whatever the
+    respawn delay, so the client's 15 s local delete was not observable.
+* **209**: a freshly created car that settles next to the player gets 4–6 sends of 209 (rel7 ch1),
+  ~153 ms apart, while it moves.
+* **Trailer**:
+  * RPC 148 → `0x0893 ATTACH_TRAILER_TO_CAB(trailer, cab)`, then GTA moves the trailer to the hitch.
+  * The 200 trailer field = trailer id.
+  * 210 is sent on every in-car tick (~38 ms) while the player is in the cab with the trailer
+    attached, even when the 200s are suppressed as duplicates.
+* **200 extra field**:
+  * Bike: smoothed lean, about −0.67 … +0.80 at full stick; 0 straight.
+  * Train: signed speed in units/frame (= |velocity|, negative in reverse).
+  * Heli/plane: 0.
+  * Hydra landing gear byte: 0, then 1 after the gear key.
+* **Train** (AddStaticVehicle; open.mp CreateVehicle refuses 538):
+  * RPC 70 → `0x036A` + camera reset + `0x0158 CAMERA_ON_VEHICLE(mode 3, switch 2)`.
+  * GTA logs `CWanted::RegisterCrime(6)`.
+  * F does nothing in a moving train (exit path not reached; open).
+* **Stats at state 9**: float stats 69–79 = 1000.0. Int stats 160/223/229/230 (`StatTypesInt` 0xB79000 + 4·(id−120)) = 1000.
+  `CStats::SetStatValue` starts with 0xC3.
+* **Local aim sync (203)** for BOT-2:
+  * Aspect byte 85 (GTA 4:3).
+  * Cam modes: 4 on foot, 15 class selection, 18 in vehicles, 3 in the train (samp camera),
+    53 aiming, 7 sniper.
+  * Rate 1.0 s when not aiming, ~0.115 s aiming.
+  * Zoom 63 unzoomed (ramps on aim-in; bikes follow the speed FOV).
+  * weaponState 2 (M4/Deagle), 1 (sniper), 0 (fists).
+* **Input lock at start-up**: a poked NOP at 0x541DF5 before the first frame was restored within
+  36 frames. Class selection locks again until the spawn.
+
+
 ## Open problems / notes
 
 * `origin` stack scanning is heuristic. For samp's script commands the first two entries
@@ -772,3 +1066,14 @@ This section confirms that spec at runtime and refines it.
   (`SAMP_TRACER_SCRIPTS`).
 * samp's file-redirect layer (below `CFileMgr::OpenFile`, above `CreateFileW`) was not
   identified exactly.
+* TRACE-3/5 open:
+  * the 15 s local vehicle delete (blocked by open.mp's respawn);
+  * the train exit/warp path;
+  * Insert (overwrite) in the edit box;
+  * F1 help dialog, net stats (F5), textdraws and selection, model previews;
+  * 1920x1080 runs (needs `setmode.py` with the mode list of a 1920x1080 gamescope);
+  * MR-5.1 remote-driver correction (bot drive at 40/150 ms); MR-5.6 engine/lights;
+    MR-5.9/5.10/5.12.
+* The original client once crashed ("SA:MP An exception occured", EIP in a Wine module) after
+  xdotool's Insert key switched the input layout and 140 chars were typed into the chat input.
+  Not reproduced.

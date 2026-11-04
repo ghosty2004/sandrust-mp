@@ -6,6 +6,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/lib.sh"
 CLIENT="$1"; NAME="$2"; STEPS="$3"; OUT="$4"
 trace_ports "$CLIENT"
+# TRACE_VIDEO_MODE=N overrides the GTA video mode index (tools/wine-env.sh sets 32 = 1280x720 for
+# a 1280x720 display; other display sizes have other mode lists, printed by samp-tracer).
+if [ -n "${TRACE_VIDEO_MODE:-}" ]; then
+    python3 -I "$HERE/setmode.py" "$WINEPREFIX/drive_c/users/$USER/Documents/GTA San Andreas User Files/gta_sa.set" "$TRACE_VIDEO_MODE"
+fi
 
 ( trace_launch "$CLIENT" "$NAME" > "$OUT/launch.out" 2>&1 ) &
 LPID=$!
@@ -38,6 +43,41 @@ if [ "$CLIENT" = bare ]; then
     e2e_shot "$OUT/bare.png"
     python3 -I "$HERE/spoff_sites.py" "$SAMP_TRACER_PORT" "$OUT/spoff-sites.txt" 2>/dev/null || true
     python3 -I "$HERE/peek_dump.py" "$SAMP_TRACER_PORT" 0xA49960 200000 "$OUT/scriptspace.bin" > /dev/null 2>&1 || true
+    end_game
+    exit 0
+fi
+if [ "$STEPS" = hold ] || [ "$STEPS" = holdjoin ]; then
+    # TRACE-3/5: interactive session driven by tools/trace/ui.sh (keys, screenshots, d3d logs,
+    # filterscript commands, bots) until $OUT/stop exists or TRACE_HOLD_SECS (default 3600) pass.
+    {
+        echo "OUT=$OUT"
+        echo "E2E_HEADLESS_DISPLAY=$E2E_HEADLESS_DISPLAY"
+        echo "E2E_GAMESCOPE=$E2E_GAMESCOPE"
+        echo "SAMP_TRACER_PORT=$SAMP_TRACER_PORT"
+        echo "E2E_CTL_PORT=$E2E_CTL_PORT"
+    } > "$TRACE_OUT/hold.env"
+    if [ "$STEPS" = hold ]; then
+        e2e_wait_log "\[e2e\] connect id=[0-9]+ name=$NAME" 120 || fail "no join"
+        trace_mark joined
+        e2e_wait_log "\[e2e\] class id=[0-9]+ class=" 60 || fail "no class request"
+        trace_mark class_selection
+        sleep 3
+        spawned=0
+        for i in 1 2 3 4 5 6; do
+            e2e_key shift
+            if e2e_wait_log "\[e2e\] spawn id=" 4; then spawned=1; break; fi
+        done
+        [ "$spawned" = 1 ] || fail "no spawn after Shift"
+        trace_mark spawned
+    fi
+    trace_say "holding; tools/trace/ui.sh drives the session (ui.sh stop ends it)"
+    echo ready > "$OUT/ready"
+    for ((i = 0; i < ${TRACE_HOLD_SECS:-3600}; i++)); do
+        [ -e "$OUT/stop" ] && break
+        kill -0 "$LPID" 2>/dev/null || { trace_say "game exited"; break; }
+        sleep 1
+    done
+    rm -f "$TRACE_OUT/hold.env"
     end_game
     exit 0
 fi

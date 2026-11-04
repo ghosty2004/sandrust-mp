@@ -56,6 +56,9 @@ pub enum Special {
     /// `CAutomobile::ProcessControl`: wrapped so the context the client swaps in for a
     /// remote driver (PlayerInFocus, pad, camera) and the car's state can be sampled (TRACE-4).
     VehProcessControl,
+    /// GTA's window procedure (`__MainWndProc`): only keyboard messages (0x100–0x109) are
+    /// written, to see which keys a client lets through to the game (TRACE-3).
+    WndProc,
 }
 
 /// How to render one argument. Stack slots count from the first argument
@@ -79,6 +82,8 @@ pub enum Arg {
     TaskOwner,
     /// Pointer to a C++ object: logged as its vtable address (identifies the class).
     Vtable(usize, &'static str),
+    /// A pointer value kept in diffs (e.g. to see whether a buffer is static).
+    Addr(usize, &'static str),
 }
 
 /// `CTaskManager::m_pPed` (5 primary + 6 secondary task pointers precede it; gta-reversed TaskManager.h).
@@ -436,6 +441,21 @@ pub static HOOKS: &[HookSpec] = &[
         I32(1, "crime"),
         VecPtr(2, "pos"),
     ]),
+    // --- UI (TRACE-3) ------------------------------------------------------------------
+    h("CMessages::AddBigMessage", 0x69F2B0, &[0x81, 0xEC, 0x20, 0x03, 0x00, 0x00], Always, &[
+        CStr(0, "text"),
+        Addr(0, "text_addr"),
+        I32(1, "time"),
+        I32(2, "style"),
+    ]),
+    HookSpec {
+        name: "__MainWndProc",
+        addr: 0x747EB0,
+        prologue: &[0x83, 0xEC, 0x3C, 0x53, 0x55],
+        policy: Always,
+        special: Special::WndProc,
+        args: &[I32(1, "msg"), I32(2, "wparam"), Addr(3, "lparam")],
+    },
     h(
         "CAEPoliceScannerAudioEntity::PlayPoliceScannerDialogue",
         0x4E6ED0,
@@ -494,6 +514,7 @@ pub fn render_args<M: Mem>(m: &M, spec: &HookSpec, c: &Call) -> Val {
                 let p = m.u32(c.slot_addr(i)).unwrap_or(0);
                 v.put(k, if p == 0 { Val::Null } else { m.u32(p).map(Val::Hex).unwrap_or(Val::Null) });
             }
+            Addr(i, k) => v.put(k, m.u32(c.slot_addr(i)).map(Val::Hex).unwrap_or(Val::Null)),
             ScriptIp(i, k) => {
                 let p = m.u32(c.slot_addr(i)).unwrap_or(0);
                 let off = p.wrapping_sub(gta::SCRIPT_SPACE);

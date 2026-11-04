@@ -31,6 +31,20 @@ TRACE_BIN="$TRACE_ROOT/target/i686-pc-windows-gnu/release"
 
 trace_say() { printf '[trace] %s\n' "$*"; }
 
+# trace_lock — blocks until this process holds target/locks/trace.lock (on fd 9, so it lasts
+# until the caller and its children exit). No-op when SAMP_RS_TRACE_LOCK_HELD=1 (the lock is
+# already held by a parent, e.g. tools/trace/with-lock.sh).
+trace_lock() {
+    [ "${SAMP_RS_TRACE_LOCK_HELD:-0}" = 1 ] && return 0
+    mkdir -p "$TRACE_ROOT/target/locks"
+    exec 9> "$TRACE_ROOT/target/locks/trace.lock"
+    if ! flock -n 9; then
+        trace_say "waiting for the trace-lane lock (target/locks/trace.lock)"
+        flock 9
+    fi
+    export SAMP_RS_TRACE_LOCK_HELD=1
+}
+
 # trace_build [ours] — tracer + launcher (+ samp_client.dll for our client).
 trace_build() {
     local pkgs=(-p samp-tracer -p samp-launcher)
