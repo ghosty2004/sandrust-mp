@@ -191,11 +191,12 @@ if [[ "${1:-}" == --inner ]]; then
     grep -q 'text=not sent' "$E2E_LOG" && fail "ESC-closed text reached the server"
     e2e_key t; wait_input ' open=1 text="not sent" ' 5 || fail "T did not reopen with the kept text: $(e2e_ctl input)"
     say "ESC ok (text kept for the next open)"
-    # History: Up recalls the last line, Down restores the live line.
+    # History: Up recalls the last line; Down past the newest shows an empty line (the
+    # original does not keep the live line, TRACE-3 U-HISTORY-RESET).
     e2e_key Up
     wait_input 'text="/save m4"' 5 || fail "Up did not recall the last line: $(e2e_ctl input)"
     e2e_key Down
-    wait_input 'text="not sent"' 5 || fail "Down did not restore the live line: $(e2e_ctl input)"
+    wait_input ' open=1 text="" ' 5 || fail "Down past the newest entry did not empty the line: $(e2e_ctl input)"
     for _ in 1 2 3 4 5 6 7 8; do e2e_key BackSpace; done
     wait_input ' open=1 text="" ' 5 || fail "BackSpace did not empty the input: $(e2e_ctl input)"
     e2e_key Escape; wait_input ' open=0 ' 5 || fail "ESC did not close the input"

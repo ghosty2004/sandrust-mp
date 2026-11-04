@@ -50,6 +50,8 @@ pub enum Command {
     Quit,
     Chat(usize),
     Input,
+    /// `ui`: dialog / scoreboard / textdraw / menu / death window state.
+    Ui,
     Say(String),
     Peek { addr: u32, len: usize },
     Unknown(String),
@@ -96,6 +98,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "spawn" => Command::Spawn,
         "chat" => Command::Chat(20),
         "input" => Command::Input,
+        "ui" => Command::Ui,
         "quit" | "exit" => Command::Quit,
         _ => Command::Unknown(t.to_string()),
     })

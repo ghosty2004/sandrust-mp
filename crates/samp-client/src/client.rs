@@ -65,6 +65,8 @@ pub struct Client {
     players: crate::players::Players,
     /// Vehicles (M5, vehicles.rs).
     vehicles: crate::vehicles::Vehicles,
+    /// The connect tick has fired (networking runs from then on).
+    net_started: bool,
 }
 
 /// Raw write into game data (heap objects, .data/.bss); no protection change.
@@ -118,6 +120,7 @@ impl Client {
             time_of_day: 12,
             players: crate::players::Players::default(),
             vehicles: crate::vehicles::Vehicles::default(),
+            net_started: false,
         })
     }
 
@@ -165,8 +168,16 @@ impl Client {
     /// One frame (main thread).
     pub fn tick(&mut self) {
         let now = Instant::now();
-        for ev in self.net.tick(now) {
-            self.on_event(ev, now);
+        // The connect tick starts connecting 3.0 s after "Started" (TRACE-3
+        // U-CONNECT-TIMING); the UI prints the connect / retry lines.
+        let answered = !matches!(self.net.phase(), Phase::Opening);
+        if crate::ui::connect_tick(answered) {
+            self.net_started = true;
+        }
+        if self.net_started {
+            for ev in self.net.tick(now) {
+                self.on_event(ev, now);
+            }
         }
         if self.debug_spawn {
             self.debug_spawn = false;
@@ -195,6 +206,8 @@ impl Client {
         self.players.tick(now);
         self.vehicles.remote_tick(&mut self.runner, &mut self.players);
         self.vehicles.hook_events(&mut self.runner, &mut self.net);
+        crate::ui::set_remotes(self.players.ui_snapshot(now));
+        crate::ui::set_class_selection(self.class_sel.is_active());
         if self.class_sel.is_active() {
             self.class_selection_tick(now);
         } else if self.spawned {
@@ -229,7 +242,7 @@ impl Client {
                     g.on_foot_rate
                 );
                 self.players.set_init_game(g.player_id, g.death_drop_money);
-                crate::ui::on_init_game(g.server_name.as_bytes(), g.player_id);
+                crate::ui::on_init_game(&g);
                 self.vehicles.set_init_game(&g);
                 self.enter_class_selection(now, g.spawns_available);
             }
@@ -433,10 +446,13 @@ impl Client {
             set_hud(false);
         }
         let mem = ProcessMemory;
+        // Clicks on the class-selection panel (<<, >>, Spawn) act like the keys.
+        let click = crate::ui::take_class_click();
         let keys = classsel::Keys {
-            left: async_key_down(VK_LEFT) || game::key_down(&mem, game::key::LEFT),
-            right: async_key_down(VK_RIGHT) || game::key_down(&mem, game::key::RIGHT),
-            shift: async_key_down(VK_SHIFT)
+            left: click == 1 || async_key_down(VK_LEFT) || game::key_down(&mem, game::key::LEFT),
+            right: click == 2 || async_key_down(VK_RIGHT) || game::key_down(&mem, game::key::RIGHT),
+            shift: click == 3
+                || async_key_down(VK_SHIFT)
                 || game::key_down(&mem, game::key::SHIFT)
                 || game::key_down(&mem, game::key::LSHIFT)
                 || game::key_down(&mem, game::key::RSHIFT),

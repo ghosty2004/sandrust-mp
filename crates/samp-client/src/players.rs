@@ -108,6 +108,23 @@ impl Players {
         self.players.values_mut()
     }
 
+    /// What the UI needs of each remote player (nametags, bubbles, scoreboard).
+    #[cfg(windows)]
+    pub fn ui_snapshot(&self, now: Instant) -> Vec<crate::ui::core::RemoteUi> {
+        self.players
+            .values()
+            .map(|p| crate::ui::core::RemoteUi {
+                id: p.id,
+                ped: p.ped,
+                state: p.state,
+                health: p.health,
+                armour: p.armour,
+                npc: p.npc,
+                ms_since_sync: p.last_sync.map_or(u64::MAX, |t| now.duration_since(t).as_millis() as u64),
+            })
+            .collect()
+    }
+
     /// Streamed-in remote peds (N of the on-foot send interval).
     pub fn streamed(&self) -> u32 {
         self.slots.count()

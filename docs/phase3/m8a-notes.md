@@ -1,0 +1,87 @@
+# Phase 3 / M8a + M4-P — dialogs, textdraws, menus, scoreboard, nametags, death window, bubbles; UI parity
+
+Branch `ui-dialogs` (git worktree `~/samp-rs-wt/m8a`). Acceptance: `tools/e2e/m8a.sh` (lane "ui").
+D3D parity: `M8A_D3D=1 tools/e2e/m8a.sh` + `tools/e2e/m8a_d3d_diff.py` against the original's
+TRACE-3 logs; original-side session for the elements TRACE-3 did not log: `tools/e2e/m8a-orig.sh`.
+
+## What is implemented
+
+| area | where | source |
+|---|---|---|
+| Dialogs, all 6 styles: layout once per open, DXUT-style render (caption, buttons, list box with tablist columns, edit box focused last), body/headers through the font renderer; keys (ESC, Enter, list keys, edit keys, typing), mouse (buttons, rows; second click on the selected row activates); RPC 62 | `samp_ui::dialog`, `ui/render.rs` `dialog`, `ui/dxut.rs`, `ui/core.rs` | UR §13, UCA §61/62, TRACE-3 |
+| Textdraws: pool 2304, set-text rules, `CFont` call sequence after `Render2dStuff`, hit rects, selection (hover colour, click → RPC 83 id, ESC/RPC 83 enable 0 → 0xFFFF, cursor mode 2) | `samp_ui::textdraw`, `ui/textdraws.rs` | UR §14, UCA §83/105/134/135, samp A 0x100b31e0/0x100b2fa0 (static) |
+| Menus: RPC 76/77/78, GTA menu via 0x08D4/0x08DB/0x09DB/0x08D9, `CText::Get` hook (CSV row 58: `jmp [0x6A0043]`) answering `SAMPHED`/`SAMPRW1/2`/`SAMP0rr`/`SAMP1rr`, per-frame pad poll → RPC 132/140, local hide one frame later | `samp_ui::menu`, `ui/menus.rs` | UCA §76–78/132/140, samp A 0x100a7780/0x100a4070/0x10008060 (static) |
+| Scoreboard: Tab, cursor mode 3, HUD off, DXUT list (selection on row 0, selected row white), texts with outline, RPC 155 on open + every 3000 ms | `samp_ui::scoreboard`, `ui/render.rs` `scoreboard` | UR §15, TRACE-3 |
+| Nametags: server flags (show, distance, LOS 0x06BD twice per tag), bone-8 anchor + `0.0475·d + 0.2`, D3DXVec3Project with the VIEW/PROJECTION recorded by the device proxy's SetTransform (samp's proxy slot 44), `_ftol2` truncation, bars (FVF 0x44 fans), name (measure, 4 outlines, main), AFK icon (SAMPAUX3 20/22, lazily created) | `samp_ui::nametags`, `ui/glue.rs` `nametags`, `ui/render.rs` | UR §16, TRACE-3, samp A 0x10074270/0x1006d0a0 (static) |
+| Death window: RPC 55 names/colours, 5 slots newest at the bottom, `ftol(0.75·W)`, `ftol(0.3·H)`, nick/icon metrics, killer rect `[x+nickW−w, y, x+60, y+30]`, icon `G` + CALCRECT + glyph, victim at `+iconW` | `ui/render.rs` `death_window` | UR §17, samp A 0x1006a2e0/0x10069d40 (static), TRACE-3 |
+| Chat bubbles: RPC 59, wrap, head bone anchor, distance to the local ped, small font `DT_CENTER` | `samp_ui::bubbles`, `ui/glue.rs` `bubbles` | UR §11 |
+| Chat render-to-texture (M4-P): `D3DXCreateTexture(2048,1024,RT)` + `D3DXCreateRenderToSurface(…, D16)`, updated from the `CGame::Process` hook only when dirty/scrolled (`Clear(3)`, sprite `Begin(0x10)`, `DESTBLEND 14`, lines, End), blitted in Present (`Begin(0x10)`, `Draw(NULL…)`) | `ui/render.rs` `update_chat_rt`/`chat`, `dll.rs` | UR §7.6, TRACE-3 |
+| Frame order (M4-P): netgame tick + UI pre-step → `Render2dStuff` → textdraws → input restore; HUD flags written every Present (`!scoreboard && mode ≠ 0`) | `dll.rs` `frame_hook`, `ui/glue.rs` | UR §2.3/§2.4, TRACE-3 U-HUD-STEP9 |
+| Connect timing (M4-P): "Connecting to" 3.0 s after "Started" and the network starts then; retry line + new "Connecting to" every 6.05 s while unanswered | `ui/core.rs` `connect_tick`, `client.rs` | TRACE-3 U-CONNECT-TIMING |
+| Input/edit (M4-P): password mask U+25CF (DrawTextW), DXUT first-visible scrolling (`PlaceCaret`, GDI widths), key consumption (no key-down/char reaches GTA while typing; every key-up does), U-LOCK-INIT restore at start-up, `/fontsize` rebuilds GUI fonts at once | `samp_ui::edit`, `samp_ui::keys`, `ui/inputlock.rs`, `ui/render.rs` | TRACE-3 |
+| D3D call shape: per-painter sprites (font renderer, chat, blit, GUI, death, tags, 3D text), colour proxy `Draw` that tail-jumps into the real `Draw` (D3DX stays the caller), 4-way outlines move only left/top (8-way whole rect), DXUT `DrawSprite`/`DrawText`/`DrawRect` sequences, proxy `EndScene` wrapper, d3dx9_25 + `AddFontResourceA` at start-up | `ui/d3d.rs`, `ui/dxut.rs` | TRACE-3 D3D logs |
+| Class-selection panel (GUI dialog 0x1026eaa4): 310×40 at `y = H − 90`, `<<` `>>` `Spawn` buttons (clicks act like Left/Right/Shift), cursor mode 2 while shown, drawn after the chat GUI dialog | `ui/render.rs` `class_panel`, `ui/glue.rs`, `client.rs` | UR §4.2, TRACE-3 class.png |
+| Control: `ui` (dialog, scoreboard, textdraws, selection, menu, deaths, bubbles, cursor mode, remotes) | `control.rs`, `ui/core.rs` | — |
+
+Changes outside `ui/`: `dll.rs` (frame order, game-frame hook calls the RT update, `ui` command, preload),
+`client.rs` (connect gate, remotes/class-selection to the UI, `on_init_game(&InitGame)`), `players.rs`
+(`ui_snapshot`), `control.rs`, `samp-proto::session::InitGame` derives `Default`, `tools/run-client.sh`
+(`SAMP_RS_PRE_DLL`).
+
+## Static analysis used (§3b step 1; samp.dll A build, objdump)
+
+* Textdraw set-text rules (A 0x100b2fa0) and hit rects (A 0x100b31e0 tail, A 0x100b30d0): left = x .. wrap,
+  height = centre size; centred = x − cs/2 .. +cs, height = wrap (the known swap); right = 2x − wrap .. x.
+* Menu build order, keys and the `CText::Get` hook; both menu columns get col1W as width (samp passes +0x384
+  twice: reproduced).
+* Death window draw (A 0x1006a2e0): truncation, 5 fixed slots, rect values (killer right edge `x + 60`).
+* Nametag projection (A 0x1006d0a0): D3DXVec3Project with samp's copies of VIEW/PROJECTION from proxy
+  slot 44; z ≤ 1; `_ftol2`; LOS 0x06BD from bone 8 to the camera with flags (1,0,0,1,0); distance helper
+  A 0x1009f1f0 = ped position − camera (0xB6F9CC).
+
+## Measured on the original (this work, trace lane, `tools/e2e/m8a-orig.sh`, session orig-20261104-230225)
+
+* MR-M8A-3 list mouse: a click selects; a second single click 1.5 s later does nothing; a double click
+  answers with that row (`listitem 2 'Row 2 green'`). Implemented with the system double-click time.
+* MR-M8A-4 glyph boxes: the original is deterministic (the `a` of "Cancel" has the same box in TRACE-3 and
+  in this run); ours differs by 1 px for that glyph → an open residual, not noise (see below).
+* Textdraw selection: HUD flags are 0/1 while selecting (samp's per-frame A 0x10071470 = cursor mode 2 +
+  HUD off) — implemented.
+* Same-scenario D3D comparison (ours `M8A_D3D=1` vs this run): select, death window, nametags+bubble+AFK
+  measure, scoreboard, menu: identical call structure (`m8a_d3d_diff.py --same`: 0 lines); textdraw and
+  menu 2D draws (box quads, glyph batches, positions, colours) identical; menu script commands
+  (0x08D4/08DB/09DB/08D9/08D7/08DA/00BE) identical in `trace.jsonl`.
+* Part 2 (`tools/e2e/m8a-orig2.sh`, session orig-20261104-231716): MR-M8A-1 sprite textdraw
+  `LD_SPAC:white` 100×60 at (500,20): one textured quad (8×8 texture) 1000,32.1–1200,128.6 white — ours
+  identical; its selection frame diffs to 0 lines and the click is reported. MR-M8A-2 model preview
+  (model 411, 100×100 at (300,200)): the original draws a 256×256 render-target texture (A8R8G8B8,
+  RT usage) as one white quad 600,321.4–800,482.1 — not implemented (needs the off-screen model render,
+  TODO). MR-M8A-5 (remote driver nametag): not measured — samp-bot did not become a driver in that
+  session; still open (belongs with M5's remote vehicles).
+* Static: A 0x1009f430 is not an on-screen test but "ped valid and in the moving list" (+0xB4 ≠ 0).
+
+## Results
+
+* `tools/e2e/m8a.sh`: PASS (dialogs 0–5 incl. mouse, textdraws + selection, menu select/exit, death window,
+  bot nametag + bubble, scoreboard, game text; capture: RPC 62/83/132/140/155 as specified).
+  RPC 62 payloads are byte-identical to the original's TRACE-3 capture for all six dialogs.
+* D3D diff (`m8a_d3d_diff.py`, frame 1, normalised): input 0 lines; dlg2/dlg3 0; dlg0/1/4/5 4 lines each =
+  one glyph (`a` of "Cancel"/"OK" row) whose D3DX glyph box is 1 px taller in our process (atlas
+  rasterisation; not caused by our calls). Scoreboard / nametags / death window: same call structure,
+  differences are scenario content (names, ids, number of bots) — see the final report.
+* m1 (headless), m2, m3, m4 pass in lane ui.
+
+## Deviations / TODO-unknown
+
+* Sprite textdraws (font 4) follow samp's loader and match the original's draw; `mdlNNN` sprites and
+  model previews (font 5, A 0x100b34e0: 256×256 RT quad measured) are not drawn (TODO).
+* Nametags of players in vehicles (state 0x13 → vehicle position) are not reproduced (no remote
+  vehicles before M5).
+* Resolved: the 1-px glyph difference of GUI font 0 (`a` of "Cancel") came from the missing
+  class-selection panel — the original caches `a` first through its `Spawn` button; with the panel
+  drawn, dlg0–dlg5 diff to 0 lines.
+* F1 help, F5 net stats, F8 screenshot, F10, IME/clipboard, `directmode` config are not done here.
+* Slider panel / download progress / class-selection GUI dialogs (DXUT) are not drawn.
+* The object-editor SAMPAUX3 22/28 fonts created at start are not created (no visible effect).
+* The original passes an uninitialised rect / stale colour to its DT_CALCRECT calls; ours pass zeros (the
+  diff ignores those arguments).

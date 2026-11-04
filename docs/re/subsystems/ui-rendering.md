@@ -911,3 +911,34 @@ resolutions 800×600, 1280×720 and 1920×1080):
 - A D3D9 call log (API-level hook in the tracer) of one Present while chat, a dialog and
   nametags are visible. It confirms the draw order of §2.3, the font creation parameters
   (`D3DXCreateFontA` arguments) and the render states.
+
+---------------------------------------------------------------------------------------------
+
+## 22. Corrections from M8a (static analysis of the A build + TRACE-3 D3D logs)
+
+- **Textdraw set-text (A 0x100b2fa0):** texts of ≥ 800 chars leave the textdraw empty; while scanning,
+  a `~` opens a code (a following `k`/`K` marks key expansion) and the next `~` closes it; a code
+  longer than 24 characters or an unclosed code → `Error: unmatched tilde`; a key text longer than 255
+  → `Error: can't use k-codes in long string`.
+- **Textdraw hit rects (§14.2 step 12, §14.3):** with `X`,`Y` the PrintString position, `wrap` =
+  W·textSizeX·ux, `cs` = W·textSizeY·ux, all truncated with `_ftol2`: left-aligned `[X, Y, wrap, Y+cs]`;
+  right-aligned `[2X−wrap, Y, X, Y+cs]`; centred `[X−cs/2, Y, (X−cs/2)+cs, Y+wrap]` (the box flag is not
+  used). Sprite: `[x·W·ux, y·H·uy, W·ux·tsx + left, H·uy·tsy + top]`.
+- **Menus (§12):** build order 0x08D4 (title key, x, y, (w1+w2)/columns, columns, interactive, 1, 1),
+  0x08DB + 0x09DB per column (both columns get w1 as width), 0x08D9 per row. `CText::Get` hook
+  (CSV row 58) answers `SAMPHED`, `SAMPRW1/2`, `SAMP0rr`/`SAMP1rr` (rr 00–11) from the current menu.
+- **Nametags (§16):** anchor = bone 8 (head) position; LOS test 0x06BD (bone 8 → camera, flags
+  1,0,0,1,0) runs before the NPC check, once per pass; the projection uses samp's copies of the VIEW /
+  PROJECTION matrices taken in its proxy `SetTransform` (slot 44); screen coordinates are truncated.
+  Name rect `[X − w/2, Y + 17 − h, X + w/2, Y]`.
+- **Death window (§17):** origin `ftol(0.75·W)`, `ftol(0.3·H)` (truncation); 5 fixed slots, the newest at
+  the bottom, empty slots keep their space; killer rect `[x + nickW − w, y, x + 60, y + 30]`; icon box
+  `[x + nickW + 3, y − 5, +35, y + 30]`: `G` drawn, then measured into the rect (`DT_CALCRECT|NOCLIP`),
+  then the reason glyph centred; victim rect `[iconLeft + iconW, y, +35, y + 30]`; names use the death
+  font for outline and main (no colour wrapper).
+- **Outlines (§3.4):** the 4-way passes move only left/top of the rect; the 8-way chat passes (W > 1280)
+  move the whole rect.
+- **Dialogs (§13.2):** caption height = main-font "Y" height + 4; the edit-box term is
+  `trunc(1.6·h1 + 14)`; placement rounds `(client − size)/2`; empty list lines make no row; the
+  tablist column count is the first row's cell count while the widths use up to 4 cells of every row
+  (header included); the focused control (list or edit box) is drawn last.
