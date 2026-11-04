@@ -206,3 +206,16 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - Started: TRACE-3 (REA + tracer: D3D call logger, UI unknowns incl. M4's 8 requests,
   then remaining vehicle cases), DIFF-3 cross-client + F5 patch coverage (lanes diff +
   diff2), BOT-2 (bot drives/shoots).
+
+## 2026-11-04 — Lane isolation incident (user files)
+
+- TRACE-3 found that wine/prefix, prefix-diff, prefix-diff2 and prefix-shot had
+  `Documents` symlinked to the user's real ~/Documents: the lanes shared one
+  "GTA San Andreas User Files" (gta_sa.set, SAMP/sa-mp.cfg, chatlog, screens), and the
+  tests had created that folder in the user's ~/Documents (first GTA run, 17:45).
+- Fixed: private Documents per prefix; the folder was moved out of ~/Documents into
+  wine/archive/ (nothing of the user's was overwritten — it did not exist before);
+  `tools/wine-env.sh` now enforces private Documents and sets GTA video mode 32
+  (1280x720) on headless runs. Lanes notified to re-run resolution/config-dependent tests.
+- TRACE-3 batch 1 (D3D logger + chat/input/scrollbar/cursor/fonts at pixel level)
+  forwarded to M4. BOT-2 done (drive/passenger/shoot; bot2.sh exit 0).
