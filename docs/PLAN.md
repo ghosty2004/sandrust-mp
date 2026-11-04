@@ -94,12 +94,15 @@ repository state, deterministically:
   editing them must keep `cargo build --workspace` green after EVERY edit (create a
   file before declaring its module, add methods before using them). A broken build
   blocks all other agents' e2e runs (happened once with NET-7).
+- Git: only the main session commits (after verifying a green build/tests), with plain
+  descriptive messages; agents never commit. With commits available, implementation
+  agents may run in parallel in git worktrees and the main session integrates.
 - Agents never kill processes outside their lane, never `pkill -f` patterns, never
   screenshot the user's desktop, never commit.
 - Budget: ≤ ~1.5M tokens per agent step; workflows only for broad sweeps.
 
 ## 5. Escalation to the user
 
-Only: git commits (user), legal/publishing, system installs (sudo), irreversible
+Only: pushing to GitHub, legal/publishing, system installs (sudo), irreversible
 actions outside the project, new client binaries (versions), Windows runs.
 Everything else is decided autonomously and logged.

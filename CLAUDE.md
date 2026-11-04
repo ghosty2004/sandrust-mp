@@ -18,7 +18,7 @@ small per-version profile (join version string, RPC differences, game addresses)
 - No cheats, no bypassing server-side anti-cheat. Passing the connection-level
   checks a server requires of any compatible client is in scope.
 - Never commit third-party binaries (`re/samp-dll/`, `re/snapshots/`, `server/`
-  are gitignored). Don't add Claude attribution lines to commits.
+  are gitignored). Commits are made by the MAIN session only (never by agents): plain descriptive English messages, no internal task IDs (M1, SAA-2, …), no Claude session links or Co-Authored-By trailers. Push only when the user asks. Remote: git@github.com:ghosty2004/sandrust-mp.git (branch main).
 
 ## Layout
 - `crates/samp-proto` — version-independent wire protocol (cipher, unconnected

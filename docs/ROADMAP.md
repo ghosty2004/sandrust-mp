@@ -101,7 +101,7 @@ differential capture against the original client, e2e script.
 |---|---|---|
 | D-1 | SA:MP assets (`SAMP/` folder, loading screen) | **resolved (2026-11-04): load from the user's existing SA:MP install, never redistribute** (user asked for the SA:MP loading screen; confirm if this reading is wrong) |
 | D-2 | Legal review before any public release | licence (f) "no derivative works" vs EU interoperability right |
-| D-3 | Git commits | the user commits personally |
+| D-3 | Git commits | **resolved (2026-11-04): Claude (main session) commits; plain messages, no task IDs, no session/attribution trailers; push only on request; remote ghosty2004/sandrust-mp** |
 | D-4 | samp.saa data overrides (10 of 23 files differ; handling/weapon identical) | **resolved (2026-11-04): option A — read ALL redirected files from the user's samp.saa at runtime, exactly like the original (user: "I want 1:1"); never redistribute; fallback to our own minimal script when SA:MP isn't installed** |
 
 ## Decisions made autonomously
@@ -109,8 +109,8 @@ differential capture against the original client, e2e script.
 Since 2026-11-04 the user delegates technical decisions to Claude with one goal:
 **rebuild the original client 1:1**. Rule of thumb: when in doubt, match the
 original client's observed behaviour (tracer, captures); never ship SA:MP or GTA
-files (read them from the user's installs). Still escalated to the user: git
-commits, legal/publishing, system installs, irreversible actions outside the project.
+files (read them from the user's installs). Still escalated to the user: pushing,
+legal/publishing, system installs, irreversible actions outside the project.
 
 | Date | Decision | Rationale |
 |---|---|---|
