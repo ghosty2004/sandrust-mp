@@ -111,6 +111,8 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | D-4 | samp.saa data overrides (10 of 23 files differ; handling/weapon identical) | **resolved (2026-11-04): option A — read ALL redirected files from the user's samp.saa at runtime, exactly like the original (user: "I want 1:1"); never redistribute; fallback to our own minimal script when SA:MP isn't installed** |
 
 ## Decisions made autonomously
+- UI parity: the original passes an uninitialised rect and a stale colour to D3DX DrawText DT_CALCRECT calls; we pass zeros and the D3D diff ignores rect/colour on CALCRECT records (no observable output; reproducing garbage values is not meaningful).
+- UI parity: GTA's own render-target calls before samp's UI pass and the stage-0 texture left over from GTA's last scene draw are scene content and excluded from UI call-stream diffs.
 
 Since 2026-11-04 the user delegates technical decisions to Claude with one goal:
 **rebuild the original client 1:1**. Rule of thumb: when in doubt, match the
