@@ -7,6 +7,7 @@
 //   xc hpar <id> <health> <armour> ;   SetPlayerHealth + SetPlayerArmour
 //   xc skin <id> <skin> ;              SetPlayerSkin
 //   xc sa <id> <action> ;              SetPlayerSpecialAction
+//   xc weapon <id> <weapon> <ammo> ;   GivePlayerWeapon (M7)
 //   xc info <tag> ;                    one line per connected player (the server's view):
 //     [xc] info <tag> id=.. name=.. st=.. pos=x,y,z ang=.. skin=.. hp=.. ar=.. anim=.. sa=..
 // Each command prints "[xc] ok <cmd> ..." or "[xc] error ..." when done.
@@ -71,6 +72,11 @@ public OnRconCommand(cmd[])
         SetPlayerFacingAngle(id, floatstr(tok[5]));
         SetCameraBehindPlayer(id);
         printf("[xc] ok tp %d", id);
+    }
+    else if (!strcmp(tok[0], "weapon") && n >= 4)
+    {
+        GivePlayerWeapon(id, WEAPON:strval(tok[2]), strval(tok[3]));
+        printf("[xc] ok weapon %d", id);
     }
     else if (!strcmp(tok[0], "hpar") && n >= 4)
     {

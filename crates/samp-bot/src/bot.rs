@@ -139,6 +139,8 @@ pub struct Config {
     pub fire_ms: Option<u32>,
     /// Fixed foot/in-car sync interval instead of rate + N (measurement only).
     pub sync_ms: Option<u32>,
+    /// Special action sent in every 207 on foot (measurement only, e.g. 24 = cuffed).
+    pub special_action: Option<u8>,
 }
 
 impl Default for Config {
@@ -162,6 +164,7 @@ impl Default for Config {
             offset: None,
             fire_ms: None,
             sync_ms: None,
+            special_action: None,
         }
     }
 }
@@ -994,7 +997,7 @@ impl Bot {
             health: self.health.clamp(0.0, 255.0) as u8,
             armour: self.armour.clamp(0.0, 255.0) as u8,
             weapon: WeaponByte::new(self.inv.armed, 0),
-            special_action: self.special_action,
+            special_action: self.cfg.special_action.unwrap_or(self.special_action),
             velocity: geom::move_speed(self.vel),
             ..FootSync::default()
         };

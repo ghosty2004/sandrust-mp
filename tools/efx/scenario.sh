@@ -101,6 +101,11 @@ for step in ${EFX_STEPS:-pos hp skin putin}; do
         pos) capture pos 1 12 "pos|1510.0|-1660.0|13.55"; capture pos 2 12 "pos|1530.0|-1670.0|13.55" ;;
         hp) capture hp 1 14 "hp|57.5"; capture hp 2 14 "hp|33.0" ;;
         skin) capture skin 1 153 "skin|29"; sleep 2; capture skin 2 153 "skin|101" ;;
+        # M7 weapon RPCs (the give loads the model the first time: capture 2 is the already-loaded case).
+        give) capture give 1 22 "weapon|24|50"; sleep 1; capture give 2 22 "weapon|22|30" ;;
+        armed) capture armed 1 67 "armed|24"; sleep 1; capture armed 2 67 "armed|0" ;;
+        ammo) capture ammo 1 145 "ammo|24|20"; sleep 1; capture ammo 2 145 "ammo|22|7" ;;
+        resetw) capture resetw 1 21 "resetw"; sleep 1; efx_fs "weapon|24|50" > /dev/null; sleep 1; capture resetw 2 21 "resetw" ;;
         putin)
             # Next to the player (the tracer names the nearest car `near_veh` in both clients).
             efx_fs "pos|1510.0|-1660.0|13.55" > /dev/null

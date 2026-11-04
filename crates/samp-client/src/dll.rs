@@ -230,6 +230,11 @@ fn init_thread() {
             Ok(()) => crate::log!("main: swap hooks installed, but remote peds stay disabled (no sector relocation)"),
             Err(e) => crate::log!("main: swap hooks FAILED, remote players disabled: {e}"),
         }
+        // Combat (M7): the init-main rows of the damage / projectile / weapon-render hooks.
+        let combat = crate::combathooks::install_main(patcher, &mut mem);
+        let failed: Vec<String> =
+            combat.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
+        crate::log!("main: combat rows: {} applied, failed: {failed:?}", combat.len() - failed.len());
         // CSV rows 2/3 — samp's custom script opcodes 0x09C6 / 0x09D3 (used by samp.saa's scripts).
         match crate::scmops::install(patcher, &mut mem) {
             Ok(()) => crate::log!("main: script opcodes 0x09C6 / 0x09D3 installed"),
@@ -417,6 +422,13 @@ fn init_thread() {
             service_control("bg");
         }
     }
+}
+
+/// Runs `f` with the process patcher (InitGame-time patches, M7).
+pub(crate) fn with_patcher<R>(f: impl FnOnce(&mut Patcher, &mut ProcessMemory) -> R) -> R {
+    let mut g = PATCHER.lock().unwrap_or_else(|e| e.into_inner());
+    let p = g.get_or_insert_with(Patcher::new);
+    f(p, &mut ProcessMemory)
 }
 
 /// ANSI path of our generated main.scm (NUL-terminated).
@@ -731,6 +743,7 @@ fn service_control(_from: &str) {
             Ok(mut g) => g.as_mut().map(|c| c.request_debug_spawn()).unwrap_or_else(|| "error no session".into()),
             Err(_) => "error client busy".into(),
         },
+        Command::Combat => crate::combathooks::status_line(),
         Command::Chat(n) => crate::ui::control_chat(*n),
         Command::Input => crate::ui::control_input(),
         Command::Ui => crate::ui::control_ui(),

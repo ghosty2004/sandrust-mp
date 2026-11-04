@@ -49,6 +49,7 @@
 //   rmb|P|model|x|y|z|radius               RemoveBuildingForPlayer
 //   team|P|team  skill|P|skill|level  explode|x|y|z|type|radius  armed|P|weapon  ammo|P|weapon|ammo
 //   resetw|P  forceclass|P  special|P|action  kill|P (health 0)
+//   wdata|P|slot (GetPlayerWeaponData: the server's view of the client's 204 slot records; M7)  kick|P (Kick)
 // TRACE-7: explodeN|x|y|z|type|radius|n (n explosions at once)  specoff|P (TogglePlayerSpectating off)
 #define FILTERSCRIPT
 #pragma dynamic 65536
@@ -541,6 +542,13 @@ Run(seq, const line[])
     else if (!strcmp(cmd, "forceclass")) ForceClassSelection(pl(line, 1));
     else if (!strcmp(cmd, "special")) SetPlayerSpecialAction(pl(line, 1), SPECIAL_ACTION:in(line, 2));
     else if (!strcmp(cmd, "kill")) SetPlayerHealth(pl(line, 1), 0.0);
+    else if (!strcmp(cmd, "kick")) Kick(pl(line, 1));
+    else if (!strcmp(cmd, "wdata"))
+    {
+        new WEAPON:wd, wa;
+        GetPlayerWeaponData(pl(line, 1), WEAPON_SLOT:in(line, 2), wd, wa);
+        printf("[ui-fs] %d wdata %d slot %d weapon %d ammo %d armed %d", seq, pl(line, 1), in(line, 2), _:wd, wa, _:GetPlayerWeapon(pl(line, 1)));
+    }
     else printf("[ui-fs] %d unknown command '%s'", seq, cmd);
     printf("[ui-fs] %d done %s", seq, cmd);
 }

@@ -46,6 +46,8 @@ pub enum Command {
     Remote,
     Files,
     Vehicles,
+    /// Combat counters (M7).
+    Combat,
     Spawn,
     Quit,
     Chat(usize),
@@ -95,6 +97,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "remote" => Command::Remote,
         "files" => Command::Files,
         "vehicles" => Command::Vehicles,
+        "combat" => Command::Combat,
         "spawn" => Command::Spawn,
         "chat" => Command::Chat(20),
         "input" => Command::Input,

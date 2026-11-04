@@ -442,6 +442,81 @@ impl Players {
         }
     }
 
+    /// RPC 69 for a remote player.
+    pub fn set_team(&mut self, id: u16, team: u8) {
+        if let Some(p) = self.players.get_mut(&id) {
+            p.team = team;
+        }
+    }
+
+    /// RPC 34 for a remote player (A 0x1000F5E0): stored in the slot's skill table while streamed in.
+    pub fn set_skill(&mut self, id: u16, skill: u32, level: u16) {
+        let Some(slot) = self.players.get(&id).and_then(|p| p.slot) else { return };
+        if skill as usize >= SKILLS {
+            return;
+        }
+        swap::with_table(|t| {
+            if let Some(sh) = t.shadows.get_mut(usize::from(slot)) {
+                sh.skills[skill as usize] = f32::from(level);
+            }
+        });
+    }
+
+    /// 206 apply, weapon step (A 0x10016370 step 3): arm the shooter with the bullet's weapon, giving it with
+    /// 9999 rounds if missing. Returns the shooter's (ped, slot).
+    pub fn arm_shooter(&mut self, runner: &mut Runner, id: u16, weapon: u8) -> Option<(u32, u8)> {
+        let p = self.players.get(&id)?;
+        let (ped, slot) = (p.ped, p.slot?);
+        if ped == 0 || !crate::client::ped_in_world(ped) {
+            return None;
+        }
+        apply_weapon(runner, ped, slot, weapon);
+        Some((ped, slot))
+    }
+
+    /// RPC 166 (A 0x10017570 → ped helper A 0x100B0010): pad keys cleared, jetpack removed, fires
+    /// extinguished, teleported to its own position, health 0, EXPLODE_CHAR_HEAD under PlayerInFocus = slot;
+    /// state := wasted and the sync caches reset. Measured (TRACE-6): the head stays on.
+    pub fn kill(&mut self, runner: &mut Runner, id: u16) {
+        let Some(p) = self.players.get_mut(&id) else { return };
+        if let (Some(slot), ped) = (p.slot, p.ped)
+            && ped != 0
+        {
+            swap::with_table(|t| {
+                if let Some(sh) = t.shadows.get_mut(usize::from(slot)) {
+                    let input = PadInput { keys: 0, left_right: 0, up_down: 0, in_vehicle: false, jetpack: false };
+                    remote::apply_keys(&mut sh.pad, input);
+                }
+            });
+            let mem = ProcessMemory;
+            let in_vehicle = mem.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0;
+            let intel = mem.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
+            let task =
+                if intel != 0 { mem.read_u32(intel + off::INTELLIGENCE_PRIMARY_TASK).unwrap_or(0) } else { 0 };
+            if !in_vehicle && task != 0 && mem.read_u32(task).ok() == Some(game::VTBL_TASK_SIMPLE_JETPACK) {
+                // SAFETY: the jetpack task's deleting destructor (thiscall), main thread.
+                unsafe {
+                    let f: extern "thiscall" fn(u32, u32) = std::mem::transmute(JETPACK_DELETING_DTOR as usize);
+                    f(task, 1);
+                }
+                poke(intel + off::INTELLIGENCE_PRIMARY_TASK, 0u32);
+            }
+            crate::combathooks::extinguish(ped);
+            teleport_in_place(ped);
+            poke(ped + off::PED_HEALTH, 0.0f32);
+            if let Some(h) = game::ped_handle(&mem, ped).ok().flatten() {
+                let focus = mem.read_u8(game::PLAYER_IN_FOCUS).unwrap_or(0);
+                poke(game::PLAYER_IN_FOCUS, slot);
+                runner.run(op::EXPLODE_CHAR_HEAD, &[Arg::Int(h)]);
+                poke(game::PLAYER_IN_FOCUS, focus);
+            }
+        }
+        p.state = state::WASTED;
+        p.foot_new = false;
+        p.last_ts = None;
+        crate::log!("players: id={id} died (RPC 166)");
+    }
+
     /// RPC 153 for a remote player: the shared skin path on its ped, if streamed in.
     pub fn set_skin(&mut self, runner: &mut Runner, id: u16, skin: u32) {
         let Some(p) = self.players.get_mut(&id) else { return };
@@ -527,14 +602,14 @@ fn with_focus<R>(slot: u8, f: impl FnOnce() -> R) -> R {
 }
 
 /// SET_CURRENT_CHAR_WEAPON under the slot's context (A 0x100ac0a0, on foot).
-fn set_weapon(runner: &mut Runner, ped: u32, slot: u8, weapon: u8) {
+pub(crate) fn set_weapon(runner: &mut Runner, ped: u32, slot: u8, weapon: u8) {
     let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return };
     with_focus(slot, || runner.run(op::SET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Int(i32::from(weapon))]));
 }
 
 /// The one-shot weapon check: arm the synced weapon; if the ped does not have it,
 /// give it with 9999 rounds and arm it again (A 0x100166B0 → 0x100af7d0).
-fn apply_weapon(runner: &mut Runner, ped: u32, slot: u8, synced: u8) {
+pub(crate) fn apply_weapon(runner: &mut Runner, ped: u32, slot: u8, synced: u8) {
     let synced = synced & 0x3F;
     if current_weapon(runner, ped) == synced {
         return;
@@ -615,6 +690,9 @@ fn special_actions(runner: &mut Runner, ped: u32, action: u8, in_vehicle: bool, 
         }
     }
 }
+
+/// `CTaskSimpleJetPack` scalar deleting destructor (A 0x100ACDA0).
+const JETPACK_DELETING_DTOR: u32 = 0x6801D0;
 
 /// `CPed::bIsDucking` (m_nPedFlags bit 26).
 const PED_FLAG_DUCKING: u32 = 1 << 26;

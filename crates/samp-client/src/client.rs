@@ -88,6 +88,12 @@ pub struct Client {
     vehicles: crate::vehicles::Vehicles,
     /// The connect tick has fired (networking runs from then on).
     net_started: bool,
+    /// Combat (M7, combatclient.rs).
+    combat: crate::combatclient::Combat,
+    /// Local player "dead" flag (local player +0xF4): set with RPC 53, cleared by the respawn.
+    dead: bool,
+    /// InitGame class count (class selection after a forced reselection).
+    class_count: u32,
 }
 
 /// Raw write into game data (heap objects, .data/.bss); no protection change.
@@ -152,6 +158,9 @@ impl Client {
             players: crate::players::Players::default(),
             vehicles: crate::vehicles::Vehicles::default(),
             net_started: false,
+            combat: crate::combatclient::Combat::new(),
+            dead: false,
+            class_count: 0,
         })
     }
 
@@ -205,10 +214,15 @@ impl Client {
         if crate::ui::connect_tick(answered) {
             self.net_started = true;
         }
+        // What the combat hooks queued during this frame's CGame::Process (206 / 115), first.
+        self.combat.drain(&mut self.net);
         if self.net_started {
+            self.combat.update_shared(&self.players, &self.vehicles);
             for ev in self.net.tick(now) {
                 self.on_event(ev, now);
             }
+            // Remote 206 shots fired while the packets were handled (115 taking 1).
+            self.combat.drain(&mut self.net);
         }
         if self.debug_spawn {
             self.debug_spawn = false;
@@ -251,11 +265,18 @@ impl Client {
         crate::ui::set_class_selection(self.class_sel.is_active());
         if self.class_sel.is_active() {
             self.class_selection_tick(now);
-        } else if self.spawned {
-            self.local_frame(now);
-            self.sync_tick(now);
-        } else if !matches!(self.net.phase(), Phase::Connected) {
-            self.connecting_tick();
+        } else {
+            // Death (RPC 53) and the respawn after the wasted sequence (local tick A 0x100074C0).
+            if self.spawned || self.dead {
+                self.death_tick(now);
+            }
+            if self.class_sel.is_active() || self.dead {
+            } else if self.spawned {
+                self.local_frame(now);
+                self.sync_tick(now);
+            } else if !matches!(self.net.phase(), Phase::Connected) {
+                self.connecting_tick();
+            }
         }
         // Remote peds whose ProcessControl faulted (swap.rs fault containment).
         self.players.handle_faults(&mut self.runner);
@@ -265,6 +286,9 @@ impl Client {
         if matches!(self.net.phase(), Phase::Connected) {
             self.vehicles.pool_tick(&mut self.runner, &mut self.net, &self.players, now);
         }
+        // The hooks' view for the next CGame::Process.
+        self.combat.update_shared(&self.players, &self.vehicles);
+        self.combat.drain(&mut self.net);
         // Push out what this frame queued (sync packets, RPCs) right away.
         if self.net_started {
             self.net.flush(now);
@@ -293,6 +317,8 @@ impl Client {
                     g.on_foot_rate
                 );
                 self.players.set_init_game(g.player_id, g.death_drop_money);
+                self.combat.on_init_game(&g);
+                self.class_count = g.spawns_available;
                 crate::ui::on_init_game(&g);
                 self.vehicles.set_init_game(&g);
                 self.enter_class_selection(now, g.spawns_available);
@@ -322,6 +348,11 @@ impl Client {
             S::Vehicle { .. } | S::Passenger(_) | S::Unoccupied(_) | S::Trailer(_) => {
                 self.vehicles.on_sync(&mut self.runner, &mut self.players, s, now)
             }
+            // Bullet sync fires its shot at once (A 0x10009B40 → 0x10016370; combat §8 P10).
+            S::Bullet(b) => {
+                self.combat.update_shared(&self.players, &self.vehicles);
+                self.combat.on_bullet(&mut self.runner, &mut self.players, &self.vehicles, &b);
+            }
             s => self.players.on_sync(s, now),
         }
     }
@@ -340,6 +371,10 @@ impl Client {
                 let (streamed_in, quit) = match &r {
                     R::PlayerStreamIn(s) => (Some(s.player_id), None),
                     R::PlayerQuit(q) => (None, Some(q.player_id)),
+                    R::PlayerStreamOut(s) => {
+                        self.vehicles.reset_remote_vehicle(s.player_id);
+                        (None, None)
+                    }
                     _ => (None, None),
                 };
                 self.players.on_rpc(&mut self.runner, r);
@@ -423,6 +458,32 @@ impl Client {
                         self.give_weapon(ped, g.weapon.min(255) as u8, g.ammo);
                     }
                 }
+                P::SetPlayerAmmo(a) => {
+                    crate::log!("client: RPC 145 weapon {} ammo {}", a.weapon, a.ammo);
+                    crate::combatclient::set_ammo(self.ped(), a.weapon, a.ammo)
+                }
+                P::SetPlayerSkillLevel(k) => {
+                    if Some(k.player_id) == self.net.player_id() {
+                        crate::combatclient::set_local_skill(k.skill_type, k.level);
+                    } else if k.player_id < 1004 {
+                        self.players.set_skill(k.player_id, k.skill_type, k.level);
+                    }
+                }
+                P::SetPlayerTeam(t) => {
+                    if Some(t.player_id) == self.net.player_id() {
+                        self.combat.local_team = t.team;
+                    } else {
+                        self.players.set_team(t.player_id, t.team);
+                    }
+                }
+                P::PlayerDeath(d) => {
+                    // The local id is not special-cased by samp, but it has no remote entry (ignored).
+                    if d.player_id < 1005 && Some(d.player_id) != self.net.player_id() {
+                        self.players.kill(&mut self.runner, d.player_id);
+                        self.vehicles.reset_remote_vehicle(d.player_id);
+                    }
+                }
+                P::CreateExplosion(e) => crate::combatclient::create_explosion(&mut self.runner, &e),
                 P::SetPlayerTime(t) => {
                     // A 0x1000f420: GTA clock, SET_TIME_OF_DAY, settings.
                     poke(crate::world::CLOCK_HOURS, t.hour);
@@ -449,9 +510,10 @@ impl Client {
                 P::SetPlayerSpecialAction(a) => self.on_special_action(a.action),
                 P::DisableRemoteVehicleCollisions(d) => self.vehicles.set_disable_collisions(d.disable),
                 P::SetPlayerArmedWeapon(w) => {
-                    let ped = self.ped();
-                    if let Some(h) = self.ped_handle(ped) {
-                        self.runner.run(op::SET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Int(w.weapon as i32)]);
+                    // A 0x10018E50: 0…46 only; set-armed-weapon (A 0x100AC0A0, not forced).
+                    if w.weapon <= 46 {
+                        let ped = self.ped();
+                        crate::combatclient::set_armed_local(&mut self.runner, ped, w.weapon as u8);
                     }
                 }
                 P::ResetPlayerWeapons(_) => {
@@ -609,6 +671,8 @@ impl Client {
         // of its own that are never valid blips; nothing to reproduce.)
         // 8./9. state and RPC 52.
         self.spawned = true;
+        self.dead = false;
+        self.combat.reset_local();
         self.spawned_once = true;
         self.zone_names_from = Some(Instant::now() + ZONE_NAMES_DELAY);
         self.vehicles.set_spawned();
@@ -617,6 +681,93 @@ impl Client {
         self.net.send_rpc(&player::PlayerSpawn, Reliability::ReliableOrdered);
         crate::log!("client: spawned at {:?} heading {} skin {}", s.pos, s.rotation, s.skin);
         true
+    }
+
+    // ---- death and respawn (local tick A 0x100074C0) -------------------------
+
+    fn death_tick(&mut self, now: Instant) {
+        let ped = self.ped();
+        if ped == 0 {
+            return;
+        }
+        let mem = ProcessMemory;
+        let st = mem.read_u32(ped + off::PED_STATE).unwrap_or(0);
+        let health = mem.read_f32(ped + off::PED_HEALTH).unwrap_or(0.0);
+        if self.spawned {
+            if (!self.dead && st == PEDSTATE_DIE) || health <= 0.0 {
+                self.on_local_death(ped, now);
+            }
+            return;
+        }
+        // Dead: wait until GTA's wasted sequence has ended (ped state no longer 54/55).
+        if st == PEDSTATE_DIE || st == PEDSTATE_DEAD {
+            return;
+        }
+        // Cuffs off (A 0x100ACF40(0)); the jetpack does not exist here.
+        self.combat.cuffs.cuffed = false;
+        self.combat.publish_masks();
+        let connected = matches!(self.net.phase(), Phase::Connected);
+        if self.spawn_info.is_some() && !self.force_class_selection && connected {
+            if health > 0.0 {
+                self.dead = false;
+                crate::log!("client: respawn after death");
+                self.spawn();
+            }
+            return;
+        }
+        self.dead = false;
+        let count = self.class_count;
+        self.enter_class_selection(now, count);
+        self.force_class_selection = false;
+    }
+
+    /// The death branch of the local tick: special states off, controllable, a driver's last 200, fires out,
+    /// RPC 53 with the killer / reason of A 0x100AC890, then dead := 1, spawned := 0, zone names off.
+    fn on_local_death(&mut self, ped: u32, now: Instant) {
+        if self.hands_up(ped) {
+            self.set_controllable(true);
+        }
+        if self.phone
+            && let Some(h) = self.ped_handle(ped)
+        {
+            self.set_phone(h, false);
+        }
+        self.runner.run(op::SET_PLAYER_DRUNKENNESS, &[Arg::Int(0), Arg::Int(0)]);
+        self.set_controllable(true);
+        if self.combat.drive_by {
+            crate::vehicles::stop_drive_by(ped);
+            self.combat.drive_by = false;
+        }
+        self.vehicles.force_driver_send(&mut self.net, now);
+        crate::combathooks::extinguish(ped);
+        let mem = ProcessMemory;
+        let weapon = mem.read_u8(ped + off::PED_LAST_DAMAGE_WEAPON).unwrap_or(0xFF);
+        let entity = mem.read_u32(ped + off::PED_LAST_DAMAGE_ENTITY).unwrap_or(0);
+        let damager = self.damager_of(entity);
+        let (reason, killer) = crate::combat::death_reason(u32::from(weapon), damager);
+        crate::log!("client: local death: weapon {weapon} damager {damager:?} -> RPC 53 reason {reason} killer {killer}");
+        self.net.send_rpc(&player::OnPlayerDeath { reason, killer_id: killer }, Reliability::ReliableOrdered);
+        self.spawned = false;
+        self.dead = true;
+        self.zone_names_from = None;
+        self.runner.run(op::DISPLAY_ZONE_NAMES, &[Arg::Int(0)]);
+    }
+
+    /// The last damaging entity against the pools (remote ped, pool vehicle with its remote driver).
+    fn damager_of(&self, entity: u32) -> crate::combat::Damager {
+        use crate::combat::Damager;
+        if entity == 0 {
+            return Damager::None;
+        }
+        if let Some(p) = self.players.iter().find(|p| p.ped == entity) {
+            return Damager::Player(p.id);
+        }
+        if self.vehicles.hook_vehicles().iter().any(|v| v.0 == entity) {
+            let driver = ProcessMemory.read_u32(entity + 0x460).unwrap_or(0);
+            let id = if driver != 0 { self.players.iter().find(|p| p.ped == driver).map(|p| p.id) } else { None };
+            return Damager::Vehicle { driver: id };
+        }
+        Damager::Other
     }
 
     // ---- sync ---------------------------------------------------------------
@@ -640,9 +791,31 @@ impl Client {
         if matches!(state, PEDSTATE_IDLE | PEDSTATE_SNIPER | PEDSTATE_DRIVING) {
             self.head_look(ped, now);
         }
+        // 205 (> 1000 ms) and 204 (every tick) come before the per-state packets (A 0x100078A8 / 0x100078C9).
+        if self.last_stats.is_none_or(|t| now.duration_since(t) > footsync::STATS_INTERVAL) {
+            self.last_stats = Some(now);
+            let money = mem.read_i32(game::PLAYER_MONEY).unwrap_or(0);
+            self.net.send_sync(&StatsSync { money, drunk_level: 0 });
+        }
+        self.combat.weapons_tick(&mut self.net, &self.players, ped, now);
+        self.combat.cuffed_tick(&mut self.runner, ped);
+        // Local passenger drive-by (A 0x10007B68), before the 211.
+        let in_vehicle_flag = mem.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0;
+        let veh = mem.read_u32(ped + 0x58C).unwrap_or(0);
+        let is_driver = in_vehicle_flag && veh != 0 && mem.read_u32(veh + 0x460).unwrap_or(0) == ped;
+        if in_vehicle_flag && veh != 0 && !is_driver {
+            self.combat.passenger_drive_by(&mut self.runner, ped);
+        } else if self.combat.drive_by {
+            self.combat.drive_by = false;
+        }
         // In-car packets (200/210/211/106, passenger poll); on-foot sync only in ped states 1 and 12, so nothing
         // is sent while entering a seat from the server's warp or during the exit animation (TRACE-4 §4).
+        self.vehicles.local_drive_by = self.combat.drive_by;
+        self.vehicles.local_cuffed = self.combat.cuffs.cuffed;
         let in_car = self.vehicles.local_tick(&mut self.runner, &mut self.net, self.players.streamed(), now);
+        if in_car && in_vehicle_flag && veh != 0 {
+            self.combat.aim_in_car(&mut self.net, &mut self.vehicles, ped, is_driver, now);
+        }
         if !in_car && state != PEDSTATE_DRIVING {
             // On foot (A 0x10003f50): GET_AREA_VISIBLE for the world-bounds check (bounds: M8b).
             self.runner.run(op::GET_AREA_VISIBLE, &[Arg::Local(0)]);
@@ -663,14 +836,11 @@ impl Client {
                             self.net.send_sync(&f);
                         }
                     }
+                    // 203 after the 207 (A 0x10007C9A).
+                    self.combat.aim_on_foot(&mut self.net, &mut self.sender, ped, keys, now);
                 }
                 Err(e) => crate::log!("client: cannot read local ped: {e}"),
             }
-        }
-        if self.last_stats.is_none_or(|t| now.duration_since(t) > footsync::STATS_INTERVAL) {
-            self.last_stats = Some(now);
-            let money = mem.read_i32(game::PLAYER_MONEY).unwrap_or(0);
-            self.net.send_sync(&StatsSync { money, drunk_level: 0 });
         }
     }
 
@@ -771,6 +941,7 @@ impl Client {
     fn on_special_action(&mut self, action: u8) {
         use crate::remote::special;
         crate::log!("client: special action {action}");
+        self.combat.on_special_action(action);
         let ped = self.ped();
         let Some(h) = self.ped_handle(ped) else { return };
         let in_vehicle = ProcessMemory.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0;
@@ -875,13 +1046,15 @@ impl Client {
         }
     }
 
-    /// `CPed::ClearWeapons`.
+    /// `CPed::ClearWeapons` inside the local slot context (A 0x100AC050: PlayerInFocus only).
     fn clear_weapons(&mut self, ped: u32) {
-        // SAFETY: thiscall on the live local ped, main thread.
-        unsafe {
-            let f: extern "thiscall" fn(u32) = std::mem::transmute(game::PED_CLEAR_WEAPONS as usize);
-            f(ped);
-        }
+        crate::combatclient::local_context(false, || {
+            // SAFETY: thiscall on the live local ped, main thread.
+            unsafe {
+                let f: extern "thiscall" fn(u32) = std::mem::transmute(game::PED_CLEAR_WEAPONS as usize);
+                f(ped);
+            }
+        });
     }
 
     /// RPC 22 behaviour: load the weapon model, `CPed::GiveWeapon`, arm it.
@@ -890,15 +1063,16 @@ impl Client {
         if !self.load_model(model) {
             return;
         }
-        // SAFETY: thiscall on the live local ped, main thread.
-        unsafe {
-            let f: extern "thiscall" fn(u32, u32, u32, u32) -> u32 =
-                std::mem::transmute(game::PED_GIVE_WEAPON as usize);
-            f(ped, u32::from(weapon), ammo, 1);
-        }
-        if let Some(h) = self.ped_handle(ped) {
-            self.runner.run(op::SET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Int(i32::from(weapon))]);
-        }
+        // GiveWeapon inside the slot context, then set-armed-weapon, not forced (A 0x100AF7D0 → 0x100AC0A0(weapon, 0)).
+        crate::combatclient::local_context(true, || {
+            // SAFETY: thiscall on the live local ped, main thread.
+            unsafe {
+                let f: extern "thiscall" fn(u32, u32, u32, u32) -> u32 =
+                    std::mem::transmute(game::PED_GIVE_WEAPON as usize);
+                f(ped, u32::from(weapon), ammo, 1);
+            }
+        });
+        crate::combatclient::set_armed_local(&mut self.runner, ped, weapon);
     }
 }
 

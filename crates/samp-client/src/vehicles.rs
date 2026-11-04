@@ -267,6 +267,14 @@ pub struct Vehicles {
     patcher: Patcher,
     train_camera_since: Option<Instant>,
     n: Counters,
+    /// Set when a 200 went out (combat: 203 after each 200 of an armed vehicle).
+    driver_sent: Option<u16>,
+    /// The local passenger drive-by is active (combat, local player +0x1CB): 211 drive-by bit.
+    pub local_drive_by: bool,
+    /// The local player is cuffed (special action 24): 211 cuffed bit.
+    pub local_cuffed: bool,
+    /// Remote +0x1E7 per player (see `remote_vehicle`).
+    last_vehicle: HashMap<u16, u16>,
 }
 
 impl Vehicles {
@@ -793,6 +801,7 @@ impl Vehicles {
                 let r = self.remote.entry(sync.player_id).or_default();
                 r.driver = Some(d);
                 r.driver_new = true;
+                self.last_vehicle.insert(sync.player_id, d.vehicle_id);
                 r.passenger = None;
                 let ped = p.ped;
                 if ped != 0 && !in_vehicle(ped) && self.seat_remote(runner, ped, d.vehicle_id, 0) {
@@ -812,6 +821,7 @@ impl Vehicles {
                 let r = self.remote.entry(ps.player_id).or_default();
                 r.passenger = Some(d);
                 r.passenger_new = true;
+                self.last_vehicle.insert(ps.player_id, d.vehicle_id);
                 r.driver = None;
                 let ped = p.ped;
                 if ped != 0 && !in_vehicle(ped) && d.seat > 0 && self.seat_remote(runner, ped, d.vehicle_id, d.seat) {
@@ -873,6 +883,12 @@ impl Vehicles {
 
     pub fn forget_player(&mut self, pid: u16) {
         self.remote.remove(&pid);
+        self.last_vehicle.remove(&pid);
+    }
+
+    /// samp's cache reset of a remote (A 0x10015FA0: RPC 166, stream-out) clears its vehicle id (+0x1E7).
+    pub fn reset_remote_vehicle(&mut self, pid: u16) {
+        self.last_vehicle.remove(&pid);
     }
 
     /// 209 apply (A 0x100158D0), immediately on receive.
@@ -1027,6 +1043,8 @@ impl Vehicles {
                         }
                     }
                     poke(ptr + g::VEH_HEALTH, d.vehicle_health);
+                    // Weapon, as on foot (remote-players-sync §2.1 one-shot apply, driver; M7).
+                    crate::players::apply_weapon(runner, ped, slot, d.weapon);
                     if d.trailer_id == 0 || d.trailer_id >= vm::MAX_VEHICLES {
                         let tr: u32 = rd(ptr + g::VEH_TRAILER);
                         if tr != 0 && self.pool.values().any(|t| t.ptr == tr && t.id != 0) {
@@ -1061,6 +1079,11 @@ impl Vehicles {
                 });
                 poke(ptr + g::VEH_HORN, u32::from(d.keys & 2 != 0));
             } else if let (state::PASSENGER, Some(d)) = (p.state, r.passenger) {
+                if r.passenger_new && seated {
+                    // One-shot apply, passenger (§2.1 + RE-10): weapon, drive-by task, cuffs (M7).
+                    crate::players::apply_weapon(runner, ped, slot, d.weapon);
+                    remote_drive_by(runner, ped, slot, d.drive_by);
+                }
                 r.passenger_new = false;
                 let input = PadInput { keys: d.keys, left_right: 0, up_down: 0, in_vehicle: true, jetpack: false };
                 crate::swap::with_table(|t| {
@@ -1070,6 +1093,54 @@ impl Vehicles {
                 });
             }
         }
+    }
+
+    // ---- combat (M7) --------------------------------------------------------------------------------------------
+
+    /// Streamed vehicles as (GTA pointer, id) for the combat hooks.
+    pub fn hook_vehicles(&self) -> Vec<(u32, u16)> {
+        self.pool.values().filter(|v| v.ptr != 0 && v.id != 0).map(|v| (v.ptr, v.id)).collect()
+    }
+
+    /// samp's remote +0x1E7: the vehicle of the last stored driver / passenger sync. Written by both stores,
+    /// kept after the remote leaves the vehicle, cleared only by the cache reset A 0x10015FA0 (RPC 166,
+    /// stream-out, the reset branch of the remote tick) and the constructor.
+    pub fn remote_vehicle(&self, pid: u16) -> Option<u16> {
+        self.last_vehicle.get(&pid).copied().filter(|&v| v != 0)
+    }
+
+    pub fn ptr_of(&self, id: u16) -> Option<u32> {
+        self.get(id).map(|v| v.ptr)
+    }
+
+    /// The in-car duplicate gate (shared timestamp of 200/211/210, also used for the in-car 203).
+    pub fn dup_offer(&mut self, now: Instant, packet_id: u8, bytes: Vec<u8>) -> bool {
+        self.dup.offer(now, packet_id, bytes)
+    }
+
+    /// A 200 was sent by the last `local_tick` (armed vehicles send a 203 after every 200).
+    pub fn take_driver_sent(&mut self) -> Option<u16> {
+        self.driver_sent.take()
+    }
+
+    /// Death while driving (A 0x10007080): one last 200, outside the interval.
+    pub fn force_driver_send(&mut self, net: &mut NetClient, now: Instant) {
+        let ped = local_ped();
+        if ped == 0 || !in_vehicle(ped) {
+            return;
+        }
+        let veh: u32 = rd(ped + g::PED_VEHICLE);
+        if rd::<u32>(veh + g::VEH_DRIVER) != ped {
+            return;
+        }
+        if let Some(id) = self.id_of_ptr(veh) {
+            self.send_driver(net, ped, veh, id, now);
+        }
+    }
+
+    /// The vehicle model of a pool id.
+    pub fn model_of(&self, id: u16) -> Option<u32> {
+        self.get(id).map(|v| v.model)
     }
 
     // ---- hook events and the local player -------------------------------------------------------------------
@@ -1228,6 +1299,7 @@ impl Vehicles {
             self.last_rotation = Some(p.rotation);
             net.send_sync(&p);
             self.n.sent_200 += 1;
+            self.driver_sent = Some(id);
         }
         // 210 goes out on every in-car tick while towing, even when the 200 was suppressed as a duplicate, and it
         // refreshes the shared send timestamp (TRACE-5: stationary 1 × 200 vs 119 × 210).
@@ -1254,7 +1326,7 @@ impl Vehicles {
         let Ok(sample) = game::read_local_sample(&ProcessMemory, ped) else { return };
         let seat =
             (0..8u32).find(|&i| rd::<u32>(veh + g::VEH_PASSENGERS + 4 * i) == ped).map(|i| i as u8 + 1).unwrap_or(0);
-        let p = vm::build_passenger_sync(
+        let mut p = vm::build_passenger_sync(
             id,
             seat,
             sample.weapon,
@@ -1266,6 +1338,9 @@ impl Vehicles {
             footsync::key_word(&sample.pad, sample.key_ctx),
             sample.position,
         );
+        // Drive-by bit (byte 2 bit 6): the local drive-by task is active (TRACE-7: set from the start frame on).
+        p.drive_by = self.local_drive_by;
+        p.cuffed = self.local_cuffed;
         if self.dup.offer(now, samp_proto::sync::ids::PASSENGER_SYNC, body(&p)) {
             net.send_sync(&p);
             self.n.sent_211 += 1;
@@ -1838,4 +1913,80 @@ fn is_passenger(veh: u32, ped: u32) -> bool {
 fn dead(ped: u32) -> bool {
     let st: u32 = rd(ped + off::PED_STATE);
     st == 54 || st == 55 || rd::<f32>(ped + off::PED_HEALTH) <= 0.0
+}
+
+/// `CPedIntelligence` task slot samp reads for the drive-by task (RE-10: intelligence +0x10).
+const INTEL_DRIVE_BY_SLOT: u32 = 0x10;
+/// `TASK_SIMPLE_GANG_DRIVEBY` task type and its deleting destructor.
+const TASK_GANG_DRIVEBY: u32 = 0x3FE;
+const GANG_DRIVEBY_DELETING_DTOR: u32 = 0x6275E0;
+
+/// The drive-by task is active (task type 0x3FE in the intelligence slot +0x10).
+pub(crate) fn drive_by_task(ped: u32) -> u32 {
+    let intel: u32 = rd(ped + off::PED_INTELLIGENCE);
+    if intel == 0 {
+        return 0;
+    }
+    let task: u32 = rd(intel + INTEL_DRIVE_BY_SLOT);
+    if task == 0 {
+        return 0;
+    }
+    let vt: u32 = rd(task);
+    if !(0x80_0000..=0x90_0000).contains(&vt) {
+        return 0;
+    }
+    let get_type: u32 = rd(vt + 0x10);
+    // SAFETY: the task's own GetTaskType virtual (thiscall), main thread.
+    let kind = unsafe {
+        let f: extern "thiscall" fn(u32) -> u32 = std::mem::transmute(get_type as usize);
+        f(task)
+    };
+    if kind == TASK_GANG_DRIVEBY { task } else { 0 }
+}
+
+/// Stops the drive-by task through its deleting destructor and clears the slot (A 0x100AD0C0).
+pub(crate) fn stop_drive_by(ped: u32) {
+    let task = drive_by_task(ped);
+    if task == 0 {
+        return;
+    }
+    // SAFETY: the task's deleting destructor (thiscall), main thread.
+    unsafe {
+        let f: extern "thiscall" fn(u32, u32) = std::mem::transmute(GANG_DRIVEBY_DELETING_DTOR as usize);
+        f(task, 1);
+    }
+    let intel: u32 = rd(ped + off::PED_INTELLIGENCE);
+    poke(intel + INTEL_DRIVE_BY_SLOT, 0u32);
+}
+
+/// Starts the drive-by task (A 0x100ACFD0): in a vehicle only; with the parachute the weapon goes to fists and no
+/// task starts; otherwise the current weapon is armed again and TASK_DRIVE_BY(ped, −1, −1, 0, 0, 0, 300, 8, 1, 20)
+/// runs (TRACE-7: same parameters for the local and the remote passenger).
+pub(crate) fn start_drive_by(runner: &mut Runner, ped: u32, arm: impl FnOnce(&mut Runner, u8)) -> bool {
+    if !in_vehicle(ped) || rd::<u32>(ped + g::PED_VEHICLE) == 0 {
+        return false;
+    }
+    let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return false };
+    let w = current_weapon(ped) as u8;
+    if w == vm::WEAPON_PARACHUTE {
+        arm(runner, 0);
+        return false;
+    }
+    arm(runner, w);
+    let f = Arg::Float;
+    runner.run(
+        op::TASK_DRIVE_BY,
+        &[Arg::Int(h), Arg::Int(-1), Arg::Int(-1), f(0.0), f(0.0), f(0.0), f(300.0), Arg::Int(8), Arg::Int(1), Arg::Int(20)],
+    );
+    true
+}
+
+/// Remote passenger drive-by bit (remote-players-sync RE-10): start when set and not active, stop when clear.
+fn remote_drive_by(runner: &mut Runner, ped: u32, slot: u8, on: bool) {
+    let active = drive_by_task(ped) != 0;
+    if on && !active {
+        start_drive_by(runner, ped, |r, w| crate::players::set_weapon(r, ped, slot, w));
+    } else if !on && active {
+        stop_drive_by(ped);
+    }
 }
