@@ -3,6 +3,8 @@
 #   ui.sh key KEY...            xdotool key presses on the headless display (e.g. t, F7, Escape, Return)
 #   ui.sh down KEY | up KEY     hold / release
 #   ui.sh type TEXT             type text (xdotool type)
+#   ui.sh mouse ARGS…           xdotool mouse command (mousedown 3 | mouseup 1 | click 1 | mousemove_relative -- DX DY)
+#   ui.sh fire [MS]             left button held MS ms (default 150)
 #   ui.sh shot NAME             screenshot of the headless display → $OUT/NAME.png
 #   ui.sh ctl CMD               tracer control line (state, peek, poke, mark, d3d …)
 #   ui.sh mark TEXT             mark in trace.jsonl and d3d.jsonl
@@ -13,11 +15,18 @@
 #   ui.sh log [N]               last N server log lines (default 20)
 #   ui.sh wait REGEX SECONDS    wait for a server log line
 #   ui.sh stop                  kill the bots (by PID) and end the session
+# Every call needs TRACE_SESSION=<id from run.sh hold's output> and SAMP_RS_TRACE_LOCK_HELD=1.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/lib.sh"
-ENVF="$TRACE_OUT/hold.env"
-[ -f "$ENVF" ] || { echo "ui.sh: no running hold session ($ENVF)" >&2; exit 1; }
+# Hold sessions are private (TRACE-6): only the owner, who got the session id from run.sh's output and
+# runs inside the lane lock, may drive one.
+SESSION="${TRACE_SESSION:-}"
+[ -n "$SESSION" ] || { echo "ui.sh: refused: set TRACE_SESSION=<id printed by run.sh hold>" >&2; exit 1; }
+[ "${SAMP_RS_TRACE_LOCK_HELD:-0}" = 1 ] || { echo "ui.sh: refused: only the session owner (SAMP_RS_TRACE_LOCK_HELD=1) may drive it" >&2; exit 1; }
+case "$SESSION" in */*|.*|"") echo "ui.sh: refused: bad session id" >&2; exit 1 ;; esac
+ENVF="$TRACE_OUT/${SESSION%%.*}/hold.env"
+[ -f "$ENVF" ] && grep -qxF "SESSION=$SESSION" "$ENVF" || { echo "ui.sh: refused: no running hold session $SESSION" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "$ENVF"
 export E2E_HEADLESS_DISPLAY E2E_GAMESCOPE SAMP_TRACER_PORT E2E_CTL_PORT
@@ -30,6 +39,12 @@ case "$cmd" in
     down) e2e_keydown "$1" ;;
     up) e2e_keyup "$1" ;;
     type) DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool type --delay 60 -- "$1" ;;
+    mouse) DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool "$@" ;;
+    fire)
+        DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool mousedown 1
+        sleep "$(awk "BEGIN{print ${1:-150}/1000}")"
+        DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool mouseup 1
+        ;;
     shot) e2e_shot "$OUT/$1.png" && echo "$OUT/$1.png" ;;
     ctl) trace_ctl "$*" ;;
     mark) trace_ctl "mark $*" ;;
