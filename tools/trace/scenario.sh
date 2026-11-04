@@ -72,7 +72,8 @@ if [ "$STEPS" = vehicles ]; then
     sleep 5
     e2e_shot "$OUT/veh-0.png"
     trace_mark enter_press
-    e2e_key f
+    # Held for 0.3 s: a bare press/release can fall between two pad updates.
+    e2e_keydown f; sleep 0.3; e2e_keyup f
     e2e_wait_log "\[trace-fs\] state [0-9]+ 1->2" 10 && trace_mark local_driver || trace_say "local player did not become driver"
     sleep 1
     trace_mark drive_start
@@ -81,9 +82,9 @@ if [ "$STEPS" = vehicles ]; then
     e2e_keyup w
     trace_mark drive_end
     e2e_shot "$OUT/veh-1.png"
-    sleep 3
+    sleep 5
     trace_mark exit_press
-    e2e_key f
+    e2e_keydown f; sleep 0.3; e2e_keyup f
     e2e_wait_log "\[trace-fs\] state [0-9]+ 2->1" 10 && trace_mark local_onfoot || trace_say "local player did not leave the car"
     sleep 3
     ( cd "$TRACE_ROOT" && exec target/debug/examples/drive_bot "127.0.0.1:$E2E_PORT" --name DriveBot --seconds 62 ) \

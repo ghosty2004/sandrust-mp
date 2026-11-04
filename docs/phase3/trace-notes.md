@@ -89,6 +89,11 @@ names come from gta-reversed `Enums/eScriptCommands.h`.
     bot next to the traced player, 15 s later moves it 1500 m away (stream-out), and 10 s after that brings it back
     (stream-in again). The bot leaves after 40 s.
   * `tools/trace/remote_report.py DIR` prints the four answers from a trace.
+* TRACE-4 additions:
+  * `run.sh orig|ours idle` (SP-OFF, `spoff.pwn`, `spoff_report.py`, `spoff_sites.py`);
+  * `run.sh orig|ours vehicles` (`vehfs.pwn`, the `drive_bot` example, a network capture per client,
+    `veh_report.py`);
+  * the hooks and records listed in "SP-OFF baseline" and "Vehicles".
 
 ## Original client: results
 
@@ -510,6 +515,253 @@ How it was measured: `SAMP_TRACER_GUARD=400 tools/trace/run.sh ours remote` with
 8. After that restart, ours alternates `SET_CURRENT_CHAR_WEAPON(1, 22)` and `(1, 4)` every 2–3
    frames.
 9. The local pistol-skill stat is 0 in ours; the original sets 1000 after the spawn.
+
+## SP-OFF baseline: single-player population and police (TRACE-4 part 2)
+
+**Runs** (all 5 minutes of idling after the spawn):
+
+* `TRACE_IDLE_SECS=300 tools/trace/run.sh orig|ours idle`
+  * `tools/trace/spoff.pwn` lifts the gungame world bounds and puts the player in Grove Street
+    (2495, −1675).
+  * After 300 s it moves the player in front of the Alhambra entry-exit ("BAR1"). The scenario
+    walks the player in with W and idles 30 s inside (area 17).
+* `tools/trace/run.sh bare 300`: the stock new game at Grove Street. The intro mission starts
+  after about 115 s.
+* Reports: `tools/trace/spoff_report.py DIR [--from grove]`. Live patch bytes:
+  `tools/trace/spoff_sites.py` (`spoff-sites.txt` in each run directory).
+
+**Tracer additions:**
+* 29 hooks:
+  * ped/vehicle constructors: `CCopPed`, `CVehicle`;
+  * the CPopulation generators;
+  * the CCarCtrl, car-generator, plane, train and roadblock generators;
+  * the CWanted setters;
+  * the police scanner;
+  * `CEntryExit::GenerateAmbientPeds` and `CPopulation::PopulateInterior`.
+* Per-frame generators are `Count` hooks, reported on/off in `watch`.
+* Creation records carry `gta_stack`: up to 6 gta_sa.exe return addresses.
+* `watch` also reports:
+  * ped and vehicle pool usage;
+  * `CPopulation` / `CCarCtrl` counters;
+  * the density multipliers;
+  * `CWanted::MaximumWantedLevel`;
+  * the local player's wanted level and chaos.
+* Hooks that are deliberately not used:
+  * `CPopulation::AddPed`: samp rewrites its entry.
+  * `CCivilianPed::CCivilianPed`: a rel32 points into its first bytes.
+  * `CCarCtrl::GenerateOneRandomCar` and `GenerateOneEmergencyServicesCar`: the exe's protection
+    stubs read their entry bytes as data. A hook on 0x42B7D0 broke the decryption at 0x403796
+    and crashed `SET_PLAYER_CONTROL`.
+* New test `no_absolute_reference_into_stolen_bytes` scans the whole image for such
+  references.
+
+| per 5 min after the spawn | original | ours (M3 build) | stock (bare) |
+|---|---|---|---|
+| peds created (excluding players) | **0** | 21 cops (12 on foot via `AddPed`, 9 SWAT from police helicopters) + 8 interior peds | 128 (civilians, gangs, 6 cops) |
+| vehicles created | **0** | 11 police helicopters (created_by PERMANENT) + 5 parked cars before the spawn | 54 (24 parked, 12 random traffic, 7 mission, 9 train cars, …) |
+| `MaximumWantedLevel` | **0** (`SET_MAX_WANTED_LEVEL` from samp's main.scm in frames 0 and 2) | 6 | 6, then 4 (story script) |
+| wanted level | 0 | **4** (set in frame 18 by `CGameLogic::SetPlayerWantedLevelForForbiddenTerritories`: the class-selection position 1958, 1343 is in Las Venturas, a locked city) | 0 |
+| arrests | 0 | 4 (ped state 54 → 55, camera mode 29, restart) | 0 |
+| `CCarCtrl::GenerateRandomCars` | never called (CSV row 189 NOP) | never called (`CGame::Process` skips it when the streaming update takes ≥ 4 ms; not NOPed) | every frame |
+| `CTheCarGenerators::Process` | never (row 181 NOP) | **every frame** | every frame |
+| `CPlane` / `CTrain` generation | never | never | 65 % of frames |
+| `CPopulation::Update` / `ManagePopulation` | every frame (not patched) | every frame | every frame |
+| `CPopulation::AddToPopulation` | 0 frames after the spawn (ped density 0) | 4 frames | 65 % of frames |
+| `CRoadBlocks::GenerateRoadBlocks`, `CWanted::Update` | every frame (harmless at wanted level 0) | every frame | every frame |
+| interior entry (`TransitionFinished`) | no `GenerateAmbientPeds` (row 164 NOPs the call) | `GenerateAmbientPeds` → `PopulateInterior(9)` → 8 dancers/patrons | — |
+| police scanner (`AddAudioEvent` / dialogue) | 0 | 0 | 0 |
+| ped / car density | 0 / 0 | 0 / 0 | 1 / 1 |
+
+**What samp neutralises, and how** (live bytes from `spoff-sites.txt`; CSV rows of
+`gta-patches-r4-annotated.csv`):
+* **By code patches at init:**
+  * row 189: the `GenerateRandomCars` call in `CGame::Process`;
+  * row 181: the `CTheCarGenerators::Process` call;
+  * row 182: the plane generation inside `GenerateRandomCars`;
+  * row 185: `CPopulation::AddPed` → `xor eax,eax; ret`;
+  * row 186: the `SetPedInCarDirect` call in `AddPedInCar`;
+  * row 164: the `GenerateAmbientPeds` call in `CEntryExit::TransitionFinished`;
+  * row 55: the police scanner's `FindPlayerPed` call;
+  * row 246: cutscenes;
+  * row 163: replay.
+* **By its replacement main.scm:**
+  * `SET_MAX_WANTED_LEVEL 0`, so the wanted level is capped at 0 (this also neutralises the
+    forbidden-territory wanted level);
+  * ped and car density 0;
+  * `SWITCH_ROADS_OFF` / ped roads off;
+  * `SWITCH_RANDOM_TRAINS(0)` at spawn.
+* **Not patched, still running every frame:** `CPopulation::Update` / `ManagePopulation`,
+  `CWanted::Update`, `CRoadBlocks::GenerateRoadBlocks`. With density 0, maximum wanted level 0
+  and `AddPed` returning 0, they create nothing.
+
+**SP-OFF acceptance gaps of our client** (all measured in `ours-20261104-203122`):
+1. `MaximumWantedLevel` is still 6. The original sets 0 through its script. Result:
+   * wanted level 4 for locked cities;
+   * police helicopters with SWAT rappelling, cops on foot;
+   * an arrest about every 60 s.
+   This also explains the arrest seen in the M3 re-diff.
+2. Row 181 is missing: `CTheCarGenerators::Process` runs, and 5 parked cars were created during
+   class selection.
+3. Row 185 is missing: `CPopulation::AddPed` creates peds. These were the 12 cops on foot. With
+   density 0 the only other route is attractor/interior population.
+4. Row 164 is missing: entering an interior generates ambient peds (8 in the Alhambra).
+5. Rows 189 and 182 are missing. `GenerateRandomCars` happened not to run in our trace (timing
+   gate), but it is not disabled.
+6. Rows 186, 55 and 163 (replay) are missing. No effect was seen in this run, because nothing
+   was created in cars and no crime was reported.
+7. Already present in ours: row 246 (cutscenes), row 202 (wanted HUD), densities 0, roads off.
+
+## Vehicles (TRACE-4)
+
+What the original client does with vehicles. Everything was measured at runtime with samp.dll 0.3.7-R4 (build B)
+and is described in our own words. Static background: `docs/re/subsystems/remote-control-vehicles.md` (build A).
+This section confirms that spec at runtime and refines it.
+
+**Runs:** `tools/trace/run.sh orig vehicles`.
+* `target/trace/orig-20261104-204143`: the full scenario.
+* `orig-20261104-203744`: the local exit failed (F was too short).
+* Per-frame figures agree within a few frames between the two runs. The local exit and the network figures come
+  from the first one.
+
+**Scenario** (`tools/trace/vehfs.pwn`, LS airport tarmac):
+* The traced player stands next to a Sultan (car A). It enters with F, drives 4 s with W and exits with F.
+* Then `target/debug/examples/drive_bot` (new samp-bot example) joins as "DriveBot". The server creates car B 40 m
+  away and calls `PutPlayerInVehicle(bot, B, 0)`.
+* The bot sends driver sync (200) every 30 ms on a circle: radius 10 m, 0.5 rad/s, synced velocity 0.1 per frame,
+  accelerate key held, steering −64.
+
+**Timeline after the bot's spawn:**
+* +21.5 s `RemovePlayerFromVehicle`. The bot then sends foot sync.
+* +26.5 s put back in the car.
+* +31.5 s the traced player is moved 1500 m away (stream-out of both cars and the bot).
+* +41.5 s the player is brought back (stream-in again).
+* +51.5 s `DestroyVehicle(B)` with the bot inside.
+
+**Tools:**
+* Loopback traffic is captured to `net.pcapng`, split per client port and decoded with samp-dump (`net-<port>.log`;
+  the game's file is the one without "DriveBot" in its RPC 25).
+* `tools/trace/veh_report.py DIR` prints the report.
+
+**Tracer additions:**
+* `CAutomobile::ProcessControl` (0x6B1880) gets an inline hook (inner). There is also an outer wrapper in front of
+  samp's CAutomobile vtable slot 0x871148. Together they produce one `vpc` record per call on a mission car:
+  * the samples `pre.before` / `in` / `out` / `pre.after`;
+  * PlayerInFocus, `Pads[0]`, camera mode / weapon mode / look-left-right / front;
+  * the car's position, speed, turn speed, forward vector, status, driver, health, steer/gas/brake and raw flags;
+  * `orig_called: false` when samp skipped GTA's function.
+* An `rveh` record per mission car per frame, at frame start, `world_in` and `world_out`.
+
+### 1. Stream-in (RPC 164), one frame, all through script commands
+
+1. Model: `0x0248 HAS_MODEL_LOADED(560)`.
+   * If the model is missing: `0x0247 REQUEST_MODEL(560)`, `0x038B LOAD_ALL_MODELS_NOW`
+     (→ `CStreaming::LoadAllRequestedModels`), then `0x0248` again in the same frame. That is the busy-wait; one poll
+     was enough here.
+   * If the model is loaded (car B, and the second stream-in): only `0x0248`.
+2. `0x00A5 CREATE_CAR(560, x, y, z)` → `CVehicle::CVehicle(created_by 2 = MISSION)`, `CWorld::Add`. Handles were 1,
+   257, 258, 513.
+3. `0x0175 SET_CAR_HEADING(h, angle)` → `CPlaceable::SetHeading`. On the second stream-in the angle is the server's
+   current angle (91.77).
+4. `0x09C4 SET_PETROL_TANK_WEAKPOINT(h, 0)`, `0x07FF SET_CAR_HYDRAULICS(h, 0)`, `0x053F SET_CAN_BURST_CAR_TYRES(h, 0)`.
+5. The z of the matrix is raised by 0.25 with no GTA call: CREATE_CAR at z 13.55 gives the car at z 13.80 in the next
+   frame (13.259 → 13.509 for the second stream-in of car A). The door lock reads 0.
+6. When a player and a car stream in together (RPC 164 followed by RPC 32 in the same packet), `CREATE_CAR` comes
+   first and `CREATE_PLAYER` follows in the same frame.
+7. Unoccupied sync: right after car A streamed in, the local client sent 4 × packet 209 for it, 150 ms apart, and
+   then stopped (the car had settled).
+
+### 2. Every frame, for every vehicle (samp's pool tick)
+
+* For each car: `0x02AC SET_CAR_PROOFS(h, 1,1,1,1,1)` and `0x053F SET_CAN_BURST_CAR_TYRES(h, 0)`. When the local ped
+  drives the car, these become `(h, 0,0,0,0,0)` and `(h, 1)`.
+  * This is one pair per car per frame (e.g. 259 frames → 259 pairs per car).
+  * The switch happens as soon as GTA seats the local ped, 6 frames before the server reports state 2. It switches
+    back on exit.
+* `0x02BF IS_CAR_IN_WATER(h)` every 4th frame (the sunk check).
+* Blips: on the local enter, `0x0164 REMOVE_BLIP`. On the exit, `0x0161` (blip for the car, handle 196610) and then
+  `0x0165` (blip colour 1004). This is samp's own vehicle-marker handling.
+
+### 3. Remote driver
+
+* **Seating:**
+  * The server's `PutPlayerInVehicle` for the bot is **not** relayed as an animation; no RPC 26/154 reached the game.
+  * When the first driver sync arrives (44–46 frames after `CREATE_PLAYER`), samp runs `0x036A WARP_CHAR_INTO_CAR(ped, car)`
+    → `CTaskSimpleCarDrive`.
+  * After `RemovePlayerFromVehicle`, the bot sends foot sync. samp then runs
+    `0x0362 WARP_CHAR_FROM_CAR_TO_COORD(ped, x, y, z)`. The coordinates are **the ped's own current position**, not the
+    car's position + 2.
+  * A later driver sync seats the ped again with `0x036A`.
+* **ProcessControl swap** (1886 of 1886 calls with the remote driver). Before samp's handler and after it the game
+  context is the local one: PlayerInFocus 0, local pad, camera mode 18 while the local player drives and 4 on foot.
+  Inside GTA's `CAutomobile::ProcessControl`:
+  * PlayerInFocus = **2** (the slot);
+  * `Pads[0]` holds **the remote keys**: LeftStickX = −64 (steering) and ButtonCross = 255 (accelerate, from
+    KEY_SPRINT);
+  * camera mode **4** and camera front **(0, 0, 0)** (per-slot defaults);
+  * look-left/right 0;
+  * car status 0 (STATUS_PLAYER).
+* **z protection:** samp changes the car's z or move-speed z after GTA's function only when the car is far away or
+  has no collision. It happened in every call while the local player was 1500 m away (69–74 calls) and never
+  while it was near; the few calls counted just before the `local_away` mark are mark lag.
+* **Unoccupied cars:**
+  * GTA's ProcessControl runs while the car is near the local player.
+  * It is skipped (`orig_called: false`) when the car is far: car A, left 170 m north, was frozen for 1305–1321 calls.
+* **Corrections, all between `CWorld::Process` and the next frame (never inside the world update):**
+  * the forward vector (rotation) is rewritten every frame (1873 of 1886): about 0.56° per frame, which equals the
+    synced turn rate, so it is a slerp toward the synced quaternion;
+  * the move speed is written when a sync arrives (1042 of 1886 frames; gaps of 2 frames: 760, 1 frame: 255). The
+    written |v| has a median of 0.1001 for a synced 0.1000 (min 0.095, max 0.187): the velocity plus a small pull;
+  * the position was **never** written outside the world update; it comes only from GTA physics;
+  * turn speed stayed below 0.014, so the ±0.02 clamp was never reached.
+
+### 4. Local driver: enter, drive (packet 200), exit
+
+* **Enter (F):**
+  * GTA sets the enter task from the on-foot task (`SetTask(…, 3)` from 0x570A41, frame 0).
+  * samp sends **RPC 26 EnterVehicle (vehicle 1, passenger 0)** at the moment F is pressed.
+  * Foot sync 207 keeps going at 30 ms while the enter animation plays (≈3.3 s).
+  * Seated at frame +167: ped state 50, `CTaskSimpleCarDrive`, camera mode 18. The first 200 is sent in the same
+    frame.
+* **Driving:**
+  * Packet 200 is sent every 30 ms (in-car rate) while anything changes (227 of 264 gaps were 30 ms).
+  * When the car stands still with no input it is sent every ~530 ms: identical structs are suppressed for 501 ms.
+  * Aim sync 203 is also sent about once per second while driving.
+* **Exit (F):**
+  * samp sends **RPC 154 ExitVehicle (vehicle 1)** when F is pressed.
+  * GTA sets `CTaskComplexLeaveCar` (index 3) and ped state 0.
+  * **No 200 and no 207 are sent during the exit animation**: the last 200 is 4 ms after RPC 154, and the next 207
+    comes 1.9 s later.
+  * The ped is on foot after ≈100 frames (`CTaskSimplePlayerOnFoot`, camera mode 4). Then the car blip described in
+    §2 is added.
+
+### 5. Stream-out and destroy
+
+* **Stream-out** (local player moved away): RPC 165 for car B, RPC 165 for car A, then RPC 163 for the bot, all in one
+  packet. In the trace, in one frame:
+  1. `0x0362 WARP_CHAR_FROM_CAR_TO_COORD(remote ped, its own position)` (task reset, `CPed::Teleport`, Remove/Add);
+  2. `0x00A6 DELETE_CAR(257)`, then `0x00A6 DELETE_CAR(1)` (`CWorld::Remove` from 0x467B41);
+  3. the remote ped's destructor (as in TRACE-2).
+  No `RemoveModel` for the car model, and no blip calls.
+* **Stream-in again:** both cars are re-created with `CREATE_CAR` at the server's current position and angle. The
+  remote ped is created again and immediately warped in with `0x036A` (the stored driver sync).
+* **`DestroyVehicle(B)` with the bot inside:** RPC 165 → `0x0362` (ped's own position) then `0x00A6 DELETE_CAR(258)`.
+  The ped stays streamed in, on foot.
+
+### 6. For the M5 implementation
+
+* Use the opcode sequence of §1, including the busy-wait load and the +0.25 z.
+* The per-frame proofs/tyres pair (§2) is applied to every car.
+* Seating, unseating and ejection are warps; the coordinates are the ped's own position.
+* Remote-driver swap: PlayerInFocus, pad (steer → LeftStickX, KEY_SPRINT → Cross), camera mode 4, front (0, 0, 0);
+  restore z only far away. Unoccupied cars far away are not processed.
+* Corrections happen after the world update: slerp the rotation every frame, and on each sync write the velocity
+  plus a small pull. No position writes in normal driving.
+* Local driver:
+  * RPC 26 when the enter starts (F), RPC 154 when the exit starts;
+  * 200 at the in-car rate, with identical packets suppressed for about 500 ms;
+  * no sync during the exit animation;
+  * 203 about once per second.
+* Not measured yet: passengers (211), trailers, trains, bikes, aircraft, damage. They need more scenario steps.
 
 ## Open problems / notes
 
