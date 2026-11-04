@@ -99,9 +99,10 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | M7 | Combat: aim/bullet/weapons sync, damage, death | in-progress | e2e + differential | |
 | M4-P | UI parity from TRACE-3 batch 2 + M4 deviations: chat render-to-texture cache (2048x1024 RT like samp), per-frame HUD flag order, connect timing (Started → +3.0 s Connecting; retry every ~6.05 s with "didn't respond" line), history keeps duplicates and position across close/send, input keeps text on ESC/F6, password mask U+25CF, ctrl+A / ctrl+word moves, /fontsize recreates GUI fonts immediately, /timestamp layout, IME/clipboard | done (merged 86dfabc) | D3D call-stream diff (tools/trace/d3d_diff.py) of chat/input scenarios = no differences | measured values in trace-notes "UI (TRACE-3)" |
 | M8a | Dialogs (6 styles), textdraws (+selection), menus, scoreboard, nametags + bars + AFK icon, death window, chat bubbles | done (merged 86dfabc) | `tools/e2e/m8a.sh` + D3D call-stream diff vs the original | measured values: trace-notes "UI (TRACE-3)" |
-| M8 | (M8b) Spectating, camera RPCs, remaining RPC behaviours | todo | e2e | |
-| M9 | Audio streams | deferred | — | |
-| M10 | Windows validation run | deferred | user on Windows | final check outside Wine |
+| M8b | Spectating, camera RPCs, world bounds, gravity, interiors, animations (+table), drunk, fighting style, SCM events, ClientCheck, misc RPCs | in-progress | `tools/e2e/m8b.sh` + DIFF-2 + effect diffs | spec: trace-notes "Remaining behaviour (TRACE-8)" |
+| M9 | Audio: streams (BASS-equivalent, 20 ms volume loop, linear falloff), PlayerPlaySound, radio interaction | todo | `tools/e2e/m9.sh` + BASS call-log diff | spec: trace-notes "Audio (TRACE-8)" |
+| M10 | Client features: sa-mp.cfg keys, chatlog, F8 screenshots, connection lifecycle (restart, kick/ban, wrong version/password/full, reconnect) | todo | `tools/e2e/m10.sh` | spec: TRACE-8 client-features batch |
+| M12 | Windows validation run | deferred | user on Windows | final check outside Wine |
 
 ## Decisions waiting for the user
 
