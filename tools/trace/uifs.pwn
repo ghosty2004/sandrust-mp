@@ -50,6 +50,7 @@
 //   team|P|team  skill|P|skill|level  explode|x|y|z|type|radius  armed|P|weapon  ammo|P|weapon|ammo
 //   resetw|P  forceclass|P  special|P|action  kill|P (health 0)
 // TRACE-7: explodeN|x|y|z|type|radius|n (n explosions at once)  specoff|P (TogglePlayerSpectating off)
+//   findz|P|x|y|z (SetPlayerPosFindZ)
 #define FILTERSCRIPT
 #pragma dynamic 65536
 #include <open.mp>
@@ -535,6 +536,7 @@ Run(seq, const line[])
         for (new k = 0, n = in(line, 6); k < n; k++) CreateExplosion(fl(line, 1), fl(line, 2), fl(line, 3), in(line, 4), fl(line, 5));
     }
     else if (!strcmp(cmd, "specoff")) TogglePlayerSpectating(pl(line, 1), false);
+    else if (!strcmp(cmd, "findz")) SetPlayerPosFindZ(pl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4));
     else if (!strcmp(cmd, "armed")) SetPlayerArmedWeapon(pl(line, 1), WEAPON:in(line, 2));
     else if (!strcmp(cmd, "ammo")) SetPlayerAmmo(pl(line, 1), WEAPON:in(line, 2), in(line, 3));
     else if (!strcmp(cmd, "resetw")) ResetPlayerWeapons(pl(line, 1));
