@@ -12,7 +12,8 @@ differential capture against the original client, e2e script.
 
 | Slot | Running | Next |
 |---|---|---|
-| samp-client (lane main) | SAA-2 | SP-OFF → M2-P/M3-P → UX-1 → M4 |
+| samp-client (lane main) | SAA-2 → SP-OFF (same agent) | M2-P/M3-P → UX-1 |
+| samp-client worktree (lane ui) | M4 (chat, input, local commands, game text) | M8a |
 | measurement (lane trace) | TRACE-4 (SP-OFF baseline + vehicles, original) | TRACE-3: UI runtime facts for RE-5 gaps |
 | harness (lane diff) | DIFF-2 (per-RPC baseline) | DIFF-3 cross-client → F5 patch-coverage script |
 | no-game #1 | BOT-2 (bot drives/shoots) | NET-6 ack/resend timing → rename to sandrust-mp (if confirmed) |
@@ -76,6 +77,7 @@ differential capture against the original client, e2e script.
 | TRACE-1 | Behavioural differential tracer (52 GTA hooks, JSONL, multi-`--dll` launcher, `tools/trace/run.sh` + `diff.py`) | done | original client + ours both run join→spawn→walk traced; spawn order matches first 15 steps | `docs/phase3/trace-notes.md` |
 | ENV-3 | Second test lane for tracing: `wine/prefix-trace` + `wine/gta-sa-trace` (hard-linked data, real copies of top-level files) | done | prefix boots | use `WINEPREFIX`, `GTA_DIR`, `E2E_TAG=trace`, `E2E_PORT=7790`, `E2E_CTL_PORT=47701` |
 | ENV-4 | Third test lane "diff": `wine/prefix-diff` + `wine/gta-sa-diff` (hard-linked), server 7795, control 47705/47706 | done | prefix boots | for DIFF-2/3/4 harness runs |
+| ENV-5 | Fourth lane "ui" (wine/prefix-ui, wine/gta-sa-ui, 7800/47710) + git worktree ~/samp-rs-wt/m4 (branch ui-render) for a parallel samp-client writer | done | prefix boots; worktree created at 0a4acdd | main session merges worktree branches |
 | DIFF-1 | Same state queries for the ORIGINAL client: tracer serves the control-channel protocol | done | `state` text identical between our client and tracer in the same run (except ticks) | port 47701/47702 in trace lane |
 | DIFF-2 | RPC coverage scenario: test filterscript fires every S→C RPC with known values; compare client reactions (state, GTA call trace, screenshot) original vs ours | in-progress | per-RPC diff report | after M3/TRACE-1 |
 | DIFF-3 | Cross-client test: original client and ours on one server at the same time; each sees the other correctly | todo | both directions: position/anim/vehicle via state queries | after M3 |
@@ -86,8 +88,8 @@ differential capture against the original client, e2e script.
 | M3 | Remote players on foot: sector relocation, Players slots, CREATE_PLAYER stream-in, ProcessControl/UseGun swap hooks, 207 apply, destroy | done | main session: `tools/e2e/m3.sh` exit 0 (bot slot 2, tracking 0.2 m, path 8.38 m/5 s, removed on quit) and `tools/e2e/goal.sh` exit 0 (combined scenario); 337 tests; clippy 0 host + i686; agent: 3/3 each; TRACE-4 re-diff: stream-in/swap/timing/destroy match | `docs/phase3/m3-notes.md`; open parity items → M3-P |
 | RE-10 | Static gap check for M5/M6/M7 + measurement requests + CSV rows per milestone | done | `docs/phase3/re10-gaps.md`: specified/partial/missing M5 36/12/7→48/6/1, M6 16/12/11→31/6/2, M7 23/9/3→29/5/1; `docs/phase3/measurement-requests.md` (MR-5.1, 6.1, 7.1, 5.2, 6.2, 7.2…); CSV rows to apply M5 83 / M6 61 / M7 40 | rows 61, 370, 375 to justify for F5 |
 | BOT-2 | samp-bot driving + shooting modes (driver sync 200, passenger 211, aim 203, bullets 206, weapons 204, enter/exit RPCs) for MR-5.1 / MR-7.2 and cross-client tests | in-progress | live server: probe sees the bot as driver / shooter | no game runs; server on port 7799 |
-| M4-core | `crates/samp-ui`: renderer-independent UI logic for M4/M8a (chat buffer + paging + F7 modes, colour-code parsing incl. alpha rule, text wrapping/limits, ~k~ expansion hook, input box editing/history, local command parser + sa-mp.cfg read/write, dialog models for all 6 styles incl. list/tablist parsing, scoreboard model, death-window model) | in-progress | unit tests from RE-5 tables | no D3D; consumed by samp-client in M4 |
-| M4 | Chat window + input, dialogs, game text, textdraws | todo | e2e + headless screenshots | depends RE-5, ENV-2 |
+| M4-core | `crates/samp-ui`: renderer-independent UI logic for M4/M8a (chat buffer + paging + F7 modes, colour-code parsing incl. alpha rule, text wrapping/limits, ~k~ expansion hook, input box editing/history, local command parser + sa-mp.cfg read/write, dialog models for all 6 styles incl. list/tablist parsing, scoreboard model, death-window model) | done | main session: 420 workspace tests pass, clippy 0; 83 unit tests from RE-5 tables; exact strings from samp.dll's string table; ~39 unknown constants listed in `docs/phase3/m4-core-notes.md` for TRACE-3 (incl. U-LIST-CODES: assumed list rows render colour codes) | no D3D; consumed by samp-client in M4 |
+| M4 | Chat window + input, dialogs, game text, textdraws | in-progress | e2e + headless screenshots | depends RE-5, ENV-2 |
 | M5 | Vehicles: stream in/out, driving, passengers, unoccupied, trailers | todo | e2e + differential | |
 | M6 | World entities: objects, pickups, actors, checkpoints, 3D labels, gang zones, map icons | todo | e2e | needs SA:MP assets decision |
 | M7 | Combat: aim/bullet/weapons sync, damage, death | todo | e2e + differential | |
