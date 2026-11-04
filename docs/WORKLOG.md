@@ -310,3 +310,18 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   `tools/e2e/ux1.sh` (+ ux1_shots.py), original-side session scripts.
 - Verified (lane ui under ui.lock, trace lane under trace.lock): visual.sh exit 0 (all 25 elements
   clean, glyph splits covered), ux1.sh exit 0, m1/saa/m4/m8a exit 0, 517 tests, clippy 0 host + i686.
+
+## 2026-11-05 — Loading screen, visual harness and world entities merged
+
+- UI branch merged (820e431): loading screen identical to the original (same 582 loading
+  Presents, same-moment screenshot difference 0.00), tools/diff/visual.sh with 25 UI
+  elements at 0 open lines, F1/F5/F8/F10, clipboard, input-lock modes, remote-driver tag.
+  Verified in lane ui under the lock: m1, saa, m2, m3, goal, m4, m5, m8a exit 0.
+- D3D state-block fix (831455f) for the black world in connecting/class selection.
+- World entities merged (bafc841, fast-forward of the branch after it merged main):
+  objects incl. samp's passes, material colour/text (pre-scene render, blanktex), attached
+  objects, building removal, pickups, checkpoints, actors, gang zones, map icons, 3D labels,
+  ProcessVerticalLine row 96. Verified by the main session in lane veh under the lock:
+  m1, saa, m2, m3, goal, m4, m5, m6, m8a exit 0; 528 tests; clippy 0 (host + i686).
+  Parity vs the original on the same scenario: checkpoints and icons identical, objects /
+  labels / zones differ only in repeat counts (fps), the rest is server ordering.
