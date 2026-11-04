@@ -24,8 +24,8 @@ tools/diff/rpc-coverage.sh --report --orig target/diff/runs/orig-A --orig target
   NOT-FIRED and NOT-RUN fail). A summary is printed either way.
 * `--only REGEX` limits the fired steps (the idle steps always run). The report
   then marks the RPCs of skipped steps NOT-RUN.
-* One full run is about 12–14 minutes (176 steps). The default (3 runs) takes
-  about 40 minutes.
+* One run takes about 7.5 minutes (176 steps); the default (3 runs) about 23 minutes.
+  `--orig-runs 3` gives a better noise model (see "Validation").
 
 ## Lane "diff" (ENV-4)
 
@@ -108,9 +108,13 @@ Per step, three components:
   original) plus the `gtastate` snapshot, taken before and after the step.
   * Keys that changed on either side must end at the same value.
   * Entity lists compare the added/removed items, without positions.
-* **visual**: a 32×18 grid of the screenshot change. The step's shot is compared with the
-  previous step's shot, and cells with mean |Δ| > 18 count as changed. The two clients'
-  masks may differ in ≤ 6 % of the cells.
+* **visual**: a 32×18 grid of the screenshot change. The step's shot (640×360 grey) is
+  compared with the previous step's shot.
+  * A cell counts as changed when > 8 % of its pixels changed by > 60.
+  * Masks match when the cells not covered by the other side (allowing a 1-cell shift)
+    are ≤ max(4, 40 % of the changed cells).
+  * Steps where the original's own masks disagree are judged only on the cells that
+    every original run changed.
 
 Determinism: with ≥ 2 original runs, the report first compares the original runs with
 each other.
@@ -119,8 +123,12 @@ each other.
 * State keys that differ between original runs are ignored.
 * The visual check is skipped for steps whose original screenshots disagree.
 
+Steps where nothing can be judged fall back to the handler scan: no trace or state
+reaction in the original, and only an unstable screenshot change.
+
 Verdicts:
-* MATCH;
+* MATCH. It is flagged "no observable reaction in the original" when the original showed
+  nothing in any channel;
 * NOT-IMPLEMENTED: none of the step's RPCs has a match arm in samp-client (static scan of
   samp-proto payload names), or ours shows no reaction at all where the original does;
 * DIFF: anything else, including "our client is not running any more";
@@ -128,11 +136,70 @@ Verdicts:
 
 Per RPC, the worst verdict over the steps that cover it.
 
-## Baseline (2026-11-04)
+## Validation of the harness (original side)
 
-(filled in below after the baseline run)
+The original client was run 3 times with the full scenario (`target/diff/runs/orig-20261104-201031`,
+`-201831`, `-202550`; the first had one scenario bug, since fixed: the RCON terminator,
+so `team_3` was not fired).
+
+* **Determinism, the two baseline original runs** (201831 vs 202550):
+  * 150 of 176 steps are identical in all three components; per component, trace 169,
+    state 167 and visual 163.
+  * The rest is physics and timing noise: the jump/drunk-walk/vehicle-velocity
+    positions, nametag line-of-sight polls with ped positions, per-frame drunkenness
+    values, remote-ped positions while spectating, which models are unloaded at gmx,
+    flashing gang zones, chat-line timing.
+* **Held-out check.** Each original run was judged as "ours" against the other two:
+  * 111–112 of 130 fired RPCs come out MATCH.
+  * About 6 of the rest are steps whose only reaction is an unstable screenshot change.
+    The report does not call these MATCH; it falls back to the samp-client handler scan.
+  * The others are the harness's false-positive floor with 2 learning runs.
+  * Recurring: 126 spectate_npc, 40/139 gamemode_restart, 90 velocity_up, 26
+    npc_put_in_vehicle, 166 npc_kill (trace/state noise from physics and remote
+    peds); 58, 121, 103 (visual timing).
+  * Treat a DIFF on these as "check by hand" until more original runs are learned.
+* The visual metric and thresholds were tuned with the same held-out check. Mean
+  cell |Δ| > 18 gave 41 visual false positives over the 3 checks; the pixel-fraction
+  metric gives 16, while chat lines and textdraws still register.
+
+## Baseline, our client (2026-11-04)
+
+`target/diff/rpc-coverage.md` from originals 201831 + 202550 vs `ours-20261104-203303`
+(samp_client.dll built at 20:06, before M3 landed; hashes in the run's `binaries.sha256`).
+Our client survived all 176 steps, including gmx; only its final `quit` needed the lane kill.
+
+| verdict | RPCs |
+|---|---|
+| MATCH | 15 (12 of them: the original shows no observable reaction either) |
+| DIFF | 20 |
+| NOT-IMPLEMENTED | 96 |
+| UNTRIGGERABLE | 10 |
+
+* MATCH with an actual reaction: 19 SetPlayerFacingAngle, 21 ResetPlayerWeapons,
+  66 SetPlayerArmour.
+  * Health (14) is a DIFF only through the kill step.
+* DIFF examples:
+  * 22 GivePlayerWeapon: samp also issues `GET_CURRENT_CHAR_WEAPON`.
+  * 29/94 time: ours does not apply the minute / world time.
+  * 12 SetPlayerPosition: different follow-up tasks.
+  * 15 TogglePlayerControllable, camera 157/158/162, join/spawn flow 60/68/128/129/139,
+    remote player 32/137/138/163.
+* **Standing differences of ours at idle** (useful for M3+):
+  * weather is not forced (ours cycles 10→12, the original keeps forced 10);
+  * wanted level 4 (original 0);
+  * weapon skills 0 (original 1000);
+  * 4 stock weapon pickups exist (the original has none);
+  * the two vehicle-entity blips the original has are missing.
+  * Ambient traffic in ours also adds visual noise to unrelated steps (e.g. 11, 137, 138).
 
 ## Open problems
+
+* Some entities are placed outside the camera view (actor at +6/+3, car at +7/+6 relative
+  to a player looking east). Steps like `actor_anim_clear` and `vehicle_damage` therefore
+  show no visual reaction even in the original. Placing them in view would make the
+  visual check stronger.
+* The noise model is learned from the original runs. More `--orig-runs` means fewer
+  false positives on the physics/remote-player steps listed under "Validation".
 
 * The trace only shows hooked GTA functions plus samp's script commands. Effects done
   with direct calls to unhooked functions are visible only through state and screenshots:

@@ -18,8 +18,9 @@ Three components per step:
   state  — `state` + tools/diff/gtastate.py snapshot: keys that changed during
            the step on either side must end at the same value; entity lists
            compare added/removed items;
-  visual — screenshot change mask (this step's shot vs the previous one) on a
-           32x18 grid, compared between the two clients.
+  visual — screenshot change mask (this step's shot vs the previous one,
+           sharp pixel changes per cell of a 32x18 grid), compared between the two clients (relative bound, see
+           VISUAL_MIN_CELLS / VISUAL_SHARE).
 Verdicts: MATCH, DIFF, NOT-IMPLEMENTED (ours has no handler for the step's RPCs
 or shows no reaction at all where the original reacts), NOT-FIRED (scenario
 error). Per RPC: the worst verdict over the steps that cover it; RPC ids no
@@ -73,13 +74,24 @@ NOISE_FNS = {
 # LOAD_ALL_MODELS_NOW) depend on memory state, not on the client.
 GTA_STREAMING = re.compile(
     r"^CStreaming::RemoveModel .*<gta>|^CStreaming::RequestModel \{model=\d+,flags=(0|8)\}  <gta>")
+POLL_MIN_STEPS = 3
 ORDERED = re.compile(r"^scm |<client>|\[via scm ")
 # Lines present in at least this share of all step segments are per-frame
 # background (polling), not a reaction.
 BACKGROUND_SHARE = 0.5
 GRID = (32, 18)
-CELL_THRESHOLD = 18.0      # mean |Δ| (0..255) for a grid cell to count as changed
-VISUAL_TOLERANCE = 0.06    # share of cells whose change status may differ
+# A grid cell counts as changed when more than CELL_FRACTION of its pixels
+# changed by more than PIXEL_THRESHOLD (0..255 grey). Sharp, local changes (UI
+# text, markers, objects) pass; soft scene animation (escalators, lighting,
+# JPEG noise) mostly does not. Tuned on three original runs: each judged
+# against the other two (held-out false positives) vs sensitivity to UI steps.
+PIXEL_THRESHOLD = 60
+CELL_FRACTION = 0.08
+# Change masks match if they differ in at most max(VISUAL_MIN_CELLS,
+# VISUAL_SHARE × cells changed on either side) cells; small UI elements
+# (a textdraw, a chat line) change only a few cells, so the bound is relative.
+VISUAL_MIN_CELLS = 4
+VISUAL_SHARE = 0.4
 
 
 class Opts:
@@ -103,6 +115,9 @@ def load_run(d):
         pass
     run["segments"] = load_segments(os.path.join(d, "trace.jsonl"))
     return run
+
+
+PLAYER_MODEL = re.compile(r"model=-?\d+,player=True")
 
 
 def split_watch(line):
@@ -147,6 +162,10 @@ def load_segments(path):
                 continue
             n = tdiff.normalise(rec, Opts)
             if n:
+                # The local ped's current model is state (judged by the state check
+                # and the SetModelIndex calls); keeping it in every entity
+                # descriptor would turn one missed skin change into many diffs.
+                n = PLAYER_MODEL.sub("player=True", n)
                 (segs[cur] if cur is not None else gap).extend(split_watch(n))
     return segs
 
@@ -209,6 +228,7 @@ def reactions(run):
     names = list(segs)
     bgset = LineSet(bg)
     out = {}
+    removed = Counter()
     for i, k in enumerate(names):
         before = LineSet(allsegs.get("gap:" + k, ()))
         # Periodic (not per-frame) polling that runs across this step: present
@@ -219,6 +239,11 @@ def reactions(run):
                 if ln in nxt:
                     before.add(ln)
         out[k] = [ln for ln in segs[k] if ln not in bgset and ln not in before and not GTA_STREAMING.search(ln)]
+        removed.update({LineSet.key(ln)[0] for ln in segs[k] if ln in before})
+    # Templates (numbers masked) removed as running background in several
+    # steps: samp's periodic polls. Their per-step presence and arguments
+    # depend on timing, so they are tolerated as missing/extra (see compare_runs).
+    run["poll_templates"] = {t for t, c in removed.items() if c >= POLL_MIN_STEPS}
     return out
 
 
@@ -259,6 +284,7 @@ def item_id(it):
 
 def state_delta(step):
     pre, post = flat_state(step.get("pre", {})), flat_state(step.get("post", {}))
+    step["_pre_flat"] = pre
     scal, lists = {}, {}
     for k in set(pre) | set(post):
         a, b = pre.get(k), post.get(k)
@@ -272,18 +298,28 @@ def state_delta(step):
     return scal, lists, post
 
 
-def compare_state(sa, sb, ignore=frozenset()):
-    """Differences between two steps' state reactions -> list of text lines."""
+def pre_differs(sa, sb, k):
+    a, b = sa.get("_pre_flat", {}).get(k), sb.get("_pre_flat", {}).get(k)
+    if isinstance(a, list) or isinstance(b, list):
+        return Counter(map(item_id, a or [])) != Counter(map(item_id, b or []))
+    return a != b
+
+
+def compare_state(sa, sb, ignore=frozenset(), drift=False):
+    """Differences between two steps' state reactions -> list of text lines.
+    drift=True (original vs ours): a key the original did not change in this
+    step and that already differed before the step is a standing divergence
+    (reported once under "Standing state differences"), not this step's."""
     sca, lia, posta = state_delta(sa)
     scb, lib, postb = state_delta(sb)
     out = []
     for k in sorted(set(sca) | set(scb)):
-        if k in ignore:
+        if k in ignore or (drift and k not in sca and pre_differs(sa, sb, k)):
             continue
         if posta.get(k) != postb.get(k):
             out.append(f"{k}: {posta.get(k)!s} vs {postb.get(k)!s}")
     for k in sorted(set(lia) | set(lib)):
-        if k in ignore:
+        if k in ignore or (drift and k not in lia and pre_differs(sa, sb, k)):
             continue
         a, b = lia.get(k, ([], [])), lib.get(k, ([], []))
         if a != b:
@@ -311,7 +347,7 @@ def grid(run, step):
         from PIL import Image
 
         with Image.open(p) as im:
-            g = np.asarray(im.convert("L").resize(GRID, Image.BOX), dtype=np.float32)
+            g = np.asarray(im.convert("L"), dtype=np.int16)
     except Exception:  # noqa: BLE001
         g = None
     _img_cache[p] = g
@@ -324,9 +360,21 @@ def change_mask(run, name):
     if i == 0:
         return None
     a, b = grid(run, run["steps"][names[i - 1]]), grid(run, run["steps"][name])
-    if a is None or b is None:
+    if a is None or b is None or a.shape != b.shape:
         return None
-    return abs(b - a) > CELL_THRESHOLD
+    gx, gy = GRID
+    h, w = a.shape
+    d = abs(b - a)[: h // gy * gy, : w // gx * gx] > PIXEL_THRESHOLD
+    return d.reshape(gy, h // gy, gx, w // gx).mean(axis=(1, 3)) > CELL_FRACTION
+
+
+def dilate(m):
+    d = m.copy()
+    d[1:, :] |= m[:-1, :]
+    d[:-1, :] |= m[1:, :]
+    d[:, 1:] |= m[:, :-1]
+    d[:, :-1] |= m[:, 1:]
+    return d
 
 
 def compare_visual(ra, na, rb, nb):
@@ -334,15 +382,17 @@ def compare_visual(ra, na, rb, nb):
     ma, mb = change_mask(ra, na), change_mask(rb, nb)
     if ma is None or mb is None:
         return None, "no screenshot"
-    cells = ma.size
-    xor = int((ma ^ mb).sum())
-    share = xor / cells
-    return share <= VISUAL_TOLERANCE, f"changed cells {int(ma.sum())} vs {int(mb.sum())}, differing {xor}/{cells}"
+    # A changed cell on one side counts as matched when the other side changed
+    # it or a neighbouring cell (UI text shifted by a few pixels, cursor).
+    xor = int((ma & ~dilate(mb)).sum() + (mb & ~dilate(ma)).sum())
+    union = int((ma | mb).sum())
+    ok = xor <= max(VISUAL_MIN_CELLS, VISUAL_SHARE * union)
+    return ok, f"changed cells {int(ma.sum())} vs {int(mb.sum())}, differing {xor} of {union} changed"
 
 
 def reacted_visual(run, name):
     m = change_mask(run, name)
-    return m is not None and m.mean() > VISUAL_TOLERANCE
+    return m is not None and int(m.sum()) >= VISUAL_MIN_CELLS
 
 
 # ---------------------------------------------------------------- static scan
@@ -370,12 +420,13 @@ def handled_rpcs():
 
 
 # ---------------------------------------------------------------- comparison
-def ordered_ok(stable, union_, ours):
+def ordered_ok(stable, union_, ours, polls=frozenset()):
     """ours must contain every stable line, nothing outside `union_`, and the
-    stable lines in the same relative order."""
+    stable lines in the same relative order. Lines of poll templates
+    (`polls`) are not counted as missing or extra."""
     so = LineSet(ours)
-    missing = [ln for ln in stable if ln not in so]
-    extra = [ln for ln in ours if ln not in union_]
+    missing = [ln for ln in stable if ln not in so and LineSet.key(ln)[0] not in polls]
+    extra = [ln for ln in ours if ln not in union_ and LineSet.key(ln)[0] not in polls]
     # Order: the client's own calls (script commands, direct calls) among the
     # stable lines present in ours must be a subsequence of ours. `watch` diffs
     # and GTA-internal follow-ups (tasks) land at frame boundaries and are
@@ -392,6 +443,7 @@ def compare_runs(orig_runs, ours):
     """Per-step verdicts."""
     reac_o = [reactions(r) for r in orig_runs]
     reac_a = reactions(ours) if ours else None
+    polls = set().union(*(r["poll_templates"] for r in orig_runs))
     handled = handled_rpcs() if ours else set()
     o0 = orig_runs[0]
     steps = []
@@ -408,9 +460,9 @@ def compare_runs(orig_runs, ours):
         unstable_keys = set()
         for i in range(1, len(orig_runs)):
             a, b = lines[0], lines[i]
-            only_a = [x for x in a if x not in sets[i]]
-            only_b = [x for x in b if x not in sets[0]]
-            _, _, order_bad = ordered_ok([x for x in a if x in sets[i]], sets[i], b)
+            only_a = [x for x in a if x not in sets[i] and LineSet.key(x)[0] not in polls]
+            only_b = [x for x in b if x not in sets[0] and LineSet.key(x)[0] not in polls]
+            _, _, order_bad = ordered_ok([x for x in a if x in sets[i]], sets[i], b, polls)
             if only_a or only_b or order_bad:
                 det["trace"].append({"only_run1": only_a, f"only_run{i + 1}": only_b, "order": order_bad})
             sd = compare_state(st, orig_runs[i]["steps"].get(name, {}))
@@ -438,12 +490,25 @@ def compare_runs(orig_runs, ours):
             steps.append(row)
             continue
         ra = reac_a.get(name, [])
-        missing, extra, order_bad = ordered_ok(stable, union_, ra)
+        missing, extra, order_bad = ordered_ok(stable, union_, ra, polls)
         trace_ok = not missing and not extra and not order_bad
-        state_diff = compare_state(st, sa, ignore=unstable_keys)
+        state_diff = compare_state(st, sa, ignore=unstable_keys, drift=True)
         vis_ok, vis_text = compare_visual(o0, name, ours, name)
         if det["visual"] is not None:
-            vis_ok = None  # visual unstable on the original side: not judged
+            # Unstable on the original side (timing of chat lines, animated
+            # markers …): only the cells that changed in every original run
+            # are judged; ours must change at least half of them.
+            masks = [change_mask(r, name) for r in orig_runs]
+            mu = change_mask(ours, name)
+            vis_ok = None
+            if mu is not None and all(m is not None for m in masks):
+                core = masks[0].copy()
+                for m in masks[1:]:
+                    core &= m
+                n = int(core.sum())
+                if n >= VISUAL_MIN_CELLS and int((core & mu).sum()) < n / 2:
+                    vis_ok = False
+                    vis_text += f"; ours changes {int((core & mu).sum())} of the {n} cells every original run changes"
         row["trace"] = {"ok": trace_ok, "missing_in_ours": missing, "extra_in_ours": extra, "order_differs": order_bad}
         row["state"] = {"ok": not state_diff, "diff": state_diff}
         row["visual"] = {"ok": vis_ok, "detail": vis_text}
@@ -452,8 +517,19 @@ def compare_runs(orig_runs, ours):
         orig_reacted = bool(stable) or reacted_state(st) or reacted_visual(o0, name)
         real = [r for r in st["rpcs"] if r]
         no_handler = [r for r in real if r not in handled]
-        if trace_ok and not state_diff and vis_ok is not False:
+        row["orig_observable"] = orig_reacted
+        # Nothing judged at all (no trace/state reaction, screenshot unstable)
+        # while the original did change the picture: fall back to the static
+        # handler check instead of calling it a MATCH.
+        unjudged = vis_ok is None and not stable and not reacted_state(st) and reacted_visual(o0, name)
+        if unjudged and real and len(no_handler) == len(real):
+            row["verdict"] = "NOT-IMPLEMENTED"
+            row["why"] = "no handler in samp-client for " + ",".join(map(str, no_handler)) + \
+                " (the original's only reaction is an unstable screenshot change)"
+        elif trace_ok and not state_diff and vis_ok is not False:
             row["verdict"] = "MATCH"
+            if not orig_reacted:
+                row["why"] = "no observable reaction in the original (trace, state, screenshot)"
         elif (real and len(no_handler) == len(real)) or (orig_reacted and not ours_reacted):
             row["verdict"] = "NOT-IMPLEMENTED"
             row["why"] = ("no handler in samp-client for " + ",".join(map(str, no_handler))) if no_handler \
@@ -502,6 +578,8 @@ def per_rpc(steps, step_list, have_ours):
             continue
         worst = max(cov, key=lambda s: RANK.get(s["verdict"], 5))
         out[rid] = {"verdict": worst["verdict"], "steps": [s["name"] for s in cov]}
+        if worst["verdict"] == "MATCH" and not any(s.get("orig_observable") for s in cov):
+            out[rid]["note"] = "no observable reaction in the original"
     return out
 
 
@@ -510,6 +588,25 @@ def short(lst, n=6):
     lst = list(lst)
     s = "; ".join(f"`{x}`" for x in lst[:n])
     return s + (f" … (+{len(lst) - n})" if len(lst) > n else "")
+
+
+def standing_diffs(orig, ours, name="idle_b"):
+    """Whole-state differences between the clients at an idle step (no RPC
+    pending): divergences that are not caused by one particular step."""
+    a, b = orig["steps"].get(name), ours["steps"].get(name)
+    if not a or not b:
+        return []
+    fa, fb = flat_state(a.get("post", {})), flat_state(b.get("post", {}))
+    out = []
+    for k in sorted(set(fa) | set(fb)):
+        va, vb = fa.get(k), fb.get(k)
+        if isinstance(va, list) or isinstance(vb, list):
+            ca, cb = Counter(map(item_id, va or [])), Counter(map(item_id, vb or []))
+            if ca != cb:
+                out.append(f"{k}: only orig {sorted((ca - cb).elements())}, only ours {sorted((cb - ca).elements())}")
+        elif va != vb:
+            out.append(f"{k}: {va} vs {vb}")
+    return out
 
 
 def write_report(out_dir, orig_runs, ours, steps, rpcs):
@@ -553,12 +650,22 @@ def write_report(out_dir, orig_runs, ours, steps, rpcs):
                 parts.append("visual " + d["visual"])
             md.append(f"* `{s['name']}`: " + " | ".join(parts))
         md.append("")
+    standing = standing_diffs(orig_runs[0], ours) if have_ours else []
+    if have_ours:
+        md.append("## Standing state differences (at idle_b, original vs ours)")
+        md.append("")
+        md.append("Not attributed to single steps; a key listed here is only judged in steps where the original"
+                  " changes it.")
+        md.append("")
+        md += [f"* `{d}`" for d in standing] or ["* none"]
+        md.append("")
     md.append("## Per RPC")
     md.append("")
     md.append("| RPC | verdict | steps / reason |")
     md.append("|---|---|---|")
     for rid, v in rpcs.items():
-        md.append(f"| {rid} | {v['verdict']} | {', '.join(v['steps']) or v.get('why', '')} |")
+        note = f" ({v['note']})" if v.get("note") else ""
+        md.append(f"| {rid} | {v['verdict']} | {', '.join(v['steps']) or v.get('why', '')}{note} |")
     md.append("")
     md.append("## Per step")
     md.append("")
@@ -591,6 +698,7 @@ def write_report(out_dir, orig_runs, ours, steps, rpcs):
         json.dump({
             "orig_runs": [r["dir"] for r in orig_runs], "ours_run": ours["dir"] if have_ours else None,
             "totals": totals, "determinism_unstable_steps": [s["name"] for s in det_bad],
+            "standing_state_differences": standing,
             "rpcs": {str(k): v for k, v in rpcs.items()}, "steps": steps,
         }, f, indent=1, default=str)
     return totals, det_bad
