@@ -718,7 +718,9 @@ impl Vehicles {
         if !seat_allowed(&v, seat) {
             return;
         }
-        if current_weapon(ped) == u32::from(vm::WEAPON_PARACHUTE) {
+        // samp reads the weapon with GET_CURRENT_CHAR_WEAPON (A 0x100abc90; efx RPC 70 diff).
+        runner.run(op::GET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Local(0)]);
+        if runner.local_i32(0) as u32 == u32::from(vm::WEAPON_PARACHUTE) {
             runner.run(op::SET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Int(0)]);
         }
         warp_into(runner, h, &v, seat);
@@ -1289,7 +1291,9 @@ impl Vehicles {
             return;
         }
         let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return };
-        if current_weapon(ped) == u32::from(vm::WEAPON_PARACHUTE) {
+        // samp reads the weapon with GET_CURRENT_CHAR_WEAPON (A 0x100abc90; efx RPC 70 diff).
+        runner.run(op::GET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Local(0)]);
+        if runner.local_i32(0) as u32 == u32::from(vm::WEAPON_PARACHUTE) {
             runner.run(op::SET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Int(0)]);
         }
         // Model 570 warps instead of animating (vehicles.md 26); the seat it uses is not specified: TODO-unknown.
