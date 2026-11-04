@@ -27,6 +27,8 @@ pub enum Command {
     Remote,
     /// `d3d off|on|ui|all|text [FRAMES]` (Direct3D call-stream logger, `crate::d3d`).
     D3d(String),
+    /// `efx arm|watch|status|disarm …` (effect tracer, `crate::efx`).
+    Efx(String),
     /// `poke ADDR HEXBYTES`: writes bytes (test harness only, e.g. to see whether a client
     /// rewrites a flag every frame).
     Poke {
@@ -60,6 +62,10 @@ pub fn parse(line: &str) -> Option<Command> {
     let lower = t.to_ascii_lowercase();
     if let Some(rest) = lower.strip_prefix("d3d ") {
         return Some(Command::D3d(rest.trim().to_string()));
+    }
+    if lower.starts_with("efx ") {
+        // Original case: `efx watch` takes a file path.
+        return Some(Command::Efx(t[4..].trim().to_string()));
     }
     if let ["poke", a, hex] = lower.split_whitespace().collect::<Vec<_>>().as_slice()
         && let Some(addr) = parse_num(a).filter(|&a| a <= u64::from(u32::MAX))
@@ -141,6 +147,7 @@ mod tests {
         assert_eq!(parse("d3d all 3"), Some(Command::D3d("all 3".into())));
         assert_eq!(parse("cov start Grove_Idle"), Some(Command::Cov("start Grove_Idle".into())));
         assert_eq!(parse("cov dump Z:\\x\\c.tsv\n"), Some(Command::Cov("dump Z:\\x\\c.tsv".into())));
+        assert_eq!(parse("efx watch C:\\X.txt"), Some(Command::Efx("watch C:\\X.txt".into())));
         assert_eq!(parse("poke 0xBA6769 00ff"), Some(Command::Poke { addr: 0xBA6769, bytes: vec![0, 0xFF] }));
         assert!(matches!(parse("poke 0xBA6769 0"), Some(Command::Unknown(_))));
         assert_eq!(port_from_env(Some("47701")), 47701);
