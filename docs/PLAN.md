@@ -64,6 +64,18 @@ Phase B–F milestones run in parallel where their files don't overlap (see §4)
    "Decisions made autonomously".
 6. **Record** — ROADMAP status + WORKLOG entry; update `docs/workflow.svg` at phase ends.
 
+### 3b. No guessing rule (user, 2026-11-04)
+
+Anything uncertain or "unpredictable" is resolved BEFORE it is implemented:
+1. static analysis with REA/Ghidra (samp.dll, gta_sa.exe) — what the code does;
+2. dynamic measurement with the tracer on the running ORIGINAL client — what actually
+   happens, in which order, with which values;
+3. only then implement, then diff against the original.
+If both fail, the item stays `blocked`/Unknown — never filled in with a plausible guess.
+Implementation agents that hit an unknown must stop that item and request a measurement
+(via the main session) instead of choosing a value. REA holds one binary at a time: a
+single agent uses REA at any moment; others use the decompiled exports and objdump.
+
 ## 3a. Scheduler — what to do at every goal re-injection
 
 The /goal text only states the end condition; the next action is derived from the
