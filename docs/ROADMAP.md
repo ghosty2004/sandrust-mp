@@ -15,7 +15,7 @@ differential capture against the original client, e2e script.
 | samp-client worktree par (lane main) | M2-P + M3-P (player/remote-ped parity) | UX-1 |
 | samp-client worktree m8a (lane ui) | M8a + M4-P (dialogs, textdraws, menus, scoreboard, nametags, death window; UI parity) | — |
 | measurement (lane trace, REA) | TRACE-6 (world entities + combat, original) | TRACE-7: remaining UI/vehicle open items |
-| harness (lanes diff + diff2) | — (free) | PAR-AUDIT (after EFX-1) |
+| harness (lanes diff + diff2) | PAR-AUDIT (audit of main, excl. combat) | — |
 | no-game | — (free) | NET-6 ack/resend timing; rename to sandrust-mp |
 
 ## Next up (ordered queue — the scheduler takes from the top)
