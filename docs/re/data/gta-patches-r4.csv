@@ -1,0 +1,385 @@
+gta_addr,size,kind,new_bytes_hex,applied_when,samp_site_A,samp_site_B,purpose,confidence
+0x47bf54,4,pointer-redirect(A:0x10002090 B:0x10002090),<samp ptr>,init-main,0x10002100,0x10002100,pointer -> samp 0x10002090 (A) (VirtualProtect done in 0x100aaef0 just before),medium
+0x47bf88,4,pointer-redirect(A:0x10001c30 B:0x10001c30),<samp ptr>,init-main,0x1000210a,0x1000210a,pointer -> samp 0x10001c30 (A) (no VirtualProtect seen; target page must already be writable),medium
+0x60dc50,1,byte-patch,c3,rpc139-InitGame,0x100a1c23,0x100a1bf3,unknown,-
+0x60e530,3,byte-patch,c20800,rpc139-InitGame,0x100a1c2f,0x100a1bff,unknown,-
+0x53eb13,4,call-retarget(A:0x100c5030 B:0x100c5010),<rel32>,init-main,0x100a6163,0x100a6133,"rel32 of existing CALL at 0x53EB12 retargeted to samp per-frame entry (A 0x100c5030, via var 0x1026e9b4); inferred Idle() late-frame call",high
+0x58fc53,5,hook-call(A:0x100a2540 B:0x100a2510),e8<rel32>,init-main,0x100a6182,0x100a6152,hook (inferred HUD draw); body runs aspect-ratio constant update,medium
+0x58fbbf,5,hook-call(A:0x100a2590 B:0x100a2560),e8<rel32>,init-main,0x100a61b5,0x100a6185,hook (inferred HUD draw); body runs aspect-ratio constant update,medium
+0x53c104,5,hook-call(A:0x100a2670 B:0x100a2640),e8<rel32>,init-main,0x100a61e8,0x100a61b8,unknown,-
+0x53e981,5,hook-call(A:0x100a26a0 B:0x100a2670),e8<rel32>,init-main,0x100a6219,0x100a61e9,per-frame hook (inferred Idle() -> game-process call); body also toggles 0x6884C4/0x688200 and 0x5E92F4,medium
+0x86d1b0,4,pointer-redirect(A:0x100a3e70 B:0x100a3e40),<samp ptr>,init-main,0x100a6245,0x100a6215,"vtable slot +0x48 (index 18, inferred Render) of player-ped class",medium
+0x86c0f0,4,pointer-redirect(A:0x100a3e70 B:0x100a3e40),<samp ptr>,init-main,0x100a626b,0x100a623b,vtable slot +0x48 (inferred Render) of a ped class,medium
+0x86c168,4,pointer-redirect(A:0x100a3e70 B:0x100a3e40),<samp ptr>,init-main,0x100a6291,0x100a6261,vtable slot +0x48 (inferred Render) of a ped class,medium
+0x86c248,4,pointer-redirect(A:0x100a3e70 B:0x100a3e40),<samp ptr>,init-main,0x100a62b7,0x100a6287,vtable slot +0x48 (inferred Render) of a ped class,medium
+0x86c3a0,4,pointer-redirect(A:0x100a3e70 B:0x100a3e40),<samp ptr>,init-main,0x100a62dd,0x100a62ad,vtable slot +0x48 (inferred Render) of base ped class,medium
+0x53e930,5,hook-call(A:0x100a2420 B:0x100a23f0),e8<rel32>,init-main,0x100a630d,0x100a62dd,hook; body runs aspect-ratio constant update (0x100a2440),medium
+0x4d3aa0,10,hook-jmp-indirect(A:0x100a4210 B:0x100a41e0),ff2534394d0090909090,init-main,0x100a6340,0x100a6310,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x4d3934. ",
+0x4d4610,7,hook-jmp-indirect(A:0x100a42c0 B:0x100a4290),ff2509464d0090,init-main,0x100a635b,0x100a632b,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x4d4609. ",
+0x86d190,4,pointer-redirect(A:0x100a29a0 B:0x100a2970),<samp ptr>,init-main,0x100a6387,0x100a6357,"vtable slot +0x28 (index 10, inferred ProcessControl) of player-ped class",medium
+0x86c0d0,4,pointer-redirect(A:0x100a2ca0 B:0x100a2c70),<samp ptr>,init-main,0x100a63ad,0x100a637d,vtable slot +0x28 (inferred ProcessControl) of a ped class,medium
+0x86d744,4,pointer-redirect(A:0x100a2e20 B:0x100a2df0),<samp ptr>,init-main,0x100a63d3,0x100a63a3,unknown,-
+0x7330a2,5,hook-call(A:0x100a2d80 B:0x100a2d50),e8<rel32>,init-main,0x100a6404,0x100a63d4,unknown,-
+0x86d194,4,pointer-redirect(A:0x100a4130 B:0x100a4100),<samp ptr>,init-main,0x100a642d,0x100a63fd,vtable slot +0x2C of player-ped class; body makes 0x6D64F0 a ret,low
+0x5689fd,5,hook-call(A:0x100a4990 B:0x100a4960),e8<rel32>,init-main,0x100a645e,0x100a642e,unknown,-
+0x53ea03,5,hook-call(A:0x100a2640 B:0x100a2610),e8<rel32>,init-main,0x100a6491,0x100a6461,unknown,-
+0x871148,4,pointer-redirect(A:0x100a3140 B:0x100a3110),<samp ptr>,init-main,0x100a64b9,0x100a6489,"vtable slot +0x28 (index 10, inferred ProcessControl) of vehicle class @0x871120 (inferred CAutomobile)",medium
+0x8721c8,4,pointer-redirect(A:0x100a3140 B:0x100a3110),<samp ptr>,init-main,0x100a64df,0x100a64af,"vtable slot +0x28 (index 10, inferred ProcessControl) of vehicle class @0x8721A0 (inferred CBoat)",medium
+0x871388,4,pointer-redirect(A:0x100a3140 B:0x100a3110),<samp ptr>,init-main,0x100a6505,0x100a64d5,"vtable slot +0x28 (index 10, inferred ProcessControl) of vehicle class @0x871360 (inferred CBike)",medium
+0x871970,4,pointer-redirect(A:0x100a3140 B:0x100a3110),<samp ptr>,init-main,0x100a652b,0x100a64fb,"vtable slot +0x28 (index 10, inferred ProcessControl) of vehicle class @0x871948 (inferred CPlane)",medium
+0x8716a8,4,pointer-redirect(A:0x100a3140 B:0x100a3110),<samp ptr>,init-main,0x100a6551,0x100a6521,"vtable slot +0x28 (index 10, inferred ProcessControl) of vehicle class @0x871680 (inferred CHeli)",medium
+0x871550,4,pointer-redirect(A:0x100a3140 B:0x100a3110),<samp ptr>,init-main,0x100a6577,0x100a6547,"vtable slot +0x28 (index 10, inferred ProcessControl) of vehicle class @0x871528 (inferred CBmx)",medium
+0x871800,4,pointer-redirect(A:0x100a3140 B:0x100a3110),<samp ptr>,init-main,0x100a659d,0x100a656d,"vtable slot +0x28 (index 10, inferred ProcessControl) of vehicle class @0x8717D8 (inferred CMonsterTruck)",medium
+0x871b10,4,pointer-redirect(A:0x100a3140 B:0x100a3110),<samp ptr>,init-main,0x100a65c3,0x100a6593,"vtable slot +0x28 (index 10, inferred ProcessControl) of vehicle class @0x871AE8 (inferred CQuadBike)",medium
+0x872398,4,pointer-redirect(A:0x100a3140 B:0x100a3110),<samp ptr>,init-main,0x100a65e9,0x100a65b9,"vtable slot +0x28 (index 10, inferred ProcessControl) of vehicle class @0x872370 (inferred CTrain)",medium
+0x871c50,4,pointer-redirect(A:0x100a3140 B:0x100a3110),<samp ptr>,init-main,0x100a660f,0x100a65df,"vtable slot +0x28 (index 10, inferred ProcessControl) of vehicle class @0x871C28 (inferred CTrailer)",medium
+0x501b1d,5,hook-call(A:0x100a3690 B:0x100a3660),e8<rel32>,init-main,0x100a6640,0x100a6610,unknown,-
+0x501b42,5,hook-call(A:0x100a3690 B:0x100a3660),e8<rel32>,init-main,0x100a6674,0x100a6644,unknown,-
+0x501fc2,5,hook-call(A:0x100a3690 B:0x100a3660),e8<rel32>,init-main,0x100a66a7,0x100a6677,unknown,-
+0x502067,5,hook-call(A:0x100a3690 B:0x100a3660),e8<rel32>,init-main,0x100a66da,0x100a66aa,unknown,-
+0x5021ae,5,hook-call(A:0x100a3690 B:0x100a3660),e8<rel32>,init-main,0x100a670e,0x100a66de,unknown,-
+0x5869bf,5,hook-call(A:0x100a3f40 B:0x100a3f10),e8<rel32>,init-main,0x100a6741,0x100a6711,unknown,-
+0x5759e4,5,hook-call(A:0x100a3f40 B:0x100a3f10),e8<rel32>,init-main,0x100a6770,0x100a6740,unknown,-
+0x609a4e,5,hook-call(A:0x100a3f60 B:0x100a3f30),e8<rel32>,init-main,0x100a67a8,0x100a6778,unknown,-
+0x4579c6,5,hook-jmp(A:0x100a3f80 B:0x100a3f50),e9<rel32>,init-main,0x100a67db,0x100a67ab,unknown,-
+0x73c252,5,hook-jmp(A:0x100a3db0 B:0x100a3d80),e9<rel32>,init-main,0x100a680e,0x100a67de,unknown,-
+0x73ace2,5,hook-call(A:0x100a3da0 B:0x100a3d70),e8<rel32>,init-main,0x100a6842,0x100a6812,unknown,-
+0x6f8cf8,5,hook-call(A:0x100a3de0 B:0x100a3db0),e8<rel32>,init-main,0x100a6875,0x100a6845,unknown,-
+0x6402f0,7,hook-jmp-indirect(A:0x100a3860 B:0x100a3830),ff25bb19690090,init-main,0x100a6895,0x100a6865,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x6919bb. ",
+0x63b8c0,7,hook-jmp-indirect(A:0x100a38c0 B:0x100a3890),ff25bab8630090,init-main,0x100a68b0,0x100a6880,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x63b8ba. ",
+0x438576,7,hook-jmp-indirect(A:0x100a3aa0 B:0x100a3a70),ff25aa85430090,init-main,0x100a68cb,0x100a689b,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x4385aa. ",
+0x584770,7,hook-jmp-indirect(A:0x100a3a80 B:0x100a3a50),ff25794a580090,init-main,0x100a68e6,0x100a68b6,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x584a79. ",
+0x53c900,7,hook-jmp-indirect(A:0x100a3ae0 B:0x100a3ab0),ff25f1c8530090,init-main,0x100a6904,0x100a68d4,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x53c8f1. ",
+0x4b5ac0,6,hook-jmp-indirect(A:0x100a3d50 B:0x100a3d20),ff25bc5a4b00,init-main,0x100a691f,0x100a68ef,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x4b5abc. ",
+0x4d41c0,5,hook-jmp(A:0x100a3e00 B:0x100a3dd0),e9<rel32>,init-main,0x100a6950,0x100a6920,unknown,-
+0x4e7427,5,hook-call(A:0x100a41a0 B:0x100a4170),e8<rel32>,init-main,0x100a697b,0x100a694b,unknown,-
+0x738f3a,6,hook-jmp-indirect(A:0x100a3fc0 B:0x100a3f90),ff251b8b7300,init-main,0x100a69a5,0x100a6975,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x738b1b. ",
+0x738877,6,hook-jmp-indirect(A:0x100a4000 B:0x100a3fd0),ff255b887300,init-main,0x100a69c0,0x100a6990,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x73885b. ",
+0x6a0050,9,hook-jmp-indirect(A:0x100a4070 B:0x100a4040),ff2543006a00909090,init-main,0x100a69db,0x100a69ab,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x6a0043. ",
+0x6fded6,5,hook-call(A:0x100a4560 B:0x100a4530),e8<rel32>,init-main,0x100a6a0b,0x100a69db,unknown,-
+0x7fb020,6,hook-jmp-indirect(A:0x100a4470 B:0x100a4440),ff2521c75900,init-main,0x100a6a34,0x100a6a04,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x59c721. ",
+0x7fb060,6,hook-jmp-indirect(A:0x100a4470 B:0x100a4440),ff2521c75900,init-main,0x100a6a4a,0x100a6a1a,"EU-only variant of the 0x7FB020 stub (same hook, same slot 0x59C721, same 6 bytes)",high
+0x6d0e7e,5,hook-call(A:0x100a45a0 B:0x100a4570),e8<rel32>,init-main,0x100a6a85,0x100a6a55,unknown,-
+0x866fa8,4,pointer-redirect(A:0x100a45b0 B:0x100a4580),<samp ptr>,init-main,0x100a6aae,0x100a6a7e,unknown,-
+0x586c0a,5,hook-call(A:0x100a4a50 B:0x100a4a20),e8<rel32>,init-main,0x100a6adf,0x100a6aaf,unknown,-
+0x538090,7,hook-jmp-indirect(A:0x100a4ab0 B:0x100a4a80),ff258480530090,init-main,0x100a6b00,0x100a6ad0,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x538084. ",
+0x718599,5,hook-call(A:0x100a4c40 B:0x100a4c10),e8<rel32>,init-main,0x100a6b30,0x100a6b00,unknown,-
+0x866f7c,4,pointer-redirect(A:0x100a4b30 B:0x100a4b00),<samp ptr>,init-main,0x100a6b58,0x100a6b28,unknown,-
+0x866f80,4,pointer-redirect(A:0x100a4ba0 B:0x100a4b70),<samp ptr>,init-main,0x100a6b7e,0x100a6b4e,unknown,-
+0x8585e8,4,pointer-redirect(A:0x100a4ba0 B:0x100a4b70),<samp ptr>,init-main,0x100a6ba4,0x100a6b74,unknown,-
+0x871218,4,pointer-redirect(A:0x100a4cb0 B:0x100a4c80),<samp ptr>,init-main,0x100a6bca,0x100a6b9a,"vtable slot +0xF8 (index 62, candidate BreakTowLink (low)) of vehicle class @0x871120 (inferred CAutomobile)",low
+0x871778,4,pointer-redirect(A:0x100a4cb0 B:0x100a4c80),<samp ptr>,init-main,0x100a6bf0,0x100a6bc0,"vtable slot +0xF8 (index 62, candidate BreakTowLink (low)) of vehicle class @0x871680 (inferred CHeli)",low
+0x8718d0,4,pointer-redirect(A:0x100a4cb0 B:0x100a4c80),<samp ptr>,init-main,0x100a6c0d,0x100a6bdd,"vtable slot +0xF8 (index 62, candidate BreakTowLink (low)) of vehicle class @0x8717D8 (inferred CMonsterTruck)",low
+0x871a40,4,pointer-redirect(A:0x100a4cb0 B:0x100a4c80),<samp ptr>,init-main,0x100a6c3c,0x100a6c0c,"vtable slot +0xF8 (index 62, candidate BreakTowLink (low)) of vehicle class @0x871948 (inferred CPlane)",low
+0x871be0,4,pointer-redirect(A:0x100a4cb0 B:0x100a4c80),<samp ptr>,init-main,0x100a6c62,0x100a6c32,"vtable slot +0xF8 (index 62, candidate BreakTowLink (low)) of vehicle class @0x871AE8 (inferred CQuadBike)",low
+0x5648d3,5,hook-call(A:0x100a4f10 B:0x100a4ee0),e8<rel32>,init-main,0x100a6c93,0x100a6c63,unknown,-
+0x53dfdd,5,hook-call(A:0x100a50d0 B:0x100a50a0),e8<rel32>,init-main,0x100a6cc7,0x100a6c97,unknown,-
+0x53e019,5,hook-call(A:0x100a5110 B:0x100a50e0),e8<rel32>,init-main,0x100a6ce8,0x100a6cb8,unknown,-
+0x5534b0,9,hook-jmp-indirect(A:0x100a5150 B:0x100a5120),ff25a6345500909090,init-main,0x100a6d1a,0x100a6cea,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x5534a6. ",
+0x5342f9,5,hook-call(A:0x100a5430 B:0x100a5400),e8<rel32>,init-main,0x100a6d4b,0x100a6d1b,unknown,-
+0x4b35a0,6,hook-jmp-indirect(A:0x100a53e0 B:0x100a53b0),ff2533344b00,init-main,0x100a6d6c,0x100a6d3c,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x4b3433. ",
+0x41b02e,5,hook-call(A:0x100a5990 B:0x100a5960),e8<rel32>,init-main,0x100a6d9d,0x100a6d6d,unknown,-
+0x41af80,5,hook-call(A:0x100a5b00 B:0x100a5ad0),e8<rel32>,init-main,0x100a6dd0,0x100a6da0,unknown,-
+0x41ab78,5,hook-call(A:0x100a5b30 B:0x100a5b00),e8<rel32>,init-main,0x100a6e03,0x100a6dd3,unknown,-
+0x871178,4,pointer-redirect(A:0x100a5b50 B:0x100a5b20),<samp ptr>,init-main,0x100a6e2c,0x100a6dfc,"vtable slot +0x58 (index 22, inferred ProcessEntityCollision) of vehicle class @0x871120 (inferred CAutomobile)",medium
+0x8716d8,4,pointer-redirect(A:0x100a5b50 B:0x100a5b20),<samp ptr>,init-main,0x100a6e52,0x100a6e22,"vtable slot +0x58 (index 22, inferred ProcessEntityCollision) of vehicle class @0x871680 (inferred CHeli)",medium
+0x8719a0,4,pointer-redirect(A:0x100a5b50 B:0x100a5b20),<samp ptr>,init-main,0x100a6e78,0x100a6e48,"vtable slot +0x58 (index 22, inferred ProcessEntityCollision) of vehicle class @0x871948 (inferred CPlane)",medium
+0x871b40,4,pointer-redirect(A:0x100a5b50 B:0x100a5b20),<samp ptr>,init-main,0x100a6e9e,0x100a6e6e,"vtable slot +0x58 (index 22, inferred ProcessEntityCollision) of vehicle class @0x871AE8 (inferred CQuadBike)",medium
+0x8713b8,4,pointer-redirect(A:0x100a5bf0 B:0x100a5bc0),<samp ptr>,init-main,0x100a6eb7,0x100a6e87,"vtable slot +0x58 (index 22, inferred ProcessEntityCollision) of vehicle class @0x871360 (inferred CBike)",medium
+0x871580,4,pointer-redirect(A:0x100a5bf0 B:0x100a5bc0),<samp ptr>,init-main,0x100a6eea,0x100a6eba,"vtable slot +0x58 (index 22, inferred ProcessEntityCollision) of vehicle class @0x871528 (inferred CBmx)",medium
+0x871830,4,pointer-redirect(A:0x100a5c90 B:0x100a5c60),<samp ptr>,init-main,0x100a6f10,0x100a6ee0,"vtable slot +0x58 (index 22, inferred ProcessEntityCollision) of vehicle class @0x8717D8 (inferred CMonsterTruck)",medium
+0x8721f8,4,pointer-redirect(A:0x100a5d30 B:0x100a5d00),<samp ptr>,init-main,0x100a6f36,0x100a6f06,"vtable slot +0x58 (index 22, inferred ProcessEntityCollision) of vehicle class @0x8721A0 (inferred CBoat)",medium
+0x6e0954,5,hook-call(A:0x100a5dd0 B:0x100a5da0),e8<rel32>,init-main,0x100a6f67,0x100a6f37,unknown,-
+0x6b2bcb,5,hook-call(A:0x100a5dd0 B:0x100a5da0),e8<rel32>,init-main,0x100a6f8d,0x100a6f5d,unknown,-
+0x4f77da,5,hook-call(A:0x100a5dd0 B:0x100a5da0),e8<rel32>,init-main,0x100a6fcd,0x100a6f9d,unknown,-
+0x872a74,4,pointer-redirect(A:0x100a5e70 B:0x100a5e40),<samp ptr>,init-main,0x100a6ff6,0x100a6fc6,unknown,-
+0x5674e0,6,hook-jmp-indirect(A:0x100a6000 B:0x100a5fd0),ff25db745600,init-main,0x100a7014,0x100a6fe4,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x5674db. ",
+0x4087ea,6,hook-jmp-indirect(A:0x100a5ed0 B:0x100a5ea0),ff25d7874000,once at model-cache init (0x100a7a40),0x100a7046,0x100a7016,"writes ""jmp dword [slot]"" stub at site and stores the samp handler address into GTA slot 0x4087d7. ",
+0x742495,5,hook-call(A:0x100a5820 B:0x100a57f0),e8<rel32>,rpc139-InitGame,0x100a7084,0x100a7054,unknown,-
+0x7424ec,5,hook-call(A:0x100a5820 B:0x100a57f0),e8<rel32>,rpc139-InitGame,0x100a70b8,0x100a7088,unknown,-
+0x742548,5,hook-call(A:0x100a5820 B:0x100a57f0),e8<rel32>,rpc139-InitGame,0x100a70eb,0x100a70bb,unknown,-
+0x740721,5,hook-call(A:0x100a5640 B:0x100a5610),e8<rel32>,rpc139-InitGame,0x100a711e,0x100a70ee,unknown,-
+0x740b69,5,hook-call(A:0x100a5640 B:0x100a5610),e8<rel32>,rpc139-InitGame,0x100a7152,0x100a7122,unknown,-
+0x736247,5,hook-call(A:0x100a5640 B:0x100a5610),e8<rel32>,rpc139-InitGame,0x100a7185,0x100a7155,unknown,-
+0x7424cb,5,hook-call(A:0x100a58e0 B:0x100a58b0),e8<rel32>,rpc139-InitGame,0x100a71b8,0x100a7188,unknown,-
+0x73ac4b,5,hook-call(A:0x100a5930 B:0x100a5900),e8<rel32>,rpc139-InitGame,0x100a71ec,0x100a71bc,unknown,-
+0x6d7c90,5,hook-jmp(A:0x100a5370 B:0x100a5340),e9<rel32>,rpc139-InitGame,0x100a7234,0x100a7204,unknown,-
+0x551024,7,byte-patch,6a0068c6020000,init-main,0x100aa5f1,0x100aa5c1,"7 bytes ""push 0; push 0x2C6"": pool capacity 710 (inferred CPools::Initialise vehicle pool); waits until byte==0x68 first",medium
+0x55105f,4,byte-patch,204e0000,init-main,0x100aa628,0x100aa5f8,pool capacity := 20000 (inferred CPools::Initialise building pool),medium
+0x5510cf,4,byte-patch,a00f0000,init-main,0x100aa642,0x100aa612,pool capacity := 4000 (inferred CPools::Initialise),medium
+0x550f46,4,byte-patch,a0860100,init-main,0x100aa65c,0x100aa62c,pool capacity := 100000 (inferred ptr-node-single pool),medium
+0x550f82,4,byte-patch,401f0000,init-main,0x100aa676,0x100aa646,pool capacity := 8000 (inferred ptr-node-double pool),medium
+0x550fba,4,byte-patch,88130000,init-main,0x100aa690,0x100aa660,pool capacity := 5000 (inferred entry-info-node pool),medium
+0x551097,4,byte-patch,b80b0000,init-main,0x100aa6aa,0x100aa67a,pool capacity := 3000 (inferred CPools::Initialise),medium
+0x550ff2,1,byte-patch,f0,init-main,0x100aa6c4,0x100aa694,pool capacity byte := 240 (inferred ped pool),medium
+0x551283,1,byte-patch,f0,init-main,0x100aa6db,0x100aa6ab,"pool capacity byte := 240 (inferred ped-intelligence pool, matches ped pool)",medium
+0x551140,1,byte-patch,05,init-main,0x100aa6eb,0x100aa6bb,pool capacity byte := 5,low
+0x551178,1,byte-patch,01,init-main,0x100aa709,0x100aa6d9,pool capacity byte := 1,low
+0x54f3a1,4,byte-patch,70170000,init-main,0x100aa720,0x100aa6f0,dword := 6000,low
+0x551106,5,byte-patch,68ff7e0000,init-main,0x100aa736,0x100aa706,"5 bytes ""push 0x7EFF"": pool capacity 32511 (inferred CPools::Initialise col-model pool)",medium
+0xc8d4c0,1,byte-patch,05,init-early,0x100aa808,0x100aa7d8,game-state variable set to 5 (inferred gGameState; skips startup logo/intro states),medium
+0x747483,6,nop,909090909090,init-early,0x100aa80f,0x100aa7df,6-byte NOP in startup code; byte here (0x89 US / 0xC8 EU) is also the GTA version probe (EU: 0x7474D3),medium
+0x866cd8,6,byte-patch,7469746c6500,init-early,0x100aa83f,0x100aa80f,"string patched to ""title"" (inferred: startup movie filename -> skip logo/intro movies)",medium
+0x866ccc,6,byte-patch,7469746c6500,init-early,0x100aa856,0x100aa826,"string patched to ""title"" (same as above, second movie name)",medium
+0x745b87,68,nop,90 x68,init-early,0x100aa882,0x100aa852,68-byte NOP in startup code (unknown; inferred WinMain/device-setup region),low
+0x7459e1,2,nop,9090,init-early,0x100aa8a5,0x100aa875,2-byte NOP in startup code,low
+0x561872,29,byte-patch,33c0909090909090909090909090909090909090909090909090909090,init-early,0x100aa8af,0x100aa87f,"xor eax,eax + 27 NOP (waits until byte==0x85 first; inferred: removes a focus/pause-on-inactive check)",low
+0x5b8e6a,4,byte-patch,<RAM-dependent>,init-early,0x100aa97f,0x100aa94f,"imm32 = streaming memory budget chosen from physical RAM (>4000MB:0x40000000, >2000:0x20000000, >1000:0x10000000, >500:0x8000000, else 0x6000000) (inferred CStreaming memory limit)",high
+0x4083c0,1,byte-patch,c3,init-early,0x100aa99b,0x100aa96b,ret (waits until byte==0xB8 first): function disabled,low
+0x590099,5,nop,9090909090,init-early,0x100aa9b7,0x100aa987,5-byte NOP (call removed),low
+0x53e94c,1,byte-patch,02,init-early,0x100aa9d1,0x100aa9a1,byte := 2,low
+0x731f60,4,byte-patch,204e0000,init-early,0x100aa9dd,0x100aa9ad,dword := 20000,low
+0x4c67ad,4,pointer-redirect(A:0x101c9590 B:0x101c9590),<samp ptr>,init-main,0x100aaa41,0x100aaa11,ped-model-info store relocated to samp buffer: 319 x 0x44-byte entries (vtable 0x85BDC0 written per entry) (inferred CPedModelInfo store enlarged),medium
+0x4c63f2,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,unknown,-
+0x5dc7aa,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,unknown,-
+0x40d68f,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,unknown,-
+0x4091c8,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aaba9,0x100aab79,unknown,-
+0x5634a6,4,pointer-redirect(A:0x101c9590 B:0x101c9590),<samp ptr>,init-main,0x100aabcc,0x100aab9c,unknown,-
+0x564dc7,4,pointer-redirect(A:0x101be690 B:0x101be690),<samp ptr>,init-main,0x100aabf2,0x100aabc2,"pointer -> samp 0x101be690 (= relocated sector buffer + 115200, i.e. end of original-size grid)",medium
+0x40936a,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aabfe,0x100aabce,pointer -> samp 0x101a2494 (relocated sector buffer +4),medium
+0x6e1be3,37,nop,90 x37,rpc139-InitGame (only if manual engine/lights setting; once),0x100aac51,0x100aac21,unknown,-
+0x6e1c38,8,nop,9090909090909090,rpc139-InitGame (only if manual engine/lights setting; once),0x100aac91,0x100aac61,unknown,-
+0x6e1d98,15,nop,90 x15,rpc139-InitGame (only if manual engine/lights setting; once),0x100aaca7,0x100aac77,unknown,-
+0x6e1dbc,8,nop,9090909090909090,rpc139-InitGame (only if manual engine/lights setting; once),0x100aacd9,0x100aaca9,unknown,-
+0x6e1ba0,6,nop,909090909090,rpc139-InitGame (only if manual engine/lights setting; once),0x100aacf8,0x100aacc8,unknown,-
+0x6e1bb1,6,nop,909090909090,rpc139-InitGame (only if manual engine/lights setting; once),0x100aad18,0x100aace8,unknown,-
+0x6e1bd2,7,nop,90909090909090,rpc139-InitGame (only if manual engine/lights setting; once),0x100aad2f,0x100aacff,unknown,-
+0x6e1be5,10,byte-patch,8a8628040000a8407428,rpc139-InitGame (only if manual engine/lights setting; once),0x100aad5a,0x100aad2a,"rewritten inside the NOPed range: ""mov al,[esi+0x428]; test al,0x40; jz +0x28"" (vehicle flag test)",high
+0x44b1c1,4,pointer-redirect(A:0x1026ae50 B:0x1026ae50),<samp ptr>,init-main,0x100aaddb,0x100aadab,256-entry x 4-byte table copied from samp .data 0x101169c8 to 0x1026ae50; 7 references redirected (inferred vehicle colour palette 128->256),medium
+0x4c8390,4,pointer-redirect(A:0x1026ae50 B:0x1026ae50),<samp ptr>,init-main,0x100aadf1,0x100aadc1,colour table redirect (byte 0),medium
+0x4c8399,4,pointer-redirect(A:0x1026ae51 B:0x1026ae51),<samp ptr>,init-main,0x100aae07,0x100aadd7,colour table redirect (byte 1),medium
+0x4c83a3,4,pointer-redirect(A:0x1026ae52 B:0x1026ae52),<samp ptr>,init-main,0x100aae21,0x100aadf1,colour table redirect (byte 2),medium
+0x5817cc,4,pointer-redirect(A:0x1026ae50 B:0x1026ae50),<samp ptr>,init-main,0x100aae3b,0x100aae0b,colour table redirect,medium
+0x582176,4,pointer-redirect(A:0x1026ae50 B:0x1026ae50),<samp ptr>,init-main,0x100aae51,0x100aae21,colour table redirect,medium
+0x6a6ffa,4,pointer-redirect(A:0x1026ae50 B:0x1026ae50),<samp ptr>,init-main,0x100aae5b,0x100aae2b,colour table redirect,medium
+0x4df7e2,5,nop,9090909090,init-main,0x100aaf69,0x100aaf39,unknown,-
+0x5b8fe4,1,byte-patch,7f,init-main,0x100aaf83,0x100aaf53,byte := 0x7F,low
+0x5720a5,5,nop,9090909090,init-main,0x100aaf9f,0x100aaf6f,unknown,-
+0x53c159,5,nop,9090909090,init-main,0x100aafbe,0x100aaf8e,unknown,-
+0x53c136,5,nop,9090909090,init-main,0x100aafd4,0x100aafa4,unknown,-
+0x748063,5,nop,9090909090,init-main,0x100ab013,0x100aafe3,5-byte NOP (call removed) (EU: 0x7480B3),
+0x58fbe9,5,nop,9090909090,init-main,0x100ab032,0x100ab002,unknown,-
+0x86d1ec,1,byte-patch,00,init-main,0x100ab04c,0x100ab01c,byte := 0x00 (inside .rdata/vtable area),low
+0x53c090,5,nop,9090909090,init-main,0x100ab068,0x100ab038,unknown,-
+0x440833,8,nop,9090909090909090,init-main,0x100ab087,0x100ab057,unknown,-
+0x53ea08,10,nop,90 x10,init-main,0x100ab0a4,0x100ab074,unknown,-
+0x71162c,1,byte-patch,50,init-main,0x100ab0c4,0x100ab094,byte := 0x50,low
+0x609c08,39,nop,90 x39,init-main,0x100ab0dc,0x100ab0ac,unknown,-
+0x56e0fa,18,nop,90 x18,init-main,0x100ab0fb,0x100ab0cb,unknown,-
+0x6bc9eb,2,nop,9090,init-main,0x100ab131,0x100ab101,unknown,-
+0x4bc6c1,3,byte-patch,b00090,init-main,0x100ab13f,0x100ab10f,"""mov al,0; nop"": forces a bool result false",medium
+0x44ac75,5,byte-patch,b001909090,init-main,0x100ab16e,0x100ab13e,"""mov al,1; 3xNOP"": forces a bool result true",medium
+0x5b47b0,1,byte-patch,c3,init-main,0x100ab19d,0x100ab16d,ret: function disabled,medium
+0x5e63a6,19,nop,90 x19,init-main,0x100ab1ac,0x100ab17c,unknown,-
+0x621aea,12,nop,90 x12,init-main,0x100ab1df,0x100ab1af,unknown,-
+0x62d331,11,nop,90 x11,init-main,0x100ab1fa,0x100ab1ca,unknown,-
+0x741fff,27,nop,90 x27,init-main,0x100ab220,0x100ab1f0,unknown,-
+0x704e8a,5,nop,9090909090,init-main,0x100ab25b,0x100ab22b,unknown,-
+0x4090a0,1,byte-patch,c3,init-main,0x100ab275,0x100ab245,ret: function disabled,medium
+0x441482,5,nop,9090909090,init-main,0x100ab291,0x100ab261,unknown,-
+0x588be0,1,byte-patch,c3,init-main,0x100ab2ab,0x100ab27b,ret: function disabled (inferred CHud::SetHelpMessage -> no SP help boxes),low
+0x53c06a,5,nop,9090909090,init-main,0x100ab2c7,0x100ab297,unknown,-
+0x434272,5,nop,9090909090,init-main,0x100ab2e6,0x100ab2b6,unknown,-
+0x60d64e,1,byte-patch,84,init-main,0x100ab300,0x100ab2d0,jcc opcode byte := 0x84 (condition inverted/changed; VirtualProtect covers 0x60D64D..),medium
+0x542485,11,nop,90 x11,init-main,0x100ab318,0x100ab2e8,unknown,-
+0x612710,3,byte-patch,33c0c3,init-main,0x100ab335,0x100ab305,"""xor eax,eax; ret"": function returns 0",high
+0x613ba7,5,nop,9090909090,init-main,0x100ab366,0x100ab336,unknown,-
+0x609a4e,6,nop,909090909090,init-main,0x100ab385,0x100ab355,6-byte NOP; later 0x100a6320 writes a call hook over the first 5 bytes,high
+0x6f8cf8,12,byte-patch,9090909090b8898f6f00ffe0,init-main,0x100ab39c,0x100ab36c,"NOP5 + ""mov eax,0x6F8F89; jmp eax"" (samp .data 0x101166e8); later 0x100a6320 overwrites the first 5 bytes with a call hook",high
+0x53c1c1,5,nop,9090909090,init-main,0x100ab3e4,0x100ab3b4,unknown,-
+0x540040,9,byte-patch,90909090909085c974,init-main,0x100ab3ff,0x100ab3cf,"6xNOP + ""test ecx,ecx; je"": condition rewritten",medium
+0x56e5ad,5,nop,9090909090,init-main,0x100ab438,0x100ab408,unknown,-
+0x609cb4,5,nop,9090909090,init-main,0x100ab467,0x100ab437,unknown,-
+0x60f2c4,25,nop,90 x25,init-main,0x100ab47d,0x100ab44d,unknown,-
+0x6b18f1,5,nop,9090909090,init-main,0x100ab4b4,0x100ab484,unknown,-
+0x6b9298,5,nop,9090909090,init-main,0x100ab4d3,0x100ab4a3,unknown,-
+0x6f1793,5,nop,9090909090,init-main,0x100ab4f2,0x100ab4c2,unknown,-
+0x6f86b6,5,nop,9090909090,init-main,0x100ab511,0x100ab4e1,unknown,-
+0x47c477,1,byte-patch,eb,init-main,0x100ab51d,0x100ab4ed,0xEB: conditional jump made unconditional,medium
+0x53a984,2,byte-patch,eb77,init-main,0x100ab53d,0x100ab50d,"""jmp short +0x77"": skip block",medium
+0x60f289,8,nop,9090909090909090,init-main,0x100ab565,0x100ab535,unknown,-
+0x60f29d,19,nop,90 x19,init-main,0x100ab57b,0x100ab54b,unknown,-
+0x58db5f,9,byte-patch,bd0000000090909090,init-main,0x100ab59d,0x100ab56d,"""mov ebp, imm32; 4xNOP""; imm32 low byte is rewritten at runtime by 0x100a1460 (SetPlayerWantedLevel RPC 133 path) -> HUD wanted level comes from samp",high
+0x575b0e,5,nop,9090909090,init-main,0x100ab5ff,0x100ab5cf,unknown,-
+0x63adc8,6,nop,909090909090,init-main,0x100ab61e,0x100ab5ee,unknown,-
+0x58fc2e,30,nop,90 x30,init-main,0x100ab635,0x100ab605,unknown,-
+0x5e1e70,2,byte-patch,33c0,init-main,0x100ab666,0x100ab636,"""xor eax,eax""",medium
+0x6a8500,119,byte-patch,c3 x119,init-main,0x100ab68a,0x100ab65a,119 bytes of 0xC3 (ret) - block of functions disabled,medium
+0x593d7c,5,nop,9090909090,init-main,0x100ab6a9,0x100ab679,unknown,-
+0x7469af,2,byte-patch,33c0,init-main,0x100ab6c7,0x100ab697,"xor eax,eax (EU: 0x7469FF)",medium
+0x61e0c2,4,pointer-redirect(A:0x10116718 B:0x10116718),<samp ptr>,init-main,0x100ab713,0x100ab6e3,float operand pointer -> samp const 2.0 (.data 0x10116718),medium
+0x454cc9,4,pointer-redirect(A:0x1011671c B:0x1011671c),<samp ptr>,init-main,0x100ab72d,0x100ab6fd,float operand pointer -> samp const 10000.0 (.data 0x1011671c),medium
+0x5952a6,5,nop,9090909090,init-main,0x100ab74c,0x100ab71c,unknown,-
+0x6884c4,6,nop,909090909090,init-main,0x100ab772,0x100ab742,unknown,-
+0x688200,6,nop,909090909090,init-main,0x100ab788,0x100ab758,unknown,-
+0x570535,15,nop,90 x15,init-main,0x100ab79f,0x100ab76f,unknown,-
+0x5e7847,17,nop,90 x17,init-main,0x100ab7c8,0x100ab798,unknown,-
+0x570546,175,nop,90 x175,init-main,0x100ab7f8,0x100ab7c8,unknown,-
+0x6d1874,24,byte-patch,d5176d00d5176d00d5176d00d5176d00d5176d00d5176d00,init-main,0x100ab812,0x100ab7e2,six jump-table entries all pointed at 0x6D17D5 (switch cases collapsed),high
+0x64db49,9,nop,90 x9,init-main,0x100ab851,0x100ab821,unknown,-
+0x64bc9f,9,nop,90 x9,init-main,0x100ab873,0x100ab843,unknown,-
+0x64b872,9,nop,90 x9,init-main,0x100ab895,0x100ab865,unknown,-
+0x5e7d62,5,byte-patch,5e5dc21c00,init-main,0x100ab8ab,0x100ab87b,"""pop esi; pop ebp; ret 0x1C"": early return",high
+0x6348f6,4,byte-patch,ffffffff,init-main,0x100ab8ea,0x100ab8ba,dword := 0xFFFFFFFF,low
+0x634de2,4,byte-patch,ffffffff,init-main,0x100ab903,0x100ab8d3,dword := 0xFFFFFFFF,low
+0x71a223,1,byte-patch,03,init-main,0x100ab90b,0x100ab8db,unknown,-
+0x71a5d5,1,byte-patch,03,init-main,0x100ab911,0x100ab8e1,unknown,-
+0x71a247,1,byte-patch,03,init-main,0x100ab917,0x100ab8e7,unknown,-
+0x71a282,1,byte-patch,03,init-main,0x100ab91d,0x100ab8ed,unknown,-
+0x71a26a,1,byte-patch,03,init-main,0x100ab923,0x100ab8f3,unknown,-
+0x71a2e5,1,byte-patch,03,init-main,0x100ab929,0x100ab8f9,unknown,-
+0x71a3ac,1,byte-patch,03,init-main,0x100ab92f,0x100ab8ff,unknown,-
+0x71a4b9,1,byte-patch,03,init-main,0x100ab935,0x100ab905,unknown,-
+0x71a53c,1,byte-patch,03,init-main,0x100ab93b,0x100ab90b,unknown,-
+0x71a37f,1,byte-patch,03,init-main,0x100ab941,0x100ab911,unknown,-
+0x71a518,1,byte-patch,03,init-main,0x100ab94c,0x100ab91c,unknown,-
+0x71a525,1,byte-patch,03,init-main,0x100ab954,0x100ab924,unknown,-
+0x71a54b,1,byte-patch,03,init-main,0x100ab95a,0x100ab92a,unknown,-
+0x71a5b6,1,byte-patch,03,init-main,0x100ab962,0x100ab932,unknown,-
+0x71a3bb,1,byte-patch,03,init-main,0x100ab96d,0x100ab93d,unknown,-
+0x7361b2,4,pointer-redirect(A:0x101166f4 B:0x101166f4),<samp ptr>,init-main,0x100ab988,0x100ab958,float operand pointer -> samp const -20000.0 (.data 0x101166f4) (inferred bullet/world bound),medium
+0x7361cb,4,pointer-redirect(A:0x101166f0 B:0x101166f0),<samp ptr>,init-main,0x100ab9a3,0x100ab973,float operand pointer -> samp const 20000.0 (.data 0x101166f0),medium
+0x7361e0,4,pointer-redirect(A:0x101166f4 B:0x101166f4),<samp ptr>,init-main,0x100ab9b9,0x100ab989,float operand pointer -> samp const -20000.0,medium
+0x7361f5,4,pointer-redirect(A:0x101166f0 B:0x101166f0),<samp ptr>,init-main,0x100ab9cf,0x100ab99f,float operand pointer -> samp const 20000.0,medium
+0x524582,5,nop,9090909090,init-main,0x100ab9ea,0x100ab9ba,unknown,-
+0x712025,1,byte-patch,01,init-main,0x100aba04,0x100ab9d4,byte := 0x01,low
+0x53bf28,5,nop,9090909090,init-main,0x100aba2e,0x100ab9fe,unknown,-
+0x4c3a5b,10,nop,90 x10,init-main,0x100aba6d,0x100aba3d,unknown,-
+0x4c63f2,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c662d,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c6822,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c6829,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c6877,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c6881,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c6890,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c68a5,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c68f3,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c6932,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c6971,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c69b0,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c69ef,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x4c6a2e,4,pointer-redirect(A:0x101cea50 B:0x101cea50),<samp ptr>,init-main,0x100aaaa9,0x100aaa79,atomic-model-info store relocated to samp buffer of 20000 x 32-byte entries (vtable 0x85BBF0 written per entry) (inferred CModelInfo atomic store; default smaller),medium
+0x5dc7aa,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x41a85d,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x41a864,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x408259,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x711b32,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x699cf8,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x4092ec,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x40914e,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x408702,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x564220,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x564172,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x563845,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x84e9c2,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x85652d,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab21,0x100aaaf1,"sector-array base relocated to samp buffer (160000 bytes, zeroed); original 115200-byte array at 0xB7D0B8 zeroed (inferred CWorld sector grid). EU list differs at 3 entries",medium
+0x40d68f,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x5664da,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x566589,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x408709,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56b3b4,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56ad94,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56a862,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x5675fd,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56cd87,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56cc7c,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56cb54,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56ca4d,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56c667,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56c56c,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56c448,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56c344,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56bd49,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56bc56,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56be59,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56a943,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x567738,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x54673b,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x54bb26,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x6e31ad,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x40dc2c,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x534a0c,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x534d6e,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x564b5c,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x564dac,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x67ff60,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x568cbc,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x568efe,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x569f5a,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56953a,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56912a,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56b4b8,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56b597,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56b2c6,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56af77,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56ae98,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56bf52,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56aca6,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56a769,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x56a688,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x70b9bd,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x5647a0,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x70acb5,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x6063ca,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x699d01,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x41a864,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x40e064,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x40df61,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x40ddd1,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x40db11,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x40d98f,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x1566858,4,pointer-redirect(A:0x101a2490 B:0x101a2490),<samp ptr>,init-main,0x100aab71,0x100aab41,"same relocation, imm32 at instruction+3 (EU list differs only in last entry: 0x1566845 vs 0x1566855)",medium
+0x4091c8,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aaba9,0x100aab79,"same relocation, +4 field, imm32 at instruction+3",medium
+0x40936a,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aaba9,0x100aab79,"same relocation, +4 field, imm32 at instruction+3",medium
+0x40d9c8,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aaba9,0x100aab79,"same relocation, +4 field, imm32 at instruction+3",medium
+0x40db4a,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aaba9,0x100aab79,"same relocation, +4 field, imm32 at instruction+3",medium
+0x40dc64,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aaba9,0x100aab79,"same relocation, +4 field, imm32 at instruction+3",medium
+0x40de0a,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aaba9,0x100aab79,"same relocation, +4 field, imm32 at instruction+3",medium
+0x40df9a,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aaba9,0x100aab79,"same relocation, +4 field, imm32 at instruction+3",medium
+0x40e09d,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aaba9,0x100aab79,"same relocation, +4 field, imm32 at instruction+3",medium
+0x534a9b,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aaba9,0x100aab79,"same relocation, +4 field, imm32 at instruction+3",medium
+0x534dfd,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aaba9,0x100aab79,"same relocation, +4 field, imm32 at instruction+3",medium
+0x71cdb3,4,pointer-redirect(A:0x101a2494 B:0x101a2494),<samp ptr>,init-main,0x100aaba9,0x100aab79,"same relocation, +4 field, imm32 at instruction+3",medium
+0x5634a6,4,pointer-redirect(A:0x101c9590 B:0x101c9590),<samp ptr>,init-main,0x100aabcc,0x100aab9c,ped-model-info store relocated (see 0x4C67AD),medium
+0x5638df,4,pointer-redirect(A:0x101c9590 B:0x101c9590),<samp ptr>,init-main,0x100aabcc,0x100aab9c,ped-model-info store relocated (see 0x4C67AD),medium
+0x56420f,4,pointer-redirect(A:0x101c9590 B:0x101c9590),<samp ptr>,init-main,0x100aabcc,0x100aab9c,ped-model-info store relocated (see 0x4C67AD),medium
+0x564283,4,pointer-redirect(A:0x101c9590 B:0x101c9590),<samp ptr>,init-main,0x100aabcc,0x100aab9c,ped-model-info store relocated (see 0x4C67AD),medium
+0xb7d0b8,115200,data-fill,00 x115200,init-main,0x100aac10,0x100aabe0,zero original array after relocation (inferred CWorld sector grid),medium
+(707 sites),4 each,pointer-redirect(A:0x10182424 B:0x10182424),<samp ptr>,once at model-cache init (0x100a7a40),0x100a79ff/0x100a7a14,0x100a79cf/0x100a79e4,"model-info pointer array (20000 ptrs copied from 0xA9B0C8) relocated into a 65535-entry samp array whose element 0 is at 0x10182424; each site from table A .data 0x10114b10 (US) / 0x101158e0 (EU), 5-byte records {u32 addr; u8 expected opcode}; patched only if opcode matches: 8B/89/39 -> imm32 at +3, BE/BF -> imm32 at +1 (inferred CModelInfo::ms_modelInfoPtrs)",medium
+0x541df5,5,nop / restore,9090909090 | restore e846f3feff (call 0x531140),"runtime: input-lock (0x100a0750 modes 1-3, 0x100c4570) / unlock (0x100a0630)","0x100a0775,0x100a07f6,0x100c4598 / 0x100a0663","0x100a0745,0x100a07c6,0x100c4578 / 0x100a0633",call inside the pad-update routine (samp itself calls 0x541DD0 and 0x541BD0 around the toggle; inferred CPad::UpdatePads / ClearMouseHistory). VirtualProtect for it is already done in 0x100aaef0,medium
+0x53f417,5,nop / restore,"9090909090 | restore e8b47a2000 (US, call 0x746ED0) or e8047b2000 (EU, call 0x746F20)",runtime: input-lock (0x100a05e0) / unlock (0x100a0630),"0x100a05f6 / 0x100a0691,0x100a06ab","0x100a05c6 / 0x100a0661,0x100a067b",call in mouse-update code removed while input is locked (inferred),medium
+0x53f41f,4,byte-patch / restore,33c00f84 | restore 85c00f8c,runtime: input-lock / unlock,0x100a0607 / 0x100a06ca,0x100a05d7 / 0x100a069a,"""xor eax,eax; jz"" replaces ""test eax,eax; jl"" (mouse-update branch forced)",medium
+"0x53f47a,0x53f49a,0x53f4b3",4,pointer-redirect / restore,"-> samp 0x101501a8 (dummy) | restore 0xB73410,0xB73414,0xB7340C",runtime: input mode 4 (0x100a0540) / unlock (0x100a0590),0x100a0578.. / 0x100a05b4..,0x100a0548.. / 0x100a0584..,mouse-state operand pointers redirected to a samp dummy (and GTA mouse state 0xB7340C..0xB73417 zeroed),medium
+0x6194a0,1,byte-patch / restore,c3 | restore e9,runtime: input-lock / unlock,"0x100a07ad,0x100a0846,0x100a089f,0x100c45b8 / 0x100a0725","0x100a077d,0x100a0816,0x100a086f,0x100c4598 / 0x100a06f5",function disabled while samp owns the cursor (inferred mouse-position setter),low
+0x52cf10,1,byte-patch toggle,c3 (off) | 56 (on),"runtime: TogglePlayerClock RPC 30, connect/settings path, first-frame init (0x100a0b60(0), 0x100a14a0)","0x100a0b7a,0x100a1503,0x100a1533","0x100a0b4a,0x100a14d3,0x100a1503",on/off of a GTA function (paired with clock format string at 0x859A6C) -> HUD clock display (inferred),medium
+0x859a6c,10,data-write toggle,"""%02d:%02d"" | zeros",runtime: with 0x52CF10 toggle (0x100a14a0),"0x100a1516,0x100a154b","0x100a14e6,0x100a151b",clock text format string,high
+0x55a070,1,byte-patch,c3,"runtime: first-frame init (0x100a0c40 from 0x100c47d0), after calling GTA 0x4399D0 and 0x439940",0x100a0c5d,0x100a0c2d,function disabled,low
+0xc1704c,4,data-write,c8000000,runtime: first-frame init / 0x1006890b (0x100a0c10),0x100a0c26,0x100a0bf6,dword := 200,low
+0x863984,4,data-write,<float gravity>,"runtime: InitGame field 17, SetPlayerGravity RPC 146, 0x1000a540 (0x100a1440)",0x100a1453,0x100a1423,gravity constant (default 0.008) - unprotected then written,high
+0xa4a474,4,data-write,<u8 zero-extended>,"runtime: InitGame stunt-bonus field, EnableStuntBonusForPlayer RPC 104 (0x100a1580)",0x100a1594,0x100a1564,stunt-bonus enable flag,high
+0x58db60,1,data-write,<wanted level>,"runtime: SetPlayerWantedLevel RPC 133, 0x1000a540 (0x100a1460)",0x100a1464,0x100a1434,"imm of the ""mov ebp, imm32"" patched at 0x58DB5F by init",high
+0x4e7529,39,nop,90 x39,runtime: PlayCrimeReport RPC 112 (0x100a17d0) before calling GTA 0x4E71E0,0x100a1816,0x100a17e6,39-byte NOP before playing a crime/police report (inferred police-scanner audio),medium
+0x46977f,1,byte-patch temporary,"75 during call, then 7d",runtime: vehicle creation wrapper 0x100a9150 when model < 0,0x100a929b,0x100a926b,"jge->jne swap around a GTA vehicle-create call, restored after",medium
+0x5a82c0,1,byte-patch,c3,runtime: skin change / spawn path (0x100aff90; callers incl. SetPlayerSkin RPC 153),0x100affd3,0x100affa3,"function disabled (once set, never restored)",low
+0x41b1d0,1,byte-patch temporary,"c3 during call, then 64",runtime: 0x100b1f50 / 0x100b2000 (asset load helpers),"0x100b1f7a,0x100b202c","0x100b1f4a,0x100b1ffc","function disabled around a samp-driven load, restored to 0x64",low
+0x50ac20,3,byte-patch,c208 + 00,runtime: local player spawn (0x10003c20),0x10003df3,0x10003de3,"""ret 8"": function disabled at each spawn",low
+0x5e92f4,5,nop / restore,9090909090 | restore e81788ffff (call 0x5E1B10),runtime: 0x100a2960 (no direct caller found) / 0x100a2980; also inside hooks 0x100a26a0 and 0x100a29a0,"0x100a2976 / 0x100a298b,0x100a2ac9","0x100a2946 / 0x100a295b,0x100a2a99",call toggled per frame around local/remote ped processing,low
+"0x6884c4,0x688200",6,nop / restore (temporary),909090909090 | restore from samp .data 0x10113a90/0x10113a98 (d9965c050000 / d99e5c050000: x87 store to [esi+0x55c]),runtime: inside hooks 0x100a26a0 (Idle) and 0x100a29a0 (player ProcessControl); also NOPed once by 0x100aaef0,0x100a290a.. 0x100a2c4e..,0x100a28da.. 0x100a2c1e..,float store suppressed while samp processes remote players,medium
+0x859520,8,data-write,<two floats>,"runtime: aspect-ratio update 0x100a2440 (from hooks at 0x53E930, 0x58FC53, 0x58FBBF) when enabled and width/height >= 1.6","0x100a24bd,0x100a24d9","0x100a248d,0x100a24a9","screen-scale constants: second := 0x3B1E98DD, first := 0.00222/aspect; restored to saved values in the hooks (VirtualProtect done in 0x100aaef0; reads 0xC17044/0xC17048 = screen width/height)",medium
+0x866b74,8,data-write,"00009842 0000bc42 (76.0,94.0) or 0000a442 0000c042 (82.0,96.0)",runtime: aspect-ratio update / hooks,"0x100a24ac,0x100a24ed,0x100a2525..",0x100a247c..,two HUD float constants chosen by aspect ratio (pointers held in samp .data 0x10113a88/8c),medium
+0x858ef0,4,data-write temporary,00000040 (2.0) then restore,runtime: hook 0x100a2e20 (vtable 0x86D744) around GTA call 0x62A380,"0x100a2fc8,0x100a2ff0","0x100a2f98,0x100a2fc0",float constant forced to 2.0 for one call,medium
+"0x858ba4,0x858f84",4,data-write temporary,"00002042 (40.0), 00004842 (50.0) then restore",runtime: hook 0x100a4c40 (call at 0x718599) around GTA call 0x717D30,"0x100a4c6f,0x100a4c7c,0x100a4c95,0x100a4ca0","0x100a4c3f,..",two float constants overridden for one call,medium
+0x4096aa,3,nop / restore (temporary),909090 | restore ff5220,runtime: hook 0x100a4b30 (vtable 0x866F7C) around GTA call 0x533D30,"0x100a4b4f,0x100a4b6c","0x100a4b1f,0x100a4b3c","""call [edx+0x20]"" suppressed for one call",medium
+0x71791f,5,nop / restore (temporary),9090909090 | restore e83cffffff,"runtime: hook 0x100a4ba0 (vtables 0x866F80, 0x8585E8) around GTA call 0x534030","0x100a4c0d,0x100a4c26","0x100a4bdd,0x100a4bf6",call suppressed for one call,medium
+0x5543c0,30,nop / restore (temporary),NOP 22 @0x5543C0 + NOP 2 @0x5543DC | restore originals,runtime: hook 0x100a4f10 (call at 0x5648D3),"0x100a501f,0x100a503b,0x100a5081,0x100a50b8","0x100a4fef,..","code block suppressed for one call, original bytes rewritten from constants afterwards",medium
+0x6d64f0,1,byte-patch,c3,runtime: hook 0x100a4130 (vtable 0x86D194) before GTA call 0x811C80,0x100a4171,0x100a4141,function disabled (not restored),low
+0x4d3aa0,20,read (not a patch),-,auth challenge handler 0x1000a100 -> 0x100576f0 reads 20 bytes at this hooked site,0x100578d5,0x10057885,connection-auth related read of patched code (see handshake.md section 4); recorded for completeness only,high
+0xc8d4c0,4,data-write,08000000,init-main (0x100a0940 after all patches),0x100a0954,0x100a0924,game-state variable := 8 (inferred: leave frontend and start loading the game),medium
+"0xba6831,0xba67a4,0xba677b",1,data-write,01 / 00 / 00,init-main (0x100a0940),0x100a0960..0x100a096c,0x100a0930..0x100a093c,frontend/menu flags (inferred menu manager fields),low
+0xc97c28,4,pointer-redirect (data),"<samp object, vtable A 0x100ed8f0>",runtime: first-frame init 0x100c47d0 (original saved to 0x1026de58),0x100c48a3,0x100c4883,GTA global object pointer replaced by a samp wrapper object (inferred render-device pointer),low
+"0x40619b,0x405c3d",4,pointer-redirect (DEAD CODE),<malloc buffer>,never (0x100aa1b0 unreferenced),0x100aa1b0,0x100aa180,also writes 4-byte values into 0x1569777/0x15649FA/0x1561160 (US) or 0x1569717/0x156495A/0x156115C (EU) via patch-copy helper 0x100aa160,high
+"0x4c66b1,0x4c66c2,0x84bc51,0x856261,0x4c683b,0x4c6464,0x4c66bd,0x4c58a5",4,pointer-redirect (DEAD CODE),<malloc buffer>,never (0x100aa2c0 unreferenced),0x100aa2c0,0x100aa290,"alternate store allocator: N x 0x24-byte entries (vtable 0x85BCB0 bytes written per entry), plus ""push N"" at 0x4C58A5",high
+0x411458 + 7 sites from .data 0x101166f8 (+2),4,data-write (DEAD CODE),N and N*0x2C,"never (0x100aa520 unreferenced, not in decompile index)",0x100aa520,0x100aa4f0,"pool-size changer (count N, size N*44)",high
+0x71a223.. (15 bytes),1,byte-patch (DEAD COPY),03,never as standalone (0x100aa580 unreferenced); same writes are inlined in 0x100aaef0,0x100aa580,0x100aa550,duplicate,high
+"0x704e8a,0x609a4e",5,nop (DEAD CODE),90..,"never (0x100aae70 unreferenced; it would also call 0x100a6130,0x100aaac0,0x100aaa00,0x100aada0,0x100aaa50,0x100aa5d0,0x10002100)",0x100aae70,0x100aae40,alternate reduced init,high
+"0xa4326c(u16),0xa43318(3xf32),0xa432e8(f32),0xa432c0(u32)",22,data-write (A only; B uses a script command instead),0 / spawn pos / heading / 0,runtime: local player spawn 0x10003c20 -> A 0x100ac790,0x100ac796..0x100ac7c2,(B 0x100ac760 runs GTA script command descriptor 0x100ece20 with pos+heading instead),respawn/restart override set to the spawn point (inferred CRestart override). Build difference in mechanism only,medium

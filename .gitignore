@@ -1,0 +1,17 @@
+/target
+# Third-party binaries: never commit (copyright)
+/re/samp-dll/**/*.dll
+/re/snapshots/
+/server/
+/re/openmp-src/
+/re/gta/
+/re/omp-raknet/
+/re/omp-network/
+/re/gta-reversed/
+/re/plugin-sdk/
+/data/
+/wine/
+/captures/
+/re/samp-installer/
+/Read Me.txt
+__pycache__/

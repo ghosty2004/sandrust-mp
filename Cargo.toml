@@ -1,0 +1,7 @@
+[workspace]
+resolver = "3"
+members = ["crates/samp-proto", "crates/samp-bot", "crates/samp-dump", "crates/samp-client", "crates/samp-launcher", "crates/samp-tracer", "crates/samp-saa", "crates/samp-ui"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"

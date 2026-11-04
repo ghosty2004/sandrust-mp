@@ -1,0 +1,597 @@
+//! Startup patch table (milestone M1: boot straight into gameplay).
+//!
+//! Every entry names its row in `docs/re/data/gta-patches-r4-annotated.csv`
+//! (1-based line number in the file, header = line 1) and the spec section in
+//! `docs/re/subsystems/gta-patches.md` ("Purpose analysis" → "Startup / intro").
+//! `original` holds the bytes of the unmodified 1.0 US executable; a patch is
+//! only written when memory still holds them.
+//!
+//! M3 adds the rows remote players need (ped-related pool sizes, the
+//! `Players[-1]` / NULL-player-info NOPs, the ped-group and heading-store
+//! patches); the sector relocation itself is table-driven in `sectors.rs`.
+//!
+//! Deliberately NOT applied yet (later milestones): the other pool sizes,
+//! model-store / colour-table relocation, the CJ-walk anim-group hook (rows 43,
+//! 187), the single-player feature removals, and `CStreaming::InitImageList`
+//! := RET (row 128 — SA:MP registers the image archives itself; we do not yet).
+
+use crate::patch::{Memory, PatchError, Patcher};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// At DLL attach, while the main thread is still suspended (spec §2 step 2).
+    Early,
+    /// Once `gGameState == 7` (FRONTEND_IDLE), before switching to state 8 (spec §2 step 3).
+    Main,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Write {
+    Bytes(&'static [u8]),
+    Nop(usize),
+    /// imm32 chosen from physical RAM (row 127, spec §4.6).
+    StreamingBudget,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Entry {
+    pub addr: u32,
+    pub phase: Phase,
+    pub write: Write,
+    /// Bytes expected before patching (from gta_sa.exe 1.0 US).
+    pub original: &'static [u8],
+    /// Line number in gta-patches-r4-annotated.csv.
+    pub csv_row: u32,
+    pub what: &'static str,
+}
+
+impl Entry {
+    pub fn size(&self) -> usize {
+        match self.write {
+            Write::Bytes(b) => b.len(),
+            Write::Nop(n) => n,
+            Write::StreamingBudget => 4,
+        }
+    }
+}
+
+const TIMER_QPC_BYPASS: [u8; 29] = {
+    let mut b = [0x90u8; 29];
+    b[0] = 0x33; // xor eax,eax
+    b[1] = 0xC0;
+    b
+};
+
+pub const TABLE: &[Entry] = &[
+    // CSV row 121 — psInitialize: NOP `mov [gGameState],esi` so the state set at
+    // attach (5, written separately) survives. Spec: Startup / intro.
+    Entry {
+        addr: 0x747483,
+        phase: Phase::Early,
+        write: Write::Nop(6),
+        original: &[0x89, 0x35, 0xC0, 0xD4, 0xC8, 0x00],
+        csv_row: 121,
+        what: "psInitialize: keep gGameState",
+    },
+    // CSV row 124 — GetVideoModeList: drop the aspect-ratio filter (68 bytes).
+    Entry {
+        addr: 0x745B87,
+        phase: Phase::Early,
+        write: Write::Nop(68),
+        original: &[
+            0xd9, 0x44, 0x24, 0x08, 0xd8, 0x1d, 0x98, 0x8c, 0x85, 0x00, 0xdf, 0xe0, 0xf6, 0xc4, 0x44, 0x7b, 0x33, 0xd9,
+            0x44, 0x24, 0x08, 0xd8, 0x1d, 0x34, 0x8f, 0x85, 0x00, 0xdf, 0xe0, 0xf6, 0xc4, 0x44, 0x7b, 0x22, 0xd9, 0x44,
+            0x24, 0x08, 0xd8, 0x1d, 0xc8, 0x8c, 0x85, 0x00, 0xdf, 0xe0, 0xf6, 0xc4, 0x44, 0x7b, 0x11, 0xd9, 0x44, 0x24,
+            0x08, 0xd8, 0x1d, 0xdc, 0x52, 0x86, 0x00, 0xdf, 0xe0, 0xf6, 0xc4, 0x44, 0x7a, 0x6d,
+        ],
+        csv_row: 124,
+        what: "GetVideoModeList: no aspect filter",
+    },
+    // CSV row 125 — FillAvailableVMs: NOP one `jp` of the aspect test.
+    Entry {
+        addr: 0x7459E1,
+        phase: Phase::Early,
+        write: Write::Nop(2),
+        original: &[0x7A, 0x71],
+        csv_row: 125,
+        what: "FillAvailableVMs: no aspect filter",
+    },
+    // CSV row 126 — CTimer::Initialise: always the millisecond timer path.
+    Entry {
+        addr: 0x561872,
+        phase: Phase::Early,
+        write: Write::Bytes(&TIMER_QPC_BYPASS),
+        original: &[
+            0x85, 0xc0, 0x74, 0x19, 0xb8, 0xd3, 0x4d, 0x62, 0x10, 0xf7, 0x64, 0x24, 0x00, 0xc1, 0xea, 0x06, 0xb9, 0xa0,
+            0x17, 0x56, 0x00, 0x89, 0x15, 0x2c, 0xcb, 0xb7, 0x00, 0xeb, 0x0f,
+        ],
+        csv_row: 126,
+        what: "CTimer::Initialise: no QPC",
+    },
+    // CSV row 127 — CStreaming::Init2: ms_memoryAvailable budget from physical RAM (spec §4.6).
+    Entry {
+        addr: 0x5B8E6A,
+        phase: Phase::Early,
+        write: Write::StreamingBudget,
+        original: &[0x00, 0x00, 0x20, 0x03],
+        csv_row: 127,
+        what: "CStreaming::Init2: streaming memory budget",
+    },
+    // CSV row 129 — CLoadingScreen::RenderSplash: NOP a CSprite2d::DrawRect call.
+    Entry {
+        addr: 0x590099,
+        phase: Phase::Early,
+        write: Write::Nop(5),
+        original: &[0xE8, 0xC2, 0x7A, 0x19, 0x00],
+        csv_row: 129,
+        what: "RenderSplash: no DrawRect",
+    },
+    // CSV row 130 — Idle: frame-limiter busy-wait 14 ms -> 2 ms.
+    Entry {
+        addr: 0x53E94C,
+        phase: Phase::Early,
+        write: Write::Bytes(&[0x02]),
+        original: &[0x0E],
+        csv_row: 130,
+        what: "Idle: frame limiter 2 ms",
+    },
+    // CSV row 160 — __MainWndProc: NOP the CGame::InitAfterLostFocus call.
+    Entry {
+        addr: 0x748063,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xE8, 0xF8, 0x3B, 0xDF, 0xFF],
+        csv_row: 160,
+        what: "__MainWndProc: no InitAfterLostFocus",
+    },
+    // CSV row 246 — CGame::Process: NOP the CCutsceneMgr::Update call. Besides
+    // removing cutscenes this keeps the stock main.scm from taking over the
+    // player: its intro mission waits for a cutscene that never finishes
+    // loading (see docs/phase3/m2-notes.md).
+    Entry {
+        addr: 0x53BF28,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xE8, 0xD3, 0x9D, 0xF9, 0xFF],
+        csv_row: 246,
+        what: "CGame::Process: no CCutsceneMgr::Update",
+    },
+    // CSV row 157 — CUserDisplay::Process: NOP CPlaceName::Process (no zone names).
+    Entry {
+        addr: 0x5720A5,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xE8, 0x76, 0xFE, 0xFF, 0xFF],
+        csv_row: 157,
+        what: "CUserDisplay::Process: no CPlaceName::Process",
+    },
+    // CSV row 161 — CHud::Draw: NOP CHud::DrawVehicleName.
+    Entry {
+        addr: 0x58FBE9,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xE8, 0xB2, 0xB2, 0xFF, 0xFF],
+        csv_row: 161,
+        what: "CHud::Draw: no DrawVehicleName",
+    },
+    // CSV row 180 — CHud::SetHelpMessage := ret (no single-player help boxes).
+    Entry {
+        addr: 0x588BE0,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0xC3]),
+        original: &[0xA0],
+        csv_row: 180,
+        what: "CHud::SetHelpMessage: ret",
+    },
+    // CSV row 202 — CHud::DrawWanted: the shown wanted level is an immediate
+    // (low byte at 0x58DB60) that SetPlayerWantedLevel (RPC 133) rewrites; 0 here.
+    Entry {
+        addr: 0x58DB5F,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0xBD, 0x00, 0x00, 0x00, 0x00, 0x90, 0x90, 0x90, 0x90]),
+        original: &[0x83, 0xFE, 0x05, 0x0F, 0x84, 0xDA, 0x00, 0x00, 0x00],
+        csv_row: 202,
+        what: "CHud::DrawWanted: level from samp",
+    },
+    // CSV row 205 — CHud::Draw: NOP the vital-stats block.
+    Entry {
+        addr: 0x58FC2E,
+        phase: Phase::Main,
+        write: Write::Nop(30),
+        original: &[
+            0x6a, 0x00, 0x6a, 0xff, 0xe8, 0x99, 0xe4, 0xfd, 0xff, 0x83, 0xc4, 0x08, 0x85, 0xc0, 0x75, 0x0e, 0xc6, 0x05,
+            0xde, 0xb1, 0xba, 0x00, 0x01, 0xe8, 0x06, 0x9a, 0xff, 0xff, 0xeb, 0x0c,
+        ],
+        csv_row: 205,
+        what: "CHud::Draw: no vital stats",
+    },
+    // CSV row 209 — diMouseInit: cooperative level always non-exclusive|foreground.
+    Entry {
+        addr: 0x7469AF,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x33, 0xC0]),
+        original: &[0x1B, 0xC0],
+        csv_row: 209,
+        what: "diMouseInit: non-exclusive mouse",
+    },
+    // ---- M3: remote players (remote-control-onfoot.md §1.6, §7.1 item 7) ----
+    // CSV row 178 — CStreaming::DeleteAllRwObjects := RET (goes with the sector relocation:
+    // samp's table would otherwise corrupt an instruction inside it, see sectors.rs).
+    Entry {
+        addr: 0x4090A0,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0xC3]),
+        original: &[0xa1],
+        csv_row: 178,
+        what: "CStreaming::DeleteAllRwObjects: ret",
+    },
+    // CSV rows 110–118 — CPools::Initialise / CPlaceable::InitMatrixArray capacities that grow
+    // with the number of peds (gta-patches.md "Pools & limits"). Run at gGameState 8, after this.
+    Entry {
+        addr: 0x550F46,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0xa0, 0x86, 0x01, 0x00]),
+        original: &[0x70, 0x11, 0x01, 0x00],
+        csv_row: 110,
+        what: "CPools::Initialise: PtrNode Single 100000",
+    },
+    Entry {
+        addr: 0x550F82,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x40, 0x1f, 0x00, 0x00]),
+        original: &[0x80, 0x0c, 0x00, 0x00],
+        csv_row: 111,
+        what: "CPools::Initialise: PtrNode Double 8000",
+    },
+    Entry {
+        addr: 0x550FBA,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x88, 0x13, 0x00, 0x00]),
+        original: &[0xf4, 0x01, 0x00, 0x00],
+        csv_row: 112,
+        what: "CPools::Initialise: EntryInfoNode 5000",
+    },
+    Entry {
+        addr: 0x550FF2,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0xF0]),
+        original: &[0x8c],
+        csv_row: 114,
+        what: "CPools::Initialise: Peds 240",
+    },
+    Entry {
+        addr: 0x551283,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0xF0]),
+        original: &[0x8c],
+        csv_row: 115,
+        what: "CPools::Initialise: PedIntelligence 240",
+    },
+    Entry {
+        addr: 0x551140,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x05]),
+        original: &[0x01],
+        csv_row: 116,
+        what: "CPools::Initialise: Task 1524",
+    },
+    Entry {
+        addr: 0x551178,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x01]),
+        original: &[0x00],
+        csv_row: 117,
+        what: "CPools::Initialise: Event 456",
+    },
+    Entry {
+        addr: 0x54F3A1,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x70, 0x17, 0x00, 0x00]),
+        original: &[0x84, 0x03, 0x00, 0x00],
+        csv_row: 118,
+        what: "CPlaceable::InitMatrixArray: 6000 matrices",
+    },
+    // CSV row 183 — CPlayerPed::CPlayerPed: inverted jcc, SetupPlayerPed(false) creates no ped group
+    // (CPedGroups has 8 groups; remote-control-onfoot.md §1.6).
+    Entry {
+        addr: 0x60D64E,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x84]),
+        original: &[0x85],
+        csv_row: 183,
+        what: "CPlayerPed ctor: no ped group",
+    },
+    // CSV row 193 — CPlayerPed::ProcessControl: drop FindPlayerSlotWithPedPointer + Players[slot]
+    // .m_pRemoteVehicle (−1 for remote peds → Players[-1]).
+    Entry {
+        addr: 0x60F2C4,
+        phase: Phase::Main,
+        write: Write::Nop(25),
+        original: &[0x56, 0xe8, 0xd6, 0x4c, 0xf5, 0xff, 0x69, 0xc0, 0x90, 0x01, 0x00, 0x00, 0x8b, 0x88, 0x48, 0xce, 0xb7, 0x00, 0x83, 0xc4, 0x04, 0x85, 0xc9, 0x75, 0x08],
+        csv_row: 193,
+        what: "CPlayerPed::ProcessControl: no FindPlayerSlotWithPedPointer",
+    },
+    // CSV rows 173–176 — GetPlayerInfoForThisPlayerPed()->+0x153 uses removed (NULL for slots ≥ 2).
+    Entry {
+        addr: 0x5E63A6,
+        phase: Phase::Main,
+        write: Write::Nop(19),
+        original: &[0xe8, 0x45, 0x3c, 0x02, 0x00, 0x8a, 0x88, 0x53, 0x01, 0x00, 0x00, 0x84, 0xc9, 0x0f, 0x84, 0xa8, 0x00, 0x00, 0x00],
+        csv_row: 173,
+        what: "CPed::RemoveWeaponWhenEnteringVehicle: no player-info lookup",
+    },
+    Entry {
+        addr: 0x621AEA,
+        phase: Phase::Main,
+        write: Write::Nop(12),
+        original: &[0xe8, 0x01, 0x85, 0xfe, 0xff, 0xc6, 0x80, 0x53, 0x01, 0x00, 0x00, 0x00],
+        csv_row: 174,
+        what: "0x621960: no player-info lookup",
+    },
+    Entry {
+        addr: 0x62D331,
+        phase: Phase::Main,
+        write: Write::Nop(11),
+        original: &[0xe8, 0xba, 0xcc, 0xfd, 0xff, 0x88, 0x98, 0x53, 0x01, 0x00, 0x00],
+        csv_row: 175,
+        what: "CTaskComplexKillPedOnFootArmed::ControlSubTask: no player-info lookup",
+    },
+    Entry {
+        addr: 0x741FFF,
+        phase: Phase::Main,
+        write: Write::Nop(27),
+        original: &[0xe8, 0xec, 0x7f, 0xec, 0xff, 0x85, 0xc0, 0x0f, 0x84, 0xec, 0x02, 0x00, 0x00, 0x8a, 0x88, 0x53, 0x01, 0x00, 0x00, 0x84, 0xc9, 0x0f, 0x84, 0xde, 0x02, 0x00, 0x00],
+        csv_row: 176,
+        what: "CVehicle::DoDriveByShootings: no player-info lookup",
+    },
+    // CSV row 206 — CPed::UpdatePosition: standing-on-entity block always skipped.
+    Entry {
+        addr: 0x5E1E70,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x33, 0xC0]),
+        original: &[0x85, 0xc0],
+        csv_row: 206,
+        what: "CPed::UpdatePosition: ignore m_standingOnEntity",
+    },
+    // CSV rows 213/214 — the m_fAimingRotation stores of CTaskSimplePlayerOnFoot; restored around the
+    // local player's ProcessControl only (remote.rs hook, CSV row 367).
+    Entry {
+        addr: 0x6884C4,
+        phase: Phase::Main,
+        write: Write::Nop(6),
+        original: &[0xd9, 0x96, 0x5c, 0x05, 0x00, 0x00],
+        csv_row: 213,
+        what: "PlayerControlZelda: no m_fAimingRotation store",
+    },
+    Entry {
+        addr: 0x688200,
+        phase: Phase::Main,
+        write: Write::Nop(6),
+        original: &[0xd9, 0x96, 0x5c, 0x05, 0x00, 0x00],
+        csv_row: 214,
+        what: "PlayerControlDucked: no m_fAimingRotation store",
+    },
+    // CSV row 167 — CPlayerPed::ProcessAnimGroups: no release of the previous anim block and no
+    // store to playerData+0x4C (players.rs zeroes that field before deleting a remote ped, as samp).
+    Entry {
+        addr: 0x609C08,
+        phase: Phase::Main,
+        write: Write::Nop(39),
+        original: &[0x8b, 0x0d, 0x34, 0xea, 0xb4, 0x00, 0x8d, 0x04, 0x80, 0x8b, 0x14, 0x81, 0x81, 0xea, 0xa0, 0xd4, 0xb5, 0x00, 0xc1, 0xfa, 0x05, 0x52, 0xe8, 0xad, 0xa3, 0xec, 0xff, 0x8b, 0x86, 0x80, 0x04, 0x00, 0x00, 0x83, 0xc4, 0x04, 0x89, 0x68, 0x4c],
+        csv_row: 167,
+        what: "CPlayerPed::ProcessAnimGroups: no anim block switch",
+    },
+    // CSV row 162 — "playidles" blanked: no idle anims on player peds.
+    Entry {
+        addr: 0x86D1EC,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x00]),
+        original: &[0x70],
+        csv_row: 162,
+        what: "playidles anim block name blanked",
+    },
+];
+
+/// Streaming budget for `CStreaming::ms_memoryAvailable` from physical RAM in
+/// MB (spec §4.6, CSV row 127).
+pub fn streaming_budget(ram_mb: u64) -> u32 {
+    match ram_mb {
+        m if m > 4000 => 0x4000_0000,
+        m if m > 2000 => 0x2000_0000,
+        m if m > 1000 => 0x1000_0000,
+        m if m > 500 => 0x0800_0000,
+        _ => 0x0600_0000,
+    }
+}
+
+/// Outcome of applying one phase.
+#[derive(Debug, Default)]
+pub struct Report {
+    pub applied: Vec<(u32, &'static str)>,
+    pub failed: Vec<(u32, &'static str, PatchError)>,
+}
+
+/// Applies every entry of `phase`. Entries whose original bytes do not match
+/// are skipped and reported (never partially written).
+pub fn apply_phase<M: Memory>(patcher: &mut Patcher, mem: &mut M, phase: Phase, ram_mb: u64) -> Report {
+    let mut report = Report::default();
+    for e in TABLE.iter().filter(|e| e.phase == phase) {
+        let budget;
+        let bytes: Vec<u8> = match e.write {
+            Write::Bytes(b) => b.to_vec(),
+            Write::Nop(n) => vec![crate::patch::OP_NOP; n],
+            Write::StreamingBudget => {
+                budget = streaming_budget(ram_mb);
+                budget.to_le_bytes().to_vec()
+            }
+        };
+        match patcher.write(mem, e.what, e.addr, &bytes, Some(e.original)) {
+            Ok(()) => report.applied.push((e.addr, e.what)),
+            Err(err) => report.failed.push((e.addr, e.what, err)),
+        }
+    }
+    report
+}
+
+/// Shared test helpers: the annotated CSV and the reference executable.
+#[cfg(test)]
+pub(crate) mod testutil {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    pub fn root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    pub fn unhex(s: &str) -> Vec<u8> {
+        let s = s.split("...").next().unwrap_or("").trim();
+        (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()
+    }
+
+    /// Minimal CSV field split (quoted fields with commas, doubled quotes).
+    pub fn split_csv(line: &str) -> Vec<String> {
+        let mut out = vec![String::new()];
+        let mut q = false;
+        let mut it = line.chars().peekable();
+        while let Some(c) = it.next() {
+            match c {
+                '"' if q && it.peek() == Some(&'"') => {
+                    it.next();
+                    out.last_mut().unwrap().push('"');
+                }
+                '"' => q = !q,
+                ',' if !q => out.push(String::new()),
+                _ => out.last_mut().unwrap().push(c),
+            }
+        }
+        out
+    }
+
+    pub type Row = HashMap<String, String>;
+
+    /// Every row of gta-patches-r4-annotated.csv by line number (header = 1).
+    pub fn csv_rows() -> HashMap<u32, Row> {
+        let csv = std::fs::read_to_string(root().join("docs/re/data/gta-patches-r4-annotated.csv")).unwrap();
+        let mut lines = csv.lines();
+        let header = split_csv(lines.next().unwrap());
+        lines
+            .enumerate()
+            .map(|(i, l)| (i as u32 + 2, header.iter().cloned().zip(split_csv(l)).collect::<Row>()))
+            .collect()
+    }
+
+    pub fn field_u32(row: &Row, name: &str) -> u32 {
+        u32::from_str_radix(row[name].trim_start_matches("0x"), 16).unwrap()
+    }
+
+    /// `re/gta/1.0-US/gta_sa.exe`, if present (it is gitignored).
+    pub struct Exe(Vec<u8>);
+
+    impl Exe {
+        pub fn load() -> Option<Self> {
+            std::fs::read(root().join("re/gta/1.0-US/gta_sa.exe")).ok().map(Exe)
+        }
+
+        pub fn read_va(&self, va: u32, len: usize) -> Vec<u8> {
+            let exe = &self.0;
+            let rd = |o: usize| u32::from_le_bytes(exe[o..o + 4].try_into().unwrap());
+            let pe = rd(0x3C) as usize;
+            let nsec = u16::from_le_bytes([exe[pe + 6], exe[pe + 7]]) as usize;
+            let opt = u16::from_le_bytes([exe[pe + 20], exe[pe + 21]]) as usize;
+            let rva = va - rd(pe + 24 + 28);
+            for i in 0..nsec {
+                let s = pe + 24 + opt + 40 * i;
+                let (vsize, vaddr, rsize, roff) = (rd(s + 8), rd(s + 12), rd(s + 16), rd(s + 20));
+                if rva >= vaddr && rva < vaddr + vsize.max(rsize) {
+                    let o = (roff + rva - vaddr) as usize;
+                    return exe[o..o + len].to_vec();
+                }
+            }
+            panic!("{va:#x} not mapped");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testutil::{self, Exe, unhex};
+    use super::*;
+    use crate::patch::fake::FakeMemory;
+
+    #[test]
+    fn table_matches_annotated_csv() {
+        let rows = testutil::csv_rows();
+        for e in TABLE {
+            let row = &rows[&e.csv_row];
+            assert_eq!(testutil::field_u32(row, "gta_addr"), e.addr, "row {} address", e.csv_row);
+            assert_eq!(row["size"].parse::<usize>().unwrap(), e.size(), "row {} size", e.csv_row);
+            let orig = unhex(&row["original_bytes_hex"]);
+            assert!(!orig.is_empty() && e.original.starts_with(&orig), "row {} original bytes", e.csv_row);
+            assert_eq!(e.original.len(), e.size(), "row {} original length", e.csv_row);
+            let new = &row["new_bytes_hex"];
+            match e.write {
+                Write::Bytes(b) => {
+                    if !new.contains('x') && !new.contains('…') {
+                        assert_eq!(unhex(new), b, "row {} new bytes", e.csv_row);
+                    } else {
+                        assert!(b.starts_with(&unhex(new.split('…').next().unwrap())));
+                    }
+                }
+                Write::Nop(n) => assert!(new == &"90".repeat(n) || new == &format!("90 x{n}"), "row {}", e.csv_row),
+                Write::StreamingBudget => assert_eq!(new, "<RAM-dependent>"),
+            }
+        }
+    }
+
+    /// Checks `original` against the reference executable when it is present
+    /// (it is gitignored, so the test passes silently without it).
+    #[test]
+    fn originals_match_reference_exe() {
+        let Some(exe) = Exe::load() else { return };
+        assert_eq!(exe.read_va(crate::game::VERSION_PROBE_ADDR, 1), [crate::game::VERSION_PROBE_US10]);
+        for e in TABLE {
+            assert_eq!(exe.read_va(e.addr, e.original.len()), e.original, "{:#x} {}", e.addr, e.what);
+        }
+        assert_eq!(exe.read_va(crate::cdstream::SYNC_WAIT_CALL, 6), crate::cdstream::SYNC_WAIT_CALL_ORIGINAL);
+        // The per-frame call site: call Render2dStuff.
+        assert_eq!(
+            exe.read_va(crate::game::IDLE_RENDER_2D_CALL, 5),
+            crate::patch::encode_branch(0xE8, crate::game::IDLE_RENDER_2D_CALL, crate::game::RENDER_2D_STUFF)
+        );
+    }
+
+    #[test]
+    fn no_overlapping_entries() {
+        for (i, a) in TABLE.iter().enumerate() {
+            for b in &TABLE[i + 1..] {
+                let disjoint = a.addr + a.size() as u32 <= b.addr || b.addr + b.size() as u32 <= a.addr;
+                assert!(disjoint, "{:#x} overlaps {:#x}", a.addr, b.addr);
+            }
+        }
+    }
+
+    #[test]
+    fn budget_thresholds() {
+        assert_eq!(streaming_budget(256), 0x0600_0000);
+        assert_eq!(streaming_budget(501), 0x0800_0000);
+        assert_eq!(streaming_budget(2000), 0x1000_0000);
+        assert_eq!(streaming_budget(4000), 0x2000_0000);
+        assert_eq!(streaming_budget(32768), 0x4000_0000);
+    }
+
+    #[test]
+    fn apply_skips_mismatched_sites() {
+        let mut m = FakeMemory::new(0x0050_0000, 0x0030_0000);
+        // Only provide the original bytes for two of the early entries.
+        m.set(0x747483, &[0x89, 0x35, 0xC0, 0xD4, 0xC8, 0x00]);
+        m.set(0x5B8E6A, &[0x00, 0x00, 0x20, 0x03]);
+        let mut p = Patcher::new();
+        let r = apply_phase(&mut p, &mut m, Phase::Early, 16384);
+        assert_eq!(r.applied.len(), 2);
+        assert_eq!(r.failed.len(), TABLE.iter().filter(|e| e.phase == Phase::Early).count() - 2);
+        assert_eq!(m.get(0x747483, 6), &[0x90; 6]);
+        assert_eq!(m.read_u32(0x5B8E6A).unwrap(), 0x4000_0000);
+        p.restore_all(&mut m).unwrap();
+        assert_eq!(m.get(0x747483, 1), &[0x89]);
+    }
+}

@@ -1,0 +1,171 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" font-family="Noto Sans, DejaVu Sans, sans-serif">
+  <defs>
+    <filter id="sh" x="-5%" y="-5%" width="110%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="ao" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ea580c"/>
+    </marker>
+    <style>
+      .title { font-size: 34px; font-weight: 700; fill: #0f172a; }
+      .sub   { font-size: 17px; fill: #475569; }
+      .ctitle{ font-size: 22px; font-weight: 700; fill: #0f172a; }
+      .cdesc { font-size: 15px; fill: #475569; }
+      .box   { font-size: 15px; font-weight: 600; fill: #0f172a; }
+      .note  { font-size: 13px; fill: #64748b; }
+      .label { font-size: 13px; font-weight: 700; fill: #64748b; letter-spacing: 1.6px; }
+      .flow  { stroke: #94a3b8; stroke-width: 2; fill: none; marker-end: url(#a); }
+      .back  { stroke: #ea580c; stroke-width: 2; fill: none; stroke-dasharray: 7 5; marker-end: url(#ao); }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1000" fill="#f8fafc"/>
+
+  <!-- Header -->
+  <text x="60" y="78" class="title">samp-rs — rebuilding the SA:MP client</text>
+  <text x="60" y="110" class="sub">An independent re-implementation of the SA:MP multiplayer client for GTA San Andreas,</text>
+  <text x="60" y="133" class="sub">written from scratch in Rust and continuously checked against the original.</text>
+
+  <!-- ===== Column 1 ===== -->
+  <g filter="url(#sh)"><rect x="60" y="175" width="440" height="470" rx="18" fill="#ffffff"/></g>
+  <rect x="60" y="175" width="440" height="8" rx="4" fill="#2563eb"/>
+  <circle cx="102" cy="230" r="20" fill="#2563eb"/><text x="102" y="237" text-anchor="middle" font-size="19" font-weight="700" fill="#fff">1</text>
+  <text x="136" y="238" class="ctitle">Understand the original</text>
+  <text x="86" y="276" class="cdesc">Study how the existing client behaves</text>
+  <text x="86" y="296" class="cdesc">and describe it precisely in writing.</text>
+
+  <rect x="140" y="322" width="280" height="54" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="280" y="355" text-anchor="middle" class="box">Original SA:MP client</text>
+
+  <path class="flow" d="M240,376 L190,420"/>
+  <path class="flow" d="M320,376 L370,420"/>
+  <rect x="86" y="422" width="180" height="62" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="176" y="449" text-anchor="middle" class="box">Read its code</text>
+  <text x="176" y="469" text-anchor="middle" class="note">static analysis</text>
+  <rect x="294" y="422" width="180" height="62" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="384" y="449" text-anchor="middle" class="box">Watch it run</text>
+  <text x="384" y="469" text-anchor="middle" class="note">record what it does</text>
+
+  <path class="flow" d="M176,484 L250,528"/>
+  <path class="flow" d="M384,484 L310,528"/>
+  <rect x="120" y="530" width="320" height="78" rx="10" fill="#2563eb"/>
+  <text x="280" y="562" text-anchor="middle" font-size="17" font-weight="700" fill="#fff">Written specification</text>
+  <text x="280" y="586" text-anchor="middle" font-size="13" fill="#dbeafe">in our own words · no code copied</text>
+
+  <!-- arrow col1 -> col2 -->
+  <path class="flow" d="M500,410 L556,410" stroke-width="3"/>
+
+  <!-- ===== Column 2 ===== -->
+  <g filter="url(#sh)"><rect x="580" y="175" width="440" height="470" rx="18" fill="#ffffff"/></g>
+  <rect x="580" y="175" width="440" height="8" rx="4" fill="#059669"/>
+  <circle cx="622" cy="230" r="20" fill="#059669"/><text x="622" y="237" text-anchor="middle" font-size="19" font-weight="700" fill="#fff">2</text>
+  <text x="656" y="238" class="ctitle">Rebuild it</text>
+  <text x="606" y="276" class="cdesc">Write a brand-new client that follows</text>
+  <text x="606" y="296" class="cdesc">the specification, piece by piece.</text>
+
+  <rect x="660" y="322" width="280" height="54" rx="10" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="800" y="355" text-anchor="middle" class="box">Specification</text>
+  <path class="flow" d="M800,376 L800,418"/>
+
+  <rect x="626" y="420" width="348" height="104" rx="10" fill="#059669"/>
+  <text x="800" y="452" text-anchor="middle" font-size="17" font-weight="700" fill="#fff">New client, written in Rust</text>
+  <rect x="646" y="470" width="150" height="36" rx="18" fill="#047857"/>
+  <text x="721" y="493" text-anchor="middle" font-size="13" fill="#ecfdf5">network protocol</text>
+  <rect x="806" y="470" width="150" height="36" rx="18" fill="#047857"/>
+  <text x="881" y="493" text-anchor="middle" font-size="13" fill="#ecfdf5">in-game module</text>
+  <path class="flow" d="M800,524 L800,552"/>
+
+  <rect x="660" y="554" width="280" height="54" rx="10" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="800" y="587" text-anchor="middle" class="box">Runs inside GTA San Andreas</text>
+
+  <!-- arrow col2 -> col3 -->
+  <path class="flow" d="M1020,410 L1076,410" stroke-width="3"/>
+
+  <!-- ===== Column 3 ===== -->
+  <g filter="url(#sh)"><rect x="1100" y="175" width="440" height="470" rx="18" fill="#ffffff"/></g>
+  <rect x="1100" y="175" width="440" height="8" rx="4" fill="#ea580c"/>
+  <circle cx="1142" cy="230" r="20" fill="#ea580c"/><text x="1142" y="237" text-anchor="middle" font-size="19" font-weight="700" fill="#fff">3</text>
+  <text x="1176" y="238" class="ctitle">Prove it behaves the same</text>
+  <text x="1126" y="276" class="cdesc">Run both clients in an automated test lab</text>
+  <text x="1126" y="296" class="cdesc">and compare them side by side.</text>
+
+  <rect x="1126" y="322" width="190" height="54" rx="10" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="1221" y="355" text-anchor="middle" class="box">Original client</text>
+  <rect x="1326" y="322" width="190" height="54" rx="10" fill="#fff7ed" stroke="#fed7aa"/>
+  <text x="1421" y="355" text-anchor="middle" class="box">Our client</text>
+  <path class="flow" d="M1221,376 L1290,418"/>
+  <path class="flow" d="M1421,376 L1352,418"/>
+
+  <rect x="1146" y="420" width="350" height="104" rx="10" fill="#ea580c"/>
+  <text x="1321" y="450" text-anchor="middle" font-size="17" font-weight="700" fill="#fff">Automatic comparison</text>
+  <text x="1321" y="474" text-anchor="middle" font-size="13" fill="#ffedd5">messages sent over the network</text>
+  <text x="1321" y="493" text-anchor="middle" font-size="13" fill="#ffedd5">actions performed in the game</text>
+  <text x="1321" y="512" text-anchor="middle" font-size="13" fill="#ffedd5">what appears on screen</text>
+
+  <rect x="1126" y="556" width="180" height="52" rx="10" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="1216" y="579" text-anchor="middle" class="box">Identical</text>
+  <text x="1216" y="597" text-anchor="middle" class="note">step is done</text>
+  <rect x="1336" y="556" width="180" height="52" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="1426" y="579" text-anchor="middle" class="box">Different</text>
+  <text x="1426" y="597" text-anchor="middle" class="note">fix and re-check</text>
+  <path class="flow" d="M1260,524 L1225,554"/>
+  <path class="flow" d="M1380,524 L1415,554"/>
+
+  <!-- feedback loop: Different -> Specification (col 1) -->
+  <path class="back" d="M1426,610 C1426,700 280,700 280,612"/>
+  <rect x="660" y="672" width="280" height="30" rx="15" fill="#f8fafc"/>
+  <text x="800" y="692" text-anchor="middle" font-size="14" fill="#c2410c">differences improve the specification</text>
+
+  <!-- ===== Who does the work ===== -->
+  <text x="60" y="760" class="label">WHO DOES THE WORK</text>
+  <g filter="url(#sh)"><rect x="60" y="774" width="700" height="150" rx="16" fill="#ffffff"/></g>
+  <rect x="84" y="796" width="200" height="106" rx="12" fill="#fef3c7"/>
+  <text x="184" y="830" text-anchor="middle" class="box">Developer</text>
+  <text x="184" y="854" text-anchor="middle" class="note">sets priorities</text>
+  <text x="184" y="872" text-anchor="middle" class="note">makes the decisions</text>
+  <path class="flow" d="M284,849 L310,849"/>
+  <rect x="312" y="796" width="200" height="106" rx="12" fill="#dbeafe"/>
+  <text x="412" y="830" text-anchor="middle" class="box">Claude</text>
+  <text x="412" y="854" text-anchor="middle" class="note">plans and coordinates</text>
+  <text x="412" y="872" text-anchor="middle" class="note">checks every result</text>
+  <path class="flow" d="M512,849 L538,849"/>
+  <rect x="540" y="796" width="196" height="106" rx="12" fill="#ede9fe"/>
+  <text x="638" y="830" text-anchor="middle" class="box">AI agents</text>
+  <text x="638" y="854" text-anchor="middle" class="note">work on separate</text>
+  <text x="638" y="872" text-anchor="middle" class="note">tasks in parallel</text>
+
+  <!-- ===== Progress ===== -->
+  <text x="800" y="760" class="label">PROGRESS</text>
+  <g filter="url(#sh)"><rect x="800" y="774" width="740" height="150" rx="16" fill="#ffffff"/></g>
+  <line x1="870" y1="826" x2="1478" y2="826" stroke="#e2e8f0" stroke-width="6" stroke-linecap="round"/>
+  <line x1="870" y1="826" x2="1022" y2="826" stroke="#059669" stroke-width="6" stroke-linecap="round"/>
+  <line x1="1022" y1="826" x2="1160" y2="826" stroke="#2563eb" stroke-width="6" stroke-linecap="round" stroke-dasharray="2 10"/>
+
+  <circle cx="870" cy="826" r="14" fill="#059669"/><text x="870" y="831" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">✓</text>
+  <text x="870" y="866" text-anchor="middle" class="box" font-size="14">Protocol</text>
+  <text x="870" y="884" text-anchor="middle" class="note">connects, plays</text>
+  <text x="870" y="900" text-anchor="middle" class="note">as a test bot</text>
+
+  <circle cx="1022" cy="826" r="14" fill="#059669"/><text x="1022" y="831" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">✓</text>
+  <text x="1022" y="866" text-anchor="middle" class="box" font-size="14">Game starts</text>
+  <text x="1022" y="884" text-anchor="middle" class="note">with our client</text>
+
+  <circle cx="1174" cy="826" r="14" fill="#fff" stroke="#2563eb" stroke-width="4"/>
+  <text x="1174" y="866" text-anchor="middle" class="box" font-size="14">Join &amp; walk</text>
+  <text x="1174" y="884" text-anchor="middle" class="note">in progress</text>
+
+  <circle cx="1326" cy="826" r="12" fill="#fff" stroke="#cbd5e1" stroke-width="4"/>
+  <text x="1326" y="866" text-anchor="middle" class="box" font-size="14">See others</text>
+  <text x="1326" y="884" text-anchor="middle" class="note">next</text>
+
+  <circle cx="1478" cy="826" r="12" fill="#fff" stroke="#cbd5e1" stroke-width="4"/>
+  <text x="1478" y="866" text-anchor="middle" class="box" font-size="14">Full game</text>
+  <text x="1478" y="884" text-anchor="middle" class="note">chat, cars,</text>
+  <text x="1478" y="900" text-anchor="middle" class="note">objects, combat</text>
+
+  <!-- Footer: ground rules -->
+  <text x="60" y="968" font-size="14" fill="#475569"><tspan font-weight="700" fill="#0f172a">Ground rules:</tspan>  no original code is copied  ·  no SA:MP or GTA files are shipped — they are read from the player's own installation  ·  a step only counts once an automated test proves it</text>
+</svg>

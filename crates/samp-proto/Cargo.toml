@@ -1,0 +1,7 @@
+[package]
+name = "samp-proto"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Clean-room SA:MP 0.3.7 wire protocol (version-independent core)"
+
