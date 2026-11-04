@@ -252,12 +252,17 @@ impl UiCore {
 
     // ---- session -----------------------------------------------------------------
 
-    /// The netgame object is created (connect started): "Started", then the
-    /// first "Connecting to" line.
-    pub fn on_netgame_start(&mut self, host: &str, port: u16, name: &[u8]) {
+    /// The netgame object is created: "Started" (A 0x1000b930). The first
+    /// "Connecting to" line follows with the first connect attempt, 3 s later
+    /// ([`Self::on_connect_attempt`], A 0x10008940).
+    pub fn on_netgame_start(&mut self, name: &[u8]) {
         self.netgame = true;
         self.local_name = name.to_vec();
         self.print_debug(msg::STARTED.as_bytes());
+    }
+
+    /// A connect attempt starts: "Connecting to host:port...".
+    pub fn on_connect_attempt(&mut self, host: &str, port: u16) {
         self.print_debug(msg::connecting(host, port).as_bytes());
     }
 
@@ -582,7 +587,8 @@ mod tests {
 
     fn connected_ui(dir: Option<PathBuf>) -> UiCore {
         let mut u = UiCore::new(dir, false);
-        u.on_netgame_start("127.0.0.1", 7777, b"RustClient");
+        u.on_netgame_start(b"RustClient");
+        u.on_connect_attempt("127.0.0.1", 7777);
         u.on_init_game(b"srv", 0);
         u
     }

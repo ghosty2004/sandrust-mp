@@ -52,11 +52,11 @@ struct State {
     /// samp's 512-byte static game-text buffer (UCA §73).
     game_text: Box<[u8; 512]>,
     joining_seen: bool,
-    /// HUD was switched off by chat mode 0 (see notes "HUD and chat mode").
-    hud_off_by_chat: bool,
     say_queue: Vec<Vec<u8>>,
     device_proxy: bool,
     wndproc: bool,
+    /// Class selection holds input-lock mode 2 (A 0x10006100) until the spawn releases it.
+    class_lock: bool,
 }
 
 // SAFETY: the raw D3D pointers inside are only used on the game's main thread;
@@ -207,10 +207,10 @@ fn ensure(g: &mut Option<State>, debug_mode: bool) -> &mut State {
             runner: Runner::new(),
             game_text: Box::new([0u8; 512]),
             joining_seen: false,
-            hud_off_by_chat: false,
             say_queue: Vec::new(),
             device_proxy: false,
             wndproc: false,
+            class_lock: false,
         }
     })
 }
@@ -343,20 +343,15 @@ fn present_pass() {
             }
         }
     }
-    // Step 9 (deviation, see notes): chat mode 0 hides the HUD every frame; leaving
-    // mode 0 turns it back on once.
-    if st.core.chat.mode() == DisplayMode::Hidden {
-        set_hud(false);
-        st.hud_off_by_chat = true;
-    } else if st.hud_off_by_chat {
-        st.hud_off_by_chat = false;
-        set_hud(true);
-    }
+    // Step 9: like samp's UI render (A 0x10075790, every frame) the HUD follows the chat
+    // display mode (measured: the original's HUD flags read "on" between frames even in
+    // class selection, where the netgame tick switches them off before Render2dStuff).
+    set_hud(st.core.chat.mode() != DisplayMode::Hidden);
     // Step 11: the open input requests cursor mode 2 every frame; closing it
     // requests mode 0 with an immediate restore (UR §8).
     let ops = if st.core.input.is_open() {
         st.lock.request_mode2()
-    } else if st.lock.mode() == 2 {
+    } else if st.lock.mode() == 2 && !st.class_lock {
         st.lock.request_mode0(true)
     } else {
         Vec::new()
@@ -397,8 +392,41 @@ pub(super) fn on_edit_key(key: samp_ui::edit::EditKey, mods: samp_ui::edit::Mods
 // ---- network session hooks (client.rs) ------------------------------------------------
 
 /// The netgame is created (Client::start).
-pub fn on_netgame_start(host: &str, port: u16, name: &str) {
-    with_ui(|st| st.core.on_netgame_start(host, port, name.as_bytes()));
+pub fn on_netgame_start(name: &str) {
+    with_ui(|st| st.core.on_netgame_start(name.as_bytes()));
+}
+
+/// The first connect attempt (3 s after the netgame is created).
+pub fn on_connect_attempt(host: &str, port: u16) {
+    with_ui(|st| st.core.on_connect_attempt(host, port));
+}
+
+/// The configured frame limit (`fpslimit`, 20..90), if the UI exists and is not busy.
+pub fn fps_limit() -> Option<u32> {
+    try_with_ui(|st| st.core.settings.fps_limit).flatten()
+}
+
+/// Class selection, every frame while no frontend menu is up (A 0x10006100): input-lock mode 2.
+pub fn class_selection_lock() {
+    let ops = with_ui(|st| {
+        st.class_lock = true;
+        st.lock.request_mode2()
+    });
+    exec_ops(ops.unwrap_or_default());
+}
+
+/// Spawn (A 0x10003c20): mode 0 with the delayed (10-frame) restore.
+pub fn class_selection_release() {
+    let ops = with_ui(|st| {
+        let was = std::mem::take(&mut st.class_lock);
+        if was { st.lock.request_mode0(false) } else { Vec::new() }
+    });
+    exec_ops(ops.unwrap_or_default());
+}
+
+/// A type-8 (debug colour) chat line, e.g. samp's "Warning(…)" lines.
+pub fn print_debug(text: &str) {
+    with_ui(|st| st.core.print_debug(text.as_bytes()));
 }
 
 /// RPC 139 InitGame.

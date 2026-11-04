@@ -29,7 +29,11 @@ use crate::script::{Arg, Runner, op};
 pub const AUTH_TABLE_ENV: &str = "SAMP_RS_AUTH_TABLE";
 
 /// Ped states (gta-reversed `Enums/ePedState.h`).
+const PEDSTATE_IDLE: u32 = 1;
+const PEDSTATE_SNIPER: u32 = 12;
 const PEDSTATE_DRIVING: u32 = 50;
+/// `TheCamera.m_aCams[0].Front` (samp's camera-front pointer at A 0x101039c8 holds 0xB6F32C).
+const CAMERA_FRONT: u32 = 0xB6F32C;
 const PEDSTATE_DIE: u32 = 54;
 const PEDSTATE_DEAD: u32 = 55;
 
@@ -38,6 +42,13 @@ const PEDSTATE_DEAD: u32 = 55;
 const PRELOAD_ANIM_BLOCKS: [&str; 9] =
     ["PARACHUTE", "BAR", "GANGS", "PAULNMAC", "VENDING", "FIGHT_B", "FIGHT_C", "FIGHT_D", "FIGHT_E"];
 const PRELOAD_MODELS: [i32; 9] = [3131, 1485, 1486, 1543, 1546, 343, 342, 344, 330];
+
+/// Delay between the netgame's creation and its first connect attempt (samp A 0x10008940).
+const CONNECT_DELAY: Duration = Duration::from_millis(3000);
+/// DISPLAY_ZONE_NAMES starts this long after a spawn (A 0x10003c20 sets +0x30a := now + 1000).
+const ZONE_NAMES_DELAY: Duration = Duration::from_millis(1000);
+/// `CControllerState::ButtonTriangle` in `CPad::Pads[0].NewState` (samp's pad +0x1E).
+const PAD_TRIANGLE: u32 = 0x1E;
 
 const VK_SHIFT: i32 = 0x10;
 const VK_LEFT: i32 = 0x25;
@@ -59,8 +70,25 @@ pub struct Client {
     last_net_log: Option<Instant>,
     spawned_once: bool,
     first_frame_done: bool,
-    /// Hour from InitGame (SET_TIME_OF_DAY every frame).
-    time_of_day: u8,
+    /// Clock and weather (world.rs): settings hour/minute/weather, clock state.
+    world: crate::world::World,
+    /// samp's netgame waits 3000 ms after its creation before the first
+    /// connect attempt (A 0x10008940); `Some` until that attempt.
+    connect_at: Option<Instant>,
+    host: String,
+    port: u16,
+    /// InitGame "zone names" (settings +0x21): DISPLAY_ZONE_NAMES every frame
+    /// from 1000 ms after the spawn (local tick A 0x100074c0, spawn A 0x10003c20).
+    zone_names: bool,
+    zone_names_from: Option<Instant>,
+    /// Last interior reported with RPC 118 (local player +0x1cf, starts at 0).
+    last_interior: u8,
+    /// Phone special action active (local ped object +0x48).
+    phone: bool,
+    /// Local head look (A 0x10002fa0): offset refreshed every 1000 ms, LookAt every 200 ms.
+    look_offset: [f32; 3],
+    look_refresh: Option<Instant>,
+    look_last: Option<Instant>,
     /// Remote players (M3, players.rs).
     players: crate::players::Players,
 }
@@ -96,7 +124,7 @@ impl Client {
         let server = crate::netclient::resolve(&host, port).map_err(|e| format!("resolve {host}:{port}: {e}"))?;
         crate::log!("client: connecting to {server} as {name:?} (auth table {path}, {} entries)", auth.len());
         let net = NetClient::new(server, &name, auth).map_err(|e| format!("udp socket: {e}"))?;
-        crate::ui::on_netgame_start(&host, port, &name);
+        crate::ui::on_netgame_start(&name);
         let now = Instant::now();
         Ok(Self {
             net,
@@ -113,7 +141,17 @@ impl Client {
             last_net_log: None,
             spawned_once: false,
             first_frame_done: false,
-            time_of_day: 12,
+            world: crate::world::World::default(),
+            connect_at: Some(now + CONNECT_DELAY),
+            host,
+            port,
+            zone_names: false,
+            zone_names_from: None,
+            last_interior: 0,
+            phone: false,
+            look_offset: [0.0; 3],
+            look_refresh: None,
+            look_last: None,
             players: crate::players::Players::default(),
         })
     }
@@ -157,8 +195,15 @@ impl Client {
     /// One frame (main thread).
     pub fn tick(&mut self) {
         let now = Instant::now();
-        for ev in self.net.tick(now) {
-            self.on_event(ev, now);
+        let waiting = self.connect_at.is_some_and(|t| now < t);
+        if !waiting {
+            if self.connect_at.take().is_some() {
+                crate::log!("client: first connect attempt ({} ms after the session start)", CONNECT_DELAY.as_millis());
+                crate::ui::on_connect_attempt(&self.host, self.port);
+            }
+            for ev in self.net.tick(now) {
+                self.on_event(ev, now);
+            }
         }
         if self.debug_spawn {
             self.debug_spawn = false;
@@ -176,24 +221,38 @@ impl Client {
                 self.runner.run(op::SET_CHAR_SUFFERS_CRITICAL_HITS, &[Arg::Int(h), Arg::Int(0)]);
             }
             self.runner.run(op::DISPLAY_ZONE_NAMES, &[Arg::Int(0)]);
+            // samp's first frame (A 0x100c47d0): the GTA clock and the HUD clock string off
+            // (CSV rows 354/355).
+            let w = self.world.toggle_clock(false);
+            crate::world::apply(&w);
         }
-        // Every frame, like the original: the server's time of day and the
-        // pre-loading of the animation blocks and models samp uses.
-        self.runner.run(op::SET_TIME_OF_DAY, &[Arg::Int(i32::from(self.time_of_day)), Arg::Int(0)]);
+        // Every frame, like the original (netgame tick A 0x1000b5b0): the server's time
+        // of day while the server holds the time, then the pre-loading of the animation
+        // blocks and models samp uses.
+        if let Some((h, m)) = self.world.time_of_day() {
+            poke(crate::world::CLOCK_HOURS, h);
+            poke(crate::world::CLOCK_MINUTES, m);
+            self.runner.run(op::SET_TIME_OF_DAY, &[Arg::Int(i32::from(h)), Arg::Int(i32::from(m))]);
+        }
         self.preload();
         // Remote players before the local player's tick and send (onfoot §6 step 5b).
-        self.players.tick(now);
+        self.players.tick(&mut self.runner, now);
         if self.class_sel.is_active() {
             self.class_selection_tick(now);
         } else if self.spawned {
+            self.local_frame(now);
             self.sync_tick(now);
         } else if !matches!(self.net.phase(), Phase::Connected) {
             self.connecting_tick();
         }
+        // Remote peds whose ProcessControl faulted (swap.rs fault containment).
+        self.players.handle_faults();
         // Chat input and connection lines of the in-game UI (M4).
         crate::ui::net_tick(&mut self.net);
         // Push out what this frame queued (sync packets, RPCs) right away.
-        self.net.flush(now);
+        if !waiting {
+            self.net.flush(now);
+        }
         if self.last_net_log.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(5)) {
             self.last_net_log = Some(now);
             crate::log!("client: {}", self.status_line());
@@ -204,7 +263,12 @@ impl Client {
         match ev {
             Event::InitGame(g) => {
                 self.on_foot_rate = g.on_foot_rate.clamp(10, 1000);
-                self.time_of_day = g.world_time;
+                // InitGame (A 0x10010660): hour, weather (applied), zone names, CJ walk.
+                self.world.hour = g.world_time;
+                self.world.weather = g.weather;
+                crate::world::apply(&self.world.weather_writes(g.weather));
+                self.zone_names = g.zone_names;
+                crate::pedhooks::set_cj_walk(g.cj_walk);
                 crate::log!(
                     "client: InitGame: server {:?}, our id {}, {} class(es), on-foot rate {} ms",
                     g.server_name,
@@ -304,8 +368,30 @@ impl Client {
                         self.give_weapon(ped, g.weapon.min(255) as u8, g.ammo);
                     }
                 }
-                P::SetPlayerTime(t) => self.time_of_day = t.hour,
-                P::SetPlayerWorldTime(t) => self.time_of_day = t.hour,
+                P::SetPlayerTime(t) => {
+                    // A 0x1000f420: GTA clock, SET_TIME_OF_DAY, settings.
+                    poke(crate::world::CLOCK_HOURS, t.hour);
+                    poke(crate::world::CLOCK_MINUTES, t.minute);
+                    self.runner.run(op::SET_TIME_OF_DAY, &[Arg::Int(i32::from(t.hour)), Arg::Int(i32::from(t.minute))]);
+                    self.world.hour = t.hour;
+                    self.world.minute = t.minute;
+                }
+                P::SetPlayerWorldTime(t) => self.world.hour = t.hour,
+                P::TogglePlayerClock(t) => {
+                    let mem = ProcessMemory;
+                    let cur = (
+                        mem.read_u8(crate::world::CLOCK_HOURS).unwrap_or(0),
+                        mem.read_u8(crate::world::CLOCK_MINUTES).unwrap_or(0),
+                    );
+                    let w = self.world.on_toggle_clock_rpc(t.enable != 0, cur);
+                    crate::world::apply(&w);
+                }
+                P::SetPlayerWeather(w) => {
+                    self.world.weather = w.weather;
+                    crate::world::apply(&self.world.weather_writes(w.weather));
+                }
+                P::SetPlayerSkin(k) => self.on_set_player_skin(k.player_id, k.skin),
+                P::SetPlayerSpecialAction(a) => self.on_special_action(a.action),
                 P::SetPlayerArmedWeapon(w) => {
                     let ped = self.ped();
                     if let Some(h) = self.ped_handle(ped) {
@@ -345,6 +431,8 @@ impl Client {
     /// view of Los Santos (TRACE-1: teleport to (1133.05, -2038.40, 69.1),
     /// SET_FIXED_CAMERA_POSITION (1093, -2036, 90), POINT_CAMERA_AT_POINT (384, -1557, 20)).
     fn connecting_tick(&mut self) {
+        // A 0x100089b0 also forces weather 1 every frame while not connected.
+        crate::world::apply(&self.world.weather_writes(crate::world::CONNECTING_WEATHER));
         set_hud(false);
         self.teleport(1133.05, -2038.40, 69.1);
         self.runner.run(op::CAMERA_RESET_NEW_SCRIPTABLES, &[]);
@@ -371,10 +459,12 @@ impl Client {
     }
 
     fn class_selection_tick(&mut self, now: Instant) {
-        // While no frontend menu is open the HUD stays hidden (the original also
-        // locks keyboard→pad input here; we rely on the player being frozen).
-        if ProcessMemory.read_u8(game::MENU_ACTIVE).unwrap_or(0) == 0 {
+        // While no frontend menu is open (samp reads the menu flag as a dword at
+        // FrontEndMenuManager+0x5C, A 0x100a0980): HUD off and input-lock mode 2
+        // (keyboard and mouse cut off, cursor shown), every frame (A 0x10006100).
+        if ProcessMemory.read_u32(game::MENU_ACTIVE).unwrap_or(0) == 0 {
             set_hud(false);
+            crate::ui::class_selection_lock();
         }
         let mem = ProcessMemory;
         let keys = classsel::Keys {
@@ -410,10 +500,11 @@ impl Client {
             crate::log!("client: spawn: no local ped");
             return false;
         }
-        // 2. leave class selection.
+        // 2. leave class selection; its input lock ends 10 frames later (A 0x100a0750(0, 0)).
         if self.class_sel.is_active() {
             self.class_sel.leave();
         }
+        crate::ui::class_selection_release();
         // 3. camera, HUD, control (TRACE-1 order: 02EB, 0930/0925/0373/02EB, 01B4, 04D7, teleport).
         self.runner.run(op::RESTORE_CAMERA_JUMPCUT, &[]);
         self.camera_behind_player();
@@ -433,6 +524,8 @@ impl Client {
         );
         self.set_skin(ped, s.skin);
         self.clear_weapons(ped);
+        // Spawn routine: special action 0 (stops the phone etc.).
+        self.on_special_action(0);
         poke(ped + off::PED_LAST_DAMAGE_ENTITY, 0u32);
         poke(ped + off::PED_LAST_DAMAGE_WEAPON, 0xFFu32);
         // 5. weapons: slot 3, then 2, then 1.
@@ -458,6 +551,7 @@ impl Client {
         // 8./9. state and RPC 52.
         self.spawned = true;
         self.spawned_once = true;
+        self.zone_names_from = Some(Instant::now() + ZONE_NAMES_DELAY);
         self.sender.reset();
         self.last_stats = None;
         self.net.send_rpc(&player::PlayerSpawn, Reliability::ReliableOrdered);
@@ -478,12 +572,29 @@ impl Client {
         {
             return;
         }
+        // On foot: the surf probe (A 0x10003730), before the head look.
+        if matches!(state, PEDSTATE_IDLE | PEDSTATE_SNIPER) {
+            surf_probe(ped);
+        }
+        // Head look in the on-foot, driver and passenger branches of the local tick.
+        if matches!(state, PEDSTATE_IDLE | PEDSTATE_SNIPER | PEDSTATE_DRIVING) {
+            self.head_look(ped, now);
+        }
         if state != PEDSTATE_DRIVING {
+            // On foot (A 0x10003f50): GET_AREA_VISIBLE for the world-bounds check (bounds: M8b).
+            self.runner.run(op::GET_AREA_VISIBLE, &[Arg::Local(0)]);
             match game::read_local_sample(&mem, ped) {
                 Ok(sample) => {
                     let keys = footsync::key_word(&sample.pad, sample.key_ctx);
                     let interval = footsync::on_foot_interval(self.on_foot_rate, self.players.streamed());
                     if self.sender.due(now, interval, keys, sample.pad.left_stick_x, sample.pad.left_stick_y) {
+                        // The 207 builder (A 0x10004f00) reads the weapon with GET_CURRENT_CHAR_WEAPON.
+                        self.current_weapon(ped);
+                        let mut sample = sample;
+                        // samp's order (A 0x10003410): jetpack, dance, hands up, phone, piss, duck.
+                        if self.phone && matches!(sample.special_action, 0 | 1) {
+                            sample.special_action = crate::remote::special::PHONE;
+                        }
                         let f = footsync::build_foot_sync(&sample, self.sender.last_rotation());
                         if let Some(f) = self.sender.offer(now, f) {
                             self.net.send_sync(&f);
@@ -498,6 +609,122 @@ impl Client {
             let money = mem.read_i32(game::PLAYER_MONEY).unwrap_or(0);
             self.net.send_sync(&StatsSync { money, drunk_level: 0 });
         }
+    }
+
+    // ---- local per-frame commands (local tick A 0x100074c0) -----------------
+
+    /// The script commands samp's local tick issues every frame while spawned,
+    /// before the sync sends (TRACE-1 "Walking": 052C, 09BA, 0470, 077E).
+    fn local_frame(&mut self, now: Instant) {
+        let ped = self.ped();
+        if ped == 0 {
+            return;
+        }
+        // Hands up + Triangle (enter/exit key) → control on again, which re-sets the ped
+        // to its own position and so ends the task (A 0x100074c0 → 0x100ac7d0(1)).
+        let triangle = ProcessMemory.read_u16(game::PAD0 + PAD_TRIANGLE).unwrap_or(0);
+        if triangle != 0 && self.hands_up(ped) {
+            self.set_controllable(true);
+        }
+        // Drunk handling (A 0x100ade30): no drunk level is ever set here (RPC 35 is M8b),
+        // so it always resets the drunkenness to 0.
+        self.runner.run(op::SET_PLAYER_DRUNKENNESS, &[Arg::Int(0), Arg::Int(0)]);
+        if self.zone_names_from.is_some_and(|t| now >= t) {
+            self.runner.run(op::DISPLAY_ZONE_NAMES, &[Arg::Int(i32::from(self.zone_names))]);
+        }
+        // Weapons-update check (A 0x10006290; the 204 packet itself is not sent yet).
+        self.current_weapon(ped);
+        // Interior change → RPC 118 (A 0x100a0f20 / 0x10005970).
+        self.runner.run(op::GET_AREA_VISIBLE, &[Arg::Local(0)]);
+        let area = self.runner.local_i32(0) as u8;
+        if area != self.last_interior {
+            self.last_interior = area;
+            crate::log!("client: interior {area} -> RPC 118");
+            self.net.send_rpc(&player::OnPlayerInteriorChange { interior: area }, Reliability::Reliable);
+        }
+    }
+
+    /// The local head follows the camera (A 0x10002fa0; "disableheadmove" in sa-mp.cfg is not
+    /// read yet, so it is always on, samp's default): every 1000 ms the offset := 20 × camera
+    /// front, every 200 ms `LookAt` at position + offset for 2000 ms.
+    fn head_look(&mut self, ped: u32, now: Instant) {
+        let m = ProcessMemory;
+        let matrix = m.read_u32(ped + off::PLACEABLE_MATRIX).unwrap_or(0);
+        if matrix == 0 {
+            return;
+        }
+        let v3 = |a: u32| [m.read_f32(a).unwrap_or(0.0), m.read_f32(a + 4).unwrap_or(0.0), m.read_f32(a + 8).unwrap_or(0.0)];
+        if self.look_refresh.is_none_or(|t| now.duration_since(t) > crate::remote::LOOK_REFRESH) {
+            self.look_refresh = Some(now);
+            self.look_offset = v3(CAMERA_FRONT).map(|c| c * crate::remote::LOOK_DISTANCE);
+        }
+        if self.look_last.is_none_or(|t| now.duration_since(t) > crate::remote::LOOK_INTERVAL) {
+            self.look_last = Some(now);
+            let pos = v3(matrix + off::MATRIX_POS);
+            let mut target = [0, 1, 2].map(|i| pos[i] + self.look_offset[i]);
+            crate::players::look_at(ped, 2000, &mut target);
+        }
+    }
+
+    /// `GET_CURRENT_CHAR_WEAPON` on the local ped (samp A 0x100abc90).
+    fn current_weapon(&mut self, ped: u32) -> u8 {
+        let Some(h) = self.ped_handle(ped) else { return 0 };
+        self.runner.run(op::GET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Local(0)]);
+        self.runner.local_i32(0) as u8
+    }
+
+    /// The local ped's primary task is the hands-up task (samp A 0x100acba0).
+    fn hands_up(&self, ped: u32) -> bool {
+        let m = ProcessMemory;
+        if m.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0 || !ped_in_world(ped) {
+            return false;
+        }
+        let intel = m.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
+        let task = if intel != 0 { m.read_u32(intel + off::INTELLIGENCE_PRIMARY_TASK).unwrap_or(0) } else { 0 };
+        task != 0 && m.read_u32(task).ok() == Some(game::VTBL_TASK_HANDS_UP)
+    }
+
+    /// RPC 153 (A 0x10019190): valid ped models only; the local ped, or a streamed-in remote ped.
+    fn on_set_player_skin(&mut self, player_id: u32, skin: u32) {
+        if !game::is_ped_model(&ProcessMemory, skin) {
+            let text = format!("Warning: SetPlayerSkin {skin} isn't a valid ped model.");
+            crate::log!("client: {text}");
+            crate::ui::print_debug(&text);
+            return;
+        }
+        if Some(player_id) == self.net.player_id().map(u32::from) {
+            let ped = self.ped();
+            if ped != 0 {
+                self.set_skin(ped, skin);
+            }
+        } else if player_id < 1004 {
+            self.players.set_skin(&mut self.runner, player_id as u16, skin);
+        }
+    }
+
+    /// RPC 88 (LocalPlayer method A 0x100030f0), for the actions this client has.
+    /// 0 stops the states samp stops (jetpack, phone, items, dance, cuffs, carry,
+    /// piss) — none of which exist here — and, as in samp, not hands up.
+    fn on_special_action(&mut self, action: u8) {
+        use crate::remote::special;
+        crate::log!("client: special action {action}");
+        let ped = self.ped();
+        let Some(h) = self.ped_handle(ped) else { return };
+        let in_vehicle = ProcessMemory.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0;
+        match action {
+            special::NONE | special::PHONE_STOP if self.phone => self.set_phone(h, false),
+            special::PHONE if !in_vehicle => self.set_phone(h, true),
+            special::HANDS_UP if !in_vehicle && ped_in_world(ped) => {
+                self.runner.run(op::TASK_HANDS_UP, &[Arg::Int(h), Arg::Int(-2)]);
+            }
+            _ => {}
+        }
+    }
+
+    /// Phone flag + `TASK_USE_MOBILE_PHONE(ped, flag)` (ped method A 0x100ae0b0).
+    fn set_phone(&mut self, handle: i32, on: bool) {
+        self.phone = on;
+        self.runner.run(op::TASK_USE_MOBILE_PHONE, &[Arg::Int(handle), Arg::Int(i32::from(on))]);
     }
 
     // ---- game operations ----------------------------------------------------
@@ -612,6 +839,47 @@ impl Client {
     }
 }
 
+/// samp's local surf probe (A 0x10003730 → 0x100aca50): on foot, a vertical
+/// `CWorld::ProcessLineOfSight` (0x56BA00) from 0.25 m to 2 m below the ped's
+/// position, vehicles and objects only. What samp does with a hit (surfing a vehicle
+/// of its pool or one of its objects, remote-players-sync.md "Local surfing") needs
+/// the vehicle/object pools (M5/M6); here only the probe itself runs, as in the original.
+fn surf_probe(ped: u32) -> u32 {
+    const PROCESS_LINE_OF_SIGHT: usize = 0x56BA00;
+    type Los = extern "C" fn(*const f32, *const f32, *mut u8, *mut u32, u8, u8, u8, u8, u8, u8, u8, u8) -> u8;
+    let m = ProcessMemory;
+    if m.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0 {
+        return 0;
+    }
+    let matrix = m.read_u32(ped + off::PLACEABLE_MATRIX).unwrap_or(0);
+    if matrix == 0 {
+        return 0;
+    }
+    let p = [0, 4, 8].map(|o| m.read_f32(matrix + off::MATRIX_POS + o).unwrap_or(0.0));
+    let from = [p[0], p[1], p[2] - 0.25];
+    let to = [p[0], p[1], p[2] - 0.25 - 1.75];
+    let mut colpoint = [0u8; 64];
+    let mut entity = 0u32;
+    // SAFETY: GTA's cdecl line-of-sight query with valid in/out buffers, main thread.
+    unsafe {
+        let f: Los = std::mem::transmute(PROCESS_LINE_OF_SIGHT);
+        f(from.as_ptr(), to.as_ptr(), colpoint.as_mut_ptr(), &mut entity, 0, 1, 0, 1, 0, 0, 0, 0);
+    }
+    entity
+}
+
+/// samp's "ped is live" test (A 0x1009f430): not a deleted entity, in the moving list.
+pub(crate) fn ped_in_world(ped: u32) -> bool {
+    let m = ProcessMemory;
+    let vt = m.read_u32(ped + off::VTABLE).unwrap_or(0);
+    vt != 0 && vt != VTBL_CPLACEABLE && m.read_u32(ped + PHYSICAL_MOVING_LIST).unwrap_or(0) != 0
+}
+
+/// `CPlaceable` vtable: what a deleted entity's vtable reads as.
+const VTBL_CPLACEABLE: u32 = 0x863C40;
+/// `CPhysical::m_pMovingList`.
+const PHYSICAL_MOVING_LIST: u32 = 0xB4;
+
 /// HUD drawing on/off (samp's 0x100a1df0: menu "HUD on" flag and the script radar flag).
 fn set_hud(on: bool) {
     poke(game::MENU_HUD_ON, u8::from(on));
@@ -640,11 +908,21 @@ pub(crate) fn load_model(runner: &mut Runner, model: i32) -> bool {
 /// ped's vtable, then re-initialise its speech audio entity. CSV row 363
 /// (`CClothes::RebuildPlayer := ret`) first, so CJ's clothes never override it.
 pub(crate) fn set_ped_skin(runner: &mut Runner, ped: u32, skin: u32) {
-    if skin > 20000 {
-        return;
-    }
+    // Ped method A 0x100aff90: an invalid model becomes 0.
+    let skin = if game::is_ped_model(&ProcessMemory, skin) { skin } else { 0 };
     let mut mem = ProcessMemory;
     let _ = mem.write(0x5A82C0, &[0xC3]);
+    // A 0x100ae060: the IK secondary task (head look) is deleted first.
+    let intel = ProcessMemory.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
+    let ik = if intel != 0 { ProcessMemory.read_u32(intel + game::INTELLIGENCE_SECONDARY_IK).unwrap_or(0) } else { 0 };
+    if ik != 0 {
+        // SAFETY: GTA's scalar deleting destructor of that task (thiscall), main thread.
+        unsafe {
+            let f: extern "thiscall" fn(u32, u32) = std::mem::transmute(game::TASK_IK_DELETING_DTOR as usize);
+            f(ik, 1);
+        }
+        poke(intel + game::INTELLIGENCE_SECONDARY_IK, 0u32);
+    }
     if !load_model(runner, skin as i32) {
         return;
     }

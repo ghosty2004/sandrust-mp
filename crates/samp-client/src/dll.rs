@@ -40,6 +40,7 @@ static ARGS: std::sync::OnceLock<crate::cmdline::ConnectArgs> = std::sync::OnceL
 /// The network/game session, created on the first frame with a local ped.
 static CLIENT: Mutex<Option<Client>> = Mutex::new(None);
 static CLIENT_TRIED: AtomicBool = AtomicBool::new(false);
+static READY_SEEN: AtomicBool = AtomicBool::new(false);
 /// Set once `CWorld::ms_aSectors` has been moved (sectors.rs); remote peds
 /// (player indices ≥ 2) are only created after that.
 pub(crate) static SECTORS_RELOCATED: AtomicBool = AtomicBool::new(false);
@@ -211,6 +212,11 @@ fn init_thread() {
         }
         let r = patches::apply_phase(patcher, &mut mem, Phase::Main, 0);
         log_report("main", &r);
+        // CSV row 43 — samp's CJ-walk gate over the move-anim-group store NOPed by row 187.
+        match crate::pedhooks::install(patcher, &mut mem) {
+            Ok(()) => crate::log!("main: ProcessAnimGroups CJ-walk gate at {:#x}", crate::pedhooks::STORE_SITE),
+            Err(e) => crate::log!("main: ProcessAnimGroups CJ-walk gate FAILED: {e}"),
+        }
         // Remote-player context switch (CSV rows 19 and 21; remote-control-onfoot.md §2.2).
         match crate::swap::install(patcher, &mut mem) {
             Ok(()) if SECTORS_RELOCATED.load(Ordering::SeqCst) => {
@@ -469,6 +475,9 @@ pub(crate) static PED_FLAGS_DONE: AtomicBool = AtomicBool::new(false);
 /// ran), even while the screen is still faded out and `Render2dStuff` (our
 /// per-frame tick) is skipped.
 extern "C" fn game_process_hook() {
+    if ARGS.get().is_some_and(|a| a.connect) {
+        let _ = catch_unwind(frame_timer_step);
+    }
     let orig = ORIGINAL_GAME_PROCESS.load(Ordering::Relaxed);
     if orig != 0 {
         // SAFETY: `orig` is CGame::Process (void __cdecl(void)), read from the call we retargeted.
@@ -478,6 +487,75 @@ extern "C" fn game_process_hook() {
     if !PED_FLAGS_DONE.load(Ordering::Relaxed) {
         let _ = catch_unwind(AssertUnwindSafe(first_frame_ped_flags));
     }
+}
+
+static FRAME_TIMER: Mutex<Option<crate::frametimer::FrameTimer>> = Mutex::new(None);
+/// Frame limit (samp's Game object +0x5d): 90 from the Game constructor (A 0x1009ffe0)
+/// until the first-frame init sets the sa-mp.cfg `fpslimit` (only when it is in 20..90;
+/// otherwise 90 stays), then `/fpslimit`.
+static FPS_LIMIT: AtomicU32 = AtomicU32::new(GAME_DEFAULT_FPS_LIMIT);
+const GAME_DEFAULT_FPS_LIMIT: u32 = 90;
+
+#[link(name = "winmm")]
+unsafe extern "system" {
+    fn timeBeginPeriod(period: u32) -> u32;
+}
+
+/// samp's step before `CGame::Process` (frametimer.rs, A 0x100A1C50).
+fn frame_timer_step() {
+    use crate::frametimer::{self as ft, Limiter};
+    let mut g = FRAME_TIMER.lock().unwrap_or_else(|e| e.into_inner());
+    let t = g.get_or_insert_with(|| {
+        // samp's first-frame init: 1 ms timer resolution (A 0x100c47d0).
+        // SAFETY: plain winmm call.
+        unsafe { timeBeginPeriod(1) };
+        Default::default()
+    });
+    if let Some(l) = crate::ui::fps_limit() {
+        FPS_LIMIT.store(l, Ordering::Relaxed);
+    }
+    let mem = ProcessMemory;
+    let limiter = Limiter {
+        menu_limiter_on: mem.read_u8(ft::MENU_FRAME_LIMITER).unwrap_or(0) != 0,
+        fps_limit: FPS_LIMIT.load(Ordering::Relaxed),
+        task_gate: limiter_task_gate(),
+    };
+    let s = t.step(since_start_ms(), limiter);
+    if let Some(ts) = s.time_step {
+        let _ = ProcessMemory.write(ft::TIME_STEP_NON_CLIPPED, &ts.to_le_bytes());
+        let _ = ProcessMemory.write(ft::TIME_STEP, &ts.to_le_bytes());
+    }
+    if let Some(c) = s.pad_counter {
+        // SAFETY: a byte inside CPad::Pads[0] (.bss), main thread.
+        unsafe { std::ptr::write_volatile(ft::PAD_COUNTER as usize as *mut u8, c) };
+    }
+    if s.sleep_ms > 0 {
+        std::thread::sleep(Duration::from_millis(u64::from(s.sleep_ms)));
+    }
+    t.finish(since_start_ms());
+}
+
+/// The local ped is on foot and its intelligence +0xC task reports type 0x10C (A 0x100acd10).
+fn limiter_task_gate() -> bool {
+    let m = ProcessMemory;
+    let ped = m.read_u32(game::CWORLD_PLAYERS + game::off::PLAYER_INFO_PED).unwrap_or(0);
+    if ped == 0 || m.read_u32(ped + game::off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0 {
+        return false;
+    }
+    let intel = m.read_u32(ped + game::off::PED_INTELLIGENCE).unwrap_or(0);
+    let task = if intel != 0 { m.read_u32(intel + 0xC).unwrap_or(0) } else { 0 };
+    let vtbl = if task != 0 { m.read_u32(task).unwrap_or(0) } else { 0 };
+    // samp's sanity range for the vtable (A 0x100b40e0).
+    if !(0x80_0000..=0x90_0000).contains(&vtbl) {
+        return false;
+    }
+    let Ok(get_type) = m.read_u32(vtbl + 0x10) else { return false };
+    // SAFETY: the task's own GetTaskType virtual (thiscall), main thread.
+    let kind = unsafe {
+        let f: extern "thiscall" fn(u32) -> u32 = std::mem::transmute(get_type as usize);
+        f(task)
+    };
+    kind == crate::frametimer::LIMITER_TASK_TYPE
 }
 
 fn first_frame_ped_flags() {
@@ -499,7 +577,12 @@ fn first_frame_ped_flags() {
 }
 
 /// Replaces the `call Render2dStuff` in `Idle` (cdecl, no arguments).
+///
+/// Like samp's hook (A 0x100C5030 → 0x100C4FB0, onfoot spec §6 step 5) the network
+/// session runs before the original `Render2dStuff`, so its HUD switches apply to the
+/// same frame; the UI (drawn by samp at present time) comes after it.
 extern "C" fn frame_hook() {
+    let _ = catch_unwind(AssertUnwindSafe(tick));
     let orig = ORIGINAL_RENDER_2D.load(Ordering::Relaxed);
     if orig != 0 {
         // SAFETY: `orig` is the game's Render2dStuff (void __cdecl(void)),
@@ -507,7 +590,14 @@ extern "C" fn frame_hook() {
         let f: extern "C" fn() = unsafe { std::mem::transmute(orig as usize) };
         f();
     }
-    let _ = catch_unwind(AssertUnwindSafe(tick));
+    let _ = catch_unwind(AssertUnwindSafe(after_render_2d));
+}
+
+/// In-game UI (M4) and the control channel, after `Render2dStuff`.
+fn after_render_2d() {
+    // First-frame setup, input restore, queued UI work.
+    crate::ui::frame_entry(false);
+    service_control("tick");
 }
 
 struct TickStats {
@@ -542,9 +632,6 @@ fn tick() {
         }
     }
     client_tick();
-    // In-game UI (M4): first-frame setup, input restore, queued UI work.
-    crate::ui::frame_entry(false);
-    service_control("tick");
 }
 
 /// Starts the session once the world is up, then runs it every frame.
@@ -556,6 +643,12 @@ fn client_tick() {
         }
         let ready = game::snapshot(&ProcessMemory).ok().is_some_and(|s| s.game_state == 9 && s.player.is_some());
         if !ready {
+            return;
+        }
+        // samp's Render2dStuff hook does its one-time init on its first call and creates
+        // the netgame on the second (A 0x100c47d0; TRACE-1: netgame constructor's 09BA in
+        // frame 35, ours was one frame earlier).
+        if !READY_SEEN.swap(true, Ordering::SeqCst) {
             return;
         }
         CLIENT_TRIED.store(true, Ordering::SeqCst);

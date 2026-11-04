@@ -227,10 +227,10 @@ impl NetClient {
     fn on_datagram(&mut self, data: &[u8], now: Instant, events: &mut Vec<Event>) {
         if self.phase == Phase::Opening {
             match parse_reply(data) {
-                Some(ServerReply::Cookie(c)) => {
-                    self.cookie = c;
-                    self.send_open_request(now);
-                }
+                // The original stores the cookie and answers with the next request of its
+                // 1000 ms retry timer (TRACE-4 capture orig-20261104-204143, net-59452: request
+                // at 0 s, cookie at 0.001 s, next request at 1.001 s).
+                Some(ServerReply::Cookie(c)) => self.cookie = c,
                 Some(ServerReply::Accepted) => {
                     crate::log!("net: open-connection accepted after {} request(s)", self.open_attempts);
                     let mut conn = Connection::new(now);
@@ -410,10 +410,14 @@ mod tests {
         assert!(n >= 3);
         // Cookie reply (unencrypted S→C): 0x1a + u16 cookie.
         server.send_to(&[0x1a, 0x34, 0x12], peer).unwrap();
+        // The cookie is stored; the answer waits for the 1000 ms retry timer.
+        std::thread::sleep(Duration::from_millis(20));
+        c.tick(t0 + Duration::from_millis(500));
+        server.set_nonblocking(true).unwrap();
+        assert!(server.recv_from(&mut buf).is_err(), "answered the cookie before the retry timer");
         let mut got_second = false;
         for _ in 0..200 {
-            c.tick(Instant::now());
-            server.set_nonblocking(true).unwrap();
+            c.tick(t0 + OPEN_RETRY);
             if let Ok((n, _)) = server.recv_from(&mut buf) {
                 assert!(n >= 3);
                 got_second = true;

@@ -461,6 +461,8 @@ pub struct RemotePlayer {
     pub look_offset: [f32; 3],
     pub look_refresh: Option<Instant>,
     pub look_last: Option<Instant>,
+    /// Phone special action active (ped object +0x48 in samp).
+    pub phone: bool,
 }
 
 impl RemotePlayer {
@@ -486,6 +488,7 @@ impl RemotePlayer {
             look_offset: [0.0; 3],
             look_refresh: None,
             look_last: None,
+            phone: false,
         }
     }
 
@@ -535,6 +538,71 @@ pub fn format_remote(
         p.id, p.name, p.ped, p.health, p.state, p.teleports, p.last_speed
     )
 }
+
+/// Special-action values (public SPECIAL_ACTION_* constants).
+pub mod special {
+    pub const NONE: u8 = 0;
+    pub const DUCK: u8 = 1;
+    pub const HANDS_UP: u8 = 10;
+    pub const PHONE: u8 = 11;
+    pub const PHONE_STOP: u8 = 13;
+}
+
+/// One step of the per-frame special-action pass for a remote ped (onfoot §4.2,
+/// A 0x10014950), restricted to the actions this client reproduces (duck,
+/// phone, hands up); the other branches (jetpack, dance, piss, drinks, cuffs,
+/// carry) need state we never create, so they are no-ops here as in samp when
+/// their state is absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialStep {
+    /// `CPedIntelligence::SetTaskDuckSecondary(0)` (then samp ends the pass for this frame).
+    StartDuck,
+    /// Clear `bIsDucking`.
+    StopDuck,
+    /// `TASK_USE_MOBILE_PHONE(ped, 1)` (then the pass ends for this frame).
+    StartPhone,
+    /// `TASK_USE_MOBILE_PHONE(ped, 0)` (then the pass ends for this frame).
+    StopPhone,
+    /// `TASK_HANDS_UP(ped, −2)`.
+    StartHandsUp,
+    /// Re-set the ped to its own position through the `Teleport` virtual.
+    StopHandsUp,
+}
+
+/// The steps for one frame, in samp's order.
+pub fn special_action_steps(action: u8, ducking: bool, phone: bool, hands_up: bool) -> Vec<SpecialStep> {
+    let mut out = Vec::new();
+    if action == special::DUCK {
+        if !ducking {
+            out.push(SpecialStep::StartDuck);
+            return out;
+        }
+    } else if ducking {
+        out.push(SpecialStep::StopDuck);
+    }
+    if action == special::PHONE {
+        if !phone {
+            out.push(SpecialStep::StartPhone);
+            return out;
+        }
+    } else if phone {
+        out.push(SpecialStep::StopPhone);
+        return out;
+    }
+    if action == special::HANDS_UP {
+        if !hands_up {
+            out.push(SpecialStep::StartHandsUp);
+        }
+    } else if hands_up {
+        out.push(SpecialStep::StopHandsUp);
+    }
+    out
+}
+
+/// Weapons whose aiming puts a remote ped into the sniper ped state (onfoot §4.3).
+pub const SNIPER_STATE_WEAPONS: [u8; 3] = [34, 35, 36];
+/// Key bit of the synced key word that marks aiming on foot (§0.3).
+pub const KEY_AIM: u16 = 0x80;
 
 #[cfg(test)]
 mod tests {
@@ -735,5 +803,22 @@ mod tests {
         assert_eq!(&s.aim[3..9], &[1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
         assert_eq!(&s.aim[9..12], &[0.0, 0.0, 1.0]);
         assert_eq!((s.fov(), s.aspect), (70.0, 1.0));
+    }
+
+    #[test]
+    fn special_action_edges() {
+        use SpecialStep::*;
+        assert_eq!(special_action_steps(1, false, false, false), vec![StartDuck]);
+        assert_eq!(special_action_steps(1, false, false, true), vec![StartDuck], "duck start ends the pass");
+        assert_eq!(special_action_steps(1, true, false, false), vec![]);
+        assert_eq!(special_action_steps(0, true, false, false), vec![StopDuck]);
+        assert_eq!(special_action_steps(10, false, false, false), vec![StartHandsUp]);
+        assert_eq!(special_action_steps(10, false, false, true), vec![]);
+        assert_eq!(special_action_steps(0, false, false, true), vec![StopHandsUp]);
+        assert_eq!(special_action_steps(10, true, false, false), vec![StopDuck, StartHandsUp]);
+        assert_eq!(special_action_steps(0, false, false, false), vec![]);
+        assert_eq!(special_action_steps(11, false, false, false), vec![StartPhone]);
+        assert_eq!(special_action_steps(11, false, true, true), vec![StopHandsUp]);
+        assert_eq!(special_action_steps(0, false, true, true), vec![StopPhone], "phone stop ends the pass");
     }
 }

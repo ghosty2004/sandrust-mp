@@ -15,9 +15,11 @@
 //! := RET (row 128: the archive's default.dat registers the image archives);
 //! the model-info stores are moved in `stores.rs`.
 //!
-//! Deliberately NOT applied yet (later milestones): the object pool, the
-//! colour-table and model-pointer relocations, the CJ-walk anim-group hook
-//! (rows 43, 187) and the single-player feature removals.
+//! The parity pass adds the CJ-walk anim-group gate (row 187 here, the row 43
+//! call in pedhooks.rs) and the IPL / interior pickup removals (rows 172, 208).
+//!
+//! Deliberately NOT applied yet (later milestones): the object pool and the
+//! colour-table and model-pointer relocations.
 
 use crate::patch::{Memory, PatchError, Patcher};
 
@@ -550,6 +552,92 @@ pub const TABLE: &[Entry] = &[
         original: &[0x70],
         csv_row: 162,
         what: "playidles anim block name blanked",
+    },
+    // CSV row 187 — CPlayerPed::ProcessAnimGroups: NOP the move-anim-group store; samp then
+    // writes its gated call over the first 5 bytes (row 43, pedhooks.rs), so a player ped keeps
+    // its skin's own walk style unless InitGame "CJ walk" is set.
+    Entry {
+        addr: 0x609A4E,
+        phase: Phase::Main,
+        write: Write::Nop(6),
+        original: &[0x89, 0x86, 0xd4, 0x04, 0x00, 0x00],
+        csv_row: 187,
+        what: "ProcessAnimGroups: no move-anim-group store",
+    },
+    // CSV row 172 — CFileLoader::LoadPickup := RET: no pickups from the IPL files (the stock
+    // weapon pickups DIFF-2 saw in ours: sniper 358, extinguishers 366).
+    Entry {
+        addr: 0x5B47B0,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0xc3]),
+        original: &[0x83],
+        csv_row: 172,
+        what: "CFileLoader::LoadPickup := RET",
+    },
+    // CSV row 208 — Interior_c::Init: NOP Interior_c::AddPickups (no interior pickups).
+    Entry {
+        addr: 0x593D7C,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xe8, 0x0f, 0xe2, 0xff, 0xff],
+        csv_row: 208,
+        what: "Interior_c::Init: no AddPickups",
+    },
+    // COV-1 (GTA function coverage, original vs ours): systems that ran only with our client.
+    // CSV row 158 — CGame::Process: no CPlantMgr::Update (grass/plants).
+    Entry {
+        addr: 0x53C159,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xe8, 0x42, 0x0e, 0x0a, 0x00],
+        csv_row: 158,
+        what: "CGame::Process: no CPlantMgr::Update",
+    },
+    // CSV row 159 — CGame::Process: no CCoronas::DoSunAndMoon.
+    Entry {
+        addr: 0x53C136,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xe8, 0x65, 0x04, 0x1c, 0x00],
+        csv_row: 159,
+        what: "CGame::Process: no CCoronas::DoSunAndMoon",
+    },
+    // CSV row 165 — Idle: no CRealTimeShadowManager::Update (mov ecx + call).
+    Entry {
+        addr: 0x53EA08,
+        phase: Phase::Main,
+        write: Write::Nop(10),
+        original: &[0xb9, 0x50, 0x03, 0xc4, 0x00, 0xe8, 0x9e, 0x80, 0x1c, 0x00],
+        csv_row: 165,
+        what: "Idle: no real-time shadow update",
+    },
+    // CSV row 155 — CAEGlobalWeaponAudioEntity::ServiceAmbientGunFire: state always reset
+    // (no ambient gunfire sounds).
+    Entry {
+        addr: 0x4DF7E2,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0x7a, 0x15, 0xa1, 0x84, 0xcb],
+        csv_row: 155,
+        what: "ServiceAmbientGunFire: no ambient gunfire",
+    },
+    // CSV row 192 — CPlayerPed::ClearWeaponTarget: no CCamera::ClearPlayerWeaponMode.
+    Entry {
+        addr: 0x609CB4,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xe8, 0x57, 0x0e, 0xf0, 0xff],
+        csv_row: 192,
+        what: "ClearWeaponTarget: no ClearPlayerWeaponMode",
+    },
+    // CSV row 244 — CCam::Process_FollowPed_SA: no CIdleCam::Process (idle camera).
+    Entry {
+        addr: 0x524582,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xe8, 0xf9, 0xe6, 0xff, 0xff],
+        csv_row: 244,
+        what: "Process_FollowPed_SA: no idle camera",
     },
 ];
 

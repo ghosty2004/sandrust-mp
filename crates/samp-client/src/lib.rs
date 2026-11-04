@@ -9,11 +9,13 @@ pub mod classsel;
 pub mod cmdline;
 pub mod control;
 pub mod footsync;
+pub mod frametimer;
 pub mod game;
 pub mod log;
 pub mod netclient;
 pub mod patch;
 pub mod patches;
+pub mod pedhooks;
 pub mod pe;
 pub mod remote;
 pub mod saafs;
@@ -23,6 +25,7 @@ pub mod script;
 pub mod sectors;
 pub mod stores;
 pub mod ui;
+pub mod world;
 
 #[cfg(windows)]
 mod client;
