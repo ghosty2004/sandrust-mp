@@ -20,7 +20,7 @@ filled in by guess. Open items are listed under "Open / measurement requests".
 | 207 special action | A 0x10003410 order: jetpack 2, dance, hands up 10 (primary task vtable 0x85A29C), phone 11, piss, duck 1 … | 2, 10, 11, 1 |
 | Class-selection input lock | measured (trace lane, orig-20261104-230048, peeks of 0x541DF5): the keyboard→pad call is NOPed from the join frame (250) on and restored at frame 456, 10 frames after the spawn frame 446. Static: class selection requests input-lock mode 2 every frame while the menu flag (read as a dword at 0xBA67A4, A 0x100a0980) is 0 (A 0x10006100); the spawn requests mode 0 with the 10-frame delay (A 0x100a0750(0,0)). Without it the spawn Shift reached the pad in ours: a jump (`CTaskComplexJump`) and a 3 m move after `SpawnPlayer` (DIFF-2 flow_spawn, COV-1 item 7) | `ui::class_selection_lock` / `class_selection_release` (glue on the M4 `InputLock`) |
 | HUD / radar flags in class selection | measured: 0xBA6769/0xBAA3FB flip to 0/1 only inside the frame and read 1/0 otherwise: samp's tick hides the HUD (A 0x10006100 / 0x100089b0 → 0x100a1df0(0)) before the original `Render2dStuff`, and its UI render (A 0x10075790) sets it back every frame from the chat display mode | ours hides it after `Render2dStuff` and keeps it hidden (tracer watch: `script_no_radar=1` through class selection). Visible result the same; the per-frame order (samp: netgame tick before `Render2dStuff`, ours after) and the UI-render HUD restore belong to the frame hook / M4 UI — open, see "Open" |
-| Systems only our client ran (COV-1) | CSV rows 158 (`CPlantMgr::Update`), 159 (`CCoronas::DoSunAndMoon`), 165 (real-time shadows), 155 (ambient gunfire), 192 (`ClearPlayerWeaponMode`), 244 (idle camera), 172/208 (IPL/interior pickups) | applied (patches.rs) |
+| Systems only our client ran (COV-1) | CSV rows 158 (`CPlantMgr::Update`), 159 (`CCoronas::DoSunAndMoon`), 165 (real-time shadows), 155 (ambient gunfire), 192 (`ClearPlayerWeaponMode`), 244 (idle camera), 172/208 (IPL/interior pickups) | applied (patches.rs), except row 165: on its own it breaks world rendering in ours (white sky, black world in every lane-main screenshot; bisected with `SAMP_RS_SKIP_CSV_ROWS=158,159,165` → fixed, `=158` → still broken, `=165` → fixed). samp must stop the rest of the real-time shadow path some other way — open |
 | Local head look | A 0x10002fa0: on foot, driving or as passenger, "disableheadmove" off (Game +0x59 = 1 from the constructor), no drink item, no object edit: every 1000 ms offset := 20 × camera front (0xB6F32C), every 200 ms `LookAt("FollowPedSA", ped, 0, 2000 ms, −1, pos + offset, 0, 0.1, 500, 3, 0)` (COV-1: 39 IK functions only in the original; DIFF-2: the `SetTaskSecondary(…, 5)` after skin changes) | `Client::head_look` |
 | Frame timer / limiter | A 0x100A1C50 (see "Speed magnitude"); Game constructor (A 0x1009ffe0): frame limit +0x5d = 90 until the first-frame init sets sa-mp.cfg `fpslimit` (only when in 20..90) | `frametimer.rs` in the `CGame::Process` hook; measured afterwards: frame time median 19 ms in both clients (was 17 ms in ours), remote apply cadence like the original |
 | Connect cookie | capture orig-20261104-204143 (game port 59452): request at 0 s, cookie at 0.001 s, the answer only with the next 1000 ms retry | `netclient.rs` stores the cookie and answers on the retry timer; join now in frame 251 in both (NetGame start → join 4126 ms orig / 4097 ms ours) |
@@ -79,6 +79,13 @@ vs ours 0.85 timestep) is gone with the frame limiter.
   vehicles work is on main), idle_end not reached (no car).
 
 ## Open / measurement requests
+
+* Row 165 (see the table): find what else samp does so that skipping `CRealTimeShadowManager::Update` is safe
+  (candidates: row 184, the shadow setting); measure the original's shadow-related calls.
+* Class-selection screenshot black in lane main with main's UI work (main's own m2-class.png at 23:22 too); our
+  pre-merge build rendered the class camera fine in the trace lane (ours-20261104-223904/class.png). The tracer
+  calls on the class-camera path (teleport, 0925/015F/0925/0160) are identical in both clients, so the cause is on
+  the UI side (class panel / D3D state) — for the UI work.
 
 * Interior entry (COV-1 interior_enter): the original enters the Alhambra through `CEntryExit::TransitionStarted`
   with a scripted `CTaskComplexGotoDoorAndOpen` and a fixed camera ~266 frames after the walk, and ends inside at

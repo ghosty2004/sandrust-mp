@@ -602,15 +602,11 @@ pub const TABLE: &[Entry] = &[
         csv_row: 159,
         what: "CGame::Process: no CCoronas::DoSunAndMoon",
     },
-    // CSV row 165 — Idle: no CRealTimeShadowManager::Update (mov ecx + call).
-    Entry {
-        addr: 0x53EA08,
-        phase: Phase::Main,
-        write: Write::Nop(10),
-        original: &[0xb9, 0x50, 0x03, 0xc4, 0x00, 0xe8, 0x9e, 0x80, 0x1c, 0x00],
-        csv_row: 165,
-        what: "Idle: no real-time shadow update",
-    },
+    // CSV row 165 (Idle: no CRealTimeShadowManager::Update) is NOT applied: alone it breaks the
+    // world rendering in ours (white sky, black world in every lane-main shot; bisected with
+    // SAMP_RS_SKIP_CSV_ROWS, docs/phase3/parity-notes.md). samp must keep the remaining real-time
+    // shadow path from running some other way (row 184, the CPhysical destructor's shadow release,
+    // is one candidate) — open until measured.
     // CSV row 155 — CAEGlobalWeaponAudioEntity::ServiceAmbientGunFire: state always reset
     // (no ambient gunfire sounds).
     Entry {
@@ -664,7 +660,11 @@ pub struct Report {
 /// are skipped and reported (never partially written).
 pub fn apply_phase<M: Memory>(patcher: &mut Patcher, mem: &mut M, phase: Phase, ram_mb: u64) -> Report {
     let mut report = Report::default();
-    for e in TABLE.iter().filter(|e| e.phase == phase) {
+    // Diagnostics only: SAMP_RS_SKIP_CSV_ROWS=158,159 leaves those rows unapplied (bisecting).
+    let skip: Vec<u32> = std::env::var("SAMP_RS_SKIP_CSV_ROWS")
+        .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_default();
+    for e in TABLE.iter().filter(|e| e.phase == phase && !skip.contains(&e.csv_row)) {
         let budget;
         let bytes: Vec<u8> = match e.write {
             Write::Bytes(b) => b.to_vec(),
