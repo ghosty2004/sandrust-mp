@@ -278,3 +278,19 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   state); RPC 153 not implemented for the local player in our client; RPC 70 same 5 script
   commands (ours lacks GET_CURRENT_CHAR_WEAPON, changes aiming rotation).
 - Verified: cargo build --workspace, 492 tests, clippy host + i686 0 warnings; 4 lane runs.
+
+## 2026-11-05 — Player parity and the effect tracer merged
+
+- Effect tracer merged (082680c): single-step capture of a samp.dll function and its GTA
+  effects, page-guard capture for our client, diff tool. First diffs: SetPlayerHealth
+  identical, SetPlayerPos identical apart from the head look, local SetPlayerSkin missing,
+  PutPlayerInVehicle skips one weapon query and writes an aim field.
+- Player parity merged (359daf5) after its owner merged main into the branch: cross-client
+  24/24 match; coverage only-ours at spawn 227 → 4, vehicle 85 → 10; join frame and
+  per-frame command signature identical to the original; GTA systems samp switches off
+  now switched off (grass, sun/moon, idle camera, ambient gunfire, map pickups, weapon
+  camera reset); input lock from join to spawn + 10 frames.
+- Verified by the main session in lane main under the lane lock: m1, saa, m2, m3, goal, m4,
+  m5, m8a exit 0; 513 tests; clippy 0 (host + i686). Spawn screenshot renders the world.
+- Found by looking at screenshots: class selection renders a black world in our client
+  (assigned to the UI owner); row 165 broke world rendering and is not applied.
