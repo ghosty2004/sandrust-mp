@@ -33,7 +33,6 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 8. NET-6 — RakNet ack/resend timing parity
 9. SOAK — stability (needs M7)
 10. RENAME — samp-rs → sandrust-mp (crates sandrust-*), when no worktrees are open
-11. EXT-1 — Libre-SAMP as a third client in DIFF-3 (needs the R5 installer from the user for 1:1 vs R5)
 
 ## Phase 0 — Reverse engineering (specs in `docs/re/`)
 
