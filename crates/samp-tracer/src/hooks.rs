@@ -656,6 +656,41 @@ pub static HOOKS: &[HookSpec] = &[
     ),
     // CProjectileInfo::AddProjectile (0x737C80) cannot be hooked: the exe's protection code reads its
     // entry bytes (a 32-bit value 0x737C82 in the image).
+    // --- projectiles, explosions, mid-frame health (TRACE-7) -----------------------------
+    h(
+        "CWeapon::FireProjectile",
+        0x741360,
+        &[0x6A, 0xFF, 0xE9, 0xB2, 0x28, 0xCC, 0xFF],
+        Relevant,
+        &[
+            WeaponThis,
+            Entity(0, "by"),
+            VecPtr(1, "origin"),
+            Entity(2, "target"),
+            VecPtr(3, "target_pos"),
+            F32(4, "force"),
+            AbsU8(gta::PLAYER_IN_FOCUS, "pif"),
+        ],
+    ),
+    h(
+        "CExplosion::AddExplosion",
+        0x736A50,
+        &[0x83, 0xEC, 0x1C, 0x53, 0x55],
+        Always,
+        &[
+            Entity(0, "victim"),
+            Entity(1, "creator"),
+            I32(2, "type"),
+            VecVal(3, "pos"),
+            I32(6, "lifetime"),
+            Bool(7, "sound"),
+            F32(8, "shake"),
+            Bool(9, "invisible"),
+            AbsU8(gta::PLAYER_IN_FOCUS, "pif"),
+        ],
+    ),
+    // Sampling point after CWorld::Process (`hp_mid` records, win/combat.rs); counted only.
+    h("CCamera::Process", 0x52B730, &[0x81, 0xEC, 0xA0, 0x00, 0x00, 0x00], Count, &[]),
 ];
 
 /// Register/stack view of a hooked call at function entry.

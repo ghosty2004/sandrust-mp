@@ -1188,7 +1188,7 @@ frames/s. The server is open.mp 1.6.7, which never sends RPC 84; see 44 below.
 * The CRGBA bytes are the server RRGGBBAA unchanged (0xFF000080 → R ff, G 00, B 00, A 80).
 * **Flash**: the colour alternates every ~514 ms (27 frames), the flash colour first (~27 frames after 121).
 * 85: normal colour from the next frame. 120: no longer drawn.
-* Pause map: not measured.
+* Pause map: MEASURED in TRACE-7, see "World entities: TRACE-7 additions".
 
 ### Map icons (56/144)
 * Opcode by style: 0 → `0x04CE`, 1 → `0x02A8`, 2 → `0x0570`, 3 → `0x02A7` (x, y, z, type).
@@ -1274,9 +1274,36 @@ Not redrawn on later frames. The texture is then substituted at render time (RE-
 * A per-player label attached to the local player itself (`CreatePlayer3DTextLabel(L, …, attachedplayer = L)`) is not
   drawn for that player.
 
+### World entities: TRACE-7 additions (run `orig-20261104-234135`, `tools/trace/combat2.sh rmb` + manual `ui.sh` steps)
+
+* **Edit-object drag (117 response 2) — MEASURED.** `EditObject` on a 1271 crate, then the X handle of the gizmo was
+  dragged with the left button held (xdotool: press on the handle, 100 relative moves of 2 px every 30 ms, release):
+  * 13 RPC 117 with response 2 in 3.65 s, rel 9 ch 0. Intervals 250–287 ms (frame-quantised just above 250 ms), which
+    confirms the static 250 ms `GetTickCount` limit (`world-entities.md` §117 C→S).
+  * The first one is sent 126 ms after the button press, still at the unchanged position (1702.5); later ones carry the
+    current matrix position (1702.64, 1702.80, … 1704.32), rotation unchanged (0, 0, 0).
+  * Clicking the save icon of the gizmo bar sends response 1 with the final position (1704.48, i.e. newer than the
+    last response-2 update). The cancel case (response 0) is in TRACE-6.
+  * Screenshots `e-edit.png`, `e-drag.png`. The attached-object editor (116) drag was not repeated; it shares the
+    editor loop (static), so the same rate is expected but is **not measured**.
+* **Pause-map gang zones — MEASURED.** Gang zone (1650, −2650)–(1750, −2550) shown in 0xFF000080:
+  * In the pause menu's MAP page samp calls `CRadar::DrawAreaOnRadar(rect, colour, in_menu = true)` once per shown zone
+    per frame (797 frames, one call each), from the same samp site as the radar pass (`samp.dll+0xa1469` in B), with the
+    same rect ([minX, maxY, maxX, minY]) and the unchanged colour bytes. The zone is drawn on the map (`pm-map.png`).
+  * On the other pause-menu pages (the menu list) no gang-zone call is made at all; in game the radar pass resumes
+    (`in_menu = false`).
+* **RemoveBuilding 19300 substitution — MEASURED** (`SAMP_TRACER_WATCH_MODELS=4019,19300`):
+  * `RemoveBuildingForPlayer(4019, 1777.8, −1773.9, 12.5, 0.25)` → within 10 frames the streamed building has area 1 and
+    z −1987.48 (as in TRACE-6).
+  * Player moved to (1500, 1500) (3.3 km): the lowered 4019 entity is freed 18 frames after the teleport.
+  * Back at the airport: 27 frames after the teleport a **building of model 19300** appears at the exact original spot
+    (1777.84, −1773.91, 12.52), area 0, not lowered, RW object present; no model-4019 instance is loaded again.
+  * 19300 is `blankmodel` in `SAMP/SAMP.ide` (`19300, blankmodel, MatTextures, 100, 0`). So the IPL hook swaps the
+    model id and leaves position, area and everything else of the instance unchanged.
+
 ### Still open (M6)
-* Edit-gizmo drag updates (117/116 response 2 rate), pause-map gang zones, camera collision (MR-6.12),
-  `ProcessVerticalLine` (MR-6.13), the 19300 IPL substitution (not watched).
+* Camera collision (MR-6.12), `ProcessVerticalLine` (MR-6.13): not measured (outside TRACE-7's list).
+* 116 (attached-object editor) drag rate: not measured (see above).
 
 ## Combat (TRACE-6)
 
@@ -1306,11 +1333,14 @@ Original client, `run.sh orig hold`, LS airport tarmac. Bots are samp-bot `--mod
   |---|---|
   | remote ped | hit_type 1, hit_id = player id, offset in the victim's local frame (e.g. (0.156, 0.091, −0.779) for a leg) |
   | ground / building / actor | hit_type 0, hit_id 0xFFFF, offset = hitPos = world point |
-  | nothing (sky) | no 206 |
+  | nothing (sky), sniper | no 206 |
+  | nothing (sky), any other instant-hit weapon | 206 hit_type 0, offset (0, 0, 0), hitPos = stale colpoint (TRACE-7 correction) |
 
   * 206 is rel 7 (unreliable sequenced) ch 0, in the shot frame.
   * Quirk: the first missed Deagle shot after a sniper sky-miss sent a 206 with hit_type 0, offset (0, 0, 0) and a
-    garbage hitPos (an uninitialised colpoint).
+    garbage hitPos (an uninitialised colpoint). **TRACE-7:** this is the normal miss path, not a quirk: every missed
+    non-sniper shot sends such a 206 (measured for every drive-by miss; static B 0x10006bb0 drops only weapon 34 without a
+    hit entity). The TRACE-6 "sky → no 206" observation was the sniper.
 * **Shotguns** (25, 27):
   * one samp-hooked LOS (the main ray), then 6–7 `DoBulletImpact` pellets handled inside GTA, then **one** damage
     calc with the summed damage (90 / 105 / 120);

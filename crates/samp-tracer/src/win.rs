@@ -37,6 +37,7 @@ use crate::scm;
 use crate::watch;
 use crate::x86;
 
+mod combat;
 mod cov;
 mod d3d;
 mod remote;
@@ -426,6 +427,7 @@ fn on_call(idx: usize, r: &Regs) {
     match spec.addr {
         0x5E8030 => remote::on_ped_ctor(r.ecx),
         0x5E8620 => remote::on_ped_dtor(r.ecx),
+        0x52B730 => combat::on_camera_process(),
         _ => {}
     }
     if spec.policy == Policy::Count {
@@ -693,6 +695,7 @@ fn on_frame() {
     remote::frame(n);
     vehicles::frame();
     world::frame(n);
+    combat::frame();
     d3d::frame();
     flush();
 }
