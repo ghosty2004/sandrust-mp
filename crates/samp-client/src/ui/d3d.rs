@@ -30,6 +30,7 @@ pub mod dev {
     pub const SHOW_CURSOR: usize = 12;
     pub const RESET: usize = 16;
     pub const PRESENT: usize = 17;
+    pub const GET_FRONT_BUFFER_DATA: usize = 33;
     pub const CREATE_OFFSCREEN_PLAIN_SURFACE: usize = 36;
     pub const END_SCENE: usize = 42;
     pub const CLEAR: usize = 43;
@@ -289,6 +290,22 @@ pub mod devcall {
         let f: extern "system" fn(*mut c_void, u32) -> HResult = unsafe { vfn(d(), dev::SET_FVF) };
         f(d(), fvf);
     }
+    /// `BeginStateBlock`, the calls of `record`, `EndStateBlock`; null on failure.
+    pub fn record_state_block(record: impl FnOnce()) -> *mut c_void {
+        // SAFETY: real device, BeginStateBlock (60) / EndStateBlock (61).
+        let begin: extern "system" fn(*mut c_void) -> HResult = unsafe { vfn(d(), 60) };
+        if begin(d()) < 0 {
+            return std::ptr::null_mut();
+        }
+        record();
+        let mut sb: *mut c_void = std::ptr::null_mut();
+        // SAFETY: as above.
+        let end: extern "system" fn(*mut c_void, *mut *mut c_void) -> HResult = unsafe { vfn(d(), 61) };
+        if end(d(), &mut sb) < 0 {
+            return std::ptr::null_mut();
+        }
+        sb
+    }
     /// `CreateStateBlock(type)` (1 = `D3DSBT_ALL`); null on failure.
     pub fn create_state_block(kind: u32) -> *mut c_void {
         let mut sb: *mut c_void = std::ptr::null_mut();
@@ -532,6 +549,14 @@ impl Font {
     }
 
     /// `DT_CALCRECT` size of `text` (single line) as (w, h).
+    /// `DT_CALCRECT` with a NUL-terminated copy and count −1 (how samp measures its fixed
+    /// strings at start-up).
+    pub fn measure_z(&self, text: &[u8], flags: u32) -> (i32, i32) {
+        let mut r = Rect::default();
+        self.draw_n(std::ptr::null_mut(), text, -1, &mut r, flags | dt::CALCRECT, 0xFF00_0000);
+        (r.right - r.left, r.bottom - r.top)
+    }
+
     pub fn measure(&self, text: &[u8], flags: u32) -> (i32, i32) {
         if text.is_empty() {
             return (0, 0);
@@ -744,7 +769,7 @@ pub fn load_texture(d3dx: &D3dx, path: &[u8]) -> Result<*mut c_void, String> {
         p.as_ptr(),
         DEFAULT,
         DEFAULT,
-        1,
+        DEFAULT, // full mip chain (measured: samp passes D3DX_DEFAULT levels for sampgui.png)
         0,
         0, // D3DFMT_UNKNOWN
         1, // D3DPOOL_MANAGED
@@ -771,14 +796,14 @@ pub struct RenderTarget {
 }
 
 impl RenderTarget {
-    pub fn create(d3dx: &D3dx, w: u32, h: u32) -> Result<Self, String> {
+    pub fn create(d3dx: &D3dx, w: u32, h: u32, format: u32) -> Result<Self, String> {
         let mut tex = std::ptr::null_mut();
-        let hr = (d3dx.create_texture)(real_device(), w, h, 1, 1, 21, 0, &mut tex);
+        let hr = (d3dx.create_texture)(real_device(), w, h, 1, 1, format, 0, &mut tex);
         if hr < 0 || tex.is_null() {
             return Err(format!("D3DXCreateTexture({w}x{h} RT) failed: {hr:#x}"));
         }
         let mut rts = std::ptr::null_mut();
-        let hr = (d3dx.create_render_to_surface)(real_device(), w, h, 21, 1, 80, &mut rts);
+        let hr = (d3dx.create_render_to_surface)(real_device(), w, h, format, 1, 80, &mut rts);
         if hr < 0 || rts.is_null() {
             // SAFETY: we own the texture.
             unsafe { release(tex) };
@@ -869,6 +894,53 @@ pub fn add_font_resources() {
     }
 }
 
+// ---- F8 screenshot -----------------------------------------------------------------------
+
+/// F8 (A 0x10075620): a desktop-sized `A8R8G8B8` scratch surface, `GetFrontBufferData` (the
+/// previous frame with its UI), then the window's client rect in screen coordinates saved as
+/// PNG with `D3DXSaveSurfaceToFileA`. Returns false when the front buffer could not be read;
+/// the save result is not checked. Like samp, the surface is never released.
+pub fn screenshot(path: &[u8], hwnd: *mut c_void) -> bool {
+    use windows_sys::Win32::Foundation::{POINT, RECT};
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    type CreateOffscreen = extern "system" fn(*mut c_void, u32, u32, u32, u32, *mut *mut c_void, *mut c_void) -> HResult;
+    type FrontBuffer = extern "system" fn(*mut c_void, u32, *mut c_void) -> HResult;
+    type SaveSurface = extern "system" fn(*const u8, u32, *mut c_void, *const c_void, *const RECT) -> HResult;
+    let dev = real_device();
+    if dev.is_null() {
+        return false;
+    }
+    let mut surf: *mut c_void = std::ptr::null_mut();
+    // SAFETY: real device methods with their documented signatures; Win32 calls on the game's
+    // own window; D3DX export from the module samp uses.
+    unsafe {
+        let (h, w) = (GetSystemMetrics(SM_CYSCREEN), GetSystemMetrics(SM_CXSCREEN));
+        let create: CreateOffscreen = vfn(dev, dev::CREATE_OFFSCREEN_PLAIN_SURFACE);
+        let _ = create(dev, w as u32, h as u32, 0x15, 3, &mut surf, std::ptr::null_mut());
+        let fb: FrontBuffer = vfn(dev, dev::GET_FRONT_BUFFER_DATA);
+        if fb(dev, 0, surf) < 0 {
+            return false;
+        }
+        let mut pt = POINT { x: 0, y: 0 };
+        ClientToScreen(hwnd, &mut pt);
+        let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        GetClientRect(hwnd, &mut rc);
+        rc.left += pt.x;
+        rc.right += pt.x;
+        rc.top += pt.y;
+        rc.bottom += pt.y;
+        let m = LoadLibraryA(D3DX_DLL.as_ptr());
+        if let Some(save) = GetProcAddress(m, c"D3DXSaveSurfaceToFileA".as_ptr().cast()) {
+            let save: SaveSurface = std::mem::transmute(save);
+            let mut p = path.to_vec();
+            p.push(0);
+            let _ = save(p.as_ptr(), 3, surf, std::ptr::null(), &rc);
+        }
+    }
+    true
+}
+
 // ---- state blocks -----------------------------------------------------------------------
 
 /// `IDirect3DStateBlock9::Capture` (slot 4); no-op for null.
@@ -886,5 +958,17 @@ pub fn state_block_apply(sb: *mut c_void) {
         // SAFETY: live state block.
         let f: extern "system" fn(*mut c_void) -> HResult = unsafe { vfn(sb, 5) };
         f(sb);
+    }
+}
+
+/// `D3DXCreateTextureFromFileInMemory` from the D3DX build samp uses.
+pub fn texture_from_memory(_d3dx: &D3dx, bytes: &[u8]) -> Option<*mut c_void> {
+    type F = extern "system" fn(*mut c_void, *const u8, u32, *mut *mut c_void) -> HResult;
+    // SAFETY: the module is loaded at start-up; documented D3DX signature.
+    unsafe {
+        let m = LoadLibraryA(D3DX_DLL.as_ptr());
+        let f: F = std::mem::transmute(GetProcAddress(m, c"D3DXCreateTextureFromFileInMemory".as_ptr().cast())?);
+        let mut tex = std::ptr::null_mut();
+        (f(real_device(), bytes.as_ptr(), bytes.len() as u32, &mut tex) >= 0 && !tex.is_null()).then_some(tex)
     }
 }

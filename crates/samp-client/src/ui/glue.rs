@@ -17,6 +17,7 @@ use samp_proto::rpcs::ui::{
 };
 use samp_proto::sync::rcon::RconCommand;
 use samp_ui::chat::DisplayMode;
+use samp_ui::keys::Overlay;
 use samp_ui::commands::{GameInfo, PlayerPosition};
 use samp_ui::text::KeyNameExpander;
 
@@ -78,6 +79,10 @@ struct State {
     /// 10 frames (A 0x10003c20 → 0x100a0750(0, 0); measured: 0x541DF5 restored 10
     /// frames after the spawn frame, docs/phase3/parity-notes.md).
     spawn_release: bool,
+    /// samp's netgame object exists (from the game frame after the UI construction).
+    netgame_object: bool,
+    /// F5 counters published by the session tick (`net_tick`).
+    net_stats: super::core::NetStats,
 }
 
 // SAFETY: the raw D3D pointers inside are only used on the game's main thread;
@@ -90,12 +95,14 @@ fn user_dir() -> Option<PathBuf> {
     let mut buf = [0u8; 260];
     let _ = ProcessMemory.read(GTA_USER_DIR, &mut buf);
     let n = buf.iter().position(|&b| b == 0).unwrap_or(0);
-    let dir = if n == 0 {
-        std::env::current_dir().ok()?
-    } else {
-        PathBuf::from(String::from_utf8_lossy(&buf[..n]).into_owned()).join("SAMP")
-    };
-    let _ = std::fs::create_dir_all(&dir);
+    // A 0x100c3cb0: the current directory when GTA has no user directory; otherwise
+    // `<user files>\SAMP`, created with its `screens` folder if missing.
+    if n == 0 {
+        return std::env::current_dir().ok();
+    }
+    let dir = PathBuf::from(String::from_utf8_lossy(&buf[..n]).into_owned()).join("SAMP");
+    let _ = std::fs::create_dir(&dir);
+    let _ = std::fs::create_dir(dir.join("screens"));
     Some(dir)
 }
 
@@ -118,8 +125,65 @@ fn exec_ops(ops: Vec<Op>) {
                 f();
             }
             Op::ShowCursor(s) => d3d::show_cursor(s),
+            Op::MouseSink(a) => {
+                let sink = std::ptr::addr_of!(MOUSE_SINK) as usize as u32;
+                if let Err(e) = mem.write(a, &sink.to_le_bytes()) {
+                    crate::log!("ui: input lock redirect {a:#x} failed: {e}");
+                }
+            }
         }
     }
+}
+
+/// Mode 4's dummy mouse store (samp: A 0x101501a8); GTA writes floats into it.
+static mut MOUSE_SINK: [u32; 4] = [0; 4];
+
+/// samp's input-lock setter (A 0x100a0750) for other subsystems (object editing/selection):
+/// `mode` 0–4, `flag` = immediate restore for mode 0. Runs the operations at once (main thread).
+pub fn set_input_mode(mode: u8, flag: bool) {
+    if let Some(ops) = with_ui(|st| st.lock.set_mode(mode, flag)) {
+        exec_ops(ops);
+    }
+}
+
+/// Editor start (A 0x10072480): mode 0 and the restore at once.
+pub fn restore_input_now(flag: bool) {
+    if let Some(ops) = with_ui(|st| st.lock.restore_now(flag)) {
+        exec_ops(ops);
+    }
+}
+
+/// F5 values: memory from the process and GTA's streaming globals, the rest from what our
+/// client counts (the network block uses our connection's datagram/message counters).
+fn net_stats_values(base: &super::core::NetStats) -> super::core::NetStats {
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut s = base.clone();
+    let m = ProcessMemory;
+    // CStreaming::ms_memoryUsed / ms_memoryAvailable (1.0 US).
+    s.streaming_mb = m.read_u32(0x8E4CB4).unwrap_or(0) / (1024 * 1024);
+    s.streaming_total_mb = m.read_u32(0x8A5A80).unwrap_or(0) / (1024 * 1024);
+    // SAFETY: plain Win32 queries into correctly sized structs.
+    unsafe {
+        let mut pmc: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) != 0 {
+            s.process_kb = (pmc.PagefileUsage / 1024) as u32;
+            s.working_set_kb = (pmc.WorkingSetSize / 1024) as u32;
+        }
+        let mut ms: windows_sys::Win32::System::SystemInformation::MEMORYSTATUSEX = std::mem::zeroed();
+        ms.dwLength = std::mem::size_of_val(&ms) as u32;
+        if windows_sys::Win32::System::SystemInformation::GlobalMemoryStatusEx(&mut ms) != 0 {
+            s.system_mb = (ms.ullTotalPhys / (1024 * 1024)) as u32;
+        }
+    }
+    s
+}
+
+/// `GetAsyncKeyState(vk) != 0` as samp's Present pass tests it (either bit).
+fn key_polled(vk: i32) -> bool {
+    // SAFETY: plain Win32 query.
+    unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(vk) != 0 }
 }
 
 /// UR §2.3 "HUD off/on": menu HUD flag and the script radar flag.
@@ -241,6 +305,8 @@ fn ensure(g: &mut Option<State>, debug_mode: bool) -> &mut State {
             last_list_click: None,
             class_buttons: None,
             spawn_release: false,
+            netgame_object: false,
+            net_stats: super::core::NetStats::default(),
         }
     })
 }
@@ -294,12 +360,34 @@ fn frame_entry_inner(debug_mode: bool) {
             Err(e) => crate::log!("ui: device proxy not installed yet: {e}"),
         }
     }
+    // samp creates its netgame object on the game frame after the UI objects (A 0x100c47d0).
+    if st.renderer.is_some() {
+        st.netgame_object = true;
+    }
+    // First-frame UI construction (A 0x100c47d0), inside GTA's scene like samp's.
+    if st.device_proxy && st.renderer.is_none() && !st.renderer_failed {
+        let face =
+            st.core.settings.font_face.clone().unwrap_or_else(|| samp_ui::fonts::DEFAULT_FACE.into()).into_bytes();
+        let weight = samp_ui::fonts::weight(st.core.settings.font_weight);
+        match Renderer::new(&face, weight, st.core.settings.font_size) {
+            Ok(r) => st.renderer = Some(r),
+            Err(e) => {
+                crate::log!("ui: renderer unavailable: {e}");
+                st.renderer_failed = true;
+            }
+        }
+    }
     for line in std::mem::take(&mut st.say_queue) {
         let game = LiveGame { connected: st.core.connected };
         st.core.say(&line, &game);
     }
     if let Some((style, time, text)) = st.core.requests.game_text.take() {
         show_game_text(st, style, time, &text);
+    }
+    // Class selection locks input from the game frame (measured: its mode-2 requests come
+    // from samp's game-frame code, inside GTA's scene).
+    if st.core.class_selection && !st.core.scoreboard.is_open() {
+        exec_ops(st.lock.request_mode2());
     }
     menu_work(st);
     // Scoreboard: rows rebuilt on open / count change, RPC 155 every 3000 ms (UR §15.3).
@@ -506,11 +594,23 @@ fn nametags(st: &mut State) -> Vec<TagDraw> {
         if d >= core.name_tag_distance {
             continue;
         }
-        // A 0x1009f430: the ped is in the moving list (`CPhysical` +0xB4 ≠ 0).
-        if ProcessMemory.read_u32(r.ped + 0xB4).unwrap_or(0) == 0 {
-            continue;
-        }
-        let anchor = bone_pos(r.ped, 8);
+        // A 0x10074270: a driver (samp state 0x13) whose vehicle exists is anchored at the
+        // vehicle's position; everyone else needs to be in the moving list (A 0x1009f430,
+        // `CPhysical` +0xB4 ≠ 0) and is anchored at bone 8.
+        let vehicle = if r.state == crate::vehicle::state::DRIVER {
+            ProcessMemory.read_u32(r.ped + PED_VEHICLE).unwrap_or(0)
+        } else {
+            0
+        };
+        let anchor = if vehicle != 0 {
+            let Some(v) = ped_pos(vehicle) else { continue };
+            v
+        } else {
+            if ProcessMemory.read_u32(r.ped + 0xB4).unwrap_or(0) == 0 {
+                continue;
+            }
+            bone_pos(r.ped, 8)
+        };
         if core.name_tag_los {
             let los = |run: &mut Runner| {
                 let a = [anchor[0], anchor[1], anchor[2], cam[0], cam[1], cam[2]].map(Arg::Float);
@@ -565,24 +665,21 @@ fn bubbles(st: &State) -> Vec<BubbleDraw> {
 
 /// UR §2.3: menu check, HUD flags, then the drawing steps.
 fn present_pass() {
+    let Ok(mut g) = UI.try_lock() else { return };
+    let Some(st) = g.as_mut() else { return };
+    // Step 1: F8 screenshot (A 0x10075620), before anything of this frame is drawn.
+    if std::mem::take(&mut st.core.requests.screenshot) {
+        let (path, index) = st.core.screenshot_target();
+        let ok = d3d::screenshot(path.to_string_lossy().as_bytes(), render::hwnd());
+        st.core.screenshot_done(ok.then_some(index));
+    }
     // Step 3: GTA pause menu → no samp UI.
     if gta_menu_active() {
         return;
     }
-    let Ok(mut g) = UI.try_lock() else { return };
-    let Some(st) = g.as_mut() else { return };
     let face = st.core.settings.font_face.clone().unwrap_or_else(|| samp_ui::fonts::DEFAULT_FACE.into()).into_bytes();
     let weight = samp_ui::fonts::weight(st.core.settings.font_weight);
     let fs = st.core.settings.font_size;
-    if st.renderer.is_none() && !st.renderer_failed {
-        match Renderer::new(&face, weight, fs) {
-            Ok(r) => st.renderer = Some(r),
-            Err(e) => {
-                crate::log!("ui: renderer unavailable: {e}");
-                st.renderer_failed = true;
-            }
-        }
-    }
     for req in std::mem::take(&mut st.core.requests.cursor) {
         let ops = match req {
             CursorRequest::Mode0 { immediate } => st.lock.request_mode0(immediate),
@@ -590,11 +687,28 @@ fn present_pass() {
         };
         exec_ops(ops);
     }
-    // Step 5/9 HUD (TRACE-3 U-HUD-STEP9: written every Present).
+    // Steps 5–8 (A 0x10075790): scoreboard, else F5 (connected) / F10 held → HUD off and
+    // only the nametag passes; else F1 held opens the help dialog. Keys are polled with
+    // GetAsyncKeyState (any bit set), each only when the earlier ones did not apply.
     let sb_open = st.core.scoreboard.is_open();
-    set_hud(!sb_open && st.core.chat.mode() != DisplayMode::Hidden);
+    let mut overlay = None;
+    if st.core.netgame && !sb_open {
+        if key_polled(0x74) && st.core.connected {
+            overlay = Some(Overlay::NetStats);
+        } else if key_polled(0x79) {
+            overlay = Some(Overlay::F10);
+        } else if key_polled(0x70) {
+            st.core.open_help();
+        }
+    }
+    // Step 5/9 HUD (TRACE-3 U-HUD-STEP9: written every Present).
+    set_hud(!sb_open && overlay.is_none() && st.core.chat.mode() != DisplayMode::Hidden);
+    let scoreboard_shown = sb_open;
+    let sb_open = sb_open || overlay.is_some();
     let tags = nametags(st);
     let bubbles = if sb_open { Vec::new() } else { bubbles(st) };
+    let net_stats =
+        (overlay == Some(Overlay::NetStats)).then(|| super::core::net_stats_text(&net_stats_values(&st.net_stats)));
     let Some(r) = st.renderer.as_mut() else { return };
     if std::mem::take(&mut st.core.requests.rebuild_fonts) || r.needs_rebuild(fs) {
         r.rebuild_fonts(&face, weight, fs);
@@ -630,7 +744,7 @@ fn present_pass() {
     let (sw, shh) = samp_ui::scoreboard::size(w);
     st.core.scoreboard_rect = samp_ui::Rect::xywh(w / 2 - sw / 2, h / 2 - shh / 2, sw, shh);
     let cursor = render::cursor_pos();
-    let sb_draw = sb_open.then(|| ScoreboardDraw {
+    let sb_draw = scoreboard_shown.then(|| ScoreboardDraw {
         rows: st.core.scoreboard.rows(),
         server_name: &st.core.server_name,
         players: samp_ui::scoreboard::players_text(st.core.remote_ids().count()),
@@ -653,6 +767,10 @@ fn present_pass() {
         death: st.core.deaths.visible().then_some(&st.core.deaths),
         dialog,
         cursor,
+        overlay,
+        net_stats: net_stats.as_deref(),
+        netgame_object: st.core.netgame && st.netgame_object,
+        name_tag_passes: st.core.netgame && st.netgame_object && st.core.show_name_tags,
     };
     let lock = &mut st.lock;
     r.frame(&frame, &mut |req| match req {
@@ -661,7 +779,6 @@ fn present_pass() {
     // Step 12: the class-selection GUI dialog after the chat GUI dialog (UR §2.3, §4.2),
     // with cursor mode 2 while it is shown (TRACE-3: class selection locks input).
     if st.core.class_selection && !sb_open {
-        exec_ops(st.lock.request_mode2());
         st.class_buttons = Some(r.class_panel(cursor));
     } else {
         st.class_buttons = None;
@@ -700,9 +817,66 @@ pub(super) fn on_window_event(ev: samp_ui::keys::Event, wheel_lines: u32) -> boo
             return true;
         }
         let game = LiveGame { connected: st.core.connected };
-        st.core.handle_event(ev, menu, &game, wheel_lines)
+        let consumed = st.core.handle_event(ev, menu, &game, wheel_lines);
+        clipboard_requests(st);
+        consumed
     })
     .unwrap_or(false)
+}
+
+/// DXUT edit-box clipboard: copy (`CF_UNICODETEXT` from the ANSI selection) and paste
+/// (`CF_UNICODETEXT` converted to the ANSI code page).
+fn clipboard_requests(st: &mut State) {
+    use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar, WideCharToMultiByte};
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+    };
+    use windows_sys::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+    const CF_UNICODETEXT: u32 = 13;
+    if let Some(sel) = st.core.requests.clipboard_copy.take() {
+        // SAFETY: Win32 clipboard sequence; the global block is handed to the clipboard.
+        unsafe {
+            if OpenClipboard(std::ptr::null_mut()) != 0 {
+                EmptyClipboard();
+                let n = MultiByteToWideChar(CP_ACP, 0, sel.as_ptr(), sel.len() as i32, std::ptr::null_mut(), 0);
+                let h = GlobalAlloc(GMEM_MOVEABLE, (n as usize + 1) * 2);
+                if !h.is_null() {
+                    let p = GlobalLock(h) as *mut u16;
+                    if !p.is_null() {
+                        MultiByteToWideChar(CP_ACP, 0, sel.as_ptr(), sel.len() as i32, p, n);
+                        *p.add(n as usize) = 0;
+                        GlobalUnlock(h);
+                        SetClipboardData(CF_UNICODETEXT, h as _);
+                    }
+                }
+                CloseClipboard();
+            }
+        }
+    }
+    if std::mem::take(&mut st.core.requests.paste) {
+        let mut text = Vec::new();
+        // SAFETY: as above; the clipboard keeps ownership of its data.
+        unsafe {
+            if OpenClipboard(std::ptr::null_mut()) != 0 {
+                let h = GetClipboardData(CF_UNICODETEXT);
+                if !h.is_null() {
+                    let p = GlobalLock(h as _) as *const u16;
+                    if !p.is_null() {
+                        let mut len = 0usize;
+                        while *p.add(len) != 0 {
+                            len += 1;
+                        }
+                        let n = WideCharToMultiByte(CP_ACP, 0, p, len as i32, std::ptr::null_mut(), 0, std::ptr::null(), std::ptr::null_mut());
+                        text.resize(n.max(0) as usize, 0);
+                        WideCharToMultiByte(CP_ACP, 0, p, len as i32, text.as_mut_ptr(), n, std::ptr::null(), std::ptr::null_mut());
+                        GlobalUnlock(h as _);
+                    }
+                }
+                CloseClipboard();
+            }
+        }
+        st.core.paste(&text);
+    }
 }
 
 /// Left button released over a dialog control or a hovered textdraw.
@@ -769,7 +943,12 @@ pub fn take_class_click() -> u8 {
 
 /// Edit-box key-down; true if the input or a dialog edit box has focus (consumed).
 pub(super) fn on_edit_key(key: samp_ui::edit::EditKey, mods: samp_ui::edit::Mods) -> bool {
-    try_with_ui(|st| st.core.edit_key(key, mods)).unwrap_or(false)
+    try_with_ui(|st| {
+        let r = st.core.edit_key(key, mods);
+        clipboard_requests(st);
+        r
+    })
+    .unwrap_or(false)
 }
 
 // ---- network session hooks (client.rs) ------------------------------------------------
@@ -797,7 +976,11 @@ pub fn print_debug(text: &str) {
 
 /// RPC 139 InitGame.
 pub fn on_init_game(g: &samp_proto::session::InitGame) {
-    with_ui(|st| st.core.on_init_game(g));
+    with_ui(|st| {
+        st.net_stats.send_rate = g.on_foot_rate;
+        st.net_stats.shot_comp_mode = g.lag_compensation;
+        st.core.on_init_game(g)
+    });
 }
 
 /// The session closed.
@@ -828,6 +1011,12 @@ pub fn connect_tick(answered: bool) -> bool {
 
 /// Once per session tick: connection lines and the UI's outgoing messages.
 pub fn net_tick(net: &mut NetClient) {
+    let c = net.counters();
+    let _ = with_ui(|st| {
+        let s = &mut st.net_stats;
+        s.messages_sent = c.datagrams_sent as u32;
+        s.messages_received = c.messages_received as u32;
+    });
     let out = with_ui(|st| {
         if *net.phase() == Phase::Joining && !st.joining_seen {
             st.joining_seen = true;

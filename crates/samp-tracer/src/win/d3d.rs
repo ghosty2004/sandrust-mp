@@ -115,6 +115,109 @@ pub fn init(dir: &std::path::Path) {
         Ok(f) => D3D_OUT.lock().unwrap_or_else(|e| e.into_inner()).file = Some(f),
         Err(e) => tlog(&format!("d3d: cannot create {}: {e}", p.display())),
     }
+    if let Ok(spec) = std::env::var("SAMP_TRACER_D3D_BOOT") {
+        match dd::parse_cmd(&spec) {
+            Some((m, frames)) if m != Mode::Off => {
+                BOOT.store((u32::from(m.code()) << 24) | frames, Ordering::SeqCst);
+                std::thread::spawn(boot_watch);
+                tlog(&format!("d3d: boot logging '{spec}' armed"));
+            }
+            _ => tlog(&format!("d3d: SAMP_TRACER_D3D_BOOT '{spec}' ignored (want MODE [FRAMES])")),
+        }
+    }
+}
+
+// ------------------------------------------------------------------ boot logging ----------
+//
+// UX-1: `SAMP_TRACER_D3D_BOOT=MODE [FRAMES]` logs from the first Present of the process (the
+// loading screen), long before the first `CGame::Process`. A helper thread waits for a device
+// in `_RwD3DDevice` and points the Present slot of its vtable at `boot_present`; that runs on
+// the game thread, puts the slot back, installs the normal hooks and starts logging. With
+// MODE `all`, logging drops to `ui` once `gGameState` reaches 9 (the world scene is large).
+// Every change of `gGameState` seen at a Present is written as a `game_state` record.
+
+const GAME_STATE: u32 = 0xC8D4C0;
+/// Boot request (mode code << 24 | frames), 0 = none.
+static BOOT: AtomicU32 = AtomicU32::new(0);
+static BOOT_SLOT: AtomicU32 = AtomicU32::new(0);
+static BOOT_ORIG: AtomicU32 = AtomicU32::new(0);
+static LAST_GS: AtomicU32 = AtomicU32::new(u32::MAX);
+/// The real device found by `install` (for a late D3DX install).
+static REAL_DEV: AtomicU32 = AtomicU32::new(0);
+static D3DX_LATE: AtomicBool = AtomicBool::new(false);
+
+fn boot_watch() {
+    for _ in 0..600_000 {
+        let dev = ProcMem.u32(RW_D3D_DEVICE).unwrap_or(0);
+        if dev != 0
+            && let Some(vt) = ProcMem.u32(dev)
+            && let Some(orig) = ProcMem.u32(vt + 4 * 17)
+        {
+            BOOT_ORIG.store(orig, Ordering::SeqCst);
+            BOOT_SLOT.store(vt + 4 * 17, Ordering::SeqCst);
+            let f = boot_present as extern "system" fn(u32, u32, u32, u32, u32) -> i32 as usize as u32;
+            if !write_u32(vt + 4 * 17, f) {
+                tlog("d3d: boot: cannot patch Present");
+            }
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+extern "system" fn boot_present(this: u32, a: u32, b: u32, c: u32, d: u32) -> i32 {
+    let slot = BOOT_SLOT.load(Ordering::SeqCst);
+    write_u32(slot, BOOT_ORIG.load(Ordering::SeqCst));
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if !INSTALLED.swap(true, Ordering::SeqCst) {
+            match install(this) {
+                Ok(msg) => {
+                    tlog(&format!("d3d: installed at the first Present: {msg}"));
+                    d3d_emit(base_rec("d3d_installed").with("info", msg.as_str()).with("boot", true));
+                }
+                Err(e) => {
+                    tlog(&format!("d3d: boot install FAILED: {e}"));
+                    d3d_emit(base_rec("d3d_installed").with("error", e.as_str()));
+                }
+            }
+        }
+        PENDING.store(BOOT.load(Ordering::SeqCst), Ordering::SeqCst);
+    }));
+    // SAFETY: Present (slot 17) of the same object, now through the (hooked) vtable.
+    match unsafe { vcall::<extern "system" fn(u32, u32, u32, u32, u32) -> i32>(this, 17) } {
+        Some(f) if f as usize as u32 != boot_present as extern "system" fn(u32, u32, u32, u32, u32) -> i32 as usize as u32 => {
+            f(this, a, b, c, d)
+        }
+        _ => {
+            // SAFETY: the original Present read from the vtable before patching it.
+            let f: extern "system" fn(u32, u32, u32, u32, u32) -> i32 =
+                unsafe { std::mem::transmute(BOOT_ORIG.load(Ordering::SeqCst) as usize) };
+            f(this, a, b, c, d)
+        }
+    }
+}
+
+/// Per Present: `game_state` records, the boot-mode switch from `all` to `ui`, and the D3DX
+/// hooks once a client loads `d3dx9_NN.dll` after the first Present (every 16th Present).
+fn boot_present_step() {
+    if D3DX_RANGE.load(Ordering::Relaxed) == 0
+        && PRESENTS.load(Ordering::Relaxed).is_multiple_of(16)
+        && find_d3dx().is_some()
+        && !D3DX_LATE.swap(true, Ordering::SeqCst)
+    {
+        let msg = install_d3dx(REAL_DEV.load(Ordering::SeqCst));
+        tlog(&format!("d3d: late D3DX install: {msg}"));
+        d3d_emit(base_rec("d3d_installed").with("info", msg.as_str()).with("late_d3dx", true));
+    }
+    let gs = ProcMem.u32(GAME_STATE).unwrap_or(u32::MAX);
+    if LAST_GS.swap(gs, Ordering::Relaxed) != gs {
+        d3d_emit(base_rec("game_state").with("gs", gs));
+    }
+    if BOOT.load(Ordering::Relaxed) != 0 && gs == 9 && mode() == Mode::All {
+        BOOT.store(0, Ordering::Relaxed);
+        MODE.store(u32::from(Mode::Ui.code()), Ordering::SeqCst);
+        d3d_emit(base_rec("d3d_logging").with("mode", "ui").with("frames", FRAMES_LEFT.load(Ordering::Relaxed)));
+    }
 }
 
 /// Mark records are copied into the D3D log so it can be cut by scenario step.
@@ -404,6 +507,7 @@ fn install(dev_slot_obj: u32) -> Result<String, String> {
         return Err("SwapChain::GetDevice failed".into());
     }
     release(dev);
+    REAL_DEV.store(dev, Ordering::SeqCst);
     let dev_vt = ProcMem.u32(dev).unwrap_or(0);
     set_range(&D3D9_RANGE, dev_vt);
     let proxied = dev != dev_slot_obj;
@@ -796,6 +900,7 @@ fn draw_extras(meth: &Method, rec: &mut Val, arg: &dyn Fn(u32) -> u32) {
 
 fn on_present() {
     PRESENTS.fetch_add(1, Ordering::Relaxed);
+    boot_present_step();
     if MODE.load(Ordering::Relaxed) != 0 {
         let left = FRAMES_LEFT.load(Ordering::Relaxed).saturating_sub(1);
         FRAMES_LEFT.store(left, Ordering::Relaxed);

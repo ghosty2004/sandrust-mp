@@ -37,6 +37,12 @@ pub trait TextMeasure {
         self.measure(font, b"Y").h
     }
 
+    /// Width of the chat's timestamp sample (`[19:58:34]`, main font), measured once by samp's
+    /// chat window at construction; hosts that cached it override this.
+    fn timestamp_width(&self) -> i32 {
+        self.measure(FontId::Main, crate::chat::TIMESTAMP_SAMPLE).w
+    }
+
     /// Size of a multi-line block (`DT_EXPANDTABS`, lines split on `\n`).
     /// Default: widest line × (lines · line height).
     fn measure_block(&self, font: FontId, text: &[u8]) -> Size {
