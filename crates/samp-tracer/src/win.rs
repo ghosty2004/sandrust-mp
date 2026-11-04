@@ -37,9 +37,11 @@ use crate::scm;
 use crate::watch;
 use crate::x86;
 
+mod cov;
 mod d3d;
 mod remote;
 mod vehicles;
+mod world;
 
 /// Max records per hook per frame (the rest are counted as suppressed).
 const CAP_PER_FRAME: u32 = 200;
@@ -412,6 +414,8 @@ fn on_call(idx: usize, r: &Regs) {
         Special::PedProcessControl => return remote::on_pc_call(r),
         Special::WorldProcess => return,
         Special::VehProcessControl => return vehicles::on_vpc_call(r),
+        Special::ObjRender => return world::on_obj_render(spec, r),
+        Special::Los => return world::on_los_call(r),
         Special::WndProc => {
             if !(0x100..=0x109).contains(&ProcMem.u32(r.esp + 8).unwrap_or(0)) {
                 return;
@@ -688,6 +692,7 @@ fn on_frame() {
     drop(g);
     remote::frame(n);
     vehicles::frame();
+    world::frame(n);
     d3d::frame();
     flush();
 }
@@ -890,6 +895,7 @@ fn install_all() -> (usize, Vec<String>) {
             Special::PedProcessControl => Some(remote::pc_inner_wrap as extern "thiscall" fn(u32) as usize as u32),
             Special::WorldProcess => Some(remote::world_process_wrap as extern "C" fn() as usize as u32),
             Special::VehProcessControl => Some(vehicles::vpc_inner_wrap as extern "thiscall" fn(u32) as usize as u32),
+            Special::Los => Some(world::los_wrap as world::LosWrapFn as usize as u32),
             _ => None,
         };
         let (code, tramp) = match build_thunk(slot, i as u32, cont, spec) {
@@ -971,6 +977,7 @@ fn handle(cmd: &Command) -> (String, bool) {
         }
         Command::D3d(args) if args == "busy" => ((if d3d::busy() { "busy" } else { "idle" }).into(), false),
         Command::D3d(args) => (d3d::command(args), false),
+        Command::Cov(args) => (cov::command(args), false),
         Command::Poke { addr, bytes } => {
             if !ProcMem.read(*addr, &mut vec![0u8; bytes.len()]) {
                 return (format!("error {addr:#x} is not readable"), false);
@@ -983,7 +990,13 @@ fn handle(cmd: &Command) -> (String, bool) {
                 std::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, bytes.len());
                 VirtualProtect(p, bytes.len(), old, &mut old);
             }
-            emit(record("poke", None, None, None, Val::obj().with("addr", Val::Hex(*addr)).with("bytes", bytes.len() as u32)));
+            emit(record(
+                "poke",
+                None,
+                None,
+                None,
+                Val::obj().with("addr", Val::Hex(*addr)).with("bytes", bytes.len() as u32),
+            ));
             (format!("ok poke {addr:#x} {}", bytes.len()), false)
         }
         Command::Quit => {
@@ -1088,6 +1101,8 @@ fn attach() {
     for f in &failed {
         tlog(&format!("hook FAILED: {f}"));
     }
+    // After our hooks (their entries are skipped), before the client DLL loads.
+    cov::init();
     tlog(&format!("{ok}/{} hooks installed", HOOKS.len()));
     emit(record(
         "tracer_start",

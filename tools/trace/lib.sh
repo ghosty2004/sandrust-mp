@@ -103,11 +103,21 @@ trace_server_start_fs() {
     e2e_server_prepare
     ( cd "$E2E_SERVER" && LD_LIBRARY_PATH=qawno ./qawno/pawncc "$TRACE_ROOT/tools/trace/$pwn" "$@" \
         -iqawno/include -ofilterscripts/"$name".amx -d0 > /dev/null ) || return 1
-    python3 -I - "$E2E_SERVER/config.json" "filterscripts/$name" <<'PY'
+    # TRACE_GAMEMODE=tracegm replaces the main script by tools/trace/tracegm.pwn (TRACE-6).
+    if [ -n "${TRACE_GAMEMODE:-}" ]; then
+        ( cd "$E2E_SERVER" && LD_LIBRARY_PATH=qawno ./qawno/pawncc "$TRACE_ROOT/tools/trace/$TRACE_GAMEMODE.pwn" \
+            -iqawno/include -ogamemodes/"$TRACE_GAMEMODE".amx -d0 > /dev/null ) || return 1
+    fi
+    # TRACE_LAGCOMP=0|1|2 sets game.lag_compensation_mode (InitGame lagcomp; TRACE-6).
+    python3 -I - "$E2E_SERVER/config.json" "filterscripts/$name" "${TRACE_LAGCOMP:-}" "${TRACE_GAMEMODE:-}" <<'PY'
 import json, sys
 p = sys.argv[1]
 d = json.load(open(p))
 d["pawn"]["side_scripts"].append(sys.argv[2])
+if sys.argv[3]:
+    d["game"]["lag_compensation_mode"] = int(sys.argv[3])
+if sys.argv[4]:
+    d["pawn"]["main_scripts"] = [sys.argv[4] + " 1"]
 json.dump(d, open(p, "w"), indent=4)
 PY
     ( cd "$E2E_SERVER" && exec ./omp-server > "$E2E_LOG" 2>&1 ) &

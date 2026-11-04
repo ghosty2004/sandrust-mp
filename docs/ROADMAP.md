@@ -12,29 +12,28 @@ differential capture against the original client, e2e script.
 
 | Slot | Running | Next |
 |---|---|---|
-| samp-client (lane main) | — (free) | M2-P/M3-P → UX-1 |
-| samp-client worktree (lane ui) | M4 (chat, input, local commands, game text) | M4-P | UI parity from TRACE-3 batch 2 + M4 deviations: chat render-to-texture cache (2048x1024 RT like samp), per-frame HUD flag order, connect timing (Started → +3.0 s Connecting; retry every ~6.05 s with "didn't respond" line), history keeps duplicates and position across close/send, input keeps text on ESC/F6, password mask U+25CF, ctrl+A / ctrl+word moves, /fontsize recreates GUI fonts immediately, /timestamp layout, IME/clipboard | todo | D3D call-stream diff (tools/trace/d3d_diff.py) of chat/input scenarios = no differences | measured values in trace-notes "UI (TRACE-3)" |
-| M8a |
-| measurement (lane trace) | TRACE-4 (SP-OFF baseline + vehicles, original) | TRACE-3: UI runtime facts for RE-5 gaps |
-| harness (lane diff + diff2) | DIFF-3 cross-client + F5 patch coverage | DIFF-4 visual (after TRACE-3's D3D logger) |
-| no-game #1 | BOT-2 (bot drives/shoots) | NET-6 ack/resend timing → rename to sandrust-mp (if confirmed) |
-| no-game #2 | M4-core (`crates/samp-ui`: pure UI logic) | — |
+| samp-client worktree par (lane main) | M2-P + M3-P (player/remote-ped parity) | UX-1 |
+| samp-client worktree m8a (lane ui) | M8a + M4-P (dialogs, textdraws, menus, scoreboard, nametags, death window; UI parity) | — |
+| tracer worktree efx (lane trace via lock) | EFX-1 effect tracer | — |
+| samp-client worktree m6 (lane veh) | M6 world entities (parity loop) | — |
+| samp-client worktree ui2 (lane ui) | UX-1 loading screen + M8a leftovers + DIFF-4 harness | — |
+| measurement (lane trace, REA) | TRACE-6 (world entities + combat, original) | TRACE-7: remaining UI/vehicle open items |
+| harness (lanes diff + diff2) | — (free) | PAR-AUDIT (after EFX-1) |
+| no-game | — (free) | NET-6 ack/resend timing; rename to sandrust-mp |
 
 ## Next up (ordered queue — the scheduler takes from the top)
 
-3. M2-P — tracer re-diff of spawn after M3 changes; close remaining gaps
-4. UX-1 — SA:MP loading screen (needs SAA-2)
-5. TRACE-3 — measure UI behaviour at runtime for RE-5's unknowns (trace lane)
-6. M4 — chat window, input, local commands, game text (needs RE-5, TRACE-3)
-7. DIFF-3 — cross-client harness (needs M3)
-8. F5 — `tools/diff/patch-coverage.sh` (CSV vs applied patch table)
-9. TRACE-4 + M5 — vehicles (needs M3)
-10. M8a — dialogs, textdraws, menus, scoreboard, nametags (needs M4)
-11. TRACE-5 + M6 — world entities (needs SAA-2)
-12. TRACE-6 + M7 — combat (needs M3, M5)
-13. M8b, M9, M10 — remaining behaviour, audio, client features
-14. DIFF-4 — visual diff harness (needs UX-1, M4)
-15. SOAK — stability (needs M7)
+In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1, EFX-1.
+
+1. PAR-AUDIT — retroactive parity loop on everything already in main (protocol/bot, M1, M2, M3, SAA-2, SP-OFF, M4, M5): re-run DIFF-2 on current main, cross-client, COV-1 coverage diff, EFX-1 effect diffs for the RPCs each feature handles, D3D diff for chat, network diffs; produce a per-feature diff list and run fix agents through the parity loop until empty or logged decisions (after COV-1 + EFX-1 land)
+2. UX-1 — SA:MP loading screen (loadscs.txd `title` from samp.saa; splash rows applied in archive mode by SAA-2 — verify vs original with D3D diff + isolated screenshots)
+4. M7 — combat (TRACE-6 ✔ measured: docs/phase3/trace-notes.md "Combat (TRACE-6)"; starts when the player-parity worktree is merged — same damage/swap code; open measurements: local-hit suppression for remote hit type 0, remote hit type 1 in lag-comp 0/2, drive-by, projectiles): aim/bullet/weapons sync, damage, death
+5. M5-P — vehicle open items (+ COV-1: CPostEffects::SpeedFX row 177, SetDirtTextures row 62, CPed::RemoveWeaponWhenEnteringVehicle direct call on enter) (train exit, remote passenger weapons/drive-by, trailer receive, aircraft remote z, plates + radar colours after the D3D proxy merge)
+6. DIFF-4 — visual parity harness (D3D call-stream diff per UI element; generalise tools/e2e/m8a_d3d_diff.py) + M8a leftovers: model-preview textdraws (font 5, 256×256 RT measured), mdl* sprites, remote-driver nametag anchor (MR-M8A-5), F1/F5/F8, IME, clipboard
+7. M8b, M9, M10 — remaining behaviour (spectating, camera RPCs, animations table, SCM events), audio streams, client features (reconnect, server restart, kicks)
+8. NET-6 — RakNet ack/resend timing parity
+9. SOAK — stability (needs M7)
+10. RENAME — samp-rs → sandrust-mp (crates sandrust-*), when no worktrees are open
 
 ## Phase 0 — Reverse engineering (specs in `docs/re/`)
 
@@ -70,14 +69,17 @@ differential capture against the original client, e2e script.
 | M1 | Launcher + client DLL skeleton, boot into gameplay, control channel | done | `tools/e2e/m1.sh` exit 0 (state 9 in ~13 s, ticks ~60 fps, ped at Grove St, clean quit); 246 tests; clippy 0 (host + i686-windows) | `docs/phase3/m1-notes.md`; deferred rows: 122/123 (→ UX-1), 128, 131; extra CdStreamSync deadlock fix (rescue path untested); open: stock main.scm moves the player after spawn (→ M2) |
 | RE-9 | samp.saa archive format | done | spec `docs/re/samp-saa.md`: XTEA (32 rounds, per-block key XOR), 256-slot directory keyed by Jenkins lookup2 of the lower-case basename, RSA-1024/SHA-1 signature; redirection = `CreateFileA` hook by basename | 28 live entries incl. loadscs.txd (SA:MP loading screen), vehicle.txd, tracks2/4.dat, logo.png |
 | SAA-1 | `crates/samp-saa` pure-Rust reader | done | main session: signature valid on the user's samp.saa, 28 entries listed; tests incl. real-archive ones pass; captures match (14 byte-for-byte, 12 differ only by tracer reconstruction) | |
-| M3-P | Remote-ped parity left by TRACE-4: per-packet speed magnitude (orig |v| ≈ 0.050 vs ours 0.030; suspect samp's timestep rewrite at A 0x100A1C50), apply cadence; SEH containment around swapped ProcessControl | todo | tracer re-diff speed/cadence within tolerance | measure per-frame physics first; + DIFF-3: walk anim group (samp 118 via CSV 43/187), crouch on remote peds |
+| M3-P | Remote-ped parity left by TRACE-4: per-packet speed magnitude (orig |v| ≈ 0.050 vs ours 0.030; suspect samp's timestep rewrite at A 0x100A1C50), apply cadence; SEH containment around swapped ProcessControl | in-progress | tracer re-diff speed/cadence within tolerance | measure per-frame physics first; + DIFF-3: walk anim group (samp 118 via CSV 43/187), crouch on remote peds |
 | SAA-2 | Serve files from the user's samp.saa via CreateFileA redirection (incl. samp's main.scm/script.img), fallback to own script | done | main session: `tools/e2e/saa.sh` exit 0 (26 entries, sizes match, 0 failures); tracer: all 188 file opens identical + same script threads as the original; m1–m4 + goal green after merge | `docs/phase3/saa2-notes.md`; custom opcodes 0x09C6/0x09D3 handled (not yet seen running) |
-| UX-1 | SA:MP loading screen: splash names → `title`, remove RenderSplash rect, load SA:MP's `title` image from the user's SA:MP install (fallback: GTA splash) | todo | headless screenshots during boot vs original client; acceptance: no GTA loading slideshow/intro visible at startup (user-reported 2026-11-04) | RE first: where samp.dll gets `title` (samp.saa?) and any overlay text; user asked for it (2026-11-04); after M1 (touches patches.rs) |
+| UX-1 | SA:MP loading screen: splash names → `title`, remove RenderSplash rect, load SA:MP's `title` image from the user's SA:MP install (fallback: GTA splash) | in-progress | headless screenshots during boot vs original client; acceptance: no GTA loading slideshow/intro visible at startup (user-reported 2026-11-04) | RE first: where samp.dll gets `title` (samp.saa?) and any overlay text; user asked for it (2026-11-04); after M1 (touches patches.rs) |
 | TRACE-1 | Behavioural differential tracer (52 GTA hooks, JSONL, multi-`--dll` launcher, `tools/trace/run.sh` + `diff.py`) | done | original client + ours both run join→spawn→walk traced; spawn order matches first 15 steps | `docs/phase3/trace-notes.md` |
 | ENV-3 | Second test lane for tracing: `wine/prefix-trace` + `wine/gta-sa-trace` (hard-linked data, real copies of top-level files) | done | prefix boots | use `WINEPREFIX`, `GTA_DIR`, `E2E_TAG=trace`, `E2E_PORT=7790`, `E2E_CTL_PORT=47701` |
 | ENV-4 | Third test lane "diff": `wine/prefix-diff` + `wine/gta-sa-diff` (hard-linked), server 7795, control 47705/47706 | done | prefix boots | for DIFF-2/3/4 harness runs |
 | ENV-5 | Fourth lane "ui" (wine/prefix-ui, wine/gta-sa-ui, 7800/47710) + git worktree ~/samp-rs-wt/m4 (branch ui-render) for a parallel samp-client writer | done | prefix boots; worktree created at 0a4acdd | main session merges worktree branches |
 | DIFF-1 | Same state queries for the ORIGINAL client: tracer serves the control-channel protocol | done | `state` text identical between our client and tracer in the same run (except ticks) | port 47701/47702 in trace lane |
+| COV-1 | Full GTA function-coverage diff per time window (first-hit int3 on every function), original vs ours | done | 20,823 functions inventoried, 16,251 armed; both clients stable; triage: grass/plants (row 158), real-time shadows (165), sun/moon coronas (159), idle camera (244), ambient gunfire audio (155), IPL pickups (172/211), input lock in class selection (349/350), ClearPlayerWeaponMode (192) → M2-P; radar gang overlay (41/42), radar colours (51) → M6; SpeedFX (177), dirt textures (62), RemoveWeaponWhenEnteringVehicle → M5-P; ONLY-original: local-player head look via IKChainManager LookAt every 200 ms → M2-P; unknown: CPed::Say on interior entry, ProcessFade in class selection (to measure) | `target/cov/coverage-diff.md`, `docs/phase3/coverage-notes.md` |
+| EFX-1 | Effect tracer: single-step a samp.dll function/window and log every GTA memory write + GTA call (args/results); log the same GTA-side effects for our client; diff | in-progress | per-scenario effect-log diff empty | user idea; worktree efx |
+| TRACE-7 | Remaining combat/world measurements on the original (local-hit suppression, hit type 1 in lag-comp 0/2, drive-by, projectiles, edit-drag rates, 19300 substitution) | in-progress | items MEASURED in trace-notes.md | trace lane; feeds M7 |
 | DIFF-2 | Per-RPC coverage harness (F1) | done | `tools/diff/rpc-coverage.sh` (~23 min; original ×2 + ours); 131/141 S→C ids fired (10 never sent by open.mp); original determinism 150/176 steps identical, noise learned; baseline ours (pre-M3 build): 15 MATCH / 20 DIFF / 96 NOT-IMPLEMENTED | `docs/phase3/diff-notes.md`; re-run after each milestone |
 | DIFF-3 | Cross-client harness (F3) | done (harness) | `tools/diff/cross-client.sh`: original + ours on one server; calibration orig-vs-orig 3× identical (tolerance 0.113 m / 0.03 rad); baseline 13/24 step-directions match, 11 DIFF, 18 pending (vehicles/combat/objects/chat) | DIFFs: walk anim group 54 vs samp 118 (CSV 43/187), crouch not shown remotely, SetPlayerSpecialAction/SetPlayerSkin not applied → M3-P / M8b |
 | DIFF-4 | Visual diff: same resolution + identical gta_sa.set in both lanes; screenshots at the same scenario steps compared with tolerance | todo | image diff report | after UX-1 |
@@ -91,10 +93,12 @@ differential capture against the original client, e2e script.
 | BOT-2 | samp-bot drive/passenger/shoot modes | done | main session: `tools/e2e/bot2.sh` exit 0 (driver state + vehicle moved, passenger state, 14/14 plausible shots with damage) | plausible values (enter timing, aim camera/sway, 200 extra) queued for measurement on the original (TRACE-3 Part B) |
 | M4-core | `crates/samp-ui`: renderer-independent UI logic for M4/M8a (chat buffer + paging + F7 modes, colour-code parsing incl. alpha rule, text wrapping/limits, ~k~ expansion hook, input box editing/history, local command parser + sa-mp.cfg read/write, dialog models for all 6 styles incl. list/tablist parsing, scoreboard model, death-window model) | done | main session: 420 workspace tests pass, clippy 0; 83 unit tests from RE-5 tables; exact strings from samp.dll's string table; ~39 unknown constants listed in `docs/phase3/m4-core-notes.md` for TRACE-3 (incl. U-LIST-CODES: assumed list rows render colour codes) | no D3D; consumed by samp-client in M4 |
 | M4 | Chat window + input, local commands, game text, connect lines, cursor | done (merged a45f3d4) | main session: `tools/e2e/m4.sh` exit 0 in lane ui (chat round trip, colours, /pagesize saved, server command); agent: 3×; 432 tests, clippy 0; 1280x720 screenshot matches TRACE-3 numbers to the pixel; RPC 101/50 bytes identical to the original | deviations → M4-P |
-| M5 | Vehicles: stream in/out, driving, passengers, unoccupied, trailers | todo | e2e + differential | |
-| M6 | World entities: objects, pickups, actors, checkpoints, 3D labels, gang zones, map icons | todo | e2e | needs SA:MP assets decision |
+| M5 | Vehicles: streaming, driving, passengers, unoccupied, trailers, remote drivers | done (merged f4d480b) | main session: `tools/e2e/m5.sh` exit 0 (remote driver seated + tracking; local enter F → driver, W → 142 m server-side, exit); all e2e green after merge (saa, m1–m5, goal), 485 tests, clippy 0; tracer diff vs original matches stream-in/blips/warps/ProcessControl context/correction timing | `docs/phase3/m5-notes.md`; open: train exit, remote passenger weapons/drive-by, trailer receive, heli/plane remote z, 15 s wreck delete (unobservable vs open.mp), plates (needs D3D proxy), radar colours |
+| M6 | World entities: objects, pickups, actors, checkpoints, 3D labels, gang zones, map icons | in-progress | e2e | needs SA:MP assets decision |
 | M7 | Combat: aim/bullet/weapons sync, damage, death | todo | e2e + differential | |
-| M8 | Nametags, scoreboard, spectating, camera RPCs, remaining RPC behaviours | todo | e2e | |
+| M4-P | UI parity from TRACE-3 batch 2 + M4 deviations: chat render-to-texture cache (2048x1024 RT like samp), per-frame HUD flag order, connect timing (Started → +3.0 s Connecting; retry every ~6.05 s with "didn't respond" line), history keeps duplicates and position across close/send, input keeps text on ESC/F6, password mask U+25CF, ctrl+A / ctrl+word moves, /fontsize recreates GUI fonts immediately, /timestamp layout, IME/clipboard | done (merged 86dfabc) | D3D call-stream diff (tools/trace/d3d_diff.py) of chat/input scenarios = no differences | measured values in trace-notes "UI (TRACE-3)" |
+| M8a | Dialogs (6 styles), textdraws (+selection), menus, scoreboard, nametags + bars + AFK icon, death window, chat bubbles | done (merged 86dfabc) | `tools/e2e/m8a.sh` + D3D call-stream diff vs the original | measured values: trace-notes "UI (TRACE-3)" |
+| M8 | (M8b) Spectating, camera RPCs, remaining RPC behaviours | todo | e2e | |
 | M9 | Audio streams | deferred | — | |
 | M10 | Windows validation run | deferred | user on Windows | final check outside Wine |
 
@@ -108,6 +112,8 @@ differential capture against the original client, e2e script.
 | D-4 | samp.saa data overrides (10 of 23 files differ; handling/weapon identical) | **resolved (2026-11-04): option A — read ALL redirected files from the user's samp.saa at runtime, exactly like the original (user: "I want 1:1"); never redistribute; fallback to our own minimal script when SA:MP isn't installed** |
 
 ## Decisions made autonomously
+- UI parity: the original passes an uninitialised rect and a stale colour to D3DX DrawText DT_CALCRECT calls; we pass zeros and the D3D diff ignores rect/colour on CALCRECT records (no observable output; reproducing garbage values is not meaningful).
+- UI parity: GTA's own render-target calls before samp's UI pass and the stage-0 texture left over from GTA's last scene draw are scene content and excluded from UI call-stream diffs.
 
 Since 2026-11-04 the user delegates technical decisions to Claude with one goal:
 **rebuild the original client 1:1**. Rule of thumb: when in doubt, match the

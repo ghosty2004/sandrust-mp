@@ -43,8 +43,6 @@ const PRELOAD_ANIM_BLOCKS: [&str; 9] =
     ["PARACHUTE", "BAR", "GANGS", "PAULNMAC", "VENDING", "FIGHT_B", "FIGHT_C", "FIGHT_D", "FIGHT_E"];
 const PRELOAD_MODELS: [i32; 9] = [3131, 1485, 1486, 1543, 1546, 343, 342, 344, 330];
 
-/// Delay between the netgame's creation and its first connect attempt (samp A 0x10008940).
-const CONNECT_DELAY: Duration = Duration::from_millis(3000);
 /// DISPLAY_ZONE_NAMES starts this long after a spawn (A 0x10003c20 sets +0x30a := now + 1000).
 const ZONE_NAMES_DELAY: Duration = Duration::from_millis(1000);
 /// `CControllerState::ButtonTriangle` in `CPad::Pads[0].NewState` (samp's pad +0x1E).
@@ -72,11 +70,6 @@ pub struct Client {
     first_frame_done: bool,
     /// Clock and weather (world.rs): settings hour/minute/weather, clock state.
     world: crate::world::World,
-    /// samp's netgame waits 3000 ms after its creation before the first
-    /// connect attempt (A 0x10008940); `Some` until that attempt.
-    connect_at: Option<Instant>,
-    host: String,
-    port: u16,
     /// InitGame "zone names" (settings +0x21): DISPLAY_ZONE_NAMES every frame
     /// from 1000 ms after the spawn (local tick A 0x100074c0, spawn A 0x10003c20).
     zone_names: bool,
@@ -91,6 +84,10 @@ pub struct Client {
     look_last: Option<Instant>,
     /// Remote players (M3, players.rs).
     players: crate::players::Players,
+    /// Vehicles (M5, vehicles.rs).
+    vehicles: crate::vehicles::Vehicles,
+    /// The connect tick has fired (networking runs from then on).
+    net_started: bool,
 }
 
 /// Raw write into game data (heap objects, .data/.bss); no protection change.
@@ -124,7 +121,10 @@ impl Client {
         let server = crate::netclient::resolve(&host, port).map_err(|e| format!("resolve {host}:{port}: {e}"))?;
         crate::log!("client: connecting to {server} as {name:?} (auth table {path}, {} entries)", auth.len());
         let net = NetClient::new(server, &name, auth).map_err(|e| format!("udp socket: {e}"))?;
-        crate::ui::on_netgame_start(&name);
+        // "Started"; the UI's connect tick starts the session 3.0 s later (A 0x10008940:
+        // 3000 ms after the netgame constructor; TRACE-3 U-CONNECT-TIMING; parity run: join
+        // in frame 251 in both clients).
+        crate::ui::on_netgame_start(&host, port, &name);
         let now = Instant::now();
         Ok(Self {
             net,
@@ -142,9 +142,6 @@ impl Client {
             spawned_once: false,
             first_frame_done: false,
             world: crate::world::World::default(),
-            connect_at: Some(now + CONNECT_DELAY),
-            host,
-            port,
             zone_names: false,
             zone_names_from: None,
             last_interior: 0,
@@ -153,6 +150,8 @@ impl Client {
             look_refresh: None,
             look_last: None,
             players: crate::players::Players::default(),
+            vehicles: crate::vehicles::Vehicles::default(),
+            net_started: false,
         })
     }
 
@@ -168,7 +167,12 @@ impl Client {
 
     /// Control-channel `remote`: one header line plus one line per remote player.
     pub fn remote_lines(&self) -> String {
-        self.players.status(Instant::now())
+        self.players.status(Instant::now(), |p| self.vehicles.remote_fields(p))
+    }
+
+    /// Control-channel `vehicles`: one header line plus one line per streamed vehicle.
+    pub fn vehicle_lines(&self) -> String {
+        self.vehicles.status(&self.players)
     }
 
     /// Control-channel `spawn`: run the spawn routine on the next tick.
@@ -195,12 +199,13 @@ impl Client {
     /// One frame (main thread).
     pub fn tick(&mut self) {
         let now = Instant::now();
-        let waiting = self.connect_at.is_some_and(|t| now < t);
-        if !waiting {
-            if self.connect_at.take().is_some() {
-                crate::log!("client: first connect attempt ({} ms after the session start)", CONNECT_DELAY.as_millis());
-                crate::ui::on_connect_attempt(&self.host, self.port);
-            }
+        // The connect tick starts connecting 3.0 s after "Started" (TRACE-3
+        // U-CONNECT-TIMING); the UI prints the connect / retry lines.
+        let answered = !matches!(self.net.phase(), Phase::Opening);
+        if crate::ui::connect_tick(answered) {
+            self.net_started = true;
+        }
+        if self.net_started {
             for ev in self.net.tick(now) {
                 self.on_event(ev, now);
             }
@@ -225,6 +230,9 @@ impl Client {
             // (CSV rows 354/355).
             let w = self.world.toggle_clock(false);
             crate::world::apply(&w);
+            // CSV row 356: skills to 1000, then SetStatValue := RET (vehicles.md RE-10 "Driving skills";
+            // also TRACE-5 "Stats at state 9").
+            self.vehicles.first_frame();
         }
         // Every frame, like the original (netgame tick A 0x1000b5b0): the server's time
         // of day while the server holds the time, then the pre-loading of the animation
@@ -237,6 +245,10 @@ impl Client {
         self.preload();
         // Remote players before the local player's tick and send (onfoot §6 step 5b).
         self.players.tick(&mut self.runner, now);
+        self.vehicles.remote_tick(&mut self.runner, &mut self.players);
+        self.vehicles.hook_events(&mut self.runner, &mut self.net);
+        crate::ui::set_remotes(self.players.ui_snapshot(now));
+        crate::ui::set_class_selection(self.class_sel.is_active());
         if self.class_sel.is_active() {
             self.class_selection_tick(now);
         } else if self.spawned {
@@ -246,11 +258,15 @@ impl Client {
             self.connecting_tick();
         }
         // Remote peds whose ProcessControl faulted (swap.rs fault containment).
-        self.players.handle_faults();
+        self.players.handle_faults(&mut self.runner);
         // Chat input and connection lines of the in-game UI (M4).
         crate::ui::net_tick(&mut self.net);
+        // The vehicle pool tick follows the local player's (remote-control-vehicles §6 step 3c).
+        if matches!(self.net.phase(), Phase::Connected) {
+            self.vehicles.pool_tick(&mut self.runner, &mut self.net, &self.players, now);
+        }
         // Push out what this frame queued (sync packets, RPCs) right away.
-        if !waiting {
+        if self.net_started {
             self.net.flush(now);
         }
         if self.last_net_log.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(5)) {
@@ -277,18 +293,36 @@ impl Client {
                     g.on_foot_rate
                 );
                 self.players.set_init_game(g.player_id, g.death_drop_money);
-                crate::ui::on_init_game(g.server_name.as_bytes(), g.player_id);
+                crate::ui::on_init_game(&g);
+                self.vehicles.set_init_game(&g);
                 self.enter_class_selection(now, g.spawns_available);
             }
             Event::Rpc(r) => self.on_rpc(r),
-            Event::Sync(s) => self.players.on_sync(s, now),
+            Event::Sync(s) => self.on_sync(s, now),
             Event::Closed(reason) => {
                 crate::ui::on_closed();
-                self.players.clear();
+                self.vehicles.clear(&mut self.runner);
+                self.players.clear(&mut self.runner);
                 crate::log!("client: session closed: {reason}");
                 self.class_sel.leave();
                 self.spawned = false;
             }
+        }
+    }
+
+    /// Sync packets: 207/203 go to the player pool; 200/211 are stored and 209/210 applied by the vehicle pool.
+    fn on_sync(&mut self, s: samp_proto::sync::IncomingSync, now: Instant) {
+        use samp_proto::sync::IncomingSync as S;
+        match s {
+            S::Foot { ref sync, .. } if Some(sync.player_id) != self.net.player_id() => {
+                let id = sync.player_id;
+                self.players.on_sync(s, now);
+                self.vehicles.after_foot_store(&mut self.runner, &mut self.players, id);
+            }
+            S::Vehicle { .. } | S::Passenger(_) | S::Unoccupied(_) | S::Trailer(_) => {
+                self.vehicles.on_sync(&mut self.runner, &mut self.players, s, now)
+            }
+            s => self.players.on_sync(s, now),
         }
     }
 
@@ -301,7 +335,28 @@ impl Client {
                 crate::log!("[chat {:08x}] {}", m.colour, text(&m.message));
             }
             Incoming::Ui(ui::Incoming::SendGameText(g)) => crate::log!("[gametext] {}", text(&g.text)),
-            Incoming::Remote(r) => self.players.on_rpc(&mut self.runner, r),
+            Incoming::Remote(r) => {
+                use samp_proto::rpcs::remote::Incoming as R;
+                let (streamed_in, quit) = match &r {
+                    R::PlayerStreamIn(s) => (Some(s.player_id), None),
+                    R::PlayerQuit(q) => (None, Some(q.player_id)),
+                    _ => (None, None),
+                };
+                self.players.on_rpc(&mut self.runner, r);
+                if let Some(id) = streamed_in {
+                    self.vehicles.after_stream_in(&mut self.runner, &mut self.players, id);
+                }
+                if let Some(id) = quit {
+                    self.vehicles.forget_player(id);
+                }
+            }
+            Incoming::Vehicle(v) => self.vehicles.on_rpc(&mut self.runner, &mut self.players, v),
+            Incoming::Session(samp_proto::rpcs::session::Incoming::SetVehicleTyreStatus(t)) => {
+                self.vehicles.on_tyres(t.vehicle_id, t.tyres)
+            }
+            Incoming::Session(samp_proto::rpcs::session::Incoming::SetVehicleParamsForPlayerOld(p)) => {
+                self.vehicles.on_old_params(p.vehicle_id, p.objective, p.doors_locked)
+            }
             Incoming::Player(p) => match p {
                 P::PlayerRequestClassResponse(c) => {
                     crate::log!(
@@ -392,6 +447,7 @@ impl Client {
                 }
                 P::SetPlayerSkin(k) => self.on_set_player_skin(k.player_id, k.skin),
                 P::SetPlayerSpecialAction(a) => self.on_special_action(a.action),
+                P::DisableRemoteVehicleCollisions(d) => self.vehicles.set_disable_collisions(d.disable),
                 P::SetPlayerArmedWeapon(w) => {
                     let ped = self.ped();
                     if let Some(h) = self.ped_handle(ped) {
@@ -460,17 +516,20 @@ impl Client {
 
     fn class_selection_tick(&mut self, now: Instant) {
         // While no frontend menu is open (samp reads the menu flag as a dword at
-        // FrontEndMenuManager+0x5C, A 0x100a0980): HUD off and input-lock mode 2
-        // (keyboard and mouse cut off, cursor shown), every frame (A 0x10006100).
+        // FrontEndMenuManager+0x5C, A 0x100a0980): HUD off, every frame (A 0x10006100).
+        // Its input-lock mode 2 comes from the UI (set_class_selection → the class panel
+        // requests mode 2 every frame; measured: 0x541DF5 NOPed from the join frame on).
         if ProcessMemory.read_u32(game::MENU_ACTIVE).unwrap_or(0) == 0 {
             set_hud(false);
-            crate::ui::class_selection_lock();
         }
         let mem = ProcessMemory;
+        // Clicks on the class-selection panel (<<, >>, Spawn) act like the keys.
+        let click = crate::ui::take_class_click();
         let keys = classsel::Keys {
-            left: async_key_down(VK_LEFT) || game::key_down(&mem, game::key::LEFT),
-            right: async_key_down(VK_RIGHT) || game::key_down(&mem, game::key::RIGHT),
-            shift: async_key_down(VK_SHIFT)
+            left: click == 1 || async_key_down(VK_LEFT) || game::key_down(&mem, game::key::LEFT),
+            right: click == 2 || async_key_down(VK_RIGHT) || game::key_down(&mem, game::key::RIGHT),
+            shift: click == 3
+                || async_key_down(VK_SHIFT)
                 || game::key_down(&mem, game::key::SHIFT)
                 || game::key_down(&mem, game::key::LSHIFT)
                 || game::key_down(&mem, game::key::RSHIFT),
@@ -552,6 +611,7 @@ impl Client {
         self.spawned = true;
         self.spawned_once = true;
         self.zone_names_from = Some(Instant::now() + ZONE_NAMES_DELAY);
+        self.vehicles.set_spawned();
         self.sender.reset();
         self.last_stats = None;
         self.net.send_rpc(&player::PlayerSpawn, Reliability::ReliableOrdered);
@@ -580,7 +640,10 @@ impl Client {
         if matches!(state, PEDSTATE_IDLE | PEDSTATE_SNIPER | PEDSTATE_DRIVING) {
             self.head_look(ped, now);
         }
-        if state != PEDSTATE_DRIVING {
+        // In-car packets (200/210/211/106, passenger poll); on-foot sync only in ped states 1 and 12, so nothing
+        // is sent while entering a seat from the server's warp or during the exit animation (TRACE-4 §4).
+        let in_car = self.vehicles.local_tick(&mut self.runner, &mut self.net, self.players.streamed(), now);
+        if !in_car && state != PEDSTATE_DRIVING {
             // On foot (A 0x10003f50): GET_AREA_VISIBLE for the world-bounds check (bounds: M8b).
             self.runner.run(op::GET_AREA_VISIBLE, &[Arg::Local(0)]);
             match game::read_local_sample(&mem, ped) {

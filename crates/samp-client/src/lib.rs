@@ -25,6 +25,8 @@ pub mod script;
 pub mod sectors;
 pub mod stores;
 pub mod ui;
+pub mod vehicle;
+pub mod vehpatches;
 pub mod world;
 
 #[cfg(windows)]
@@ -39,3 +41,7 @@ mod filehook;
 mod players;
 #[cfg(windows)]
 mod swap;
+#[cfg(windows)]
+mod vehhooks;
+#[cfg(windows)]
+mod vehicles;

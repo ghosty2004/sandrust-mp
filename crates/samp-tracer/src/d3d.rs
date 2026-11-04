@@ -129,7 +129,14 @@ pub static METHODS: &[Method] = &[
     m(Device, 17, "Present", &[Rect("src"), Rect("dst")], Frame, Sp::Present),
     m(Device, 23, "CreateTexture", &[U("w"), U("h"), U("levels"), X("usage"), U("format"), U("pool")], Frame, Sp::None),
     m(Device, 33, "GetFrontBufferData", &[U("swapchain"), Obj("surface")], Always, Sp::None),
-    m(Device, 34, "StretchRect", &[Obj("src"), Rect("src_rect"), Obj("dst"), Rect("dst_rect"), U("filter")], Frame, Sp::None),
+    m(
+        Device,
+        34,
+        "StretchRect",
+        &[Obj("src"), Rect("src_rect"), Obj("dst"), Rect("dst_rect"), U("filter")],
+        Frame,
+        Sp::None,
+    ),
     m(Device, 35, "ColorFill", &[Obj("surface"), Rect("rect"), X("color")], Frame, Sp::None),
     m(Device, 36, "CreateOffscreenPlainSurface", &[U("w"), U("h"), U("format"), U("pool")], Always, Sp::None),
     m(Device, 37, "SetRenderTarget", &[U("index"), Obj("surface")], Frame, Sp::None),
@@ -264,14 +271,9 @@ pub fn render_args<M: Mem>(m: &M, method: &Method, esp: u32, label: &mut dyn FnM
             Viewport(k) => {
                 let p = raw.unwrap_or(0);
                 let vp = match (m.u32(p), m.u32(p + 4), m.u32(p + 8), m.u32(p + 12), m.f32(p + 16), m.f32(p + 20)) {
-                    (Some(x), Some(y), Some(w), Some(h), Some(z0), Some(z1)) if p != 0 => Val::List(vec![
-                        x.into(),
-                        y.into(),
-                        w.into(),
-                        h.into(),
-                        z0.into(),
-                        z1.into(),
-                    ]),
+                    (Some(x), Some(y), Some(w), Some(h), Some(z0), Some(z1)) if p != 0 => {
+                        Val::List(vec![x.into(), y.into(), w.into(), h.into(), z0.into(), z1.into()])
+                    }
                     _ => Val::Null,
                 };
                 v.put(k, vp);
@@ -455,11 +457,11 @@ pub fn format_vertex(b: &[u8], l: &Layout) -> String {
 /// Vertices drawn by `prims` primitives of D3DPRIMITIVETYPE `ty`.
 pub fn vertex_count(ty: u32, prims: u32) -> u32 {
     match ty {
-        1 => prims,                     // point list
-        2 => prims * 2,                 // line list
-        3 => prims + 1,                 // line strip
-        4 => prims * 3,                 // triangle list
-        5 | 6 => prims + 2,             // strip / fan
+        1 => prims,         // point list
+        2 => prims * 2,     // line list
+        3 => prims + 1,     // line strip
+        4 => prims * 3,     // triangle list
+        5 | 6 => prims + 2, // strip / fan
         _ => 0,
     }
 }
@@ -484,7 +486,8 @@ pub fn vertices_val(raw: &[u8], stride: u32, count: u32, l: Option<&Layout>) -> 
         && stride > 0
         && (count as usize) <= MAX_DECODED
     {
-        let list: Vec<Val> = raw.chunks(stride as usize).take(count as usize).map(|c| Val::Str(format_vertex(c, l))).collect();
+        let list: Vec<Val> =
+            raw.chunks(stride as usize).take(count as usize).map(|c| Val::Str(format_vertex(c, l))).collect();
         o.put("v", Val::List(list));
     }
     o
@@ -637,7 +640,9 @@ mod tests {
             }
         }
         let names: Vec<_> = methods_of(Iface::Device).map(|(_, m)| (m.slot, m.name)).collect();
-        assert!(names.contains(&(17, "Present")) && names.contains(&(16, "Reset")) && names.contains(&(42, "EndScene")));
+        assert!(
+            names.contains(&(17, "Present")) && names.contains(&(16, "Reset")) && names.contains(&(42, "EndScene"))
+        );
         assert!(names.contains(&(57, "SetRenderState")) && names.contains(&(83, "DrawPrimitiveUP")));
         assert!(methods_of(Iface::Font).any(|(_, m)| m.slot == 14 && m.name == "DrawTextA"));
         assert!(methods_of(Iface::Sprite).any(|(_, m)| m.slot == 9 && m.name == "Draw"));

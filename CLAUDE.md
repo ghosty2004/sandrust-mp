@@ -20,6 +20,23 @@ small per-version profile (join version string, RPC differences, game addresses)
 - Never commit third-party binaries (`re/samp-dll/`, `re/snapshots/`, `server/`
   are gitignored). Commits are made by the MAIN session only (never by agents): plain descriptive English messages, no internal task IDs (M1, SAA-2, …), no Claude session links or Co-Authored-By trailers. Push only when the user asks. Remote: git@github.com:ghosty2004/sandrust-mp.git (branch main).
 
+## Parity loop (mandatory for every implementation agent)
+A feature is done only when the NEW client (Rust) behaves like the ORIGINAL
+samp.dll for the same input. For every system you implement or change:
+1. Define the input scenario (server-side filterscript / RPC / keys / bot) and run
+   it on the ORIGINAL client first (trace lane: `tools/trace/run.sh orig …`, which
+   takes the lane lock) — record its calls and behaviour.
+2. Run the identical scenario on OUR client.
+3. Compare with every applicable tool: tracer call diff (`tools/trace/diff.py`),
+   effect-log diff (`tools/efx/`, when available), D3D call-stream diff for UI
+   (`tools/trace/d3d_diff.py`), network capture diff (`samp-dump`), per-RPC harness
+   (`tools/diff/rpc-coverage.sh --only …`), cross-client (`tools/diff/cross-client.sh`),
+   coverage diff (`tools/cov/`).
+4. Fix and repeat until the diffs are empty. A remaining difference is allowed only
+   if it is recorded in docs/ROADMAP.md "Decisions made autonomously" (e.g. a samp
+   bug acting on uninitialised memory) — never silently.
+Report the final diff results (commands + outputs) in your final reply.
+
 ## Layout
 - `crates/samp-proto` — version-independent wire protocol (cipher, unconnected
   handshake; RakNet layer, RPCs to come).

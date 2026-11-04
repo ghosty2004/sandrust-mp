@@ -49,13 +49,20 @@ fi
 if [ "$STEPS" = hold ] || [ "$STEPS" = holdjoin ]; then
     # TRACE-3/5: interactive session driven by tools/trace/ui.sh (keys, screenshots, d3d logs,
     # filterscript commands, bots) until $OUT/stop exists or TRACE_HOLD_SECS (default 3600) pass.
-    {
+    # The session is private (TRACE-6): its id (run name + random token) is written only to this run's
+    # own $OUT/hold.env and printed on run.sh's output; ui.sh needs TRACE_SESSION=<id> and
+    # SAMP_RS_TRACE_LOCK_HELD=1 from the session owner. Nothing is written to a shared path.
+    SESSION="$(basename "$OUT").$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    ( umask 077
+      {
+        echo "SESSION=$SESSION"
         echo "OUT=$OUT"
         echo "E2E_HEADLESS_DISPLAY=$E2E_HEADLESS_DISPLAY"
         echo "E2E_GAMESCOPE=$E2E_GAMESCOPE"
         echo "SAMP_TRACER_PORT=$SAMP_TRACER_PORT"
         echo "E2E_CTL_PORT=$E2E_CTL_PORT"
-    } > "$TRACE_OUT/hold.env"
+      } > "$OUT/hold.env" )
+    trace_say "session: $SESSION (drive it with TRACE_SESSION=$SESSION SAMP_RS_TRACE_LOCK_HELD=1 tools/trace/ui.sh …)"
     if [ "$STEPS" = hold ]; then
         e2e_wait_log "\[e2e\] connect id=[0-9]+ name=$NAME" 120 || fail "no join"
         trace_mark joined
@@ -77,7 +84,7 @@ if [ "$STEPS" = hold ] || [ "$STEPS" = holdjoin ]; then
         kill -0 "$LPID" 2>/dev/null || { trace_say "game exited"; break; }
         sleep 1
     done
-    rm -f "$TRACE_OUT/hold.env"
+    rm -f "$OUT/hold.env"
     end_game
     exit 0
 fi

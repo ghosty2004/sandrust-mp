@@ -27,8 +27,11 @@ pub mod fonts;
 pub mod gametext;
 pub mod input;
 pub mod keys;
+pub mod menu;
+pub mod nametags;
 pub mod scoreboard;
 pub mod text;
+pub mod textdraw;
 
 /// Axis-aligned rectangle in pixels (`right`/`bottom` exclusive, D3D `RECT` style).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -62,6 +65,6 @@ impl Rect {
 /// C `round()` for the layout formulas (half away from zero).
 ///
 /// Unknown (notes U-ROUND): the original may use a different float→int conversion.
-pub(crate) fn round_i(v: f64) -> i32 {
+pub fn round_i(v: f64) -> i32 {
     v.round() as i32
 }

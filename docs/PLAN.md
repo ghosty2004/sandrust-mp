@@ -76,6 +76,14 @@ Implementation agents that hit an unknown must stop that item and request a meas
 (via the main session) instead of choosing a value. REA holds one binary at a time: a
 single agent uses REA at any moment; others use the decompiled exports and objdump.
 
+### 3c. Parity loop per feature (user, 2026-11-04)
+
+Every implementation agent runs the same input on the original client and on ours and
+iterates until the calls and behaviour match (tracer call diff, effect-log diff, D3D
+call-stream diff for UI, network diff, per-RPC / cross-client / coverage harnesses as
+applicable). The milestone's acceptance includes the empty diffs; any residual
+difference must be a logged decision. See CLAUDE.md "Parity loop".
+
 ## 3a. Scheduler — what to do at every goal re-injection
 
 The /goal text only states the end condition; the next action is derived from the

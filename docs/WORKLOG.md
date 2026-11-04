@@ -185,7 +185,7 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   `cargo test --workspace` 337 passed; clippy 0 host + i686.
 - Open parity (M3-P): speed magnitude/cadence vs original; SEH containment.
 - The weapon flapping seen by TRACE-4 was gungame reacting to our post-arrest state —
-  removed by SP-OFF. User asked about libsamp (R5) → EXT-1; needs the R5 installer.
+  removed by SP-OFF.
 
 ## 2026-11-04 — Git, worktrees, more parallel work
 
@@ -219,3 +219,47 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   (1280x720) on headless runs. Lanes notified to re-run resolution/config-dependent tests.
 - TRACE-3 batch 1 (D3D logger + chat/input/scrollbar/cursor/fonts at pixel level)
   forwarded to M4. BOT-2 done (drive/passenger/shoot; bot2.sh exit 0).
+
+## 2026-11-04 — Data serving, chat UI and tracer merged; next wave started
+
+- Merged into main (all e2e green on the merged code: saa, m1 (isolated), m2, m3, goal,
+  m4; 470 tests; clippy 0 host + i686): samp.saa serving (all 188 file opens identical
+  to the original; samp's own scripts run; custom opcodes handled), single-player
+  systems off (0 peds/cars/cops, wanted 0 — same as the original), in-game chat, input
+  box, local commands, game text, cursor (pixel-exact vs TRACE-3 measurements).
+- TRACE-3/5 done: D3D9 call-stream logger in the tracer + d3d_diff.py; all UI unknown
+  constants settled at 1280x720 and 1920x1080; passenger/locked/trailer/bike/aircraft/
+  train/damage/death and aim-sync values measured. Lane lock now automatic in run.sh.
+- DIFF-3 + F5 done: cross-client 13/24 match (11 diff, 18 pending); patch coverage
+  173 matching / 205 missing / 3 justified (rows 61, 370, 375 logged as decisions).
+- Started: M8a + M4-P (worktree m8a, lane ui), M2-P + M3-P (worktree par, lane main),
+  TRACE-6 (world entities + combat measurements, trace lane, REA). M5 continues (m5).
+
+## 2026-11-04 — Original client measured for world entities and combat
+
+- Five live sessions on the original client: objects (create, render paths by draw distance,
+  material text render target, attachment bone formula, MoveObject/StopObject timing,
+  1000-frame RW release), pickups, checkpoints, gang zones, map icons, actors, 3D labels,
+  building removal, edit/select; combat (shot call chains, 206/115/204 order and content,
+  shotgun = one 206 + one 115, sniper and melee, 0.33 damage scaling, team rule, three
+  lag-comp modes, death/respawn timeline, remote death).
+- Trace hold sessions made private (session id + lock) after one run was driven by another
+  agent; that window's data was discarded.
+- Coverage diff (first results) lists GTA systems still running with our client (grass,
+  real-time shadows, sun/moon, idle camera, ambient gunfire audio, IPL pickups, input during
+  class selection) and the missing local head look; assigned to the player-parity and
+  world-entity work.
+
+## 2026-11-04 — Dialogs, textdraws, menus, nametags and scoreboard merged
+
+- Merged the UI branch (86dfabc). Conflicts in client.rs / players.rs resolved keeping both
+  sides (vehicle pool + UI snapshots).
+- Verified on merged main by the main session in lane ui: m1 (headless), saa, m2, m3, goal,
+  m5, m8a exit 0; m4 first failed because a queued m4 from the UI agent ran concurrently
+  without my run holding the lane lock — rerun under `flock target/locks/ui.lock`: exit 0.
+  496 workspace tests, clippy 0 (host + i686).
+- D3D call-stream diffs vs the original: 0 lines for all dialog styles, input, textdraws +
+  sprite selection, menus, nametags + bubbles, death window, scoreboard.
+- m1.sh now re-runs itself on the isolated headless display (it had opened game windows on
+  the user's desktop when run directly; no screenshots were taken).
+- Lesson: the main session's own lane runs also take the lane lock.

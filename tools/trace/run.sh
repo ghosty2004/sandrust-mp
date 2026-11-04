@@ -17,6 +17,8 @@
 #   tools/trace/run.sh orig|ours hold|holdjoin  (TRACE-3/5) interactive: tools/trace/uifs.pwn on the server,
 #     the scenario joins + spawns (holdjoin: only boots) and then waits; drive it with
 #     tools/trace/ui.sh (keys, typing, screenshots, `d3d` logs, filterscript commands, bots).
+#     The session is private: run.sh prints "session: ID"; ui.sh needs TRACE_SESSION=ID and
+#     SAMP_RS_TRACE_LOCK_HELD=1 (owner only). TRACE_GAMEMODE=tracegm / TRACE_LAGCOMP=N (TRACE-6).
 #     E2E_RES=WxH sets the headless display size; TRACE_NO_SERVER=1 starts no server (holdjoin). d3d.jsonl is copied to the output dir.
 #   tools/trace/run.sh ours [join|spawn|remote]   our samp_client.dll + samp-tracer.dll
 #   tools/trace/run.sh bare [SECONDS]      no client: stock single-player boot (baseline), default 40 s

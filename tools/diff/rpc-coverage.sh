@@ -82,6 +82,9 @@ while [ $# -gt 0 ]; do
         *) echo "usage: $0 [--orig-runs N] [--ours-runs N] [--only REGEX] [--skip-build] | --report RUN..." >&2; exit 2 ;;
     esac
 done
+# Lanes diff/diff2 are shared (DIFF harnesses, COV-1): hold target/locks/diff.lock for the run.
+source "$HERE/lane-lock.sh"
+diff_lane_lock
 mkdir -p "$DIFF_OUT/runs"
 
 if [ "$SKIP_BUILD" != 1 ]; then

@@ -19,14 +19,23 @@ pub enum Command {
     Ping,
     State,
     Quit,
-    Peek { addr: u32, len: usize },
+    Peek {
+        addr: u32,
+        len: usize,
+    },
     Mark(String),
     Remote,
     /// `d3d off|on|ui|all|text [FRAMES]` (Direct3D call-stream logger, `crate::d3d`).
     D3d(String),
     /// `poke ADDR HEXBYTES`: writes bytes (test harness only, e.g. to see whether a client
     /// rewrites a flag every frame).
-    Poke { addr: u32, bytes: Vec<u8> },
+    Poke {
+        addr: u32,
+        bytes: Vec<u8>,
+    },
+    /// `cov start NAME|dump PATH|status` (first-hit coverage, `crate::cov`). Arguments keep
+    /// their case (paths, window names).
+    Cov(String),
     Unknown(String),
 }
 
@@ -44,6 +53,9 @@ pub fn parse(line: &str) -> Option<Command> {
     }
     if let Some(rest) = t.strip_prefix("mark ").or_else(|| t.strip_prefix("MARK ")) {
         return Some(Command::Mark(rest.trim().to_string()));
+    }
+    if let Some(rest) = t.strip_prefix("cov ").or_else(|| t.strip_prefix("COV ")) {
+        return Some(Command::Cov(rest.trim().to_string()));
     }
     let lower = t.to_ascii_lowercase();
     if let Some(rest) = lower.strip_prefix("d3d ") {
@@ -127,6 +139,8 @@ mod tests {
         assert_eq!(parse("peek 0x53EB12 5"), Some(Command::Peek { addr: 0x53EB12, len: 5 }));
         assert!(matches!(parse("peek 0x10 999"), Some(Command::Unknown(_))));
         assert_eq!(parse("d3d all 3"), Some(Command::D3d("all 3".into())));
+        assert_eq!(parse("cov start Grove_Idle"), Some(Command::Cov("start Grove_Idle".into())));
+        assert_eq!(parse("cov dump Z:\\x\\c.tsv\n"), Some(Command::Cov("dump Z:\\x\\c.tsv".into())));
         assert_eq!(parse("poke 0xBA6769 00ff"), Some(Command::Poke { addr: 0xBA6769, bytes: vec![0, 0xFF] }));
         assert!(matches!(parse("poke 0xBA6769 0"), Some(Command::Unknown(_))));
         assert_eq!(port_from_env(Some("47701")), 47701);

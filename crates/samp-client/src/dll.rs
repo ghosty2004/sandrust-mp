@@ -179,6 +179,10 @@ fn init_thread() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
+    // samp imports d3dx9_25.dll and registers its fonts at attach (UR §3.1,
+    // A 0x100c5100); loaded here, once the game's own start-up is past the splash,
+    // so it is in before the first frame (the tracer's D3DX hooks need it then).
+    crate::ui::preload();
     let mut mem = ProcessMemory;
     {
         let mut g = PATCHER.lock().unwrap_or_else(|e| e.into_inner());
@@ -285,6 +289,21 @@ fn init_thread() {
             }
             Err(e) => crate::log!("main: CGame::Process hook FAILED: {e}"),
         }
+        // Vehicles (M5): init-main byte rows, the 256-colour palette (rows 148–154) and the hooks.
+        let r = crate::vehpatches::apply(patcher, &mut mem, crate::vehpatches::INIT);
+        let c = crate::vehpatches::apply_colour_table(patcher, &mut mem);
+        for (row, addr, e) in r.failed.iter().chain(c.failed.iter()) {
+            crate::log!("main: vehicle row {row} at {addr:#x} SKIPPED: {e}");
+        }
+        crate::log!(
+            "main: vehicle rows applied: {} byte patches, {} colour-table operands",
+            r.applied.len(),
+            c.applied.len()
+        );
+        let hooks = crate::vehhooks::install(patcher, &mut mem);
+        let failed: Vec<String> =
+            hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
+        crate::log!("main: vehicle hooks: {} installed, failed: {failed:?}", hooks.len() - failed.len());
         // CSV row 6 — retarget the Render2dStuff call in Idle to our per-frame entry.
         let hook = frame_hook as extern "C" fn() as usize as u32;
         match patcher.retarget_branch(
@@ -487,6 +506,8 @@ extern "C" fn game_process_hook() {
     if !PED_FLAGS_DONE.load(Ordering::Relaxed) {
         let _ = catch_unwind(AssertUnwindSafe(first_frame_ped_flags));
     }
+    // The 0x53E981 hook also updates the chat render target (UR §2.5).
+    crate::ui::game_frame();
 }
 
 static FRAME_TIMER: Mutex<Option<crate::frametimer::FrameTimer>> = Mutex::new(None);
@@ -577,10 +598,10 @@ fn first_frame_ped_flags() {
 }
 
 /// Replaces the `call Render2dStuff` in `Idle` (cdecl, no arguments).
-///
-/// Like samp's hook (A 0x100C5030 → 0x100C4FB0, onfoot spec §6 step 5) the network
-/// session runs before the original `Render2dStuff`, so its HUD switches apply to the
-/// same frame; the UI (drawn by samp at present time) comes after it.
+/// samp's order (UR §2.4; also onfoot spec §6 step 5, A 0x100C5030 → 0x100C4FB0):
+/// pre-step (netgame tick, UI work), `Render2dStuff`, textdraws, input-restore
+/// countdown. The netgame's HUD switches therefore apply to the same frame (the
+/// player-parity measurement of 0xBA6769/0xBAA3FB, docs/phase3/parity-notes.md).
 extern "C" fn frame_hook() {
     let _ = catch_unwind(AssertUnwindSafe(tick));
     let orig = ORIGINAL_RENDER_2D.load(Ordering::Relaxed);
@@ -590,14 +611,7 @@ extern "C" fn frame_hook() {
         let f: extern "C" fn() = unsafe { std::mem::transmute(orig as usize) };
         f();
     }
-    let _ = catch_unwind(AssertUnwindSafe(after_render_2d));
-}
-
-/// In-game UI (M4) and the control channel, after `Render2dStuff`.
-fn after_render_2d() {
-    // First-frame setup, input restore, queued UI work.
-    crate::ui::frame_entry(false);
-    service_control("tick");
+    crate::ui::frame_after_2d();
 }
 
 struct TickStats {
@@ -632,6 +646,9 @@ fn tick() {
         }
     }
     client_tick();
+    // In-game UI (M4): first-frame setup, input restore, queued UI work.
+    crate::ui::frame_entry(false);
+    service_control("tick");
 }
 
 /// Starts the session once the world is up, then runs it every frame.
@@ -706,12 +723,17 @@ fn service_control(_from: &str) {
             Err(_) => "error client busy".into(),
         },
         Command::Files => crate::filehook::report(),
+        Command::Vehicles => match CLIENT.try_lock() {
+            Ok(g) => g.as_ref().map(|c| c.vehicle_lines()).unwrap_or_else(|| "vehicles count=0".into()),
+            Err(_) => "error client busy".into(),
+        },
         Command::Spawn => match CLIENT.try_lock() {
             Ok(mut g) => g.as_mut().map(|c| c.request_debug_spawn()).unwrap_or_else(|| "error no session".into()),
             Err(_) => "error client busy".into(),
         },
         Command::Chat(n) => crate::ui::control_chat(*n),
         Command::Input => crate::ui::control_input(),
+        Command::Ui => crate::ui::control_ui(),
         Command::Say(t) => crate::ui::control_say(t),
         Command::Quit => "bye".into(),
         Command::Unknown(c) => format!("error unknown command {c:?}"),

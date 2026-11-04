@@ -97,6 +97,39 @@ impl Players {
         self.death_drop_money = death_drop_money.min(i32::MAX as u32) as i32;
     }
 
+    pub fn get(&self, id: u16) -> Option<&RemotePlayer> {
+        self.players.get(&id)
+    }
+
+    pub fn get_mut(&mut self, id: u16) -> Option<&mut RemotePlayer> {
+        self.players.get_mut(&id)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &RemotePlayer> {
+        self.players.values()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut RemotePlayer> {
+        self.players.values_mut()
+    }
+
+    /// What the UI needs of each remote player (nametags, bubbles, scoreboard).
+    #[cfg(windows)]
+    pub fn ui_snapshot(&self, now: Instant) -> Vec<crate::ui::core::RemoteUi> {
+        self.players
+            .values()
+            .map(|p| crate::ui::core::RemoteUi {
+                id: p.id,
+                ped: p.ped,
+                state: p.state,
+                health: p.health,
+                armour: p.armour,
+                npc: p.npc,
+                ms_since_sync: p.last_sync.map_or(u64::MAX, |t| now.duration_since(t).as_millis() as u64),
+            })
+            .collect()
+    }
+
     /// Streamed-in remote peds (N of the on-foot send interval).
     pub fn streamed(&self) -> u32 {
         self.slots.count()
@@ -113,13 +146,13 @@ impl Players {
                 if let Some(old) = self.players.get(&j.player_id)
                     && old.ped != 0
                 {
-                    self.destroy_ped(j.player_id);
+                    self.destroy_ped(runner, j.player_id);
                 }
                 self.players.insert(j.player_id, RemotePlayer::new(j.player_id, name, j.colour, j.is_npc != 0));
             }
             R::PlayerQuit(q) => {
                 crate::log!("players: quit id={} reason={}", q.player_id, q.reason);
-                self.destroy_ped(q.player_id);
+                self.destroy_ped(runner, q.player_id);
                 self.players.remove(&q.player_id);
             }
             R::PlayerStreamIn(s) => {
@@ -149,7 +182,7 @@ impl Players {
             }
             R::PlayerStreamOut(s) => {
                 crate::log!("players: stream-out id={}", s.player_id);
-                self.destroy_ped(s.player_id);
+                self.destroy_ped(runner, s.player_id);
                 if let Some(p) = self.players.get_mut(&s.player_id) {
                     p.state = state::NONE;
                 }
@@ -194,10 +227,10 @@ impl Players {
     }
 
     /// Session ended: every remote ped goes.
-    pub fn clear(&mut self) {
+    pub fn clear(&mut self, runner: &mut Runner) {
         let ids: Vec<u16> = self.players.keys().copied().collect();
         for id in ids {
-            self.destroy_ped(id);
+            self.destroy_ped(runner, id);
         }
         self.players.clear();
     }
@@ -209,7 +242,7 @@ impl Players {
             crate::log!("players: sector relocation or swap hooks missing; not creating a ped for id {id}");
             return;
         }
-        self.destroy_ped(id);
+        self.destroy_ped(runner, id);
         let Some(slot) = self.slots.alloc() else {
             crate::log!("players: no free ped slot for id {id}");
             return;
@@ -255,7 +288,7 @@ impl Players {
         crate::log!("players: id={id} {} → slot {slot}, ped {ped:#x}, handle {handle:#x}", p.name);
     }
 
-    fn destroy_ped(&mut self, id: u16) {
+    fn destroy_ped(&mut self, runner: &mut Runner, id: u16) {
         let Some(p) = self.players.get_mut(&id) else { return };
         let (ped, slot) = (p.ped, p.slot);
         p.ped = 0;
@@ -265,6 +298,14 @@ impl Players {
         let mem = ProcessMemory;
         let vtbl = mem.read_u32(ped + off::VTABLE).unwrap_or(0);
         if ped != 0 && vtbl != 0 && vtbl != VTBL_CPLACEABLE {
+            // A ped still in a vehicle is warped out to (100, 100, 10) first (onfoot §1.5), so the vehicle keeps
+            // no pointer to the deleted ped.
+            if mem.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0
+                && let Some(h) = game::ped_handle(&mem, ped).ok().flatten()
+            {
+                let a = [Arg::Int(h), Arg::Float(100.0), Arg::Float(100.0), Arg::Float(10.0)];
+                runner.run(op::WARP_CHAR_FROM_CAR_TO_COORD, &a);
+            }
             // m_pPlayerData->+0x4C := 0 (the anim-block field ProcessAnimGroups no longer
             // maintains, CSV row 167), through the ped's own pointer (TRACE-2 finding 3a).
             let data = mem.read_u32(ped + PLAYER_PED_DATA).unwrap_or(0);
@@ -412,7 +453,7 @@ impl Players {
 
     /// Streams out every player whose ped faulted inside ProcessControl
     /// (samp's handler in A 0x100A2800: "Removed player %u due to error.").
-    pub fn handle_faults(&mut self) {
+    pub fn handle_faults(&mut self, runner: &mut Runner) {
         for fault in swap::take_faults() {
             crate::ui::print_debug(&format!(
                 "Warning(playerped): Exception 0x{:X} at 0x{:X}.",
@@ -420,7 +461,7 @@ impl Players {
             ));
             let id = self.players.values().find(|p| p.slot == Some(fault.slot)).map(|p| p.id);
             let Some(id) = id else { continue };
-            self.destroy_ped(id);
+            self.destroy_ped(runner, id);
             if let Some(p) = self.players.get_mut(&id) {
                 p.state = state::NONE;
             }
@@ -429,7 +470,7 @@ impl Players {
     }
 
     /// `remote` control-channel reply: a header line, then one line per remote player.
-    pub fn status(&self, now: Instant) -> String {
+    pub fn status(&self, now: Instant, extra: impl Fn(&RemotePlayer) -> String) -> String {
         let mem = ProcessMemory;
         let (calls_remote, calls_local) = swap::call_counts();
         let mut out = format!(
@@ -450,6 +491,7 @@ impl Players {
             };
             out.push('\n');
             out.push_str(&remote::format_remote(p, pos, heading, health, now));
+            out.push_str(&extra(p));
         }
         out
     }
