@@ -14,10 +14,14 @@ pub mod log;
 pub mod netclient;
 pub mod patch;
 pub mod patches;
+pub mod pe;
 pub mod remote;
+pub mod saafs;
 pub mod scm;
+pub mod scmops;
 pub mod script;
 pub mod sectors;
+pub mod stores;
 
 #[cfg(windows)]
 mod client;
@@ -25,6 +29,8 @@ mod client;
 mod diag;
 #[cfg(windows)]
 mod dll;
+#[cfg(windows)]
+mod filehook;
 #[cfg(windows)]
 mod players;
 #[cfg(windows)]

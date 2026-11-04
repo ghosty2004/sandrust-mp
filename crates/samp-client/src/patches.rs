@@ -10,10 +10,14 @@
 //! `Players[-1]` / NULL-player-info NOPs, the ped-group and heading-store
 //! patches); the sector relocation itself is table-driven in `sectors.rs`.
 //!
-//! Deliberately NOT applied yet (later milestones): the other pool sizes,
-//! model-store / colour-table relocation, the CJ-walk anim-group hook (rows 43,
-//! 187), the single-player feature removals, and `CStreaming::InitImageList`
-//! := RET (row 128 — SA:MP registers the image archives itself; we do not yet).
+//! SAA-2 adds the pool sizes the samp.saa data needs (rows 107–109, 119, 131)
+//! and, only when files are served from samp.saa, `CStreaming::InitImageList`
+//! := RET (row 128: the archive's default.dat registers the image archives);
+//! the model-info stores are moved in `stores.rs`.
+//!
+//! Deliberately NOT applied yet (later milestones): the object pool, the
+//! colour-table and model-pointer relocations, the CJ-walk anim-group hook
+//! (rows 43, 187) and the single-player feature removals.
 
 use crate::patch::{Memory, PatchError, Patcher};
 
@@ -23,6 +27,9 @@ pub enum Phase {
     Early,
     /// Once `gGameState == 7` (FRONTEND_IDLE), before switching to state 8 (spec §2 step 3).
     Main,
+    /// At attach, only when files are served from samp.saa (SAA-2): samp's
+    /// default.dat registers the image archives itself.
+    EarlyArchive,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -307,7 +314,10 @@ pub const TABLE: &[Entry] = &[
         addr: 0x60F2C4,
         phase: Phase::Main,
         write: Write::Nop(25),
-        original: &[0x56, 0xe8, 0xd6, 0x4c, 0xf5, 0xff, 0x69, 0xc0, 0x90, 0x01, 0x00, 0x00, 0x8b, 0x88, 0x48, 0xce, 0xb7, 0x00, 0x83, 0xc4, 0x04, 0x85, 0xc9, 0x75, 0x08],
+        original: &[
+            0x56, 0xe8, 0xd6, 0x4c, 0xf5, 0xff, 0x69, 0xc0, 0x90, 0x01, 0x00, 0x00, 0x8b, 0x88, 0x48, 0xce, 0xb7, 0x00,
+            0x83, 0xc4, 0x04, 0x85, 0xc9, 0x75, 0x08,
+        ],
         csv_row: 193,
         what: "CPlayerPed::ProcessControl: no FindPlayerSlotWithPedPointer",
     },
@@ -316,7 +326,10 @@ pub const TABLE: &[Entry] = &[
         addr: 0x5E63A6,
         phase: Phase::Main,
         write: Write::Nop(19),
-        original: &[0xe8, 0x45, 0x3c, 0x02, 0x00, 0x8a, 0x88, 0x53, 0x01, 0x00, 0x00, 0x84, 0xc9, 0x0f, 0x84, 0xa8, 0x00, 0x00, 0x00],
+        original: &[
+            0xe8, 0x45, 0x3c, 0x02, 0x00, 0x8a, 0x88, 0x53, 0x01, 0x00, 0x00, 0x84, 0xc9, 0x0f, 0x84, 0xa8, 0x00, 0x00,
+            0x00,
+        ],
         csv_row: 173,
         what: "CPed::RemoveWeaponWhenEnteringVehicle: no player-info lookup",
     },
@@ -340,7 +353,10 @@ pub const TABLE: &[Entry] = &[
         addr: 0x741FFF,
         phase: Phase::Main,
         write: Write::Nop(27),
-        original: &[0xe8, 0xec, 0x7f, 0xec, 0xff, 0x85, 0xc0, 0x0f, 0x84, 0xec, 0x02, 0x00, 0x00, 0x8a, 0x88, 0x53, 0x01, 0x00, 0x00, 0x84, 0xc9, 0x0f, 0x84, 0xde, 0x02, 0x00, 0x00],
+        original: &[
+            0xe8, 0xec, 0x7f, 0xec, 0xff, 0x85, 0xc0, 0x0f, 0x84, 0xec, 0x02, 0x00, 0x00, 0x8a, 0x88, 0x53, 0x01, 0x00,
+            0x00, 0x84, 0xc9, 0x0f, 0x84, 0xde, 0x02, 0x00, 0x00,
+        ],
         csv_row: 176,
         what: "CVehicle::DoDriveByShootings: no player-info lookup",
     },
@@ -377,9 +393,154 @@ pub const TABLE: &[Entry] = &[
         addr: 0x609C08,
         phase: Phase::Main,
         write: Write::Nop(39),
-        original: &[0x8b, 0x0d, 0x34, 0xea, 0xb4, 0x00, 0x8d, 0x04, 0x80, 0x8b, 0x14, 0x81, 0x81, 0xea, 0xa0, 0xd4, 0xb5, 0x00, 0xc1, 0xfa, 0x05, 0x52, 0xe8, 0xad, 0xa3, 0xec, 0xff, 0x8b, 0x86, 0x80, 0x04, 0x00, 0x00, 0x83, 0xc4, 0x04, 0x89, 0x68, 0x4c],
+        original: &[
+            0x8b, 0x0d, 0x34, 0xea, 0xb4, 0x00, 0x8d, 0x04, 0x80, 0x8b, 0x14, 0x81, 0x81, 0xea, 0xa0, 0xd4, 0xb5, 0x00,
+            0xc1, 0xfa, 0x05, 0x52, 0xe8, 0xad, 0xa3, 0xec, 0xff, 0x8b, 0x86, 0x80, 0x04, 0x00, 0x00, 0x83, 0xc4, 0x04,
+            0x89, 0x68, 0x4c,
+        ],
         csv_row: 167,
         what: "CPlayerPed::ProcessAnimGroups: no anim block switch",
+    },
+    // SAA-2: pool sizes samp sets in CPools::Initialise (gta-patches.md §4.1). samp.saa's data
+    // (SAMP.ide, SAMP.ipl, SAMPCOL.img) needs more buildings, dummies and collision models.
+    // CSV row 107 — vehicle pool: `push "Vehicles"; push 110` -> `push 0; push 710`.
+    Entry {
+        addr: 0x551024,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x6a, 0x00, 0x68, 0xc6, 0x02, 0x00, 0x00]),
+        original: &[0x68, 0xdc, 0x3c, 0x86, 0x00, 0x6a, 0x6e],
+        csv_row: 107,
+        what: "CPools::Initialise: vehicle pool 710",
+    },
+    // CSV row 108 — building pool 13000 -> 20000.
+    Entry {
+        addr: 0x55105F,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x20, 0x4e, 0x00, 0x00]),
+        original: &[0xc8, 0x32, 0x00, 0x00],
+        csv_row: 108,
+        what: "CPools::Initialise: building pool 20000",
+    },
+    // CSV row 109 — dummy pool 2500 -> 4000.
+    Entry {
+        addr: 0x5510CF,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0xa0, 0x0f, 0x00, 0x00]),
+        original: &[0xc4, 0x09, 0x00, 0x00],
+        csv_row: 109,
+        what: "CPools::Initialise: dummy pool 4000",
+    },
+    // CSV row 119 — collision-model pool 10150 -> 32511.
+    Entry {
+        addr: 0x551106,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x68, 0xff, 0x7e, 0x00, 0x00]),
+        original: &[0x68, 0xa6, 0x27, 0x00, 0x00],
+        csv_row: 119,
+        what: "CPools::Initialise: col-model pool 32511",
+    },
+    // CSV row 131 — CTxdStore::Initialise: texture-dictionary pool 5000 -> 20000.
+    Entry {
+        addr: 0x731F60,
+        phase: Phase::Early,
+        write: Write::Bytes(&[0x20, 0x4e, 0x00, 0x00]),
+        original: &[0x88, 0x13, 0x00, 0x00],
+        csv_row: 131,
+        what: "CTxdStore::Initialise: txd pool 20000",
+    },
+    // CSV row 128 — CStreaming::InitImageList := RET. samp.saa's default.dat lists
+    // SAMP\CUSTOM.IMG, SAMP\SAMP.IMG, MODELS\GTA3.IMG and MODELS\GTA_INT.IMG itself;
+    // without this the two stock archives would be registered twice (9 of 8 image slots).
+    Entry {
+        addr: 0x4083C0,
+        phase: Phase::EarlyArchive,
+        write: Write::Bytes(&[0xC3]),
+        original: &[0xB8],
+        csv_row: 128,
+        what: "CStreaming::InitImageList := RET",
+    },
+    // CSV rows 122/123 — splash texture names "title_pc_US" and "loadsc%d" -> "title":
+    // samp.saa's loadscs.txd holds a single texture called `title` (loading screen).
+    Entry {
+        addr: 0x866CD8,
+        phase: Phase::EarlyArchive,
+        write: Write::Bytes(b"title\0"),
+        original: b"title_",
+        csv_row: 122,
+        what: "splash name title_pc_US -> title",
+    },
+    Entry {
+        addr: 0x866CCC,
+        phase: Phase::EarlyArchive,
+        write: Write::Bytes(b"title\0"),
+        original: b"loadsc",
+        csv_row: 123,
+        what: "splash name loadsc%d -> title",
+    },
+    // SP-OFF: single-player population, traffic and replay off (TRACE-4, trace-notes.md
+    // "SP-OFF baseline"). Row 55 (police scanner) is a call hook installed in dll.rs.
+    // CSV row 189 — CGame::Process: no CCarCtrl::GenerateRandomCars.
+    Entry {
+        addr: 0x53C1C1,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xe8, 0xfa, 0x7f, 0xef, 0xff],
+        csv_row: 189,
+        what: "CGame::Process: no GenerateRandomCars",
+    },
+    // CSV row 181 — CGame::Process: no CTheCarGenerators::Process (parked cars).
+    Entry {
+        addr: 0x53C06A,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xe8, 0xd1, 0x7e, 0x1b, 0x00],
+        csv_row: 181,
+        what: "CGame::Process: no CTheCarGenerators::Process",
+    },
+    // CSV row 163 — CGame::Process: no CReplay::Update.
+    Entry {
+        addr: 0x53C090,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xe8, 0x6b, 0x44, 0xf2, 0xff],
+        csv_row: 163,
+        what: "CGame::Process: no CReplay::Update",
+    },
+    // CSV row 182 — GenerateRandomCars: no CPlane::DoPlaneGenerationAndRemoval.
+    Entry {
+        addr: 0x434272,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xe8, 0x79, 0x90, 0x29, 0x00],
+        csv_row: 182,
+        what: "GenerateRandomCars: no plane generation",
+    },
+    // CSV row 185 — CPopulation::AddPed := xor eax,eax; ret.
+    Entry {
+        addr: 0x612710,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x33, 0xc0, 0xc3]),
+        original: &[0x90, 0xe9, 0xad],
+        csv_row: 185,
+        what: "CPopulation::AddPed := return NULL",
+    },
+    // CSV row 186 — CPopulation::AddPedInCar: no CCarEnterExit::SetPedInCarDirect.
+    Entry {
+        addr: 0x613BA7,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xe8, 0xd4, 0xc6, 0x03, 0x00],
+        csv_row: 186,
+        what: "AddPedInCar: no SetPedInCarDirect",
+    },
+    // CSV row 164 — CEntryExit::TransitionFinished: no GenerateAmbientPeds (push + call).
+    Entry {
+        addr: 0x440833,
+        phase: Phase::Main,
+        write: Write::Nop(8),
+        original: &[0x52, 0x8b, 0xcd, 0xe8, 0x75, 0xe0, 0xff, 0xff],
+        csv_row: 164,
+        what: "CEntryExit::TransitionFinished: no GenerateAmbientPeds",
     },
     // CSV row 162 — "playidles" blanked: no idle anims on player peds.
     Entry {
@@ -553,6 +714,22 @@ mod tests {
             assert_eq!(exe.read_va(e.addr, e.original.len()), e.original, "{:#x} {}", e.addr, e.what);
         }
         assert_eq!(exe.read_va(crate::cdstream::SYNC_WAIT_CALL, 6), crate::cdstream::SYNC_WAIT_CALL_ORIGINAL);
+        // CGame::Shutdown entry (CSV row 52).
+        assert_eq!(exe.read_va(crate::game::CGAME_SHUTDOWN, 7), crate::game::CGAME_SHUTDOWN_ORIGINAL);
+        // The police scanner's FindPlayerPed call (CSV row 55).
+        assert_eq!(
+            exe.read_va(crate::game::POLICE_SCANNER_FIND_PLAYER_CALL, 5),
+            crate::patch::encode_branch(
+                0xE8,
+                crate::game::POLICE_SCANNER_FIND_PLAYER_CALL,
+                crate::game::FIND_PLAYER_PED
+            )
+        );
+        // The CGame::Process call site in Idle (CSV row 10).
+        assert_eq!(
+            exe.read_va(crate::game::IDLE_GAME_PROCESS_CALL, 5),
+            crate::patch::encode_branch(0xE8, crate::game::IDLE_GAME_PROCESS_CALL, crate::game::CGAME_PROCESS)
+        );
         // The per-frame call site: call Render2dStuff.
         assert_eq!(
             exe.read_va(crate::game::IDLE_RENDER_2D_CALL, 5),

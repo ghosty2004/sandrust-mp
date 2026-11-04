@@ -25,6 +25,7 @@ pub mod op {
     pub const DISPLAY_ZONE_NAMES: u16 = 0x09BA;
     pub const SET_TIME_OF_DAY: u16 = 0x00C0;
     pub const SWITCH_ROADS_OFF: u16 = 0x01E8;
+    pub const SET_MAX_WANTED_LEVEL: u16 = 0x01F0;
     pub const SET_CAR_DENSITY_MULTIPLIER: u16 = 0x01EB;
     pub const GET_PLAYER_CHAR: u16 = 0x01F5;
     pub const SET_PED_DENSITY_MULTIPLIER: u16 = 0x03DE;

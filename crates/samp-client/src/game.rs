@@ -29,6 +29,24 @@ pub const RENDER_2D_STUFF: u32 = 0x53E230;
 /// Call site of `Render2dStuff` inside `Idle` (0x53E920); gta-patches CSV row 6.
 pub const IDLE_RENDER_2D_CALL: u32 = 0x53EB12;
 
+/// `CGame::Process`, named via gta-reversed; called from `Idle` at 0x53E981.
+pub const CGAME_PROCESS: u32 = 0x53BEE0;
+/// Call site of `CGame::Process` inside `Idle`; gta-patches CSV row 10. Unlike
+/// the Render2dStuff call it also runs while the screen is faded out.
+pub const IDLE_GAME_PROCESS_CALL: u32 = 0x53E981;
+
+/// `CGame::Shutdown` (cdecl, no args), gta-reversed; CSV row 52 hooks its entry.
+pub const CGAME_SHUTDOWN: u32 = 0x53C900;
+/// First 7 bytes of `CGame::Shutdown` (`push esi; push edi; mov ecx, g_breakMan`).
+pub const CGAME_SHUTDOWN_ORIGINAL: [u8; 7] = [0x56, 0x57, 0xB9, 0x40, 0x42, 0xBB, 0x00];
+
+/// `FindPlayerPed` (cdecl, int player), gta-reversed.
+pub const FIND_PLAYER_PED: u32 = 0x56E210;
+/// The `call FindPlayerPed` in `CAEPoliceScannerAudioEntity::AddAudioEvent`; CSV row 55.
+pub const POLICE_SCANNER_FIND_PLAYER_CALL: u32 = 0x4E7427;
+/// Size of the zeroed stand-in ped samp hands to the police scanner (B 0x100A17BB: 0x1E8 dwords).
+pub const SCANNER_DUMMY_PED_BYTES: usize = 0x7A0;
+
 /// `CFileMgr::OpenFile(path, mode)` (cdecl, a jump to the CRT `fopen`), gta-reversed `FileMgr.cpp`.
 pub const CFILEMGR_OPEN_FILE: u32 = 0x538900;
 /// The `call CFileMgr::OpenFile` that opens "main.scm" in `CTheScripts::Init` (0x468D50).

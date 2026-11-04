@@ -288,7 +288,11 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Result<(), Pat
         if found == want {
             Ok(())
         } else {
-            Err(PatchError::Mismatch { addr: slot, expected: want.to_le_bytes().to_vec(), found: found.to_le_bytes().to_vec() })
+            Err(PatchError::Mismatch {
+                addr: slot,
+                expected: want.to_le_bytes().to_vec(),
+                found: found.to_le_bytes().to_vec(),
+            })
         }
     };
     expect(addr::VT_PLAYER_PED_PROCESS_CONTROL, addr::PLAYER_PED_PROCESS_CONTROL)?;

@@ -165,9 +165,12 @@ impl Client {
             self.spawn();
         }
         if !self.first_frame_done {
-            // The original's first frame: two ped flags on the local player.
+            // The original's first frame: two ped flags on the local player
+            // (normally already set from the CGame::Process hook in dll.rs).
             self.first_frame_done = true;
-            if let Some(h) = self.ped_handle(self.ped()) {
+            if !crate::dll::PED_FLAGS_DONE.load(std::sync::atomic::Ordering::SeqCst)
+                && let Some(h) = self.ped_handle(self.ped())
+            {
                 self.runner.run(op::SET_CHAR_DROPS_WEAPONS_WHEN_DEAD, &[Arg::Int(h), Arg::Int(1)]);
                 self.runner.run(op::SET_CHAR_SUFFERS_CRITICAL_HITS, &[Arg::Int(h), Arg::Int(0)]);
             }

@@ -80,6 +80,9 @@ pub fn build_main_scm(player_pos: [f32; 3]) -> Vec<u8> {
     instr(&mut s, op::SET_TIME_OF_DAY, &[Arg::Int(12), Arg::Int(0)]);
     instr(&mut s, op::SET_PED_DENSITY_MULTIPLIER, &[Arg::Float(0.0)]);
     instr(&mut s, op::SET_CAR_DENSITY_MULTIPLIER, &[Arg::Float(0.0)]);
+    // samp's script caps the wanted level at 0 (TRACE-4 SP-OFF): no police, no
+    // forbidden-territory wanted level.
+    instr(&mut s, op::SET_MAX_WANTED_LEVEL, &[Arg::Int(0)]);
     instr(&mut s, op::REQUEST_COLLISION, &[Arg::Float(x), Arg::Float(y)]);
     instr(
         &mut s,

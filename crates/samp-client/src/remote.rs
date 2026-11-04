@@ -175,7 +175,8 @@ impl SlotShadow {
 
 /// An up vector perpendicular to `front` (camera roll 0).
 pub fn up_from_front(f: [f32; 3]) -> [f32; 3] {
-    let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let cross =
+        |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
     let right = cross(f, [0.0, 0.0, 1.0]);
     let up = cross(right, f);
     let n = (up[0] * up[0] + up[1] * up[1] + up[2] * up[2]).sqrt();
@@ -249,7 +250,15 @@ pub struct PadInput {
 pub fn apply_keys(pad: &mut [u8; PAD_SIZE], i: PadInput) {
     let k = |bit: u16| i.keys & (1 << bit) != 0;
     let button = |on: bool| if on { 0xFF } else { 0 };
-    let axis = |neg: bool, pos: bool| if neg { -128 } else if pos { 128 } else { 0 };
+    let axis = |neg: bool, pos: bool| {
+        if neg {
+            -128
+        } else if pos {
+            128
+        } else {
+            0
+        }
+    };
     let words: [(usize, i16); 16] = [
         (0, i.left_right),
         (1, i.up_down),
@@ -514,8 +523,7 @@ pub fn format_remote(
     let slot = p.slot.map(|s| s.to_string()).unwrap_or_else(|| "-".into());
     let pos = pos.map(|v| format!("{:.2},{:.2},{:.2}", v[0], v[1], v[2])).unwrap_or_else(|| "-".into());
     let heading = heading.map(|h| format!("{h:.3}")).unwrap_or_else(|| "-".into());
-    let age =
-        p.last_sync.map(|t| now.duration_since(t).as_millis().to_string()).unwrap_or_else(|| "-".into());
+    let age = p.last_sync.map(|t| now.duration_since(t).as_millis().to_string()).unwrap_or_else(|| "-".into());
     let sync_pos = p
         .foot
         .map(|f| format!("{:.2},{:.2},{:.2}", f.position[0], f.position[1], f.position[2]))
@@ -686,7 +694,10 @@ mod tests {
         p.slot = Some(2);
         p.ped = 0x1000;
         let line = format_remote(&p, Some([1.0, 2.0, 3.0]), Some(0.5), Some(1000.0), now);
-        assert!(line.starts_with("remote id=3 name=RemoteBot slot=2 ped=0x1000 pos=1.00,2.00,3.00 heading=0.500"), "{line}");
+        assert!(
+            line.starts_with("remote id=3 name=RemoteBot slot=2 ped=0x1000 pos=1.00,2.00,3.00 heading=0.500"),
+            "{line}"
+        );
         assert!(line.contains("sync_age_ms=0"));
         assert!(!p.is_stale(now));
         assert!(p.is_stale(now + Duration::from_millis(3001)));

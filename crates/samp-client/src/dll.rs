@@ -115,6 +115,11 @@ fn attach() {
         Err(e) => crate::log!("early: CdStreamSync wait FAILED: {e}"),
     }
     crate::log!("early: physical RAM {ram_mb} MB -> streaming budget {:#x}", patches::streaming_budget(ram_mb));
+    // SAA-2: serve files from samp.saa like samp (filehook.rs), before the game opens anything.
+    if let crate::filehook::Mode::Archive = crate::filehook::init(&mut patcher, &mut mem) {
+        let r = patches::apply_phase(&mut patcher, &mut mem, Phase::EarlyArchive, ram_mb);
+        log_report("early", &r);
+    }
     *PATCHER.lock().unwrap_or_else(|e| e.into_inner()) = Some(patcher);
 
     if let Err(e) = std::thread::Builder::new().name("samp-init".into()).spawn(init_thread) {
@@ -165,6 +170,10 @@ fn init_thread() {
         if last_report.elapsed() > Duration::from_secs(10) {
             crate::log!("still waiting for gGameState 7 (now {s})");
             last_report = Instant::now();
+            // Rare long stalls before state 7 (seen ~50 s): record where the threads are.
+            if t0.elapsed() < Duration::from_secs(35) {
+                crate::diag::dump_threads("slow start");
+            }
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -179,9 +188,26 @@ fn init_thread() {
         match crate::sectors::relocate(patcher, &mut mem, buffer.as_mut_ptr() as u32) {
             Ok(n) => {
                 SECTORS_RELOCATED.store(true, Ordering::SeqCst);
-                crate::log!("main: sector grid relocated to {:#x} ({n} references), original zeroed", buffer.as_ptr() as u32);
+                crate::log!(
+                    "main: sector grid relocated to {:#x} ({n} references), original zeroed",
+                    buffer.as_ptr() as u32
+                );
             }
             Err(e) => crate::log!("main: sector relocation FAILED, remote players disabled: {e}"),
+        }
+        // Enlarged model-info stores (gta-patches.md §4.2), needed by samp.saa's IDE files.
+        for store in crate::stores::STORES {
+            let buf: &'static mut [u8] = Box::leak(crate::stores::new_entries(store).into_boxed_slice());
+            match crate::stores::relocate(patcher, &mut mem, store, buf.as_ptr() as u32) {
+                Ok(()) => crate::log!(
+                    "main: {} moved to {:#x} ({} entries, {} references)",
+                    store.name,
+                    buf.as_ptr() as u32,
+                    store.entries,
+                    store.refs.len()
+                ),
+                Err(e) => crate::log!("main: {} relocation FAILED: {e}", store.name),
+            }
         }
         let r = patches::apply_phase(patcher, &mut mem, Phase::Main, 0);
         log_report("main", &r);
@@ -193,6 +219,65 @@ fn init_thread() {
             }
             Ok(()) => crate::log!("main: swap hooks installed, but remote peds stay disabled (no sector relocation)"),
             Err(e) => crate::log!("main: swap hooks FAILED, remote players disabled: {e}"),
+        }
+        // CSV rows 2/3 — samp's custom script opcodes 0x09C6 / 0x09D3 (used by samp.saa's scripts).
+        match crate::scmops::install(patcher, &mut mem) {
+            Ok(()) => crate::log!("main: script opcodes 0x09C6 / 0x09D3 installed"),
+            Err(e) => crate::log!("main: script opcodes 0x09C6 / 0x09D3 FAILED: {e}"),
+        }
+        // CSV row 55 — the police scanner's FindPlayerPed call gets a zeroed stand-in ped
+        // (samp: a 0x7A0-byte zeroed static), so scanner reports never refer to the player.
+        let dummy: &'static mut [u8] = Box::leak(vec![0u8; game::SCANNER_DUMMY_PED_BYTES].into_boxed_slice());
+        SCANNER_DUMMY_PED.store(dummy.as_ptr() as u32, Ordering::SeqCst);
+        let hook = scanner_find_player_ped as extern "C" fn(i32) -> u32 as usize as u32;
+        match patcher.retarget_branch(
+            &mut mem,
+            "police scanner FindPlayerPed",
+            game::POLICE_SCANNER_FIND_PLAYER_CALL,
+            hook,
+            Some(game::FIND_PLAYER_PED),
+        ) {
+            Ok(_) => crate::log!(
+                "main: police scanner FindPlayerPed at {:#x} -> stand-in ped",
+                game::POLICE_SCANNER_FIND_PLAYER_CALL
+            ),
+            Err(e) => crate::log!("main: police scanner hook FAILED: {e}"),
+        }
+        // CSV row 52 — CGame::Shutdown: like samp, never run the game's own shutdown; give
+        // the network ~2 s and end the process (the enlarged model-info stores are not
+        // known to CModelInfo::ShutDown, which would walk 311 ped entries of a 278-entry array).
+        let mut jmp = crate::patch::encode_branch(
+            crate::patch::OP_JMP,
+            game::CGAME_SHUTDOWN,
+            game_shutdown_hook as extern "C" fn() as usize as u32,
+        )
+        .to_vec();
+        jmp.extend_from_slice(&[crate::patch::OP_NOP; 2]);
+        match patcher.write(
+            &mut mem,
+            "CGame::Shutdown -> exit",
+            game::CGAME_SHUTDOWN,
+            &jmp,
+            Some(&game::CGAME_SHUTDOWN_ORIGINAL),
+        ) {
+            Ok(()) => crate::log!("main: CGame::Shutdown at {:#x} -> exit after 2 s", game::CGAME_SHUTDOWN),
+            Err(e) => crate::log!("main: CGame::Shutdown hook FAILED: {e}"),
+        }
+        // CSV row 10 — the CGame::Process call in Idle: runs every frame, also while the
+        // screen is faded out (samp.saa's main.scm keeps it faded until frame ~34).
+        let hook = game_process_hook as extern "C" fn() as usize as u32;
+        match patcher.retarget_branch(
+            &mut mem,
+            "Idle -> CGame::Process hook",
+            game::IDLE_GAME_PROCESS_CALL,
+            hook,
+            Some(game::CGAME_PROCESS),
+        ) {
+            Ok(old) => {
+                ORIGINAL_GAME_PROCESS.store(old, Ordering::SeqCst);
+                crate::log!("main: CGame::Process call at {:#x} -> {hook:#x}", game::IDLE_GAME_PROCESS_CALL);
+            }
+            Err(e) => crate::log!("main: CGame::Process hook FAILED: {e}"),
         }
         // CSV row 6 — retarget the Render2dStuff call in Idle to our per-frame entry.
         let hook = frame_hook as extern "C" fn() as usize as u32;
@@ -212,25 +297,30 @@ fn init_thread() {
             }
             Err(e) => crate::log!("main: per-frame hook FAILED: {e}"),
         }
-        // Our own replacement for the story script (scm.rs), served instead of
-        // data\script\main.scm through the open call in CTheScripts::Init.
-        match write_main_scm() {
-            Ok(path) => {
-                let hook = open_main_scm_hook as extern "C" fn(*const u8, *const u8) -> *mut c_void as usize as u32;
-                match patcher.retarget_branch(
-                    &mut mem,
-                    "CTheScripts::Init main.scm open",
-                    game::MAIN_SCM_OPEN_CALL,
-                    hook,
-                    Some(game::CFILEMGR_OPEN_FILE),
-                ) {
-                    Ok(_) => {
-                        crate::log!("main: main.scm open at {:#x} -> our script {}", game::MAIN_SCM_OPEN_CALL, path)
+        // Fallback only: our own replacement for the story script (scm.rs), served
+        // instead of data\script\main.scm through the open call in CTheScripts::Init.
+        // With samp.saa the game opens samp's own main.scm from the archive.
+        if crate::filehook::archive_active() {
+            crate::log!("main: main.scm comes from samp.saa (samp's script); our replacement script is not used");
+        } else {
+            match write_main_scm() {
+                Ok(path) => {
+                    let hook = open_main_scm_hook as extern "C" fn(*const u8, *const u8) -> *mut c_void as usize as u32;
+                    match patcher.retarget_branch(
+                        &mut mem,
+                        "CTheScripts::Init main.scm open",
+                        game::MAIN_SCM_OPEN_CALL,
+                        hook,
+                        Some(game::CFILEMGR_OPEN_FILE),
+                    ) {
+                        Ok(_) => {
+                            crate::log!("main: main.scm open at {:#x} -> our script {}", game::MAIN_SCM_OPEN_CALL, path)
+                        }
+                        Err(e) => crate::log!("main: main.scm redirect FAILED: {e}"),
                     }
-                    Err(e) => crate::log!("main: main.scm redirect FAILED: {e}"),
                 }
+                Err(e) => crate::log!("main: cannot write our main.scm: {e}; the stock story script will run"),
             }
-            Err(e) => crate::log!("main: cannot write our main.scm: {e}; the stock story script will run"),
         }
     }
 
@@ -265,12 +355,18 @@ fn init_thread() {
     let mut last_state = 8;
     let mut since_state9: Option<Instant> = None;
     let mut hook_checked = false;
+    let mut load_checked = false;
     while !QUIT.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(50));
         let s = mem.read_i32(game::G_GAME_STATE).unwrap_or(-1);
         if s != last_state {
             crate::log!("gGameState = {s} ({}) after {:.2}s", game::game_state_name(s), t0.elapsed().as_secs_f32());
             last_state = s;
+        }
+        if s == 8 && !load_checked && t0.elapsed() > Duration::from_secs(30) {
+            load_checked = true;
+            crate::log!("still loading (gGameState 8) {:.0} s after start", t0.elapsed().as_secs_f32());
+            crate::diag::dump_threads("slow load");
         }
         if s == 9 && since_state9.is_none() {
             since_state9 = Some(Instant::now());
@@ -333,6 +429,73 @@ extern "C" fn open_main_scm_hook(path: *const u8, mode: *const u8) -> *mut c_voi
             None => open(path, mode),
         }
     }
+}
+
+/// Replaces `CGame::Shutdown` (samp B 0x100A3AB0: its own cleanup, then up to
+/// 2000 ms of 100 ms sleeps, then `ExitProcess(0)`).
+extern "C" fn game_shutdown_hook() {
+    let start = Instant::now();
+    crate::log!("CGame::Shutdown: ending the process like samp");
+    // A `quit` request has already disconnected.
+    if !QUIT.load(Ordering::SeqCst)
+        && let Ok(mut g) = CLIENT.try_lock()
+        && let Some(c) = g.as_mut()
+    {
+        c.shutdown();
+    }
+    while start.elapsed() < Duration::from_millis(2000) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    crate::log!("exit");
+    std::process::exit(0);
+}
+
+/// Zeroed stand-in ped for the police scanner (CSV row 55).
+static SCANNER_DUMMY_PED: AtomicU32 = AtomicU32::new(0);
+
+/// Replaces `FindPlayerPed(player)` in `CAEPoliceScannerAudioEntity::AddAudioEvent` (cdecl).
+extern "C" fn scanner_find_player_ped(_player: i32) -> u32 {
+    SCANNER_DUMMY_PED.load(Ordering::Relaxed)
+}
+
+/// Original target of the call at 0x53E981 (`CGame::Process`).
+static ORIGINAL_GAME_PROCESS: AtomicU32 = AtomicU32::new(0);
+/// The first-frame ped flags were set from [`game_process_hook`].
+pub(crate) static PED_FLAGS_DONE: AtomicBool = AtomicBool::new(false);
+
+/// Replaces the `call CGame::Process` in `Idle` (cdecl, no arguments). After
+/// the first game frame with a local ped (state 9) it sets the two ped flags
+/// the original sets in its first frame (TRACE-1: frame 1, after the scripts
+/// ran), even while the screen is still faded out and `Render2dStuff` (our
+/// per-frame tick) is skipped.
+extern "C" fn game_process_hook() {
+    let orig = ORIGINAL_GAME_PROCESS.load(Ordering::Relaxed);
+    if orig != 0 {
+        // SAFETY: `orig` is CGame::Process (void __cdecl(void)), read from the call we retargeted.
+        let f: extern "C" fn() = unsafe { std::mem::transmute(orig as usize) };
+        f();
+    }
+    if !PED_FLAGS_DONE.load(Ordering::Relaxed) {
+        let _ = catch_unwind(AssertUnwindSafe(first_frame_ped_flags));
+    }
+}
+
+fn first_frame_ped_flags() {
+    if !ARGS.get().is_some_and(|a| a.connect) {
+        return;
+    }
+    let mem = ProcessMemory;
+    if mem.read_i32(game::G_GAME_STATE).ok() != Some(9) {
+        return;
+    }
+    let ped = mem.read_u32(game::CWORLD_PLAYERS + game::off::PLAYER_INFO_PED).unwrap_or(0);
+    let Some(h) = game::ped_handle(&mem, ped).ok().flatten() else { return };
+    use crate::script::{Arg, Runner, op};
+    let mut r = Runner::new();
+    r.run(op::SET_CHAR_DROPS_WEAPONS_WHEN_DEAD, &[Arg::Int(h), Arg::Int(1)]);
+    r.run(op::SET_CHAR_SUFFERS_CRITICAL_HITS, &[Arg::Int(h), Arg::Int(0)]);
+    PED_FLAGS_DONE.store(true, Ordering::SeqCst);
+    crate::log!("first game frame with a local ped: ped flags set (frame tick count {})", TICKS.load(Ordering::SeqCst));
 }
 
 /// Replaces the `call Render2dStuff` in `Idle` (cdecl, no arguments).
@@ -447,6 +610,7 @@ fn service_control(_from: &str) {
             Ok(g) => g.as_ref().map(|c| c.remote_lines()).unwrap_or_else(|| "remote count=0 streamed=0".into()),
             Err(_) => "error client busy".into(),
         },
+        Command::Files => crate::filehook::report(),
         Command::Spawn => match CLIENT.try_lock() {
             Ok(mut g) => g.as_mut().map(|c| c.request_debug_spawn()).unwrap_or_else(|| "error no session".into()),
             Err(_) => "error client busy".into(),

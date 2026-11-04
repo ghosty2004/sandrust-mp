@@ -384,7 +384,9 @@ mod tests {
     /// The user's archive, if present locally (third-party data, gitignored).
     fn real_archive() -> Option<SaaArchive> {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let p = std::env::var_os("SAMP_SAA").map(std::path::PathBuf::from).unwrap_or_else(|| root.join("re/samp-installer/extracted/samp.saa"));
+        let p = std::env::var_os("SAMP_SAA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| root.join("re/samp-installer/extracted/samp.saa"));
         SaaArchive::open(p).ok()
     }
 

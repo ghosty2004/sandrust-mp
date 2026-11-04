@@ -24,8 +24,8 @@ use crate::footsync::{Rotation, quat_from_matrix};
 use crate::game::{self, off};
 use crate::patch::{Memory, ProcessMemory};
 use crate::remote::{
-    self, Correction, PadInput, RemotePlayer, SKILLS, SlotAllocator, correct_position, heading_from_forward,
-    normalise, rows_from_quat, samp_deg_to_rad, slerp, state,
+    self, Correction, PadInput, RemotePlayer, SKILLS, SlotAllocator, correct_position, heading_from_forward, normalise,
+    rows_from_quat, samp_deg_to_rad, slerp, state,
 };
 use crate::script::{Arg, Runner, op};
 use crate::swap;
@@ -306,7 +306,8 @@ impl Players {
                     put_v3(ped + off::MOVE_SPEED, f.velocity);
                     if !surfing && let Some(cur) = v3(&mem, matrix + off::MATRIX_POS) {
                         let vt = mem.read_u32(ped + off::VTABLE).unwrap_or(0);
-                        let moving = vt != VTBL_CPLACEABLE && mem.read_u32(ped + PHYSICAL_MOVING_LIST).unwrap_or(0) != 0;
+                        let moving =
+                            vt != VTBL_CPLACEABLE && mem.read_u32(ped + PHYSICAL_MOVING_LIST).unwrap_or(0) != 0;
                         match correct_position(cur, f.position, f.velocity, moving) {
                             Correction::None => {}
                             Correction::Nudge(s) => {
@@ -354,7 +355,8 @@ impl Players {
                 }
                 let stale = p.is_stale(now);
                 let intel = mem.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
-                let task = if intel != 0 { mem.read_u32(intel + off::INTELLIGENCE_PRIMARY_TASK).unwrap_or(0) } else { 0 };
+                let task =
+                    if intel != 0 { mem.read_u32(intel + off::INTELLIGENCE_PRIMARY_TASK).unwrap_or(0) } else { 0 };
                 let jetpack = task != 0 && mem.read_u32(task).unwrap_or(0) == game::VTBL_TASK_SIMPLE_JETPACK;
                 let input = PadInput {
                     keys: f.keys,

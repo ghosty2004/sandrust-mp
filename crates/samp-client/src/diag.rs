@@ -60,8 +60,12 @@ unsafe fn dump_one(tid: u32) {
                     break;
                 }
                 let v = std::ptr::read_unaligned(p as usize as *const u32);
+                // gta_sa.exe code, or our own DLL (tagged "c+offset" from dump_threads).
+                let ours = dump_threads as fn(&str) as usize as u32;
                 if (0x401000..0x0160_0000).contains(&v) {
                     words.push(format!("{v:#x}"));
+                } else if v.abs_diff(ours) < 0x0040_0000 {
+                    words.push(format!("c{:+#x}", i64::from(v) - i64::from(ours)));
                 }
                 p += 4;
             }

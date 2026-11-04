@@ -9,6 +9,8 @@
 //! * `net`   → connection phase, player id, last RPC ids, packet counters
 //! * `remote` → `remote count=N …` followed by N lines, one per remote player
 //!   (id, name, ped slot, ped pointer, position, heading, health, last sync age)
+//! * `files` → `files mode=archive|fallback …` followed by one line per
+//!   samp.saa entry served so far (name, hash, size, opens, first path)
 //! * `spawn` → debugging aid: run the local spawn routine with the stored
 //!   spawn info (as if the server had answered RPC 129); not used by tests
 //! * anything else → `error unknown command`
@@ -35,6 +37,7 @@ pub enum Command {
     State,
     Net,
     Remote,
+    Files,
     Spawn,
     Quit,
     Peek { addr: u32, len: usize },
@@ -69,6 +72,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "state" => Command::State,
         "net" => Command::Net,
         "remote" => Command::Remote,
+        "files" => Command::Files,
         "spawn" => Command::Spawn,
         "quit" | "exit" => Command::Quit,
         _ => Command::Unknown(t.to_string()),
@@ -180,6 +184,7 @@ mod tests {
         assert_eq!(parse("quit"), Some(Command::Quit));
         assert_eq!(parse("net"), Some(Command::Net));
         assert_eq!(parse("remote"), Some(Command::Remote));
+        assert_eq!(parse("FILES"), Some(Command::Files));
         assert_eq!(parse("Spawn\n"), Some(Command::Spawn));
         assert_eq!(parse(""), None);
         assert_eq!(parse("foo bar"), Some(Command::Unknown("foo bar".into())));
