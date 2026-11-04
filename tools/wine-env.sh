@@ -38,3 +38,19 @@ elif command -v pactl > /dev/null; then
     # Audible run: pin the user's default sink (PipeWire remembers per-app routing).
     PULSE_SINK="$(pactl get-default-sink 2>/dev/null)"; export PULSE_SINK
 fi
+
+# Lane isolation: a prefix's Documents must never point at the user's real
+# ~/Documents (Wine creates it as a symlink by default; tests once wrote
+# gta_sa.set / sa-mp.cfg / chatlog there). Replace a symlink with a private dir.
+samp_rs_isolate_userfiles() {
+    local docs="$WINEPREFIX/drive_c/users/$USER/Documents"
+    if [ -L "$docs" ]; then
+        rm "$docs" && mkdir -p "$docs"
+    fi
+}
+samp_rs_isolate_userfiles
+# Headless test runs use 1280x720 (GTA video mode 32) so every lane renders alike.
+if [ "${E2E_HEADLESS:-0}" = 1 ] && [ -f "$ROOT/tools/trace/setmode.py" ]; then
+    _samp_rs_set="$WINEPREFIX/drive_c/users/$USER/Documents/GTA San Andreas User Files/gta_sa.set"
+    [ -f "$_samp_rs_set" ] && python3 -I "$ROOT/tools/trace/setmode.py" "$_samp_rs_set" 32 > /dev/null 2>&1 || true
+fi
