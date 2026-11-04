@@ -536,6 +536,10 @@ impl Objects {
                 continue;
             }
             stream(runner, o, cam);
+            // Material text render targets (TRACE-7: from samp's CGame::Process wrapper, outside any scene).
+            if o.materials.iter().any(|m| m.text.is_some()) {
+                crate::ui::mattext::ensure(o.ptr);
+            }
             if let Some((off, rot, vid)) = o.attach_vehicle {
                 if let Some(vh) = vehicles.script_handle(vid)
                     && !runner.run(op::IS_OBJECT_ATTACHED, &[Arg::Int(o.handle)])
@@ -748,8 +752,36 @@ fn delete_object(runner: &mut Runner, handle: i32, ptr: u32, model: i32) {
     }
 }
 
+/// The blank material texture (TRACE-7): the loose file `SAMP\\blanktex.txd` of the SA:MP install, loaded into
+/// a TXD slot "blanktex" on first use; the texture pointer is cached for the session and never released.
+static BLANK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn blank_texture() -> u32 {
+    use std::sync::atomic::Ordering;
+    let cached = BLANK.load(Ordering::Relaxed);
+    if cached != 0 {
+        return cached;
+    }
+    // SAFETY: CTxdStore::FindTxdSlot / AddTxdSlot / LoadTxd (cdecl) with NUL-terminated names.
+    unsafe {
+        let find: extern "C" fn(*const u8) -> i32 = std::mem::transmute(0x731850usize);
+        let add: extern "C" fn(*const u8) -> i32 = std::mem::transmute(0x731C80usize);
+        let load: extern "C" fn(i32, *const u8) -> u8 = std::mem::transmute(0x7320B0usize);
+        if find(c"blanktex".as_ptr().cast()) < 0 {
+            let slot = add(c"blanktex".as_ptr().cast());
+            if slot < 0 || load(slot, c"SAMP\\blanktex.txd".as_ptr().cast()) == 0 {
+                crate::log!("objects: SAMP\\blanktex.txd could not be loaded");
+                return 0;
+            }
+        }
+    }
+    let tex = find_texture(b"blanktex", b"blanktex");
+    BLANK.store(tex, Ordering::Relaxed);
+    tex
+}
+
 fn release_texture(tex: u32) {
-    if tex != 0 {
+    if tex != 0 && tex != BLANK.load(std::sync::atomic::Ordering::Relaxed) {
         // SAFETY: RwTextureDestroy (cdecl) on a texture we hold a reference to.
         unsafe {
             let f: extern "C" fn(u32) -> u32 = std::mem::transmute(0x7F3820usize);
@@ -782,7 +814,7 @@ fn apply_material(runner: &mut Runner, o: &mut Obj, m: &ObjectMaterial, from_cre
                     runner.run(crate::script::op::MARK_MODEL_AS_NO_LONGER_NEEDED, &[Arg::Int(model)]);
                 }
             } else if model == 0 {
-                crate::log!("objects: material slot {slot} of object {} wants the blank texture (not available)", o.id);
+                o.materials[slot].texture = blank_texture();
             }
             o.materials[slot].colour = *colour;
         }

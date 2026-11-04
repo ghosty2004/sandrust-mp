@@ -22,8 +22,10 @@ if [ "$CLIENT" = ours ]; then
     for d in wine data server re; do ln -sfn "$DATA/$d" "$VR/$d"; done
     ln -sfn "$ROOT/crates" "$VR/crates"
     # Same tracer build as the original's run (main's target), our client from this worktree.
-    cp "$DATA/target/i686-pc-windows-gnu/release/samp_tracer.dll" "$BIN/"
-    cp "$DATA/target/i686-pc-windows-gnu/release/samp-launcher.exe" "$BIN/"
+    # M6_TRACER_DIR: a saved copy of the tracer + launcher the original's run used (main may rebuild them).
+    TD="${M6_TRACER_DIR:-$DATA/target/i686-pc-windows-gnu/release}"
+    cp "$TD/samp_tracer.dll" "$BIN/"
+    cp "$TD/samp-launcher.exe" "$BIN/"
     cp "${CARGO_TARGET_DIR:-$ROOT/target}/i686-pc-windows-gnu/release/samp_client.dll" "$BIN/"
     sha256sum "$BIN"/*.dll "$BIN"/*.exe > "$VR/binaries.sha256"
     L="$VR/tools/trace/lib.sh"

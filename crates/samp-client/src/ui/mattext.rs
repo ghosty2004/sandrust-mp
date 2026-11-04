@@ -1,7 +1,7 @@
 //! Object material text (RPC 44 material kind 2, milestone M6), Windows only.
 //!
-//! TRACE-6 batch 3 (docs/phase3/trace-notes.md "World entities"): in the frame after RPC 44, from samp's object
-//! pass, once per text slot: `D3DXCreateTexture(2w, 2h, 1, RENDERTARGET, X8R8G8B8, DEFAULT)` and
+//! TRACE-6 batch 3 / TRACE-7 (docs/phase3/trace-notes.md "World entities"): once per text slot, from samp's
+//! CGame::Process wrapper (object pool pass; after the previous Present, before RenderWare's BeginScene): `D3DXCreateTexture(2w, 2h, 1, RENDERTARGET, X8R8G8B8, DEFAULT)` and
 //! `D3DXCreateRenderToSurface(2w, 2h, X8R8G8B8, depth, D16)` (the render target is twice the material size),
 //! `D3DXCreateFontA(face, height = font size, width 0, weight 700 when bold, mip 1, charset 1, quality 0)`;
 //! `BeginScene`, `Clear(background ARGB)`, `sprite.Begin(0x10)`, `DrawTextA(stripped text, [0, 0, 2w, 2h],
@@ -103,7 +103,8 @@ fn release(old: Option<Vec<Entry>>) {
     }
 }
 
-/// From samp's object pass: creates the missing render targets of `object` (once) and returns (slot, texture).
+/// From the CGame::Process pre-step (object pool pass): creates the missing render targets of `object` (once)
+/// and returns (slot, texture).
 pub fn ensure(object: u32) -> Vec<(usize, u32)> {
     let todo: Vec<TextSpec> =
         with(|s| s.objects.get(&object).map(|v| v.iter().filter(|e| !e.tried).map(|e| e.spec.clone()).collect()))
@@ -157,17 +158,8 @@ const D3DUSAGE_RENDERTARGET: u32 = 1;
 const D3DFMT_X8R8G8B8: u32 = 22;
 const D3DFMT_D16: u32 = 80;
 const D3DPOOL_DEFAULT: u32 = 0;
-const D3DCLEAR_TARGET: u32 = 1;
-/// `IDirect3DDevice9` BeginScene / EndScene slots.
-const BEGIN_SCENE: usize = 41;
-const END_SCENE: usize = 42;
-
-fn device_call0(slot: usize) -> d3d::HResult {
-    let dev = d3d::real_device();
-    // SAFETY: the real device's argument-less BeginScene / EndScene.
-    let f: extern "system" fn(*mut c_void) -> d3d::HResult = unsafe { d3d::vfn(dev, slot) };
-    f(dev)
-}
+/// `D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER` (TRACE-7: Clear(TARGET|ZBUFFER, background, 0.0)).
+const CLEAR_TARGET_ZBUFFER: u32 = 3;
 
 /// Creates and fills one render target (see the module header).
 fn render(spec: &TextSpec) -> Result<u32, String> {
@@ -210,19 +202,13 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
         if get_level(tex, 0, &mut surf) >= 0 && !surf.is_null() {
             let begin: extern "system" fn(*mut c_void, *mut c_void, *const c_void) -> d3d::HResult = d3d::vfn(rts, 5);
             let end: extern "system" fn(*mut c_void, u32) -> d3d::HResult = d3d::vfn(rts, 6);
-            // Called from inside the 3D scene (samp's object pass): the device scene is closed around the
-            // render-to-surface scene and reopened afterwards (D3D9 allows no nested BeginScene; the chat render
-            // target of the UI is updated outside the scene, from the CGame::Process hook).
-            let mut reopened = false;
-            let mut hb = begin(rts, surf, std::ptr::null());
-            if hb < 0 && device_call0(END_SCENE) >= 0 {
-                reopened = true;
-                hb = begin(rts, surf, std::ptr::null());
-            }
+            // Runs from the CGame::Process pre-step, between the previous Present and RenderWare's BeginScene
+            // (TRACE-7), so the render-to-surface scene is never nested.
+            let hb = begin(rts, surf, std::ptr::null());
             if hb < 0 {
                 crate::log!("mattext: {}x{} slot {}: render-to-surface BeginScene failed {hb:#x}", w, h, spec.slot);
             } else {
-                d3d::devcall::clear(D3DCLEAR_TARGET, spec.background, 1.0, 0);
+                d3d::devcall::clear(CLEAR_TARGET_ZBUFFER, spec.background, 0.0, 0);
                 sprite.begin(d3d::sprite::ALPHABLEND);
                 let stripped = colour::strip_codes(&spec.text);
                 let glyphs: Vec<u32> =
@@ -242,12 +228,8 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
                     spec.font_colour,
                     glyphs,
                 );
-                sprite.flush();
                 sprite.end();
                 end(rts, 0);
-            }
-            if reopened {
-                device_call0(BEGIN_SCENE);
             }
             d3d::release(surf);
         }

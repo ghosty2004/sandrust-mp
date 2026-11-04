@@ -600,8 +600,8 @@ fn draw_object(o: &ObjInfo) {
         rw_render_state(30, alpha_ref);
     }
     rw_render_state(20, if mflags & 0x40 != 0 { 2 } else { 1 });
-    // Material text render targets are created once, from this pass (TRACE-6 batch 3).
-    let texts = if o.has_text { crate::ui::mattext::ensure(ent) } else { Vec::new() };
+    // Material text render targets were created in the CGame::Process pre-step (objects.rs, TRACE-7).
+    let texts = if o.has_text { crate::ui::mattext::textures(ent) } else { Vec::new() };
     let saved = o.has_materials.then(|| apply_materials(ent, &o.materials, &texts));
     set_fog(true);
     let coloured = saved.as_ref().is_some_and(|s| s.coloured);
@@ -1045,6 +1045,29 @@ pub fn set_position(ent: u32, p: [f32; 3]) {
     vcall0(ent, 0x08);
 }
 
+// ---- row 96: CWorld::ProcessVerticalLine ------------------------------------------------------------------
+
+/// Row 96 (B 0x100A5FD0, TRACE-7): every caller except `BreakObject_c::Init` (return address 0x59E8F9) that tests
+/// buildings also tests objects, so ground searches (e.g. FIND_GROUND_Z_FOR_COORD for SetPlayerPosFindZ) land on
+/// client objects. Arguments (cdecl): +0x14 buildings, +0x20 objects. Then the overwritten `sub esp, 0x2C` and a
+/// jump to 0x407C37, where the original's `jmp` after the entry leads (its bytes at 0x5674E3 are now part of the
+/// `jmp dword [slot]`), like samp's wrapper.
+#[unsafe(naked)]
+unsafe extern "C" fn process_vertical_line_stub() {
+    core::arch::naked_asm!(
+        "cmp dword ptr [esp], 0x59E8F9",
+        "je 2f",
+        "cmp byte ptr [esp+0x14], 0",
+        "je 2f",
+        "mov byte ptr [esp+0x20], 1",
+        "2:",
+        "sub esp, 0x2C",
+        "push {cont}",
+        "ret",
+        cont = const 0x407C37u32,
+    )
+}
+
 // ---- row 53: ComputeDamageResponse (actor rules) ------------------------------------------------------------
 
 /// Decision of remote-control-combat.md §6.1 for the rules M6 needs: 1 (damager ≠ local and victim is a
@@ -1320,7 +1343,15 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
         },
     ));
     // jmp-indirect entries.
-    let ind: [IndirectRow; 4] = [
+    let ind: [IndirectRow; 5] = [
+        (
+            96,
+            0x5674E0,
+            0x5674DB,
+            process_vertical_line_stub as unsafe extern "C" fn() as usize as u32,
+            &[0x83, 0xEC, 0x2C, 0x90, 0x90, 0x90],
+            "CWorld::ProcessVerticalLine",
+        ),
         (
             51,
             0x584770,

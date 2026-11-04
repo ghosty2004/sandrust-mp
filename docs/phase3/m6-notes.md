@@ -27,7 +27,7 @@ materials), 65 (LoadObjectInstance → 19300), 66 + 371 (escalator constants aro
 (CreateRwObject with the AddEntity call NOPed), 68/69 + 373 (DeleteRwObject keeps escalators running), 75
 (PositionAttachedEntity: sync rotation 0), 76/77 (samp's own passes), 78 (render-list filter), 79 (roadsign null
 guard), 82 (vehicle camera collision off while RPC 167 disabled collisions), 83 (camera ignores attached objects),
-113 (object pool 3000), 211 (pickup visibility 10000).
+96 (ProcessVerticalLine: objects tested whenever buildings are, except for BreakObject_c::Init; TRACE-7), 113 (object pool 3000), 211 (pickup visibility 10000).
 Rows 172 (LoadPickup := ret, no IPL pickups) and 208 (no interior pickups) are applied by the player-parity work
 (patches.rs) (boot / SP-OFF fixes), which M6
 depends on for IPL-pickup parity. Already applied before M6: 108/109/119/131 (patches.rs), 128 (archive mode), 132/248–261 (stores.rs), 379 (UI device
@@ -36,9 +36,10 @@ proxy).
 Not applied (with reason):
 * 24 (CWorld::ProcessAttachedEntities → surf glue for local/remote players): player surfing, not an entity feature;
   belongs to the player parity work (remote-players-sync.md "surf").
-* 81 (CameraConeCastVsWorldCollision): hook body not analysed (MR-6.12); camera collision with no-camera-collision
-  objects stays GTA's.
-* 96 (ProcessVerticalLine): purpose unknown (MR-6.13).
+* 81 (CameraConeCastVsWorldCollision): TRACE-7 measured it — after GTA's BuildCacheOfCameraCollision found nothing
+  and the camera is inside ±3000, samp tests client objects (pool 1), per-player objects (pool 2) and vehicles
+  (skipped while RPC 167 disabled collisions); the no-camera-collision flag is read only there. Not implemented yet:
+  samp's own object/vehicle camera test (A 0x100A5990 → 0x10012DE0) needs its geometry routine analysed.
 * 97, 348, 362, 364: dormant custom-model path (R4 never registers RPC 179/183/185; no negative model ids reach GTA).
 * 374 (SetupEntityVisibility NOPs): used by samp's wrapper A 0x100A4FA0, which only acts on one entity stored at
   A 0x101515E8 (camera attach, RPC 81 — M8b), not by the row-75 hook as the CSV says.
@@ -68,12 +69,14 @@ Not applied (with reason):
 
 ## Deviations and open items (TODO-unknown unless marked)
 
-* **Material text**: implemented from TRACE-6 batch 3 (RT 2× size, D3DXCreateTexture + CreateRenderToSurface,
-  Arial/face h = font size, wt 700 when bold, cs 1, q 0, Clear(background), sprite Begin(0x10), DrawText fmt 0x105
-  for centre). Inferred: left/right alignment flags; the device scene is closed around the render-to-surface scene
-  (BeginScene inside the 3D scene returns D3DERR_INVALIDCALL under DXVK; how samp avoids it is unmeasured); render
-  targets are not recreated after a device reset.
-* **"blanktex"** (material model 0): source of the texture not analysed; the slot keeps its colour only.
+* **Material text**: TRACE-6 batch 3 + TRACE-7: rendered once per slot from the CGame::Process pre-step (between
+  the previous Present and RenderWare's BeginScene, like samp's wrapper B 0x100A2670): D3DXCreateTexture (2× size,
+  RENDERTARGET, X8R8G8B8) + CreateRenderToSurface (D16) + font (face, h = size, wt 700 if bold, cs 1, q 0);
+  Clear(TARGET|ZBUFFER, background, 0.0), sprite Begin(0x10), DrawText fmt 0x105 for centre (left/right inferred).
+  Not recreated after a device reset.
+* **Blank texture** (material model 0, TRACE-7): `SAMP\blanktex.txd` (loose file of the SA:MP install) loaded into
+  TXD slot "blanktex" on first use, texture "blanktex" cached and never released. samp loads it 4 frames after the
+  RPC; ours loads it in the RPC frame.
 * **Object editor gizmo and selection picking** (27/116/117, MR-6.11): the RPC state machine, ESC → 117/116
   response 0 with the current values (TRACE-6 batch 3) and RPC 28 are implemented; the per-frame editor
   (A 0x10073270, response 2 every ≥ 250 ms, drag rates unmeasured) and the mouse picking in selection mode
@@ -105,19 +108,15 @@ Not applied (with reason):
   flag comes from 0xBA67A4 like samp). RemoveBuilding replay: the reloaded IPL instance becomes model 19300 at its
   original position, area 0, not lowered (row 65 replaces only the model id).
 
-## Verification (2026-11-05)
+## Verification (2026-11-05, after merging main)
 
-* `tools/e2e/m6.sh` (lane veh) exit 0; m1 (headless), m2, m3, m4, m5, goal, saa green on the branch; 496 tests,
-  clippy host + i686 0 warnings.
-* Parity (same `m6scen.sh` input; tracer samp_tracer.dll sha256 6298dac5…): original
-  `target/trace/orig-20261104-233854` (trace lane) vs ours `target/vehroot/target/trace/ours-20261104-235851`
-  (lane veh), feature-filtered `diff.py --dump` windows with script handles masked: objects −1/+1 (pickup-object
-  CreateRwObject order inside one frame) and one repeat count; pickups 0/0; checkpoints 0/0; map icons 0/0; labels one
-  repeat count (49 vs 60 fps); actors +16 = one extra actor re-stream because SetActorInvulnerable reached ours after
-  the actor streamed in (server-side timing of the input, not a client difference). Server events identical except
-  OnPlayerPickUpPickup repeats (cooldown 15 polls × 7 frames, frame-rate bound) and actor damage (unaimed shots hit
-  on ours only).
-* DIFF-2 `rpc-coverage.sh --only <world steps>` (orig runs 225900/230052, ours 233830): trace-level differences only in
-  object/pickup handle numbering (pool allocation history; with row 172 dropped also the IPL pickups), the local
-  player's per-frame `los` (player parity), SetTaskSecondary(IK) after RPC 28 (input-lock mode, UI work), and actor
-  model already loaded on the original; the rest are visual diffs from camera/HUD differences outside M6.
+* Lane veh, isolated display: m1, saa, m2, m3, goal, m4, m5 (passed on rerun; one run had the server see no car
+  movement), m6, m8a all exit 0; 524 tests, clippy host + i686 0 warnings.
+* Parity (same `m6scen.sh` input incl. the blanktex step; tracer sha256 9c12c233…): original
+  `target/trace/orig-20261105-002451` (trace lane) vs ours `target/vehroot/target/trace/ours-20261105-004327`
+  (lane veh), feature-filtered `diff.py --dump` windows with script handles masked:
+  objects (incl. blanktex) −1 repeat line; checkpoints 0/0; map icons 0/0; labels one repeat count; gang zones repeat
+  counts only (49 vs 60 fps); pickups: the server streamed the three pickups in a different order; actors: the
+  original re-streamed the actor for SetActorInvulnerable (server timing of the input). Server events identical
+  (2× OnObjectMoved, pickup 0 twice + pickup 2, checkpoint and race-checkpoint enter) except actor damage (unaimed
+  shots hit on ours only).

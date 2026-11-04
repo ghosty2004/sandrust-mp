@@ -101,5 +101,12 @@ m6_scenario() {
         fs "label|M6 LOS|00FFFFFF|1700|-2590|14.5|50|1"
         sleep 2; shot labels; check labels
     fi
+    # ---- blank material texture (material model 0, TRACE-7: SAMP\blanktex.txd)
+    if [[ $only == all || $only == *blanktex* ]]; then
+        mark blanktex
+        fs "obj|1271|1695|-2595|13.9|0|0|0|0"; sleep 1
+        fs "objmat|6|0|0|none|none|FF00FF00"; sleep 3
+        shot blanktex; check blanktex
+    fi
     mark scenario-end
 }

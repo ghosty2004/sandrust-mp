@@ -176,6 +176,11 @@ if [[ "${1:-}" == --inner ]]; then
             acthp0)
                 l="$(wline "actor id=0 ")"; near "$(field health "$l")" 0 0.01 || fail "actor health not 0: $l"
                 say "actor health 0: $l" ;;
+            blanktex)
+                l="$(obj 6)"; [[ "$(field materials "$l")" == 1 && "$(field samp_pass "$l")" == true ]] \
+                    || fail "object 6 has no blank material: $l"
+                grep -q "blanktex.txd could not be loaded" "$CLIENT_LOG" && fail "SAMP\\blanktex.txd not loaded"
+                say "blanktex: $l" ;;
             labels)
                 [[ "$(head_field labels)" == 2 ]] || fail "world shows $(head_field labels) labels, want 2"
                 n="$(field count "$(wline labels_drawn)")"
