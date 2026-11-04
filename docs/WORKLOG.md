@@ -185,7 +185,7 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   `cargo test --workspace` 337 passed; clippy 0 host + i686.
 - Open parity (M3-P): speed magnitude/cadence vs original; SEH containment.
 - The weapon flapping seen by TRACE-4 was gungame reacting to our post-arrest state —
-  removed by SP-OFF. User asked about libsamp (R5) → EXT-1; needs the R5 installer.
+  removed by SP-OFF.
 
 ## 2026-11-04 — Git, worktrees, more parallel work
 
