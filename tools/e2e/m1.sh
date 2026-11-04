@@ -12,7 +12,8 @@ source "$ROOT/tools/wine-env.sh"
 LOG="$GTA_DIR/samp-rs.log"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/samp-rs-m1.XXXXXX")"
 TIMEOUT="${M1_TIMEOUT:-120}"
-CTL_PORT=47700
+CTL_PORT="${E2E_CTL_PORT:-47700}"
+export SAMP_RS_CTL_PORT="$CTL_PORT"
 
 say() { printf '[m1] %s\n' "$*"; }
 
@@ -66,7 +67,7 @@ if ctl ping >/dev/null 2>&1; then
 fi
 rm -f "$LOG"
 say "starting client (timeout $((TIMEOUT + 60)) s)"
-SKIP_BUILD=1 timeout --kill-after=10 "$((TIMEOUT + 60))" "$ROOT/tools/run-client.sh" >"$OUT/run.out" 2>&1 &
+SKIP_BUILD=1 timeout --kill-after=10 "$((TIMEOUT + 60))" "$ROOT/tools/run-client.sh" "127.0.0.1:${E2E_PORT:-7777}" >"$OUT/run.out" 2>&1 &
 RUN_PID=$!
 
 start=$SECONDS

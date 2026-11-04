@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Shared environment for running GTA SA (1.0 US) and SA:MP under Wine.
 # Usage: source tools/wine-env.sh
-ROOT="${SAMP_RS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
+_samp_rs_repo="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
+ROOT="${ROOT:-$_samp_rs_repo}"
+# SAMP_RS_ROOT: checkout that holds the gitignored wine/, server/ and data/
+# (set it when running from a git worktree); defaults to this checkout.
+SAMP_RS_DATA_ROOT="${SAMP_RS_ROOT:-$_samp_rs_repo}"
 # Override WINEPREFIX / GTA_DIR to run a second, independent lane (e.g. tracing).
-export WINEPREFIX="${WINEPREFIX:-$ROOT/wine/prefix}"
-export GTA_DIR="${GTA_DIR:-$ROOT/wine/gta-sa}"
+export WINEPREFIX="${WINEPREFIX:-$SAMP_RS_DATA_ROOT/wine/prefix}"
+export GTA_DIR="${GTA_DIR:-$SAMP_RS_DATA_ROOT/wine/gta-sa}"
 export WINEDEBUG="${WINEDEBUG:--all}"
 export DXVK_LOG_LEVEL="${DXVK_LOG_LEVEL:-warn}"
 

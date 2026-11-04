@@ -420,8 +420,12 @@ window model").
 - Line *k* (0-based): rect top `y = 10 + k·(h + 1)`. The first line's bottom is 110; later
   bottoms are `top + h + 1`. Left edge 45 (0x2D), right 550 (unused because of `DT_NOCLIP`).
   Flags `DT_SINGLELINE|DT_NOCLIP` (0x120).
-- After the last line, `+0x12e` := bottom of the last drawn line (110 when page size is 0).
-  The input box hangs below it (§8).
+- After the last line, `+0x12e` := the bottom of the rect the loop has prepared for the
+  line *after* the last one: `10 + (pageSize + 1)·(h + 1)` (110 when the page size is 0).
+  The loop runs once per page line, filled or not. The input box hangs below it (§8).
+  [O, corrected in M4: the loop advances `top += h + 1; bottom = top + h + 1` at the end
+  of every iteration; confirmed by a screenshot of the original, box top 175 at page size
+  10 with h = 14.]
 - Per entry:
   - With timestamps on: `strftime("[%H:%M:%S]", localtime(entry.time))` at x = 45 in the
     entry's text colour. The content then starts at `x = tw + 50`.
@@ -484,13 +488,19 @@ inside a sprite `Begin(D3DXSPRITE_ALPHABLEND)`/`End`.
   `(width + 100) × (chat bottom + 50)`. Then "open" := 1. Opening the input does not open the
   scoreboard or change chat mode.
 - While open, Present requests cursor mode 2 every frame.
-- **Close** (A 0x10069580): clear the text, hide, disable, cursor mode 0 with **immediate**
-  restore, "open" := 0. Also closed by: ShowDialog (UCA §61), `WM_KILLFOCUS`, a click outside
+- **Close** (A 0x10069580): focus out, disable, hide, cursor mode 0 with **immediate**
+  restore, "open" := 0. It does **not** clear the text or reset the history position
+  [O, corrected in M4: the original kept "not sent" after ESC and sent "not sent/q" when
+  "/q" was typed after reopening]. Enter clears the text itself and resets the history
+  position to the live line after pushing the line. Also closed by: ShowDialog (UCA §61), `WM_KILLFOCUS`, a click outside
   the box, ESC, F6.
 - **History** (10 entries of 129 bytes; index −1 = the live line): Up saves the live text the
   first time, then shows older entries. Down goes newer and restores the live text at −1.
 - Enter → the line processor and local commands (UCA "Local chat input"). The 128-character
   limit is applied there.
+  When the input was open, Enter also sets the chat scroll position to 90 (A 0x10067390;
+  the scrollbar then clamps it to `100 − pageSize`), i.e. the chat jumps to the newest
+  lines.
 
 ---------------------------------------------------------------------------------------------
 

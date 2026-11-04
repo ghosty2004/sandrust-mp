@@ -18,6 +18,7 @@ pub mod remote;
 pub mod scm;
 pub mod script;
 pub mod sectors;
+pub mod ui;
 
 #[cfg(windows)]
 mod client;

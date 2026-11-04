@@ -88,13 +88,13 @@ impl ChatInput {
         true
     }
 
-    /// Close (A 0x10069580): clear the text, hide; cursor mode 0 with immediate restore.
-    /// Unknown (notes U-HISTORY-RESET): the history position is reset to the live line.
+    /// Close (A 0x10069580): focus out, disable and hide the edit box, cursor mode 0
+    /// with immediate restore. The text and the history position are kept: the
+    /// close routine does not touch them (2021 build), and the original client was
+    /// seen to keep "not sent" after ESC and send it with the next line typed after T.
+    /// Enter clears the text itself ([`Self::submit`]).
     pub fn close(&mut self) {
-        self.edit.clear();
         self.open = false;
-        self.index = -1;
-        self.live.clear();
     }
 
     /// Typed character while open.
@@ -106,6 +106,10 @@ impl ChatInput {
     }
     pub fn paste(&mut self, clip: &[u8]) {
         self.edit.paste(clip);
+    }
+    /// Replaces the edit-box text (caret at the end).
+    pub fn set_text(&mut self, t: &[u8]) {
+        self.edit.set_text(t);
     }
 
     /// Up: save the live line the first time, then show older entries (A 0x10069630).
@@ -147,14 +151,18 @@ impl ChatInput {
         self.history.truncate(HISTORY_SIZE);
     }
 
-    /// Enter (input processor A 0x100699d0): take up to 128 chars, push to history,
-    /// classify, then clear and close.
+    /// Enter (input processor A 0x100699d0): take up to 128 chars; a non-empty line is
+    /// pushed to the history (position reset to the live line) and classified; then
+    /// the edit box is cleared and the input closed. The caller also scrolls the chat
+    /// (position 90, clamped by the scrollbar) when the input was open.
     pub fn submit(&mut self, netgame: bool, debug_mode: bool) -> Submit {
         let line = self.edit.text()[..self.edit.text().len().min(MAX_LINE)].to_vec();
         let out = if line.is_empty() {
             Submit::Empty
         } else {
             self.push_history(&line);
+            self.index = -1;
+            self.live.clear();
             if split_command(&line).is_none() {
                 if netgame { Submit::Chat(PlayerRequestChatMessage { message: line }) } else { Submit::Nothing }
             } else if let Some(cmd) = LocalCommand::parse(&line, debug_mode) {
@@ -165,6 +173,7 @@ impl ChatInput {
                 Submit::UnknownCommand
             }
         };
+        self.edit.clear();
         self.close();
         out
     }
@@ -260,5 +269,28 @@ mod tests {
         assert_eq!(box_rect(1280, 170, 20), Rect::xywh(40, 170, 768, 44));
         assert_eq!(box_rect(1920, 170, 20).width(), 800);
         assert_eq!(host_dialog_size(768, 170), (868, 220));
+    }
+
+    #[test]
+    fn close_keeps_text_and_history_position_enter_clears() {
+        let mut i = ChatInput::new();
+        i.open();
+        typed(&mut i, b"one");
+        i.submit(true, false);
+        i.open();
+        typed(&mut i, b"not sent");
+        i.close();
+        assert!(!i.is_open());
+        i.open();
+        assert_eq!(i.text(), b"not sent");
+        i.history_older();
+        assert_eq!(i.text(), b"one");
+        i.close();
+        i.open();
+        assert_eq!(i.text(), b"one");
+        i.history_newer();
+        assert_eq!(i.text(), b"not sent");
+        i.submit(true, false);
+        assert_eq!(i.text(), b"");
     }
 }
