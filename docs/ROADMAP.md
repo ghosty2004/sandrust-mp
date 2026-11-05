@@ -16,13 +16,15 @@ differential capture against the original client, e2e script.
 | samp-client worktree m8b (lane veh) | M8b remaining behaviour (camera, spectate, bounds, interiors, animations, drunk, SCM events, ClientCheck) | M9 audio |
 | samp-client worktree m9 (lane ui) | M9 audio + M10 client features | — |
 | measurement (lane trace, REA) | — (free) | EFX-2 |
-| harness (lanes diff + diff2) | PAR-AUDIT (audit of main, excl. combat) | fix agents from the audit list |
+| harness (lanes diff + diff2) | — (free) | fix agents from docs/phase3/par-audit.md |
 | no-game | — (free) | NET-6 ack/resend timing; rename to sandrust-mp |
 
 ## Next up (ordered queue — the scheduler takes from the top)
 
 In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1, EFX-1.
 
+1. FIX-A (from par-audit.md) — patches: HUD aspect rows 7/16/368/369, rows 165/184/166 shadows (165 was the state-block bug), CFont rows 225–239, rows 50/223/224/170/215–217; weather screen effect; 207 sent every 76 ms after leaving a car (532 ms original)
+1. FIX-B (from par-audit.md) — vehicles: remote driver exit task instead of warp, AddVehicleComponent order, door swing after exit, rows 177/62; radar markers for remote players; 207 anim id (check after M8b merge)
 1. M6-P — world leftovers: object editor gizmo + drag (117 response 2 every 250–287 ms), selection picking, wire TODO(input-lock) sites to ui::set_input_mode, CSV row 81 camera test for objects/vehicles; PLATE-1 number plates; M8A-PREVIEW model-preview textdraws
 1. EFX-2 — step-mode capture for OUR client too (build samp_client.dll with a symbol map so `efx arm` can single-step our handler by name) — needed to settle effect diffs like the local skin handler's extra 0247/0248 and the +0x55c write
 1. PAR-AUDIT — retroactive parity loop on everything already in main (protocol/bot, M1, M2, M3, SAA-2, SP-OFF, M4, M5): re-run DIFF-2 on current main, cross-client, COV-1 coverage diff, EFX-1 effect diffs for the RPCs each feature handles, D3D diff for chat, network diffs; produce a per-feature diff list and run fix agents through the parity loop until empty or logged decisions (after COV-1 + EFX-1 land)
@@ -121,7 +123,6 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 - M8a (2026-11-05): F5 net stats use our own counters (datagrams/messages; RakNet-only counters are 0); labels, order, layout and colours are samp's; DIFF-4 compares the element without digits.
 - M8a (2026-11-05): input-lock modes 1 and 4 of samp's setter have no caller in either R4 build (objdump of every call); measured: object editing and selection use mode 3. Modes 1/4 are modelled anyway (`InputLock::set_mode`).
 - M8a (2026-11-05): model-preview textdraws (font 5) stay undrawn until M8A-PREVIEW.
-- CSV row 165 (NOP CRealTimeShadowManager::Update) is NOT applied for now: applied alone it breaks world rendering under our client (black world / white sky; bisected with SAMP_RS_SKIP_CSV_ROWS). samp must stop the rest of the shadow path elsewhere (row 184 candidate) — open item for PAR-AUDIT.
 - UI parity: the original passes an uninitialised rect and a stale colour to D3DX DrawText DT_CALCRECT calls; we pass zeros and the D3D diff ignores rect/colour on CALCRECT records (no observable output; reproducing garbage values is not meaningful).
 - UI parity: GTA's own render-target calls before samp's UI pass and the stage-0 texture left over from GTA's last scene draw are scene content and excluded from UI call-stream diffs.
 
