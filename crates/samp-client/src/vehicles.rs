@@ -869,7 +869,8 @@ impl Vehicles {
             r.driver = None;
             r.passenger = None;
         }
-        if p.ped != 0 && in_vehicle(p.ped) && sa != 3 && sa != 4 {
+        // B 0x10017288…0x100172D4: not while the ped runs its leave-car task (RPC 154 exit animation).
+        if p.ped != 0 && in_vehicle(p.ped) && sa != 3 && sa != 4 && !leaving_car(p.ped) {
             warp_out_own_position(runner, p.ped);
             if let Some(r) = self.remote.get_mut(&pid) {
                 r.warps_out += 1;
@@ -1940,19 +1941,19 @@ const INTEL_DRIVE_BY_SLOT: u32 = 0x10;
 const TASK_GANG_DRIVEBY: u32 = 0x3FE;
 const GANG_DRIVEBY_DELETING_DTOR: u32 = 0x6275E0;
 
-/// The drive-by task is active (task type 0x3FE in the intelligence slot +0x10).
-pub(crate) fn drive_by_task(ped: u32) -> u32 {
+/// The task in the intelligence slot +0x10 (the task manager's primary slot 3) and its type, if any.
+fn intel_slot_task(ped: u32) -> Option<(u32, u32)> {
     let intel: u32 = rd(ped + off::PED_INTELLIGENCE);
     if intel == 0 {
-        return 0;
+        return None;
     }
     let task: u32 = rd(intel + INTEL_DRIVE_BY_SLOT);
     if task == 0 {
-        return 0;
+        return None;
     }
     let vt: u32 = rd(task);
     if !(0x80_0000..=0x90_0000).contains(&vt) {
-        return 0;
+        return None;
     }
     let get_type: u32 = rd(vt + 0x10);
     // SAFETY: the task's own GetTaskType virtual (thiscall), main thread.
@@ -1960,7 +1961,23 @@ pub(crate) fn drive_by_task(ped: u32) -> u32 {
         let f: extern "thiscall" fn(u32) -> u32 = std::mem::transmute(get_type as usize);
         f(task)
     };
-    if kind == TASK_GANG_DRIVEBY { task } else { 0 }
+    Some((task, kind))
+}
+
+/// The drive-by task is active (task type 0x3FE in the intelligence slot +0x10).
+pub(crate) fn drive_by_task(ped: u32) -> u32 {
+    match intel_slot_task(ped) {
+        Some((task, TASK_GANG_DRIVEBY)) => task,
+        _ => 0,
+    }
+}
+
+/// `TASK_COMPLEX_LEAVE_CAR`.
+const TASK_LEAVE_CAR: u32 = 0x2C0;
+
+/// The ped is running the leave-car task (B 0x100AC650: intelligence slot +0x10, type 0x2C0).
+fn leaving_car(ped: u32) -> bool {
+    matches!(intel_slot_task(ped), Some((_, TASK_LEAVE_CAR)))
 }
 
 /// Stops the drive-by task through its deleting destructor and clears the slot (A 0x100AD0C0).

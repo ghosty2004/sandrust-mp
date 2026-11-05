@@ -463,6 +463,12 @@ pub struct RemotePlayer {
     pub look_last: Option<Instant>,
     /// Phone special action active (ped object +0x48 in samp).
     pub phone: bool,
+    /// Radar blip handle of the 208 marker (remote +0x1F9 in samp; 0 = none).
+    pub marker_blip: i32,
+    /// The last 208 record had a position (remote +0x1E9).
+    pub marker_active: bool,
+    /// Radar blip handle on the ped (samp ped object +0x2CD; 0 = none). GTA's `CPed` destructor clears it.
+    pub ped_blip: i32,
 }
 
 impl RemotePlayer {
@@ -489,6 +495,9 @@ impl RemotePlayer {
             look_refresh: None,
             look_last: None,
             phone: false,
+            marker_blip: 0,
+            marker_active: false,
+            ped_blip: 0,
         }
     }
 
@@ -534,8 +543,8 @@ pub fn format_remote(
     let ped_health = ped_health.map(|h| format!("{h:.0}")).unwrap_or_else(|| "-".into());
     format!(
         "remote id={} name={} slot={slot} ped={:#x} pos={pos} heading={heading} health={:.0} ped_health={ped_health} \
-         state={} sync_age_ms={age} sync_pos={sync_pos} teleports={} speed={:.4}",
-        p.id, p.name, p.ped, p.health, p.state, p.teleports, p.last_speed
+         state={} sync_age_ms={age} sync_pos={sync_pos} teleports={} speed={:.4} marker_blip={} ped_blip={}",
+        p.id, p.name, p.ped, p.health, p.state, p.teleports, p.last_speed, p.marker_blip, p.ped_blip
     )
 }
 

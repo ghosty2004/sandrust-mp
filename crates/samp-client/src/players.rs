@@ -13,8 +13,10 @@
 //! the sniper ped state (§4.3), RPC 153 on remote peds, and the streaming-out
 //! of a ped whose ProcessControl faulted (swap.rs).
 //!
-//! Deviations (docs/phase3/m3-notes.md): no name tags / markers / colours
-//! applied, no fighting style, no animation sync, the other special actions,
+//! Player markers (docs/phase3/fixb-notes.md): the ped blip at spawn and the 208
+//! coordinate blips; their colour index is the player id (radar colour hook, row 51).
+//!
+//! Deviations (docs/phase3/m3-notes.md): no fighting style, no animation sync, the other special actions,
 //! no surfing positions, no vehicles;
 //! `CWorld::Players[slot].m_pPed` is cleared after deletion (samp leaves it
 //! dangling; main-session decision after TRACE-2).
@@ -89,12 +91,70 @@ pub struct Players {
     slots: SlotAllocator,
     death_drop_money: i32,
     local_id: Option<u16>,
+    /// InitGame player-marker mode (netgame settings +0x30): 0 off, otherwise a blip on every spawned ped.
+    marker_mode: u32,
 }
 
 impl Players {
-    pub fn set_init_game(&mut self, local_id: u16, death_drop_money: u32) {
+    pub fn set_init_game(&mut self, local_id: u16, death_drop_money: u32, marker_mode: u32) {
         self.local_id = Some(local_id);
         self.death_drop_money = death_drop_money.min(i32::MAX as u32) as i32;
+        self.marker_mode = marker_mode;
+    }
+
+    // ---- player markers (radar blips) -----------------------------------------------------------------------
+
+    /// 208 PlayerMarkersSync (B 0x10009F00): ids below 1004 that are in the pool. A record without a position
+    /// removes the marker blip (B 0x100144B0(0)); a position replaces it, and a new coordinate blip is created
+    /// only while the player is not streamed in (B 0x100144F0).
+    pub fn on_markers(&mut self, runner: &mut Runner, m: &samp_proto::sync::player::MarkersSync) {
+        for rec in &m.markers {
+            if rec.player_id >= MAX_PLAYER_ID {
+                continue;
+            }
+            let Some(p) = self.players.get_mut(&rec.player_id) else { continue };
+            match rec.position {
+                None => {
+                    remove_marker_blip(runner, p);
+                    p.marker_active = false;
+                }
+                Some([x, y, z]) => {
+                    p.marker_active = true;
+                    remove_marker_blip(runner, p);
+                    if p.ped == 0 {
+                        let pos = [f32::from(x), f32::from(y), f32::from(z)];
+                        p.marker_blip = add_coord_blip(runner, pos, u32::from(p.id));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Spawn part of the stream-in (B 0x10017164…0x100171A1): the 208 marker blip goes, and with markers on the
+    /// ped gets a blip of colour index = player id, display 2 (B 0x100AF740).
+    fn spawn_blips(&mut self, runner: &mut Runner, id: u16, handle: i32) {
+        let mode = self.marker_mode;
+        let Some(p) = self.players.get_mut(&id) else { return };
+        remove_marker_blip(runner, p);
+        if mode != 0 {
+            if p.ped_blip != 0 {
+                runner.run(op::REMOVE_BLIP, &[Arg::Int(p.ped_blip)]);
+                p.ped_blip = 0;
+            }
+            runner.run(op::ADD_BLIP_FOR_CHAR, &[Arg::Int(handle), Arg::Local(0)]);
+            p.ped_blip = runner.local_i32(0);
+            runner.run(op::CHANGE_BLIP_COLOUR, &[Arg::Int(p.ped_blip), Arg::Int(i32::from(id))]);
+            runner.run(op::CHANGE_BLIP_DISPLAY, &[Arg::Int(p.ped_blip), Arg::Int(2)]);
+        }
+    }
+
+    /// Remote reset (B 0x10015F50: stream-out of a spawned ped, game-mode restart) and destructor
+    /// (B 0x10016610): the marker blip goes and the marker flag is cleared.
+    pub fn reset_marker(&mut self, runner: &mut Runner, id: u16) {
+        if let Some(p) = self.players.get_mut(&id) {
+            remove_marker_blip(runner, p);
+            p.marker_active = false;
+        }
     }
 
     pub fn get(&self, id: u16) -> Option<&RemotePlayer> {
@@ -152,6 +212,7 @@ impl Players {
             }
             R::PlayerQuit(q) => {
                 crate::log!("players: quit id={} reason={}", q.player_id, q.reason);
+                self.reset_marker(runner, q.player_id);
                 self.destroy_ped(runner, q.player_id);
                 self.players.remove(&q.player_id);
             }
@@ -179,9 +240,28 @@ impl Players {
                     s.facing_angle
                 );
                 self.create_ped(runner, s.player_id, pos, s.facing_angle, skills);
+                // RPC 32 tail (B 0x10010CC9…0x10010CEC): an NPC's ped becomes fire- and explosion-proof
+                // (B 0x100ABD10 → SET_CHAR_PROOFS(0, 1, 1, 0, 0)).
+                if let Some(p) = self.players.get(&s.player_id)
+                    && p.npc
+                    && p.ped != 0
+                    && let Some(h) = game::ped_handle(&ProcessMemory, p.ped).ok().flatten()
+                {
+                    let a = [Arg::Int(h), Arg::Int(0), Arg::Int(1), Arg::Int(1), Arg::Int(0), Arg::Int(0)];
+                    runner.run(op::SET_CHAR_PROOFS, &a);
+                }
+                // Spawn (B 0x1001714E): a non-zero colour goes into the colour table once the ped exists.
+                if s.colour != 0 && self.players.get(&s.player_id).is_some_and(|p| p.ped != 0) {
+                    crate::worldhooks::with_shared(|t| {
+                        t.colours.get_or_insert_with(crate::ui::colours::PlayerColours::new).set(s.player_id, s.colour)
+                    });
+                }
             }
             R::PlayerStreamOut(s) => {
                 crate::log!("players: stream-out id={}", s.player_id);
+                if self.players.get(&s.player_id).is_some_and(|p| p.ped != 0) {
+                    self.reset_marker(runner, s.player_id);
+                }
                 self.destroy_ped(runner, s.player_id);
                 if let Some(p) = self.players.get_mut(&s.player_id) {
                     p.state = state::NONE;
@@ -286,6 +366,7 @@ impl Players {
         p.health = 100.0;
         p.foot_new = p.foot.is_some();
         crate::log!("players: id={id} {} → slot {slot}, ped {ped:#x}, handle {handle:#x}", p.name);
+        self.spawn_blips(runner, id, handle);
     }
 
     fn destroy_ped(&mut self, runner: &mut Runner, id: u16) {
@@ -293,6 +374,8 @@ impl Players {
         let (ped, slot) = (p.ped, p.slot);
         p.ped = 0;
         p.slot = None;
+        // GTA's `CPed` destructor clears the ped's blip (gta-reversed `CPed::~CPed`).
+        p.ped_blip = 0;
         let Some(slot) = slot else { return };
         swap::with_table(|t| t.unbind(slot));
         let mem = ProcessMemory;
@@ -572,6 +655,24 @@ impl Players {
         }
         out
     }
+}
+
+fn remove_marker_blip(runner: &mut Runner, p: &mut RemotePlayer) {
+    if p.marker_blip != 0 {
+        runner.run(op::REMOVE_BLIP, &[Arg::Int(p.marker_blip)]);
+        p.marker_blip = 0;
+    }
+}
+
+/// samp's coordinate blip (B 0x100A0DA0, style 0 = `ADD_SHORT_RANGE_SPRITE_BLIP_FOR_COORD`) with sprite 0:
+/// colour index, then scale 2 for player ids (3 from 1004 on).
+fn add_coord_blip(runner: &mut Runner, pos: [f32; 3], colour: u32) -> i32 {
+    let a = [Arg::Float(pos[0]), Arg::Float(pos[1]), Arg::Float(pos[2]), Arg::Int(0), Arg::Local(0)];
+    runner.run(op::ADD_SHORT_RANGE_SPRITE_BLIP_FOR_COORD, &a);
+    let blip = runner.local_i32(0);
+    runner.run(op::CHANGE_BLIP_COLOUR, &[Arg::Int(blip), Arg::Int(colour as i32)]);
+    runner.run(op::CHANGE_BLIP_SCALE, &[Arg::Int(blip), Arg::Int(if colour < 0x3EC { 2 } else { 3 })]);
+    blip
 }
 
 /// `GET_CURRENT_CHAR_WEAPON` on a ped (samp A 0x100abc90; 0 without a valid handle).

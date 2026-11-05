@@ -655,6 +655,21 @@ unsafe extern "C" fn train_derail_stub() {
 
 static ZERO_SPEED: [f32; 3] = [0.0; 3];
 
+/// `call CVehicleModelInfo::SetDirtTextures` in `CVehicle::Render` (row 62).
+const RENDER_DIRT_CALL: u32 = 0x6D0E7E;
+const SET_DIRT_TEXTURES: u32 = 0x5D5DB0;
+
+/// The vehicle `CVehicle::Render` is drawing (esi at row 62's call; samp B 0x10151550, read by samp's plate
+/// texture code).
+static RENDER_VEHICLE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Row 62 (B 0x100A4570): replaces `SetDirtTextures(modelInfo, dirt)` in `CVehicle::Render`. It only records the
+/// vehicle (esi) and returns: the dirt textures are never switched per vehicle (the caller pops the arguments).
+#[unsafe(naked)]
+unsafe extern "C" fn render_dirt_stub() {
+    core::arch::naked_asm!("mov dword ptr [{v}], esi", "ret", v = sym RENDER_VEHICLE)
+}
+
 /// `FindPlayerSpeed` in `CRadar::DrawMap` (row 64): a zero vector while the local ped is a passenger.
 extern "C" fn radar_find_player_speed(id: i32) -> *const f32 {
     let local = local_ped();
@@ -743,6 +758,13 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
         64,
         patcher
             .retarget_branch(mem, "CRadar::DrawMap FindPlayerSpeed", RADAR_SPEED_CALL, rs, Some(g::FIND_PLAYER_SPEED))
+            .map(|_| ()),
+    ));
+    let rd_stub = render_dirt_stub as unsafe extern "C" fn() as usize as u32;
+    out.push((
+        62,
+        patcher
+            .retarget_branch(mem, "CVehicle::Render SetDirtTextures", RENDER_DIRT_CALL, rd_stub, Some(SET_DIRT_TEXTURES))
             .map(|_| ()),
     ));
     let enter = enter_ctor_stub as unsafe extern "C" fn() as usize as u32;
