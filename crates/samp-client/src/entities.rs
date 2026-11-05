@@ -215,7 +215,7 @@ impl Entities {
                     return;
                 }
                 if self.actors.contains_key(&a.actor_id) {
-                    crate::log!("Warning: actor {} was not deleted", a.actor_id);
+                    crate::ui::print_debug(&format!("Warning: actor {} was not deleted", a.actor_id));
                     self.delete_actor(runner, a.actor_id);
                 }
                 if !busy_load(runner, a.skin as i32) {

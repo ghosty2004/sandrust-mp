@@ -204,6 +204,8 @@ struct Veh {
     last_unocc_sender: Option<u16>,
     /// Carriage of a locomotive: no own GTA vehicle created, deleted with the locomotive.
     carriage: bool,
+    /// The stream-in position (samp's pool +0x11AD8, shown by `/dl` as "sPos").
+    spawn_pos: [f32; 3],
 }
 
 impl Veh {
@@ -229,6 +231,7 @@ impl Veh {
             last_unocc_send: None,
             last_unocc_sender: None,
             carriage: false,
+            spawn_pos: [0.0; 3],
         }
     }
 }
@@ -457,13 +460,18 @@ impl Vehicles {
         }
     }
 
+    /// (id, GTA vehicle, stream-in position) of every vehicle with a GTA object, in id order (`/dl`, FEAT-B).
+    pub fn debug_rows(&self) -> Vec<(u16, u32, [f32; 3])> {
+        self.pool.values().filter(|v| v.ptr != 0).map(|v| (v.id, v.ptr, v.spawn_pos)).collect()
+    }
+
     /// RPC 164 (vehicles.md 164; remote-control-vehicles §1.2; TRACE-4 §1 opcode order).
     fn stream_in(&mut self, runner: &mut Runner, s: &rv::StreamInVehicle) {
         if s.vehicle_id >= vm::MAX_VEHICLES || !(vm::MODEL_MIN..=vm::MODEL_MAX).contains(&s.model) {
             return;
         }
         if self.pool.contains_key(&s.vehicle_id) {
-            crate::log!("Warning: vehicle {} was not deleted", s.vehicle_id);
+            crate::ui::print_debug(&format!("Warning: vehicle {} was not deleted", s.vehicle_id));
             self.delete(runner, s.vehicle_id);
         }
         let (x, y, z) = (s.position.x, s.position.y, s.position.z);
@@ -490,10 +498,11 @@ impl Vehicles {
         }
         let ptr = vehicle_at(handle);
         if ptr == 0 {
-            crate::log!("Warning: couldn't create vehicle type: {}", s.model);
+            crate::ui::print_debug(&format!("Warning: couldn't create vehicle type: {}", s.model));
             return;
         }
         let mut v = Veh::new(s.vehicle_id, s.model, handle, ptr);
+        v.spawn_pos = [x, y, z];
         if vm::train_type(s.model).is_none() {
             poke(ptr + g::VEH_DOOR_LOCK, 0u32);
             poke(ptr + g::VEH_DIRT, 0.0f32);

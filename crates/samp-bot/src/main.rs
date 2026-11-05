@@ -35,6 +35,8 @@ usage: samp-bot [HOST:PORT] [options]
   --target ID|NAME     player to shoot at
   --weapon W           weapon to use (must be given by the server; default: armed)
   --special-action N   special action in every on-foot sync (measurement, e.g. 24 cuffed)
+  --anim-seq W,W,…     207 animation words (index | flags << 16, decimal or 0x…) sent in turn (measurement)
+  --anim-ms MS         time per --anim-seq word (default 2000)
   --hit-type T         206 hit type 0 none, 1 player (default), 2 vehicle, 3 object
   --hit-id N           206 hit id override
   --offset X,Y,Z       206 offset override
@@ -94,6 +96,18 @@ fn parse_args() -> std::result::Result<Args, String> {
             }
             "--fire-ms" => c.fire_ms = Some(num("--fire-ms", it.next())?),
             "--special-action" => c.special_action = Some(num("--special-action", it.next())?),
+            "--anim-seq" => {
+                let v = it.next().ok_or("--anim-seq needs a list")?;
+                c.anim_seq = v
+                    .split(',')
+                    .map(|w| match w.strip_prefix("0x") {
+                        Some(h) => u32::from_str_radix(h, 16),
+                        None => w.parse(),
+                    })
+                    .collect::<std::result::Result<_, _>>()
+                    .map_err(|_| format!("--anim-seq: bad word list {v:?}"))?;
+            }
+            "--anim-ms" => c.anim_step = Duration::from_millis(num("--anim-ms", it.next())?),
             "-h" | "--help" => return Err(USAGE.into()),
             other if other.starts_with("--") => return Err(format!("unknown option {other}\n{USAGE}")),
             other => a.target = other.into(),

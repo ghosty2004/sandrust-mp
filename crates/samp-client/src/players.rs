@@ -334,6 +334,8 @@ impl Players {
         self.destroy_ped(runner, id);
         let Some(slot) = self.slots.alloc() else {
             crate::log!("players: no free ped slot for id {id}");
+            // B 0x10010B9C: the spawn failed (FEAT-B, A17).
+            crate::ui::print_debug(&format!("Warning: Couldn't spawn player({id})"));
             return;
         };
         let info = game::CWORLD_PLAYERS + u32::from(slot) * PLAYER_INFO_SIZE;
@@ -351,6 +353,7 @@ impl Players {
         if ped == 0 || game::ped_handle(&mem, ped).ok().flatten() != Some(handle) {
             crate::log!("players: CREATE_PLAYER({slot}) gave no ped (ped {ped:#x}, handle {handle:#x})");
             self.slots.free(slot);
+            crate::ui::print_debug(&format!("Warning: Couldn't spawn player({id})"));
             return;
         }
         let h = Arg::Int(handle);
@@ -398,6 +401,8 @@ impl Players {
                 let a = [Arg::Int(h), Arg::Float(100.0), Arg::Float(100.0), Arg::Float(10.0)];
                 runner.run(op::WARP_CHAR_FROM_CAR_TO_COORD, &a);
             }
+            // Parachute object off, held item dropped (B 0x100B0FB0; FEAT-B).
+            crate::specials::remote_destroyed(runner, id, ped);
             // m_pPlayerData->+0x4C := 0 (the anim-block field ProcessAnimGroups no longer
             // maintains, CSV row 167), through the ped's own pointer (TRACE-2 finding 3a).
             let data = mem.read_u32(ped + PLAYER_PED_DATA).unwrap_or(0);
@@ -499,7 +504,7 @@ impl Players {
                     }
                 }
                 // Special actions (onfoot §4.2, A 0x10014950).
-                special_actions(runner, ped, f.special_action, in_vehicle, &mut p.phone);
+                special_actions(runner, p.id, slot, ped, f.special_action, in_vehicle, &mut p.phone);
                 let stale = p.is_stale(now);
                 let intel = mem.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
                 let task =
@@ -624,10 +629,7 @@ impl Players {
     /// (samp's handler in A 0x100A2800: "Removed player %u due to error.").
     pub fn handle_faults(&mut self, runner: &mut Runner) {
         for fault in swap::take_faults() {
-            crate::ui::print_debug(&format!(
-                "Warning(playerped): Exception 0x{:X} at 0x{:X}.",
-                fault.code, fault.address
-            ));
+            crate::ui::print_debug(&swap::fault_line(swap::FaultSite::Named("playerped"), fault.code, fault.address));
             let id = self.players.values().find(|p| p.slot == Some(fault.slot)).map(|p| p.id);
             let Some(id) = id else { continue };
             self.destroy_ped(runner, id);
@@ -685,7 +687,7 @@ fn add_coord_blip(runner: &mut Runner, pos: [f32; 3], colour: u32) -> i32 {
 }
 
 /// `GET_CURRENT_CHAR_WEAPON` on a ped (samp A 0x100abc90; 0 without a valid handle).
-fn current_weapon(runner: &mut Runner, ped: u32) -> u8 {
+pub(crate) fn current_weapon(runner: &mut Runner, ped: u32) -> u8 {
     let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return 0 };
     runner.run(op::GET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Local(0)]);
     runner.local_i32(0) as u8
@@ -761,7 +763,7 @@ fn sniper_state(runner: &mut Runner, ped: u32, keys: u16) {
 }
 
 /// Duck and hands-up edges for a remote ped (onfoot §4.2).
-fn special_actions(runner: &mut Runner, ped: u32, action: u8, in_vehicle: bool, phone: &mut bool) {
+fn special_actions(runner: &mut Runner, id: u16, slot: u8, ped: u32, action: u8, in_vehicle: bool, phone: &mut bool) {
     let mem = ProcessMemory;
     if !crate::client::ped_in_world(ped) {
         return;
@@ -772,7 +774,11 @@ fn special_actions(runner: &mut Runner, ped: u32, action: u8, in_vehicle: bool, 
     let intel = mem.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
     let task = if intel != 0 { mem.read_u32(intel + off::INTELLIGENCE_PRIMARY_TASK).unwrap_or(0) } else { 0 };
     let hands_up = !in_vehicle && task != 0 && mem.read_u32(task).ok() == Some(game::VTBL_TASK_HANDS_UP);
-    for step in remote::special_action_steps(action, ducking, *phone, hands_up) {
+    let steps = remote::special_action_steps(action, ducking, *phone, hands_up);
+    // Duck start and phone start/stop end samp's pass for this frame; otherwise it goes on with piss, items and
+    // the parachute check (FEAT-B, B 0x10014A38…).
+    let ends = matches!(steps.last(), Some(SpecialStep::StartDuck | SpecialStep::StartPhone | SpecialStep::StopPhone));
+    for step in steps {
         match step {
             SpecialStep::StartDuck => {
                 if !in_vehicle && intel != 0 {
@@ -801,6 +807,9 @@ fn special_actions(runner: &mut Runner, ped: u32, action: u8, in_vehicle: bool, 
             }
         }
     }
+    if !ends {
+        crate::specials::remote_pass(runner, id, ped, slot, action);
+    }
 }
 
 /// `CTaskSimpleJetPack` scalar deleting destructor (A 0x100ACDA0).
@@ -810,7 +819,7 @@ const JETPACK_DELETING_DTOR: u32 = 0x6801D0;
 const PED_FLAG_DUCKING: u32 = 1 << 26;
 
 /// Re-sets a ped to its own matrix position through its `Teleport` virtual (A 0x100adb60).
-fn teleport_in_place(ped: u32) {
+pub(crate) fn teleport_in_place(ped: u32) {
     let mem = ProcessMemory;
     let matrix = mem.read_u32(ped + off::PLACEABLE_MATRIX).unwrap_or(0);
     let Some(pos) = (matrix != 0).then(|| v3(&mem, matrix + off::MATRIX_POS)).flatten() else { return };

@@ -908,6 +908,10 @@ pub fn remote_anim(runner: &mut Runner, id: u16, ped: u32, anim: u32) {
                     [d.looping, d.lock_x, d.lock_y, d.freeze],
                     d.time,
                 );
+                // B 0x100AE7E0 → 0x100AD630: the parachute object follows PARACHUTE anims (FEAT-B).
+                if lib == "PARACHUTE" {
+                    crate::specials::remote_para_anim(runner, id, ped, name);
+                }
             }
             RemoteAction::VendEat => play(runner, ped, b"VEND_EAT_P", b"VENDING", 4.0, [false; 4], -1),
             RemoteAction::Stop => play(runner, ped, b"crry_prtial", b"CARRY", 4.0, [false; 4], 0),
@@ -989,7 +993,7 @@ fn push_back_entity(e: u32, b: &Bounds) -> bool {
 
 /// samp's animation player (B 0x100AD240): "SEX" refused; an unloaded library is requested and polled with
 /// `Sleep(1)` 15 times, then given up; else `TASK_PLAY_ANIM_NON_INTERRUPTABLE`.
-fn play(runner: &mut Runner, ped: u32, name: &[u8], lib: &[u8], delta: f32, flags: [bool; 4], time: i32) {
+pub(crate) fn play(runner: &mut Runner, ped: u32, name: &[u8], lib: &[u8], delta: f32, flags: [bool; 4], time: i32) {
     let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return };
     if anims::refused_library(lib) {
         return;

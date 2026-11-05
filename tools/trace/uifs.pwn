@@ -58,6 +58,7 @@
 //   shop|P|name  wide|P|0/1  campos|P|x|y|z  camlook|P|x|y|z|cut  ipos|P|fx|fy|fz|tx|ty|tz|ms|cut
 //   ilook|P|fx|fy|fz|tx|ty|tz|ms|cut  camobj|P|OBJ  specon|P  specpl|P|TARGET|mode  specveh|P|VEH|mode
 //   anim|P|lib|name|delta|loop|lx|ly|freeze|time|sync  clranim|P|sync  sound|P|id|x|y|z
+// FEAT-B: pstate|P (drunk level, special action, animation index, weapon as the server sees them)
 //   audio|P|url|x|y|z|dist|usepos  audiostop|P  check|P|type|addr|offset|count (SendClientCheck)
 //   paint|VEH|pj  vmod|VEH|comp  vcolor|VEH|c1|c2  crime|P|suspect|crime  vw|P|world  wanted|P|n
 //   stunt|P|0/1  vel|P|x|y|z  money|P|n  clock|P|0/1  vehcol|P|0/1  camtarget|P|0/1  kick|P  ban|P
@@ -606,6 +607,12 @@ Run(seq, const line[])
     else if (!strcmp(cmd, "check")) SendClientCheck(pl(line, 1), hexval2(line, 2), hexval2(line, 3), in(line, 4), in(line, 5));
     else if (!strcmp(cmd, "paint")) ChangeVehiclePaintjob(in(line, 1), in(line, 2));
     else if (!strcmp(cmd, "vmod")) AddVehicleComponent(in(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "pstate"))
+    {
+        new p = pl(line, 1);
+        printf("[ui-fs] %d pstate %d drunk %d special %d anim %d weapon %d", seq, p, GetPlayerDrunkLevel(p),
+            _:GetPlayerSpecialAction(p), GetPlayerAnimationIndex(p), _:GetPlayerWeapon(p));
+    }
     else if (!strcmp(cmd, "vcolor")) ChangeVehicleColours(in(line, 1), in(line, 2), in(line, 3));
     else if (!strcmp(cmd, "crime")) PlayCrimeReportForPlayer(pl(line, 1), pl(line, 2), in(line, 3));
     else if (!strcmp(cmd, "vw")) SetPlayerVirtualWorld(pl(line, 1), in(line, 2));

@@ -967,6 +967,25 @@ impl UiCore {
             // `/hudscalefix`: samp's flag A 0x10117470 (mainhooks.rs).
             #[cfg(windows)]
             Effect::SetHudScaleFix(on) => crate::mainhooks::set_enabled(on),
+            // `/testdw` (B 0x100684C0): eight fixed rows through the death-message path (killer, victim, colours
+            // 0xFFFFFFFF, reason); a missing killer name is empty.
+            Effect::FillTestDeathWindow => {
+                const ROWS: [(&[u8], &[u8], u8); 8] = [
+                    (b"Pooper", b"Pooper333", 1),
+                    (b"Pooper", b"Pooper", 5),
+                    (b"Pooper", b"Pooper", 15),
+                    (b"Pooper", b"Pooper", 14),
+                    (b"Pooper", b"Pooper", 2),
+                    (b"", b"PooperPooperPooper0001", 5),
+                    (b"", b"Pooper", 255),
+                    (b"Pooper", b"PooperPooperPooper0001", 0),
+                ];
+                for (k, v, reason) in ROWS {
+                    self.deaths.add(k, 0xFFFF_FFFF, v, 0xFFFF_FFFF, reason);
+                }
+            }
+            // `/dl`: the flag lives in `settings.vehicle_labels`; the labels are built by `vehlabels.rs`.
+            Effect::SetVehicleLabels(_) => {}
             // Stored in `settings`; their game effects belong to later milestones.
             other => crate::log!("ui: effect {other:?} stored only (not applied in M4)"),
         }

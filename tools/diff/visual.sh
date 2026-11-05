@@ -11,6 +11,8 @@
 #   tools/diff/visual.sh --diff-only     only the diff of the existing captures
 #   tools/diff/visual.sh --ours-only     only capture our side
 #   VISUAL_ONLY=a,b                      diff only these elements
+#   VISUAL_SCENARIO_FILE=PATH            another scenario file defining visual_scenario (e.g.
+#                                        tools/diff/visual-featb.sh); VISUAL_DIR=PATH its own output root
 # Output: target/visual/{orig,ours}/ (d3d-NAME.jsonl, NAME.png, boot/ timeline, logs),
 # target/visual/report.txt.
 set -uo pipefail
@@ -32,7 +34,7 @@ if [[ -z "${SAMP_RS_ROOT:-}" && ! -d "$ROOT/wine" ]]; then
 fi
 export SAMP_RS_ROOT="${SAMP_RS_ROOT:-$ROOT}"
 TB="${CARGO_TARGET_DIR:-$ROOT/target}"
-V="$ROOT/target/visual"
+V="${VISUAL_DIR:-$ROOT/target/visual}"
 say() { printf '[visual] %s\n' "$*"; }
 # Boot logging (UX-1): all calls until gGameState 9, then the UI pass, for this many Presents.
 export SAMP_TRACER_D3D_BOOT="${SAMP_TRACER_D3D_BOOT:-all 1500}"
@@ -152,7 +154,7 @@ PY
     e2e_wait_log '\[ui-fs\] loaded' 20
 }
 source "$ROOT/tools/e2e/lib.sh"
-source "$ROOT/tools/diff/visual-scenario.sh"
+source "${VISUAL_SCENARIO_FILE:-$ROOT/tools/diff/visual-scenario.sh}"
 
 # ------------------------------------------------------------------ original side ----------
 run_orig() {

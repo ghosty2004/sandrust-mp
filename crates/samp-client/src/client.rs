@@ -100,6 +100,8 @@ pub struct Client {
     last_interior: u8,
     /// Phone special action active (local ped object +0x48).
     phone: bool,
+    /// Held item / piss state of the local ped (FEAT-B, `specials.rs`).
+    specials: crate::specials::PedExtras,
     /// Local head look (A 0x10002fa0): offset refreshed every 1000 ms, LookAt every 200 ms.
     look_offset: [f32; 3],
     look_refresh: Option<Instant>,
@@ -184,6 +186,7 @@ impl Client {
             zone_names_from: None,
             last_interior: 0,
             phone: false,
+            specials: Default::default(),
             look_offset: [0.0; 3],
             look_refresh: None,
             look_last: None,
@@ -409,6 +412,12 @@ impl Client {
         }
         // Remote peds whose ProcessControl faulted (swap.rs fault containment).
         self.players.handle_faults(&mut self.runner);
+        // `/dl` labels (B 0x10075760), rebuilt every tick while the flag is on.
+        let spectating = self.behaviour.spectate.on;
+        crate::vehlabels::tick(self.vehicles.debug_rows(), self.ped(), spectating);
+        for line in crate::swap::take_fault_lines() {
+            crate::ui::print_debug(&line);
+        }
         // Chat input and connection lines of the in-game UI (M4).
         crate::ui::net_tick(&mut self.net);
         // The vehicle pool tick follows the local player's (remote-control-vehicles §6 step 3c).
@@ -455,6 +464,8 @@ impl Client {
                 crate::ui::on_init_game(&g);
                 self.netgame.on_init_game();
                 self.vehicles.set_init_game(&g);
+                // The InitGame vehicle-model preload (B 0x100A1620; `/dl` reports its flags).
+                crate::vehlabels::preload(&mut self.runner, &g.vehicle_models);
                 self.objects.set_local_id(g.player_id);
                 self.entities.set_local_id(g.player_id);
                 self.enter_class_selection(now, g.spawns_available);
@@ -1212,9 +1223,12 @@ impl Client {
                         self.current_weapon(ped);
                         let mut sample = sample;
                         // samp's order (A 0x10003410): jetpack, dance, hands up, phone, piss, duck.
-                        if self.phone && matches!(sample.special_action, 0 | 1) {
-                            sample.special_action = crate::remote::special::PHONE;
-                        }
+                        sample.special_action = crate::specials::local_report(
+                            sample.special_action,
+                            self.phone,
+                            self.specials.piss,
+                            self.specials.item,
+                        );
                         sample.animation = self.behaviour.anim.take();
                         let f = footsync::build_foot_sync(&sample, self.sender.last_rotation());
                         if let Some(f) = self.sender.offer(now, f) {
@@ -1253,6 +1267,8 @@ impl Client {
         if triangle != 0 && self.hands_up(ped) {
             self.set_controllable(true);
         }
+        // Piss / held item (B 0x1000772C…0x100077AB): Triangle or a vehicle ends them, else the item is used.
+        crate::specials::local_tick(&mut self.runner, ped, &mut self.specials, triangle != 0, &mut self.behaviour.drunk);
         // Drunk handling (B 0x100ADE00), then the 207 animation encoder (B 0x100AE7A0).
         self.behaviour.drunk_tick(&mut self.runner, ped);
         self.behaviour.anim_tick(ped);
@@ -1329,9 +1345,9 @@ impl Client {
         }
     }
 
-    /// RPC 88 (LocalPlayer method A 0x100030f0), for the actions this client has.
-    /// 0 stops the states samp stops (jetpack, phone, items, dance, cuffs, carry,
-    /// piss) — none of which exist here — and, as in samp, not hands up.
+    /// RPC 88 (LocalPlayer method A 0x100030f0), for the actions this client has:
+    /// 0 stops the phone, pissing and a held item (not hands up, as in samp); 10, 11,
+    /// 13, 20–23 and 68 start their state. Jetpack, dances, cuffs and carry are not here.
     fn on_special_action(&mut self, action: u8) {
         use crate::remote::special;
         crate::log!("client: special action {action}");
@@ -1339,8 +1355,12 @@ impl Client {
         let ped = self.ped();
         let Some(h) = self.ped_handle(ped) else { return };
         let in_vehicle = ProcessMemory.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0;
+        // samp's case 0 order: phone, piss, item (B 0x100030F0); 20–23 / 68 start an item / pissing.
+        if matches!(action, special::NONE | special::PHONE_STOP) && self.phone {
+            self.set_phone(h, false);
+        }
+        crate::specials::local_action(&mut self.runner, ped, &mut self.specials, action);
         match action {
-            special::NONE | special::PHONE_STOP if self.phone => self.set_phone(h, false),
             special::PHONE if !in_vehicle => self.set_phone(h, true),
             special::HANDS_UP if !in_vehicle && ped_in_world(ped) => {
                 self.runner.run(op::TASK_HANDS_UP, &[Arg::Int(h), Arg::Int(-2)]);
@@ -1556,6 +1576,8 @@ pub(crate) fn set_ped_skin(runner: &mut Runner, ped: u32, skin: u32) {
         poke(intel + game::INTELLIGENCE_SECONDARY_IK, 0u32);
     }
     if !load_model(runner, skin as i32) {
+        // B 0x1009EF80: a debug chat line (FEAT-B, A17).
+        crate::ui::print_debug(&format!("Warning: Model {skin} wouldn't load in time!"));
         return;
     }
     let vtbl = ProcessMemory.read_u32(ped + off::VTABLE).unwrap_or(0);
