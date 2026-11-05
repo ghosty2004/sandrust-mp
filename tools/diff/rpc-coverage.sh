@@ -163,14 +163,15 @@ one_run() {
 
 trap 'e2e_headless_stop; e2e_server_stop; lane_wine_kill' EXIT
 orig_dirs=(); ours_dirs=()
+# A failed ORIGINAL run (e.g. no join) has no steps and would break the report: leave it out.
 for ((n = 0; n < ORIG_RUNS; n++)); do
-    one_run orig || say "orig run $((n + 1)) failed"
-    orig_dirs+=("$RUN_DIR")
+    if one_run orig; then orig_dirs+=("$RUN_DIR"); else say "orig run $((n + 1)) failed; not used in the report"; fi
 done
 for ((n = 0; n < OURS_RUNS; n++)); do
     one_run ours || say "ours run $((n + 1)) failed"
     ours_dirs+=("$RUN_DIR")
 done
+[ "${#orig_dirs[@]}" -gt 0 ] || { say "no usable original run; no report"; exit 1; }
 args=()
 for d in "${orig_dirs[@]}"; do args+=(--orig "$d"); done
 for d in "${ours_dirs[@]}"; do args+=(--ours "$d"); done

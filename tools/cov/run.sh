@@ -28,7 +28,8 @@ B_PREFIX="$ROOT/wine/prefix-diff2"; B_GTA="$ROOT/wine/gta-sa-diff2"; B_CPORT=477
 export WINEPREFIX="$A_PREFIX" GTA_DIR="$A_GTA"
 export E2E_TAG=diff E2E_PORT=7795 E2E_CTL_PORT=47705
 COV_OUT="$ROOT/target/cov"
-BIN="$ROOT/target/cov-cargo/i686-pc-windows-gnu/release"
+# COV_BIN=DIR takes tracer + launcher (+ client) from another prebuilt release dir (with --skip-build).
+BIN="${COV_BIN:-$ROOT/target/cov-cargo/i686-pc-windows-gnu/release}"
 A_NAME=CovOrig; B_NAME=CovOurs
 source "$ROOT/tools/wine-env.sh"
 source "$ROOT/tools/e2e/lib.sh"

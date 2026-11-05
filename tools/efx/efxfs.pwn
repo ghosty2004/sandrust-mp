@@ -8,12 +8,25 @@
 //   putin|veh|seat       PutPlayerInVehicle      (RPC 70)
 //   veh|model|x|y|z|a    CreateVehicle (setup; prints "[efx-fs] SEQ veh ID")
 //   where                prints position, health, skin, vehicle
+// PAR-AUDIT additions (vehicle/object/pickup commands act on the last one created here):
+//   posz|x|y|z SetPlayerPosFindZ (13)   angle|a SetPlayerFacingAngle (19)   ctrl|0/1 (15)
+//   money|n GivePlayerMoney (18)        grav|g SetPlayerGravity (146)        int|i (156)
+//   campos|x|y|z (157)  camlook|x|y|z (158)  cambehind (162)
+//   vparams|engine|lights|alarm|doors|bonnet|boot|obj (24)  vhp|hp (147)  vpos|x|y|z (159)
+//   vang|a (160)  putlast|seat (70, setup)  remove (71)  vehdel (165)
+//   obj|model|x|y|z (44)  objmove|x|y|z|speed (99)  objstop (122)  objdel (47)
+//   pickup|model|type|x|y|z (95)  pickdel (63)
+//   dlg|id|style (61; id -1 hides)  gametext|text|ms|style (73)  tdshow (134)  tdhide (135)
 #define FILTERSCRIPT
 #pragma dynamic 16384
 #include <open.mp>
 
 new gLast = 0;
 new gLocal = INVALID_PLAYER_ID;
+new gLastVeh = INVALID_VEHICLE_ID;
+new gLastObj = INVALID_OBJECT_ID;
+new gLastPickup = -1;
+new PlayerText:gTd = INVALID_PLAYER_TEXT_DRAW;
 
 public OnFilterScriptInit()
 {
@@ -80,7 +93,7 @@ in(const line[], n)
 
 Run(seq, const line[])
 {
-    new cmd[16];
+    new cmd[16], str[64];
     field(line, 0, cmd);
     new p = gLocal;
     if (!strcmp(cmd, "pos")) SetPlayerPos(p, fl(line, 1), fl(line, 2), fl(line, 3));
@@ -90,8 +103,53 @@ Run(seq, const line[])
     else if (!strcmp(cmd, "veh"))
     {
         new v = CreateVehicle(in(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), 1, 1, -1);
+        gLastVeh = v;
         printf("[efx-fs] %d veh %d", seq, v);
     }
+    else if (!strcmp(cmd, "posz")) SetPlayerPosFindZ(p, fl(line, 1), fl(line, 2), fl(line, 3));
+    else if (!strcmp(cmd, "angle")) SetPlayerFacingAngle(p, fl(line, 1));
+    else if (!strcmp(cmd, "ctrl")) TogglePlayerControllable(p, in(line, 1) != 0);
+    else if (!strcmp(cmd, "money")) GivePlayerMoney(p, in(line, 1));
+    else if (!strcmp(cmd, "grav")) SetPlayerGravity(p, fl(line, 1));
+    else if (!strcmp(cmd, "int")) SetPlayerInterior(p, in(line, 1));
+    else if (!strcmp(cmd, "campos")) SetPlayerCameraPos(p, fl(line, 1), fl(line, 2), fl(line, 3));
+    else if (!strcmp(cmd, "camlook")) SetPlayerCameraLookAt(p, fl(line, 1), fl(line, 2), fl(line, 3));
+    else if (!strcmp(cmd, "cambehind")) SetCameraBehindPlayer(p);
+    else if (!strcmp(cmd, "vparams")) SetVehicleParamsEx(gLastVeh, in(line, 1), in(line, 2), in(line, 3), in(line, 4),
+        in(line, 5), in(line, 6), in(line, 7));
+    else if (!strcmp(cmd, "vhp")) SetVehicleHealth(gLastVeh, fl(line, 1));
+    else if (!strcmp(cmd, "vpos")) SetVehiclePos(gLastVeh, fl(line, 1), fl(line, 2), fl(line, 3));
+    else if (!strcmp(cmd, "vang")) SetVehicleZAngle(gLastVeh, fl(line, 1));
+    else if (!strcmp(cmd, "putlast")) PutPlayerInVehicle(p, gLastVeh, in(line, 1));
+    else if (!strcmp(cmd, "remove")) RemovePlayerFromVehicle(p);
+    else if (!strcmp(cmd, "vehdel")) DestroyVehicle(gLastVeh);
+    else if (!strcmp(cmd, "obj"))
+    {
+        gLastObj = CreateObject(in(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), 0.0, 0.0, 0.0);
+        printf("[efx-fs] %d obj %d", seq, gLastObj);
+    }
+    else if (!strcmp(cmd, "objmove")) MoveObject(gLastObj, fl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4));
+    else if (!strcmp(cmd, "objstop")) StopObject(gLastObj);
+    else if (!strcmp(cmd, "objdel")) DestroyObject(gLastObj);
+    else if (!strcmp(cmd, "pickup"))
+    {
+        gLastPickup = CreatePickup(in(line, 1), in(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), -1);
+        printf("[efx-fs] %d pickup %d", seq, gLastPickup);
+    }
+    else if (!strcmp(cmd, "pickdel")) DestroyPickup(gLastPickup);
+    else if (!strcmp(cmd, "dlg"))
+        ShowPlayerDialog(p, in(line, 1), DIALOG_STYLE:in(line, 2), "EFX", "EFX dialog body", "OK", "Cancel");
+    else if (!strcmp(cmd, "gametext"))
+    {
+        field(line, 1, str);
+        GameTextForPlayer(p, str, in(line, 2), in(line, 3));
+    }
+    else if (!strcmp(cmd, "tdshow"))
+    {
+        if (gTd == INVALID_PLAYER_TEXT_DRAW) gTd = CreatePlayerTextDraw(p, 320.0, 240.0, "EFX");
+        PlayerTextDrawShow(p, gTd);
+    }
+    else if (!strcmp(cmd, "tdhide")) PlayerTextDrawHide(p, gTd);
     else if (!strcmp(cmd, "where"))
     {
         new Float:x, Float:y, Float:z, Float:hp;

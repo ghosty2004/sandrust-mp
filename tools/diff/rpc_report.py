@@ -166,11 +166,15 @@ def load_segments(path):
                 # and the SetModelIndex calls); keeping it in every entity
                 # descriptor would turn one missed skin change into many diffs.
                 n = PLAYER_MODEL.sub("player=True", n)
+                # A `los` record's gta_stack is a raw stack scan: with our client it picks up stale
+                # return addresses (Rust frames), so every frame looks different. Diagnostic only.
+                n = LOS_STACK.sub("", n)
                 (segs[cur] if cur is not None else gap).extend(split_watch(n))
     return segs
 
 
 NUM = re.compile(r"-?\d+\.\d+|-?\d+")
+LOS_STACK = re.compile(r",gta_stack=[^}]*")
 FLOAT_TOLERANCE = 1.5   # world coordinates/angles in trace lines (physics jitter)
 
 
@@ -410,7 +414,8 @@ def handled_rpcs():
         src += open(f).read()
     out = set()
     for name, rid in names.items():
-        if re.search(r"::" + name + r"\s*(\([^()]*\))?\s*(\{[^{}]*\})?\s*(=>|\|)", src):
+        # Also nested arms such as `Incoming::Ui(ui::Incoming::ShowDialog(d)) =>` (ui/core.rs).
+        if re.search(r"::" + name + r"\s*(\([^()]*\))?\s*(\{[^{}]*\})?\s*\)*\s*(=>|\|)", src):
             out.add(rid)
     if re.search(r"Event::InitGame", src):
         out.add(139)

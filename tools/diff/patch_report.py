@@ -52,8 +52,9 @@ def static_rows():
     def add(n, where):
         refs.setdefault(int(n), []).append(where)
 
-    for path in sorted(glob.glob(os.path.join(CLIENT_SRC, "*.rs"))):
-        name = os.path.basename(path)
+    # Recursive: ui/ (input lock rows 349–353) and other submodules apply rows too.
+    for path in sorted(glob.glob(os.path.join(CLIENT_SRC, "**", "*.rs"), recursive=True)):
+        name = os.path.relpath(path, CLIENT_SRC)
         src = open(path).read()
         for m in re.finditer(r"csv_row:\s*(\d+)", src):
             add(m.group(1), f"{name} csv_row")
@@ -68,8 +69,14 @@ def static_rows():
                 add(m.group(1), "stores.rs code refs")
         if name == "patches.rs":
             continue  # table entries only (comments repeat them)
-        for m in re.finditer(r"CSV rows? ([0-9][0-9 ,/–\-and]*)", src):
-            for part in re.split(r",|/| and ", m.group(1)):
+        # Installers that return (row, result) tuples (worldhooks.rs).
+        for m in re.finditer(r"out\.push\(\(\s*(\d+)\s*,", src):
+            add(m.group(1), f"{name} install")
+        pats = [r"CSV rows? ([0-9][0-9 ,/–\-+and]*)",
+                # comment lines that start with "Row N" / "rows N/M + K" (worldhooks.rs, ui/inputlock.rs)
+                r"(?m)^\s*//[/!]?\s*(?:-+\s*)?[Rr]ows? ([0-9][0-9 ,/–\-+and]*)"]
+        for m in (m for pat in pats for m in re.finditer(pat, src)):
+            for part in re.split(r",|/|\+| and ", m.group(1)):
                 part = part.strip()
                 r = re.fullmatch(r"(\d+)\s*[–-]\s*(\d+)", part)
                 if r:
@@ -78,6 +85,19 @@ def static_rows():
                 elif part.isdigit():
                     add(part, f"{name} comment")
     return {k: sorted(set(v)) for k, v in refs.items()}
+
+
+_CLIENT_SRC_TEXT = None
+
+
+def addr_referenced(row):
+    """True when every region address of a runtime row appears as a hex constant in samp-client."""
+    global _CLIENT_SRC_TEXT
+    if _CLIENT_SRC_TEXT is None:
+        _CLIENT_SRC_TEXT = "".join(open(p).read() for p in glob.glob(os.path.join(CLIENT_SRC, "**", "*.rs"),
+                                                                      recursive=True)).lower().replace("_", "")
+    # Code addresses only: data constants (e.g. the HUD scale floats) are often just read.
+    return bool(row.regions) and all(reg[0] < 0x856000 and f"{reg[0]:#x}" in _CLIENT_SRC_TEXT for reg in row.regions)
 
 
 def milestones():
@@ -254,6 +274,10 @@ def main():
         elif live == "match":
             cat = "applied/matching"
         elif row.row in static:
+            cat = "applied (static only)"
+        elif live and "inactive" in live and addr_referenced(row):
+            # Runtime rows (e.g. the input lock, 349–353) whose code names the patch address but no row.
+            static.setdefault(row.row, []).append("address constant in samp-client")
             cat = "applied (static only)"
         else:
             cat = "missing"

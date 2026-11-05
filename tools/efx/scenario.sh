@@ -110,6 +110,44 @@ for step in ${EFX_STEPS:-pos hp skin putin}; do
             sleep 4
             capture putin 1 70 "putin|$v|0"
             ;;
+        # PAR-AUDIT steps (one RPC per capture; setup commands are not captured).
+        posz) capture posz 1 13 "posz|1520.0|-1665.0|40.0"; capture posz 2 13 "posz|1510.0|-1660.0|40.0" ;;
+        angle) capture angle 1 19 "angle|90.0"; capture angle 2 19 "angle|180.0" ;;
+        ctrl) capture ctrl 1 15 "ctrl|0"; capture ctrl 2 15 "ctrl|1" ;;
+        money) capture money 1 18 "money|500"; capture money 2 18 "money|-200" ;;
+        # Low gravity lets the player drift off; the second capture restores the default at once.
+        grav) capture grav 1 146 "grav|0.002"; capture grav 2 146 "grav|0.008" ;;
+        int) capture int 1 156 "int|1"; capture int 2 156 "int|0" ;;
+        campos)
+            # Start from a known on-foot state (earlier steps may have moved or killed the player).
+            efx_fs "pos|1510.0|-1660.0|13.55" > /dev/null
+            sleep 3
+            capture campos 1 157 "campos|1500.0|-1650.0|30.0"; capture camlook 1 158 "camlook|1510.0|-1660.0|13.5"
+                capture cambehind 1 162 "cambehind" ;;
+        vehin)
+            efx_fs "pos|1510.0|-1660.0|13.55" > /dev/null
+            sleep 3
+            capture vehin 1 164 "veh|560|1515.0|-1665.0|13.6|90.0"
+            sleep 3
+            ;;
+        vparams) capture vparams 1 24 "vparams|1|1|0|1|0|0|0"; capture vparams 2 24 "vparams|0|0|0|0|0|0|0" ;;
+        vhp) capture vhp 1 147 "vhp|500.0"; capture vhp 2 147 "vhp|1000.0" ;;
+        vpos) capture vpos 1 159 "vpos|1518.0|-1668.0|13.6"; capture vang 1 160 "vang|45.0" ;;
+        remove)
+            efx_fs "putlast|0" > /dev/null
+            sleep 4
+            capture remove 1 71 "remove"
+            sleep 3
+            ;;
+        vehdel) capture vehdel 1 165 "vehdel"; sleep 2 ;;
+        obj) capture obj 1 44 "obj|1337|1505.0|-1655.0|13.5"; sleep 1
+             capture objmove 1 99 "objmove|1505.0|-1655.0|18.5|1.0"; sleep 1
+             capture objstop 1 122 "objstop"; capture objdel 1 47 "objdel" ;;
+        pickup) capture pickup 1 95 "pickup|1240|2|1506.0|-1662.0|13.55"; sleep 1
+                capture pickdel 1 63 "pickdel" ;;
+        dlg) capture dlg 1 61 "dlg|1|0"; sleep 1; capture dlg 2 61 "dlg|-1|0" ;;
+        gametext) capture gametext 1 73 "gametext|EFX|3000|3"; sleep 1 ;;
+        td) capture tdshow 1 134 "tdshow"; sleep 1; capture tdhide 1 135 "tdhide" ;;
         *) efx_say "unknown step $step" ;;
     esac
     e2e_shot "$OUT/$step.png"
