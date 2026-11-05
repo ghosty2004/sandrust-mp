@@ -14,6 +14,9 @@ CONTROL_FILE holds one rule line, re-read when it changes:
     drop-sc-reliable N      the same for server→client datagrams
     drop-cs-repeat K        drop client→server datagrams carrying a reliable message while it
                             has been transmitted at most K times (first send + K−1 resends)
+    mix-sc N                server→client chaos: every N-th datagram is dropped, every N-th
+                            (offset by N/2) is held back and sent after the next two datagrams
+                            (reordering), every 7th is sent twice (duplicates)
 Every drop is logged to LOG_FILE as JSON: {"t": epoch, "dir": "C>S", "nums": [...], "len": n}.
 No root, no tc: plain sockets.
 """
@@ -65,6 +68,8 @@ def main():
     rule, rule_mtime = ("off", 0), None
     log = open(logf, "a", buffering=1)
     last_ctl = 0.0
+    held = []    # (client, data, datagrams still to pass) for mix-sc reordering
+    mixn = 0
     print("lossproxy %s:%d -> %s:%d" % (lhost, port, shost, port), flush=True)
     while True:
         now = time.time()
@@ -119,8 +124,30 @@ def main():
                     up[client] = u
                     back[u.fileno()] = client
                 u.send(data)
+            elif rule[0] == "mix-sc" and rule[1] > 1:
+                mixn += 1
+                if mixn % rule[1] == 0:
+                    log.write(json.dumps({"t": time.time(), "dir": d, "mix": "drop", "len": len(data)}) + "\n")
+                    continue
+                if mixn % rule[1] == rule[1] // 2:
+                    held.append([client, data, 2])
+                    log.write(json.dumps({"t": time.time(), "dir": d, "mix": "hold", "len": len(data)}) + "\n")
+                    continue
+                lsock.sendto(data, client)
+                if mixn % 7 == 0:
+                    lsock.sendto(data, client)
+                for h in held:
+                    h[2] -= 1
+                for h in [h for h in held if h[2] <= 0]:
+                    lsock.sendto(h[1], h[0])
+                held = [h for h in held if h[2] > 0]
             else:
                 lsock.sendto(data, client)
+        # Held datagrams never wait longer than one select period when the stream goes quiet.
+        if not r and held:
+            for h in held:
+                lsock.sendto(h[1], h[0])
+            held = []
 
 
 if __name__ == "__main__":

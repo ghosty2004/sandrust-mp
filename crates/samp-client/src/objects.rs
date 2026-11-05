@@ -624,18 +624,19 @@ impl Objects {
         self.attached.insert(key, AttachedSlot { data: d, handle, ptr });
     }
 
-    /// RPC 43 (A 0x1009D1E0): occluders within 500 units zeroed; matching buildings, dummies and objects get
+    /// RPC 43 (A 0x1009D1E0): occluders within 500 units lose centre and size; matching buildings, dummies and objects get
     /// area 1 and sink 2000 units; later IPL instances are replaced (row 65).
     pub fn remove_building(&mut self, model: i32, centre: [f32; 3], radius: f32) {
         self.removals += 1;
         wh::with_shared(|s| s.removals.push(wh::Removal { model, centre, radius }));
-        // Occluders: 0x12-byte records, centre = 3 × i16 / 4 (gta-reversed Occluder.h).
-        let n: u32 = rd(0xC73F98u32);
-        for i in 0..n.min(1000) {
-            let o = 0xC73FA0 + 0x12 * i;
+        // Occluders: 0x12-byte records, centre = 3 × i16 / 4 (gta-reversed Occluder.h). Only centre and size are
+        // cleared; the list link at +0x10 must survive (world::OCCLUDER_CLEARED).
+        let n: i32 = rd(world::OCCLUDER_COUNT);
+        for i in 0..n.clamp(0, 1000) as u32 {
+            let o = world::OCCLUDERS + world::OCCLUDER_SIZE * i;
             let c = [rd::<i16>(o), rd::<i16>(o + 2), rd::<i16>(o + 4)].map(|v| f32::from(v) / 4.0);
             if world::dist3(c, centre) < world::REMOVAL_OCCLUDER_RANGE {
-                for b in 0..0x12 {
+                for b in world::OCCLUDER_CLEARED {
                     wr(o + b, 0u8);
                 }
             }
