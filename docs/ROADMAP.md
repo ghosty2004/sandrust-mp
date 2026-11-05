@@ -12,8 +12,8 @@ differential capture against the original client, e2e script.
 
 | Slot | Running | Next |
 |---|---|---|
-| samp-client (lane main) | — (free) | FIX-A |
-| samp-client (lane veh) | — (free) | FIX-B |
+| samp-client worktree fixa (lane main) | FIX-A: patch rows, HUD aspect, shadows, weather, 207 cadence | TEST-1 |
+| samp-client worktree fixb (lane veh) | FIX-B: radar markers, vehicle exit/components/door, rows 177/62, M5 leftovers | M6-P |
 | samp-client worktree m9 (lane ui) | M9 audio + M10 client features | — |
 | measurement (lane trace, REA) | — (free) | EFX-2 |
 | harness (lanes diff + diff2) | — (free) | fix agents from docs/phase3/par-audit.md |
