@@ -77,6 +77,36 @@ pub extern "system" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_
 
 /// Runs under the loader lock: only cheap work (file open, a few byte writes
 /// through kernel32, starting a thread).
+/// The rest of samp's version check for an executable that was not 1.0 US at attach (see [`attach`]).
+fn version_error_thread() {
+    let mem = ProcessMemory;
+    for _ in 0..game::VERSION_POLLS {
+        let probe = mem.read_u8(game::VERSION_PROBE_ADDR).unwrap_or(0);
+        let give_up = mem.read_u8(game::VERSION_GIVE_UP_FLAG).unwrap_or(0);
+        match game::version_poll(probe, give_up) {
+            game::VersionPoll::Us | game::VersionPoll::Eu => {
+                crate::log!("version probe became {probe:#04x}; the client stays unpatched");
+                return;
+            }
+            game::VersionPoll::Fail => break,
+            game::VersionPoll::Wait => std::thread::sleep(std::time::Duration::from_millis(game::VERSION_POLL_MS)),
+        }
+    }
+    crate::log!("version check failed: \"{}\"", game::VERSION_ERROR_CAPTION);
+    let text = format!("{}\0", game::VERSION_ERROR_TEXT);
+    let caption = format!("{}\0", game::VERSION_ERROR_CAPTION);
+    // SAFETY: NUL-terminated strings; plain Win32 calls (MB_ICONEXCLAMATION, no owner), then the process ends.
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxA(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONEXCLAMATION,
+        );
+        windows_sys::Win32::System::Threading::ExitProcess(1);
+    }
+}
+
 fn attach() {
     *START.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
     let log_path = std::env::current_exe()
@@ -100,9 +130,16 @@ fn attach() {
             "unsupported gta_sa.exe: byte at {:#x} is {probe:#04x} ({which}); only 1.0 US (0x89) is supported — not patching",
             game::VERSION_PROBE_ADDR
         );
+        if probe != game::VERSION_PROBE_EU10 {
+            // samp's check (B 0x100A08C0 → 0x100AA720) runs on its start-up thread: it polls the probe, and an
+            // executable that is neither 1.0 US nor EU ends with the "Version Error" box and ExitProcess(1).
+            std::thread::spawn(version_error_thread);
+        }
         return;
     }
     crate::log!("gta_sa.exe 1.0 US detected (byte {:#x} == 0x89)", game::VERSION_PROBE_ADDR);
+    // samp's top-level exception filter and crash dialog (FEAT-12; no upload).
+    crate::crash::install();
 
     let ram_mb = physical_ram_mb();
     let mut patcher = Patcher::new();
@@ -586,9 +623,15 @@ extern "C" fn game_process_hook() {
     }));
     let orig = ORIGINAL_GAME_PROCESS.load(Ordering::Relaxed);
     if orig != 0 {
-        // SAFETY: `orig` is CGame::Process (void __cdecl(void)), read from the call we retargeted.
-        let f: extern "C" fn() = unsafe { std::mem::transmute(orig as usize) };
-        f();
+        // CGame::Process (void __cdecl(void), read from the call we retargeted) inside the shared SEH guard, like
+        // samp's per-frame hook (B 0x100A2670: scope "s007"); `this` (ECX) is ignored by the callee.
+        // SAFETY: a no-argument cdecl function called through the guard's thiscall shape.
+        let code = unsafe { crate::swap::guarded_thiscall(orig, 0) };
+        if code != 0 {
+            let at = crate::swap::last_fault_address();
+            crate::log!("main: CGame::Process faulted: {code:#x} at {at:#x}");
+            crate::swap::push_fault(crate::swap::FaultSite::Named("s007"), code, at);
+        }
     }
     if !PED_FLAGS_DONE.load(Ordering::Relaxed) {
         let _ = catch_unwind(AssertUnwindSafe(first_frame_ped_flags));

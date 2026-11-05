@@ -12,6 +12,35 @@ pub const VERSION_PROBE_US10: u8 = 0x89;
 /// Same probe on 1.0 EU (not supported).
 pub const VERSION_PROBE_EU10: u8 = 0xC8;
 
+/// samp's version check (B 0x100AA720) also gives up at once when this byte is 1 (read in the polling loop).
+pub const VERSION_GIVE_UP_FLAG: u32 = 0xBA6831;
+/// The check polls every 10 ms up to 6000 times (B 0x100AA7BE…).
+pub const VERSION_POLL_MS: u64 = 10;
+pub const VERSION_POLLS: u32 = 6000;
+/// The message box samp shows when the check fails (B 0x100A08EA), then `ExitProcess(1)`.
+pub const VERSION_ERROR_TEXT: &str = "I can't determine your GTA version.\r\nSA-MP only supports GTA:SA v1.0 USA/EU";
+pub const VERSION_ERROR_CAPTION: &str = "Version Error";
+
+/// One poll of samp's version check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionPoll {
+    Us,
+    Eu,
+    /// Neither probe value and the give-up flag set: fail now.
+    Fail,
+    /// Neither value yet: sleep and poll again.
+    Wait,
+}
+
+pub fn version_poll(probe: u8, give_up: u8) -> VersionPoll {
+    match probe {
+        VERSION_PROBE_US10 => VersionPoll::Us,
+        VERSION_PROBE_EU10 => VersionPoll::Eu,
+        _ if give_up == 1 => VersionPoll::Fail,
+        _ => VersionPoll::Wait,
+    }
+}
+
 /// `gGameState` (int32), named via gta-reversed `app/app.h`.
 pub const G_GAME_STATE: u32 = 0xC8D4C0;
 /// `RsGlobal` (RsGlobalType), named via gta-reversed `RenderWare.h`.
@@ -393,6 +422,14 @@ mod tests {
 
     fn put_f32(m: &mut FakeMemory, a: u32, v: f32) {
         m.set(a, &v.to_le_bytes());
+    }
+
+    #[test]
+    fn version_check_polls() {
+        assert_eq!(version_poll(0x89, 1), VersionPoll::Us);
+        assert_eq!(version_poll(0xC8, 0), VersionPoll::Eu);
+        assert_eq!(version_poll(0x00, 0), VersionPoll::Wait);
+        assert_eq!(version_poll(0x00, 1), VersionPoll::Fail);
     }
 
     #[test]

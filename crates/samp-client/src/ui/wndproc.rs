@@ -17,7 +17,8 @@ use samp_ui::keys::{Event, Vk};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcA, GWL_WNDPROC, SPI_GETWHEELSCROLLLINES, SetCursor, SetWindowLongA, SystemParametersInfoA, WM_CHAR,
+    CS_DBLCLKS, CallWindowProcA, GCL_STYLE, GWL_WNDPROC, GetClassLongA, SPI_GETWHEELSCROLLLINES, SetClassLongA,
+    SetCursor, SetWindowLongA, SetWindowTextA, SystemParametersInfoA, WM_CHAR,
     WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONUP, WM_MOUSEWHEEL, WM_SETCURSOR, WM_SYSKEYUP, WNDPROC,
 };
 
@@ -39,9 +40,17 @@ pub fn install() -> Result<(), String> {
             return Err("SetWindowLongA failed".into());
         }
         OLD_PROC.store(old as u32 as usize, Ordering::SeqCst);
+        // samp's window setup (B 0x10061EB0, FEAT-B): the class gets CS_DBLCLKS (the second click of a double
+        // click arrives as WM_LBUTTONDBLCLK) and the title becomes "GTA:SA:MP".
+        let style = GetClassLongA(hwnd, GCL_STYLE);
+        SetClassLongA(hwnd, GCL_STYLE, (style | CS_DBLCLKS) as i32);
+        SetWindowTextA(hwnd, WINDOW_TITLE.as_ptr());
     }
     Ok(())
 }
+
+/// B 0x10061EF4.
+const WINDOW_TITLE: &[u8] = b"GTA:SA:MP\0";
 
 fn key_down(vk: i32) -> bool {
     // SAFETY: plain Win32 query.

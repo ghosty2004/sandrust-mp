@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use samp_proto::rpcs::{Incoming, player, remote, ui, vehicle};
 use samp_proto::session::{self, InitGame};
-use samp_proto::sync::player::{AimSync, BulletSync, FootSync, SpectatorSync, StatsSync, hit_type};
+use samp_proto::sync::player::{AimSync, Animation, BulletSync, FootSync, SpectatorSync, StatsSync, hit_type};
 use samp_proto::sync::vehicle::{PassengerSync, VehicleSync};
 use samp_proto::sync::{IncomingSync, SyncPacket, WeaponByte, policy};
 use samp_proto::types::Vec3;
@@ -145,6 +145,9 @@ pub struct Config {
     pub sync_ms: Option<u32>,
     /// Special action sent in every 207 on foot (measurement only, e.g. 24 = cuffed).
     pub special_action: Option<u8>,
+    /// 207 animation words sent in turn, each for `anim_step` (measurement only, e.g. remote parachute anims).
+    pub anim_seq: Vec<u32>,
+    pub anim_step: Duration,
 }
 
 impl Default for Config {
@@ -170,6 +173,8 @@ impl Default for Config {
             fire_ms: None,
             sync_ms: None,
             special_action: None,
+            anim_seq: Vec::new(),
+            anim_step: Duration::from_millis(2000),
         }
     }
 }
@@ -255,6 +260,8 @@ pub struct Bot {
     /// Walk circle centre and start.
     centre: Vec3,
     walk_since: Instant,
+    /// First 207 of the `--anim-seq` sequence.
+    anim_t0: Option<Instant>,
     vel: Vec3,
     keys: u16,
     lr: i16,
@@ -299,6 +306,7 @@ impl Bot {
             spectating: false,
             centre: Vec3::default(),
             walk_since: now,
+            anim_t0: None,
             vel: Vec3::default(),
             keys: 0,
             lr: 0,
@@ -998,6 +1006,16 @@ impl Bot {
         }
     }
 
+    /// The `--anim-seq` word for `now` (the sequence starts with the first 207; it holds the last word at the end).
+    fn anim_word(&mut self, now: Instant) -> Animation {
+        let Some(&last) = self.cfg.anim_seq.last() else { return Animation::default() };
+        let t0 = *self.anim_t0.get_or_insert(now);
+        let step = self.cfg.anim_step.as_millis().max(1);
+        let i = (now.duration_since(t0).as_millis() / step) as usize;
+        let v = self.cfg.anim_seq.get(i).copied().unwrap_or(last);
+        Animation { index: v as u16, flags: (v >> 16) as u16 }
+    }
+
     /// 207: when keys/lr/ud changed or the on-foot interval elapsed.
     fn send_foot(&mut self, now: Instant, out: &mut impl Outbox) {
         let k = (self.keys, self.lr, self.ud);
@@ -1018,6 +1036,7 @@ impl Bot {
             weapon: WeaponByte::new(self.inv.armed, 0),
             special_action: self.cfg.special_action.unwrap_or(self.special_action),
             velocity: geom::move_speed(self.vel),
+            animation: self.anim_word(now),
             ..FootSync::default()
         };
         self.send_gated(&sync, now, out);

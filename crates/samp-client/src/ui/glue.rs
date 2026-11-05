@@ -539,6 +539,7 @@ pub fn frame_entry(debug_mode: bool) {
 fn frame_entry_inner(debug_mode: bool) {
     let mut g = UI.lock().unwrap_or_else(|e| e.into_inner());
     let st = ensure(&mut g, debug_mode);
+    flush_pending_debug(st);
     if !st.fonts_added {
         st.fonts_added = true;
         match super::menus::install_gxt_hook() {
@@ -1195,6 +1196,21 @@ pub fn print_debug(text: &str) {
     with_ui(|st| st.core.print_debug(text.as_bytes()));
 }
 
+/// Debug chat lines raised while the UI state is locked (renderer construction, the object pre-step): printed
+/// at the end of the next frame entry, in order.
+static PENDING_DEBUG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn print_debug_later(text: String) {
+    PENDING_DEBUG.lock().unwrap_or_else(|e| e.into_inner()).push(text);
+}
+
+fn flush_pending_debug(st: &mut State) {
+    let lines = std::mem::take(&mut *PENDING_DEBUG.lock().unwrap_or_else(|e| e.into_inner()));
+    for l in lines {
+        st.core.print_debug(l.as_bytes());
+    }
+}
+
 /// A type-4 (info colour) chat line.
 pub fn print_info(text: &[u8]) {
     with_ui(|st| st.core.print_info(text));
@@ -1206,6 +1222,11 @@ pub fn audio_messages_off() -> bool {
 }
 
 /// `disableheadmove` (sa-mp.cfg / `/headmove`): samp's Game+0x59 head-tracking flag is off.
+/// `/dl` vehicle debug labels on (samp's flag B 0x1026EA30).
+pub fn vehicle_labels_on() -> bool {
+    try_with_ui(|st| st.core.settings.vehicle_labels).unwrap_or(false)
+}
+
 pub fn head_move_disabled() -> bool {
     try_with_ui(|st| st.core.settings.head_move_disabled).unwrap_or(false)
 }

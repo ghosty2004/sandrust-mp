@@ -44,6 +44,7 @@ mod d3d;
 mod efx;
 mod remote;
 mod vehicles;
+mod window;
 mod world;
 
 /// Max records per hook per frame (the rest are counted as suppressed).
@@ -987,6 +988,7 @@ fn handle(cmd: &Command) -> (String, bool) {
         Command::D3d(args) if args == "busy" => ((if d3d::busy() { "busy" } else { "idle" }).into(), false),
         Command::D3d(args) => (d3d::command(args), false),
         Command::Cov(args) => (cov::command(args), false),
+        Command::Window(args) => (window::command(args), false),
         Command::Efx(args) => (efx::command(args), false),
         Command::Poke { addr, bytes } => {
             if !ProcMem.read(*addr, &mut vec![0u8; bytes.len()]) {

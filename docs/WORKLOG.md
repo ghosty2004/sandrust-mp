@@ -424,3 +424,14 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   gungame, derby, simpletdm with 0 crashes (agent run); full 2 h soak pending on final code.
 - Lane locks no longer leak into gamescope/test server (ed9a7d3) after an orphaned display held
   the trace lane for an hour.
+
+## 2026-11-05 — FEAT-B player-visible features (branch player-features)
+- Implemented: held items 20–23 and piss 68 for the local and remote peds (specials.rs), the remote parachute object
+  (specials.rs, from the 207 PARACHUTE anims), `/dl` labels + the InitGame vehicle-model preload (vehlabels.rs),
+  `/testdw`, window class style + "GTA:SA:MP" title, the "Version Error" box, SEH-guarded script commands and
+  `CGame::Process` ("opcode" / "add_car_component" / "s007" lines, one 10-fault counter), debug lines to chat, the
+  crash filter + dialog without upload (crash.rs, `samp-rs-crash.txt`).
+- Verified: original runs in the trace lane (orig-20261105-100040 / -100640 / -101602), ours in lane ui:
+  `tools/e2e/featb_report.py` 25/25 assertions, per-step script-command parity diff empty; visual diff `dl`, `dloff`,
+  `testdw` OK (glyph-atlas split covered); `featb-version.sh` box on both clients. Tooling: tracer `window`
+  command, bot `--anim-seq`, uifs `pstate`, visual.sh scenario override. Notes: docs/phase3/featb-notes.md.

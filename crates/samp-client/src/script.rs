@@ -109,6 +109,19 @@ pub mod op {
     pub const ADD_BLIP_FOR_CHAR: u16 = 0x0187;
     pub const CHANGE_BLIP_DISPLAY: u16 = 0x018B;
     pub const ADD_SHORT_RANGE_SPRITE_BLIP_FOR_COORD: u16 = 0x04CE;
+    // Held items, piss and the remote parachute (FEAT-B; samp B 0x100B02E0 / 0x100AE110 / 0x100AD4E0).
+    pub const CREATE_OBJECT: u16 = 0x0107;
+    pub const ADD_ONE_OFF_SOUND: u16 = 0x018C;
+    pub const PLAY_FX_SYSTEM: u16 = 0x064C;
+    pub const KILL_FX_SYSTEM: u16 = 0x0650;
+    pub const CREATE_FX_SYSTEM_ON_CHAR_WITH_DIRECTION: u16 = 0x066A;
+    pub const DETACH_OBJECT: u16 = 0x0682;
+    pub const ATTACH_OBJECT_TO_CHAR: u16 = 0x069B;
+    pub const TASK_PICK_UP_OBJECT: u16 = 0x070A;
+    pub const SET_OBJECT_VISIBLE: u16 = 0x0750;
+    pub const PLAY_OBJECT_ANIM: u16 = 0x075A;
+    pub const SET_OBJECT_SCALE: u16 = 0x08D2;
+    pub const REMOVE_OBJECT_ELEGANTLY: u16 = 0x09A2;
 }
 
 /// One script command parameter.
@@ -183,11 +196,26 @@ pub mod layout {
 }
 
 #[cfg(windows)]
-pub use runner::Runner;
+pub use runner::{Runner, in_command, last_opcode};
 
 #[cfg(windows)]
 mod runner {
-    use super::{Arg, encode, layout};
+    use super::{Arg, encode, layout, op};
+
+    use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+
+    /// The last opcode run and whether a command is running (samp's ScriptCommand globals B 0x1026B3D4 /
+    /// B 0x1026B3D8, shown by the crash report as "SCM Op" and "lDbg").
+    static LAST_OPCODE: AtomicU16 = AtomicU16::new(0);
+    static IN_COMMAND: AtomicBool = AtomicBool::new(false);
+
+    pub fn last_opcode() -> u16 {
+        LAST_OPCODE.load(Ordering::SeqCst)
+    }
+
+    pub fn in_command() -> bool {
+        IN_COMMAND.load(Ordering::SeqCst)
+    }
 
     /// `CRunningScript::ProcessOneCommand` (thiscall, returns OpcodeResult).
     const PROCESS_ONE_COMMAND: usize = 0x469EB0;
@@ -221,12 +249,22 @@ mod runner {
             self.thread[layout::BASE_IP..layout::BASE_IP + 4].copy_from_slice(&ip.to_le_bytes());
             self.thread[layout::IP..layout::IP + 4].copy_from_slice(&ip.to_le_bytes());
             self.thread[layout::COND_RESULT] = 0;
-            // SAFETY: the game's command interpreter, called on the main thread
-            // with a zeroed CRunningScript whose IP points at a well-formed
-            // instruction that stays alive for the duration of the call.
-            unsafe {
-                let f: extern "thiscall" fn(*mut u8) -> u8 = std::mem::transmute(PROCESS_ONE_COMMAND);
-                f(self.thread.as_mut_ptr());
+            // SAFETY: the game's command interpreter (thiscall, `this` only), called on the main thread with a
+            // zeroed CRunningScript whose IP points at a well-formed instruction that stays alive for the
+            // duration of the call; inside the shared SEH guard like samp's ScriptCommand (B 0x100B2320).
+            LAST_OPCODE.store(opcode, Ordering::SeqCst);
+            IN_COMMAND.store(true, Ordering::SeqCst);
+            let code = unsafe { crate::swap::guarded_thiscall(PROCESS_ONE_COMMAND as u32, self.thread.as_mut_ptr() as u32) };
+            IN_COMMAND.store(false, Ordering::SeqCst);
+            if code != 0 {
+                let component = match (opcode, args.get(1)) {
+                    (op::ADD_VEHICLE_MOD, Some(Arg::Int(c))) => Some(*c as u32),
+                    _ => None,
+                };
+                let address = crate::swap::last_fault_address();
+                crate::log!("script: opcode {opcode:#06x} faulted: {code:#x} at {address:#x}");
+                crate::swap::push_fault(crate::swap::FaultSite::Opcode { opcode, component }, code, address);
+                return false;
             }
             self.thread[layout::COND_RESULT] != 0
         }

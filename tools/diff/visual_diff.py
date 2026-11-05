@@ -42,6 +42,8 @@ ELEMENTS = {
     "f8": ("ui", {}), "after-f8": ("ui", {}), "paste": ("ui", {}),
     "tags": ("ui", {"geo": True}), "scoreboard": ("ui", {"geo": True}),
     "vehtag": ("ui", {"geo": True}), "input": ("ui", {}),
+    # FEAT-B (tools/diff/visual-featb.sh, VISUAL_SCENARIO_FILE): /dl labels, /dl off, /testdw rows.
+    "dl": ("ui", {"geo": True}), "dloff": ("ui", {}), "testdw": ("ui", {}),
 }
 
 

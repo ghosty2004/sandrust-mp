@@ -214,6 +214,42 @@ static FAULTS_HANDLED: AtomicU32 = AtomicU32::new(0);
 const MAX_HANDLED_FAULTS: u32 = 10;
 static FAULT_ADDRESS: AtomicU32 = AtomicU32::new(0);
 
+/// Address of the last handled fault.
+pub(crate) fn last_fault_address() -> u32 {
+    FAULT_ADDRESS.load(Ordering::SeqCst)
+}
+
+/// Chat lines of guarded faults outside the remote ped's ProcessControl (script commands, the game-process call),
+/// printed by the client tick: the guard itself may run inside UI code.
+static FAULT_LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub(crate) fn push_fault(site: FaultSite, code: u32, address: u32) {
+    FAULT_LINES.lock().unwrap_or_else(|e| e.into_inner()).push(fault_line(site, code, address));
+}
+
+/// Guarded-fault chat lines since the last call.
+pub fn take_fault_lines() -> Vec<String> {
+    std::mem::take(&mut *FAULT_LINES.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// The chat line samp's filter prints for a guarded fault (B 0x10060960: "Warning(add_car_component %u): …" for
+/// opcode 0x06E7, "Warning(opcode 0x%X): …" for the other script commands, "Warning(%s): …" for named sites).
+pub fn fault_line(site: FaultSite, code: u32, address: u32) -> String {
+    match site {
+        FaultSite::Opcode { opcode: 0x06E7, component: Some(c) } => {
+            format!("Warning(add_car_component {c}): Exception 0x{code:X} at 0x{address:X}")
+        }
+        FaultSite::Opcode { opcode, .. } => format!("Warning(opcode 0x{opcode:X}): Exception 0x{code:X} at 0x{address:X}"),
+        FaultSite::Named(n) => format!("Warning({n}): Exception 0x{code:X} at 0x{address:X}"),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaultSite {
+    Opcode { opcode: u16, component: Option<u32> },
+    Named(&'static str),
+}
+
 /// Faults caught since the last call (main thread, client tick).
 pub fn take_faults() -> Vec<Fault> {
     std::mem::take(&mut *FAULTS.lock().unwrap_or_else(|e| e.into_inner()))
@@ -245,8 +281,9 @@ unsafe extern "C" fn guarded_thiscall_raw(func: u32, this: u32, handler: u32) ->
     )
 }
 
-/// [`guarded_thiscall_raw`] with our handler.
-unsafe fn guarded_thiscall(func: u32, this: u32) -> u32 {
+/// [`guarded_thiscall_raw`] with our handler (shared by every guarded call site: the remote ped's
+/// `ProcessControl` and the script commands, `script::Runner::run`; one fault counter, like samp's filter).
+pub(crate) unsafe fn guarded_thiscall(func: u32, this: u32) -> u32 {
     let handler = seh_handler as unsafe extern "C" fn(*mut u8, *mut u32, *mut u8, *mut u8) -> u32 as usize as u32;
     // SAFETY: caller guarantees `func` is a thiscall function taking only `this`.
     unsafe { guarded_thiscall_raw(func, this, handler) }

@@ -478,6 +478,7 @@ impl Renderer {
                 Ok(rt) => Some(rt),
                 Err(e) => {
                     crate::log!("ui: chat render target unavailable ({e}); direct drawing");
+                    super::glue::print_debug_later(chat_rt_failure_line(&e).into());
                     None
                 }
             }
@@ -578,7 +579,10 @@ impl Renderer {
         let (w, h) = if video_width() <= 1024 { (1024, 512) } else { (2048, 1024) };
         match RenderTarget::create(&self.d3dx, w, h, 21) {
             Ok(rt) => self.rt = Some(rt),
-            Err(e) => crate::log!("ui: chat render target unavailable ({e}); direct drawing"),
+            Err(e) => {
+                crate::log!("ui: chat render target unavailable ({e}); direct drawing");
+                super::glue::print_debug_later(chat_rt_failure_line(&e).into());
+            }
         }
         self.rt_valid = false;
     }
@@ -950,6 +954,33 @@ impl Renderer {
             }
             let mut r = Rect { left: x, top: y, right: x + 1, bottom: y + 1 };
             font.draw(s.ptr, &text, &mut r, dt::CENTER | dt::NOCLIP, l.argb);
+        }
+        s.end();
+    }
+
+    /// `/dl` labels (label painter B 0x1006BC50 → B 0x1006B4A0 with the outline flag): four black outline draws
+    /// of the stripped text, then the main draw in [`crate::vehlabels::LABEL_ARGB`] through the colour wrapper.
+    fn vehicle_labels(&self, rows: &[([f32; 3], String)]) {
+        const OUTLINE: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+        let s = &self.sprites.text3d;
+        s.begin(d3d::sprite::ALPHABLEND);
+        for (pos, text) in rows {
+            let p = self.project(*pos);
+            if p[2] > 1.0 {
+                continue;
+            }
+            let (x, y) = (p[0] as i32, p[1] as i32);
+            let text = colour::strip_codes(text.as_bytes());
+            let font = &self.fonts.small;
+            for (dx, dy) in OUTLINE {
+                let mut r = Rect { left: x + dx, top: y + dy, right: x + 1, bottom: y + 1 };
+                font.draw(s.ptr, &text, &mut r, dt::CENTER | dt::NOCLIP, colour::OUTLINE);
+            }
+            // The main pass goes through the colour-code font wrapper (B 0x1006B5F7; measured: no sprite pointer).
+            let mut r = Rect { left: x, top: y, right: x + 1, bottom: y + 1 };
+            let argb = crate::vehlabels::LABEL_ARGB;
+            let glyphs: Vec<u32> = colour::glyph_colours(&text, argb).iter().map(|g| g.colour).collect();
+            d3d::draw_glyph_coloured(font, s, &text, &mut r, dt::CENTER | dt::NOCLIP, argb, glyphs);
         }
         s.end();
     }
@@ -1388,6 +1419,10 @@ impl Renderer {
         if let Some(t) = f.audio_title {
             self.audio_title(t);
         }
+        // `/dl` vehicle labels: their own batch on the 3D-text painter while the flag is on (B 0x100757E6).
+        if let Some(rows) = crate::vehlabels::draws() {
+            self.vehicle_labels(&rows);
+        }
         if let Some(sb) = &f.scoreboard {
             self.scoreboard(sb, f.cursor);
             return;
@@ -1432,5 +1467,15 @@ impl Drop for Renderer {
             d3d::release(self.gui);
             d3d::release(self.cursor);
         }
+    }
+}
+
+/// The chat window's debug line when its render target cannot be made (B 0x10068190): the render-to-surface
+/// object and the texture have their own lines; both fall back to direct drawing.
+fn chat_rt_failure_line(err: &str) -> &'static str {
+    if err.contains("RenderToSurface") {
+        "ChatWindow: Can't create a render to surface. Will use direct mode."
+    } else {
+        "ChatWindow: Can't create a render surface texture. Will use direct mode."
     }
 }

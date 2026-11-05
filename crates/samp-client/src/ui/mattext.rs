@@ -192,7 +192,11 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
             quality: 0,
             face: spec.font.clone(),
         },
-    )?;
+    )
+    .inspect_err(|_| {
+        // B 0x100708E0: a debug chat line naming the face (FEAT-B, A17).
+        super::glue::print_debug_later(format!("SignText: Can't create font {}", String::from_utf8_lossy(&spec.font)));
+    })?;
     let sprite = Sprite::create(&d3dx)?;
     // SAFETY: COM calls on objects created above: IDirect3DTexture9::GetSurfaceLevel (slot 18),
     // ID3DXRenderToSurface::BeginScene (slot 5) / EndScene (slot 6), IDirect3DDevice9::Clear.
