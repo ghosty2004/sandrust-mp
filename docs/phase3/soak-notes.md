@@ -245,3 +245,102 @@ show whether these steps accumulate.
 | C | all three | 0 (derby 14 respawns) | gungame PASS, simpletdm PASS, derby FAIL local_pos 98.5 % (1 of 66, seat transition) |
 | D | all three | 0 | interrupted at derby 386 s by a session restart (gungame PASS) |
 | E (final build) | all three | 0 (derby 11 respawns) | **PASS** gungame, derby, simpletdm |
+
+## The 2-hour derby run (2026-11-05): desyncs explained (branch soak-desync)
+
+Run: lane veh, derby, 7200 s (`target/soak-early/derby-2h-fail.log`, data in the main checkout's
+`target/soak/derby/`). 0 crashes, all five cases recovered, fps median 52.5, but FAIL on desync ratios
+(remote_ghost 0 %, remote_known 96.65 %, remote_pos 97.46 %, remote_vehicle 97.80 %, veh_driver 98.73 %,
+veh_pos 98.54 %, veh_stream 96.89 %, 24 persistent desyncs) and an odd "memory session 2" slope.
+
+### Classification
+
+| finding | class | evidence | resolution |
+| --- | --- | --- | --- |
+| every desync category from t = 1594 s to the netloss reconnect (1871 s): the client stopped applying RPCs (`rpcs=564` frozen in the `net` lines for 277 s while `syncs_in` kept rising); joins/quits, stream-in/out and seat changes were all missed, hence remote_known / remote_ghost / veh_stream / remote_vehicle / veh_driver / remote_pos / veh_pos and all 24 persistent desyncs | **(a) client bug** (RakNet layer) | samples 1603–1859; client-1 `samp-rs.log` | fixed, below |
+| 2 single-sample remote_ghost (t 416, 1129) | (b) sampling order | the server dump was taken just before SkShootC's (re)join and the client queried ~70 ms after it had applied RPC 137 (join at +414.3 / +1126.7 in the DLL log) | bracketed comparison |
+| remote_ghost 0.00 % | (b) tool | the category only produced a comparison when it failed, so any ghost gave 0 % | one comparison per listed player |
+| single-sample veh_stream / remote_stream / veh_driver / remote_vehicle (t 375, 1170, 1269, 1337, 1343, 2125, 2528, 2797, 2922) | (b) sampling order | each one coincides with a derby car destroyed and re-created (death / respawn) between the server dump and the client query (e.g. t 375: local death at 13:03:27.55, stream-out of veh 7 at 27.57, dump 77 the same second) | bracketed comparison |
+| remote_pos / veh_pos single samples (≈ 30 of 3400, all SkIdle's parked car, 6–12 m from the server's position, the idle bot's sync 0.2–1 s old) | **(c) shared with the original** | the idle bot's car is rammed by the other derby cars; samp only nudges a remote car within 8 m of its synced position (remote-control-vehicles.md §2.2: Δ·0.06 per received driver sync) and the idle bot's syncs are ≥ 0.5 s apart. Original, same configuration: remote_pos 99.46 %, veh_pos 99.54 %, all SkIdle (below) | logged decision, no change |
+| veh_hp single samples (burning / exploding cars) | (c) | original 99.85 %, ours 99.6–99.8 % (below) | none |
+| "memory session 2: 791 MB/h, warm span 24 s" | (b) the run was stopped from outside | server.log, samples and the DLL log all have the same 3.4 h hole (14:04:28 → 17:28:16 UTC, local 16:04:28 → 19:28:16) with nothing running in between (not a suspend: the journal and other processes kept going): the whole process group was stopped. Session 2 had 275 s of samples before the stop and 24 s after it, so its "warm" part was 24 s of the warm-up climb; also the 2 h soak only covered 4031 s | pause detection + pause-free time axis |
+| memory session 1: 16.4 MB/h | — | within the limit; the original's slope in the same window is the same (below) | — |
+
+### (a) The RPC stall: message-number wrap in the duplicate filter
+
+The server numbers every message it sends (syncs included) from one 16-bit counter, so it wraps every
+65536 messages (≈ 10 min of derby traffic). `Connection` remembered the numbers of the last 8192
+*reliable* messages in a set and dropped any reliable message whose number was in it. After a wrap, a new
+RPC whose number equals that of an RPC received one wrap earlier was taken for a duplicate: acked (so the
+server never resends it) and dropped. Its ordering index then never arrives, and the ordered channel holds
+back every later RPC for good — exactly the frozen `rpcs=` counter. With ~600 RPC numbers remembered per
+wrap the chance per RPC is ~1 %, so a long connection hits it within the first hour (here at 173 543
+received messages, the 3rd wrap). The bots share the code (`samp-proto`).
+
+The original (A 0x10049250, written up in docs/re/handshake.md §3 "Received message numbers"): a window
+with a base number and holes (each given up 10 000 ms after it opened) over all message numbers; a number
+less than or equal to 0x8000 ahead of the base is new unless its slot was received, anything further is
+behind the base. `Connection::accept_number` implements that rule. Unit tests
+`message_numbers_wrap_without_false_duplicates` (3 wraps of syncs with irregular RPCs: the old filter
+delivered 1714 of 5076 RPCs, the new one all) and `receive_window_holes`.
+
+Evidence on the client: `SOAK_CASES= ` derby 1800 s (one connection for the whole run): 198 600 messages
+received (3 wraps), RPCs applied to the end, remote_known / remote_ghost / veh_stream 100 %.
+
+### (b) Harness changes (tools/e2e/soak_mon.py)
+
+* **Bracketed comparison** (`BRACKETED`: remote_known, remote_ghost, remote_stream, remote_vehicle,
+  veh_stream, veh_driver). The client is queried after the server dump; an RPC in flight in between shows
+  the client already in the new state. A second dump is taken right after the client query; a discrete
+  comparison fails only when the client matches neither dump. Position, health and the local checks are
+  judged against the first dump as before (no tolerance changed). A real desync (the stall above) is bad
+  against both dumps and still fails at once.
+* **remote_ghost** yields one comparison per player the client lists (before: only failures).
+* **Pause detection**: a gap of more than 60 s between samples (`PAUSE_S`; cases keep sampling, the
+  longest normal gap is 23 s) is an event `paused` and a failure reason ("did not cover its span,
+  rerun"); the memory time axis skips the pause.
+* **Memory slope** is fitted within segments (session start or the end of an in-process case
+  + `WARMUP_S` … next case), pooled, judged when the segments cover ≥ 600 s. Reason: an in-process
+  reconnect (gmx, netloss, srvkill) deletes every remote entity and streams the world in again, a warm-up
+  of its own; in a 30-minute soak (cases every ~300 s) the whole-session line through those re-warm-ups
+  gave 39–52 MB/h (run1 / run2 below) although the RSS of a session without cases grows like the
+  original's: ours 18.3 MB/h, original 19.3 MB/h, same 1800 s derby, no cases. In the 2 h run the judged
+  slope is 27.2 MB/h over 2440 s; a 30-minute soak no longer judges memory (16 s of segments), it reports.
+* **SOAK_CLIENT=orig** (soak.sh + `OrigView`): the same soak with the original samp.dll + samp-tracer.dll
+  in the trace lane (its lock is taken). `net` / `remote` / `vehicles` are built from samp.dll's memory
+  through the tracer's `peek` (the 2019 build that lane runs; offsets in `OrigView`, read from its code),
+  the class-selection and spawned flags come from the server's state; remote_hp is not compared (samp keeps
+  the remote CPed's health at 1000 and the synced value elsewhere). `SOAK_CASES` selects the cases (orig
+  default: none; netloss / srvkill / kick need the chat, which the tracer does not serve).
+  `TRACE_HOST` in `trace_launch` points the original at the proxy.
+
+### (c) Original vs ours, same derby configuration (1800 s, bots as in the soak, no cases)
+
+| category | original (`target/soak-runs/orig-1800`) | ours (`ours-nocases`) |
+| --- | --- | --- |
+| remote_known / remote_ghost / remote_stream / remote_vehicle | 100 % | 100 % |
+| veh_stream / veh_driver | 100 % | 100 % |
+| remote_pos | 99.46 % (9 bad: 8 SkIdle's rammed car, 1 SkShootC) | 99.76 % (4, SkIdle) |
+| veh_pos | 99.54 % (9, SkIdle's car) | 99.80 % (4) |
+| veh_hp | 99.85 % (3, burning car) | 99.69 % (6) |
+| local_pos / local_hp | 100 % | 100 % |
+| fps median | 52.4 | 52.5 |
+| memory slope after warm-up | 19.3 MB/h | 18.3 MB/h |
+
+Both pass. The remaining position and vehicle-health misses are the same kind on both clients (a remote
+car pushed by others between sparse syncs; health of a burning car between relays): logged in
+docs/ROADMAP.md "Decisions made autonomously".
+
+### 30-minute soaks on the branch (`SOAK_GAMEMODES=derby SOAK_SECS=1800`, lane veh)
+
+| run | verdict | notes |
+| --- | --- | --- |
+| run1 | PASS (verdict) | soak.sh exited 2 afterwards: the script was edited while running (bash reads it lazily) — not counted |
+| run2 | FAIL: memory slope 51.6 MB/h (whole-session rule) | every desync category ≥ 99.7 %; with the segment rule: PASS |
+| run3 | **PASS** (exit 0) | 99.88 % of 16 850; remote_pos 99.32 %, veh_pos 99.42 % (SkIdle's car), everything else 100 %; 0 persistent; fps 52.4 |
+| run4 | **PASS** (exit 0) | 99.90 % of 16 850; remote_pos 99.66 %, veh_pos 99.65 %, veh_hp 99.65 %; 0 persistent; fps 52.4 |
+
+run3 and run4 ran back to back on the final code (outputs `target/soak-runs/run3`, `run4` in the worktree).
+
+E2E on the branch (lane veh, after run4): m1, m2, m3, m4, m5, m6, m7, m8a, m8b, m9 (with
+`M9_ORIG=<main checkout>/target/m9-orig/trace.jsonl`; bass_diff 0 differences), m10, goal, saa — all exit 0.

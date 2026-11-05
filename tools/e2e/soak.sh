@@ -24,6 +24,11 @@
 #   SOAK_GAMEMODES="derby" …                  a subset
 #   SOAK_SKIP_BUILD=1                         use the binaries already built
 #   SOAK_CAPTURE=1                            loopback capture of the server port (capture.pcapng)
+#   SOAK_CASES="gmx kick"                     the scripted cases to run (default all; "" = none)
+#   SOAK_CLIENT=orig                          the ORIGINAL samp.dll (+ samp-tracer.dll) instead of our client,
+#                                             in the trace lane (its lock is taken; output target/soak-orig/);
+#                                             no scripted cases unless SOAK_CASES is set (net / remote /
+#                                             vehicles are read from samp.dll's memory, soak_mon.py OrigView)
 # Output: target/soak/<gamemode>/ (summary.json, samples.jsonl, events.jsonl, client-N/, bots/).
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -32,6 +37,13 @@ if [[ -z "${SAMP_RS_ROOT:-}" && ! -d "$ROOT/server" ]]; then
     [[ -n "$common" && -d "$(dirname "$common")/server" ]] && SAMP_RS_ROOT="$(dirname "$common")"
 fi
 export SAMP_RS_ROOT="${SAMP_RS_ROOT:-$ROOT}"
+export SOAK_CLIENT="${SOAK_CLIENT:-ours}"
+if [[ "$SOAK_CLIENT" == orig ]]; then
+    # trace lane: prefix-trace, gta-sa-trace, server 7790, tracer control 47701; blocking lane lock
+    source "$ROOT/tools/trace/lib.sh"
+    trace_lock
+    export SOAK_CASES="${SOAK_CASES-}"
+fi
 export E2E_TAG="${E2E_TAG:-main}" E2E_PORT="${E2E_PORT:-7777}" E2E_CTL_PORT="${E2E_CTL_PORT:-47700}"
 export SAMP_RS_CTL_PORT="$E2E_CTL_PORT"
 # The proxy listens on the server port of a second loopback address (the packet cipher is keyed with
@@ -42,6 +54,7 @@ export SOAK_EVENT_PERIOD="${SOAK_EVENT_PERIOD:-900}" SOAK_NETDROP_SECS="${SOAK_N
 source "$ROOT/tools/wine-env.sh"
 source "$ROOT/tools/e2e/lib.sh"
 OUTROOT="$ROOT/target/soak"
+[[ "$SOAK_CLIENT" == orig ]] && OUTROOT="$ROOT/target/soak-orig"
 TB="${CARGO_TARGET_DIR:-$ROOT/target}"
 GAMEMODES="${SOAK_GAMEMODES:-gungame derby simpletdm}"
 say() { printf '[soak] %s\n' "$*"; }
@@ -54,7 +67,13 @@ finish() {
 trap finish EXIT
 
 mkdir -p "$OUTROOT"
-if [[ "${SOAK_SKIP_BUILD:-0}" != 1 ]]; then
+if [[ "$SOAK_CLIENT" == orig ]]; then
+    say "building (tracer, launcher; samp-bot) for the original client"
+    { trace_build && (cd "$ROOT" && cargo build -p samp-bot); } > "$OUTROOT/build.out" 2>&1 \
+        || { tail -n 30 "$OUTROOT/build.out"; say "build failed"; exit 1; }
+    trace_install orig
+    [[ -f "$GTA_DIR/samp.dll" ]] || { say "no samp.dll in $GTA_DIR"; exit 1; }
+elif [[ "${SOAK_SKIP_BUILD:-0}" != 1 ]]; then
     say "building (i686-pc-windows-gnu release: client, launcher; samp-bot)"
     { (cd "$ROOT" && cargo build --release --target i686-pc-windows-gnu -p samp-client -p samp-launcher) &&
       (cd "$ROOT" && cargo build -p samp-bot); } > "$OUTROOT/build.out" 2>&1 \

@@ -192,6 +192,27 @@ Reliability values on the wire (inferred from which carry ordering fields and wh
 
 **MTU / splitting**: default MTU 576 (A 0x1003de50 initialiser), SetMTU clamps to 1492 (0x10038860). Split payload per fragment = MTU − 28 − header bytes (− 36 if block encryption on) (0x10045800). The SA:MP client never calls SetMTU (RakClient vtable slot 42 has no caller), so the MTU is 576. Note the cipher adds 1 byte to every client datagram.
 
+### Received message numbers: duplicate filter (A 0x10049250; observed)
+
+Every message the peer sends takes the next value of ONE 16-bit message-number counter, whatever its
+reliability (syncs included), so the counter wraps every 65536 messages (≈ 10 minutes of a busy server
+stream). The receiver keeps a window: a base number B (the oldest number not yet accounted for; 0 on a
+new connection) and one slot per number from B on, each "received" or "hole" (a hole stores its give-up
+time, receive time + the layer's timeout of 10000 ms, layer +0x2d3 set at A 0x10048e10). For every
+message, before split reassembly and ordering, with d = number − B (16-bit wrapping):
+
+* d = 0: the slot of B is taken (dropped from the window) and B advances;
+* 1 ≤ d ≤ 0x8000: if d lies inside the window, a "received" slot means a duplicate (dropped, counted at
+  layer +0x3d3) and a hole is marked received; beyond the window, holes are appended up to d and the
+  slot d is appended as received;
+* d > 0x8000 (behind B): duplicate, dropped.
+
+After an accepted message B advances over leading received slots and over holes whose give-up time has
+passed. Acks (reliability 8/9/10) are queued before this test, so a duplicate is acknowledged again.
+A filter that instead remembers recently seen numbers (without a base) takes a new message for an old
+one once the counter has wrapped; a reliable ordered RPC dropped that way never comes again (it was
+acked) and holds back every later message of its ordering channel.
+
 ### Internal ping / time sync (0x10041450, 0x1003f1a0)
 
 | msg | layout | reliability | behaviour |

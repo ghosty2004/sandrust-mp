@@ -26,6 +26,7 @@ import re
 import signal
 import socket
 import statistics
+import struct
 import subprocess
 import sys
 import time
@@ -50,7 +51,15 @@ RATE_MIN = 0.99       # steady-state comparisons within tolerance, per category
 STUCK_S = 150         # unhealthy for longer than this = stuck
 FREEZE_SAMPLES = 2    # ticks not advancing over this many samples while alive = frozen
 MEM_SLOPE_MAX_MB_H = 40.0
-WARMUP_S = 300        # memory slope: ignore the first part of each client session
+# Samples are at most ~25 s apart even across a case (recover() keeps sampling); a longer gap means the
+# whole run (monitor, server, game, bots) was stopped from outside, e.g. a SIGSTOP of its process group.
+PAUSE_S = 60.0
+# Discrete state the client takes over from a server RPC (join/quit, stream in/out, seat, driver). The
+# client is queried after the server dump; a change on the server in between (an RPC in flight) shows
+# the client already in the new state. These categories are therefore judged against two server dumps,
+# one before and one after the client query, and fail only when the client matches neither.
+BRACKETED = ("remote_known", "remote_ghost", "remote_stream", "remote_vehicle", "veh_stream", "veh_driver")
+WARMUP_S = 300        # memory slope: ignore the first part of each client session (and of each segment, below)
 
 # Wine's messages for a fatal exception (with WINEDEBUG=-all,err+seh) and the DLL's panic hook.
 CRASH_PATTERNS = [r"wine: Unhandled", r"starting debugger", r"Unhandled exception", r"Unhandled page fault", r"err:seh", r"wine: Assertion", r"EXCEPTION_ACCESS_VIOLATION"]
@@ -96,6 +105,250 @@ class Log:
         return new
 
 
+class OrigView:
+    """SOAK_CLIENT=orig: the original samp.dll (0.3.7-R4, 2021 build) with samp-tracer.dll in the trace
+    lane. The tracer answers `state` in our client's format and `quit`; this class builds the replies
+    of our client's `net`, `remote` and `vehicles` commands from the original's memory through the
+    tracer's `peek`, so both clients are judged by the same compare(). The trace lane runs the 2019 build
+    (B, fv0.3.7.3); addresses are for samp.dll at its preferred base 0x10000000 and are rebased on the
+    load address the launcher logs in the session's run.out (Wine loads it elsewhere). Layout of B, read
+    from its code: player pool loop B 0x10013790 (used flags +0xFDE, local player +0x2A), remote getter
+    B 0x100010F0 (entries +0x2E, entry +0x10 = remote player), vehicle pool tick B 0x1001F370 (same
+    arrays as A, remote-control-vehicles.md §1.1); pools struct: player pool at +8, vehicle pool at +0xC
+    (measured: the local name in the one, the highest vehicle id in the other). Remote player +0x1DD ped
+    object, ped object +0x2A4 CPed* as in player-state.md "Object map". The local player's spawned /
+    class-selection flags are not read: the server's state stands in (Soak.sample). GTA fields from
+    tools/diff/xclient.py."""
+
+    NETGAME = 0x1026EA0C
+    NG_STATE, NG_POOLS = 0x3CD, 0x3DE                  # netgame state (5 = connected), pools struct
+    POOLS_PLAYER, POOLS_VEHICLE = 0x8, 0xC
+    PP_LOCAL_ID, PP_LOCAL, PP_USED, PP_ENTRY = 0xC, 0x2A, 0xFDE, 0x2E
+    E_REMOTE, E_NAME = 0x10, 0x14                      # player pool entry: RemotePlayer*, name string
+    RP_PED = 0x1DD                                     # RemotePlayer: ped object (0 = not streamed in)
+    PEDOBJ_CPED = 0x2A4                                # ped object: GTA CPed*
+    LP_SPAWNED, LP_CLASS = 0xF0, 0x306                 # LocalPlayer: spawned, in class selection
+    VP_MAX, VP_USED, VP_CVEH = 0x0, 0x3074, 0x4FB4     # vehicle pool
+    PLAYERS0_PED = 0xB7CD98                            # CWorld::Players[0].m_pPed
+    E_MATRIX, E_PLACEMENT, MATRIX_POS = 0x14, 0x4, 0x30
+    PED_HEALTH, PED_VEHICLE, PED_FLAGS = 0x540, 0x58C, 0x46C
+    VEH_HEALTH, VEH_DRIVER, VEH_PASSENGERS = 0x4C0, 0x460, 0x464
+    MAX_ID = 64                                        # the soak server has max_players 50
+
+    def __init__(self, port):
+        self.port = port
+        self.base = None          # samp.dll load address of the current game session
+        self.run_out = None
+
+    def session(self, run_out):
+        self.run_out, self.base = run_out, None
+
+    def _find_base(self):
+        try:
+            for l in open(self.run_out, errors="replace"):
+                m = re.search(r"client DLL loaded at (0x[0-9a-fA-F]+) \(.*\\samp\.dll\)", l)
+                if m:
+                    return int(m.group(1), 16)
+        except (OSError, TypeError):
+            pass
+        return None
+
+    def _conn(self):
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=3.0)
+        s.settimeout(3.0)
+        return s, s.makefile("rw", errors="replace")
+
+    def _peek(self, f, addr, n):
+        out = b""
+        while n > 0:
+            k = min(256, n)
+            f.write("peek %#x %d\n" % (addr, k))
+            f.flush()
+            r = f.readline().split()
+            if len(r) < 3 or r[0] != "peek":
+                return None
+            out += bytes.fromhex("".join(r[2:]))
+            addr += k
+            n -= k
+        return out
+
+    def _u32(self, f, a):
+        b = self._peek(f, a, 4)
+        return struct.unpack("<I", b)[0] if b else 0
+
+    def _pos(self, f, e):
+        m = self._u32(f, e + self.E_MATRIX)
+        b = self._peek(f, (m + self.MATRIX_POS) if m else (e + self.E_PLACEMENT), 12)
+        return struct.unpack("<3f", b) if b else None
+
+    def _string(self, f, a):
+        """MSVC std::string: buffer (16 bytes inline, else a pointer), size, capacity; the allocator
+        word may precede them depending on the runtime, so both placements are tried."""
+        b = self._peek(f, a, 0x1C)
+        if not b:
+            return None
+        for off in (0, 4):
+            size, cap = struct.unpack_from("<II", b, off + 0x10)
+            if 0 < size <= 24 and size <= cap < 0x1000:
+                if cap < 16:
+                    raw = b[off:off + size]
+                else:
+                    raw = self._peek(f, struct.unpack_from("<I", b, off)[0], size) or b""
+                txt = raw.decode("latin-1")
+                if txt.isprintable():
+                    return txt
+        return None
+
+    def raw(self):
+        """Debug: hex of the netgame, pools, player pool head and local player (offset checks)."""
+        try:
+            s, f = self._conn()
+        except OSError:
+            return None
+        try:
+            if self.base is None:
+                self.base = self._find_base()
+            if self.base is None:
+                return None
+            out = ["base=%#x" % self.base]
+            ng = self._u32(f, self.NETGAME - 0x10000000 + self.base)
+            out.append("netgame=%#x %s" % (ng, (self._peek(f, ng, 0x400) or b"").hex()))
+            pools = self._u32(f, ng + self.NG_POOLS) if ng else 0
+            out.append("pools=%#x %s" % (pools, (self._peek(f, pools, 0x20) or b"").hex()))
+            for i in range(4):
+                pp = self._u32(f, pools + 4 * i) if pools else 0
+                out.append("pool%d=%#x %s" % (i, pp, (self._peek(f, pp, 0x200) or b"").hex()))
+            pp = self._u32(f, pools + self.POOLS_PLAYER) if pools else 0
+            if pp:
+                out.append("pp1f8a %s" % (self._peek(f, pp + self.PP_ENTRY, 0x40) or b"").hex())
+                lp = self._u32(f, pp + self.PP_LOCAL)
+                out.append("lp=%#x %s" % (lp, (self._peek(f, lp, 0x340) or b"").hex() if lp else ""))
+            return "\n".join(out)
+        except (OSError, struct.error, ValueError):
+            return None
+        finally:
+            s.close()
+
+    def snapshot(self):
+        try:
+            s, f = self._conn()
+        except OSError:
+            return None
+        try:
+            return self._snapshot(f)
+        except (OSError, struct.error, ValueError):
+            return None
+        finally:
+            s.close()
+
+    def _snapshot(self, f):
+        snap = {"state": None, "local_id": None, "spawned": False, "class": False, "players": {}, "vehicles": {}}
+        if self.base is None:
+            self.base = self._find_base()
+            if self.base is None:
+                return snap
+        ng = self._u32(f, self.NETGAME - 0x10000000 + self.base)
+        if not ng:
+            return snap
+        b = self._peek(f, ng + self.NG_STATE, 4)
+        snap["state"] = struct.unpack("<i", b)[0] if b else None
+        pools = self._u32(f, ng + self.NG_POOLS)
+        if not pools:
+            return snap
+        vpool, ppool = self._u32(f, pools + self.POOLS_VEHICLE), self._u32(f, pools + self.POOLS_PLAYER)
+        local_ped = self._u32(f, self.PLAYERS0_PED)
+        ped_ids = {}
+        if ppool:
+            b = self._peek(f, ppool + self.PP_LOCAL_ID, 2)
+            snap["local_id"] = struct.unpack("<H", b)[0] if b else None
+            lp = self._u32(f, ppool + self.PP_LOCAL)
+            if lp:
+                snap["spawned"] = (self._peek(f, lp + self.LP_SPAWNED, 1) or b"\0")[0] != 0
+                snap["class"] = (self._peek(f, lp + self.LP_CLASS, 1) or b"\0")[0] != 0
+            used = self._peek(f, ppool + self.PP_USED, 4 * self.MAX_ID) or b""
+            entries = self._peek(f, ppool + self.PP_ENTRY, 4 * self.MAX_ID) or b""
+            for pid in range(min(len(used), len(entries)) // 4):
+                if not struct.unpack_from("<I", used, 4 * pid)[0]:
+                    continue
+                e = struct.unpack_from("<I", entries, 4 * pid)[0]
+                if not e:
+                    continue
+                rp = self._u32(f, e + self.E_REMOTE)
+                name = self._string(f, e + self.E_NAME)
+                p = {"id": pid, "name": name or "?", "ped": 0}
+                if rp:
+                    po = self._u32(f, rp + self.RP_PED)
+                    if po:
+                        p["ped"] = self._u32(f, po + self.PEDOBJ_CPED)
+                if p["ped"]:
+                    ped_ids[p["ped"]] = pid
+                    p["pos"] = self._pos(f, p["ped"])
+                    hb = self._peek(f, p["ped"] + self.PED_HEALTH, 4)
+                    p["health"] = struct.unpack("<f", hb)[0] if hb else None
+                    p["cveh"] = self._u32(f, p["ped"] + self.PED_VEHICLE)
+                    fl = self._peek(f, p["ped"] + self.PED_FLAGS, 4) or b"\0\0\0\0"
+                    p["in_vehicle"] = bool(struct.unpack("<I", fl)[0] & (1 << 8))
+                snap["players"][pid] = p
+        veh_ids = {}
+        if vpool:
+            b = self._peek(f, vpool + self.VP_MAX, 4)
+            top = min(struct.unpack("<i", b)[0] if b else 0, 1999)
+            if top > 0:
+                used = self._peek(f, vpool + self.VP_USED, 4 * (top + 1)) or b""
+                cvs = self._peek(f, vpool + self.VP_CVEH, 4 * (top + 1)) or b""
+                for vid in range(1, min(len(used), len(cvs)) // 4):
+                    if not struct.unpack_from("<I", used, 4 * vid)[0]:
+                        continue
+                    cv = struct.unpack_from("<I", cvs, 4 * vid)[0]
+                    v = {"id": vid, "ptr": cv}
+                    if cv:
+                        veh_ids[cv] = vid
+                        v["pos"] = self._pos(f, cv)
+                        hb = self._peek(f, cv + self.VEH_HEALTH, 4)
+                        v["health"] = struct.unpack("<f", hb)[0] if hb else None
+                        drv = self._u32(f, cv + self.VEH_DRIVER)
+                        v["driver"] = "-" if not drv else ("local" if drv == local_ped else str(ped_ids.get(drv, "?")))
+                        pas = self._peek(f, cv + self.VEH_PASSENGERS, 32) or b""
+                        v["passengers"] = [x for x in struct.unpack_from("<8I", pas)] if len(pas) == 32 else []
+                    snap["vehicles"][vid] = v
+        for p in snap["players"].values():
+            cv = p.get("cveh") if p.get("in_vehicle") else 0
+            p["vehicle"] = veh_ids.get(cv) if cv else None
+            p["seat"] = None
+            if p["vehicle"] is not None:
+                v = snap["vehicles"][p["vehicle"]]
+                p["seat"] = 0 if self._u32(f, cv + self.VEH_DRIVER) == p["ped"] else (
+                    1 + v["passengers"].index(p["ped"]) if p["ped"] in v.get("passengers", []) else None)
+        return snap
+
+    @staticmethod
+    def fmt(v, n=2):
+        return "-" if v is None else ",".join("%.*f" % (n, x) for x in v)
+
+    def replies(self):
+        """(net, remote lines, vehicles lines) in our client's control-channel format, or Nones."""
+        sn = self.snapshot()
+        if sn is None:
+            return None, None, None
+        net = "net phase=%s player_id=%s class_selection=%s spawned=%s orig_state=%s" % (
+            "connected" if sn["state"] == 5 else "other", sn["local_id"], str(sn["class"]).lower(),
+            str(sn["spawned"]).lower(), sn["state"])
+        rem = ["remote count=%d" % len(sn["players"])]
+        for p in sn["players"].values():
+            # health: samp keeps a remote ped's CPed health at its own value (1000 measured) and the synced
+            # health in its remote-player object (offset not identified in B): not compared (remote_hp)
+            rem.append("remote id=%d name=%s ped=%#x pos=%s health=- cped_health=%s vehicle=%s seat=%s" % (
+                p["id"], p["name"], p["ped"], self.fmt(p.get("pos")),
+                "-" if p.get("health") is None else "%.1f" % p["health"],
+                "-" if p.get("vehicle") is None else p["vehicle"], "-" if p.get("seat") is None else p["seat"]))
+        veh = ["vehicles count=%d" % len(sn["vehicles"])]
+        for v in sn["vehicles"].values():
+            veh.append("vehicle id=%d ptr=%#x pos=%s health=%s driver=%s" % (
+                v["id"], v["ptr"], self.fmt(v.get("pos")),
+                "-" if v.get("health") is None else "%.1f" % v["health"], v.get("driver", "-")))
+        return net, rem, veh
+
+
 class Soak:
     def __init__(self):
         self.root = env("SOAK_ROOT")
@@ -114,6 +367,11 @@ class Soak:
         self.event_period = float(env("SOAK_EVENT_PERIOD", "900"))
         self.netdrop_s = float(env("SOAK_NETDROP_SECS", "15"))
         self.bot_bin = env("SOAK_BOT")
+        # ours: our client (tools/run-client.sh); orig: the original samp.dll + samp-tracer.dll (trace lane)
+        self.kind = env("SOAK_CLIENT", "ours")
+        self.orig = OrigView(self.ctl_port) if self.kind == "orig" else None
+        cases = os.environ.get("SOAK_CASES")
+        self.cases = list(self.CASES) if cases is None else cases.split()
         os.makedirs(self.out, exist_ok=True)
         os.makedirs(self.out + "/bots", exist_ok=True)
         self.server_log_path = self.out + "/server.log"
@@ -150,6 +408,7 @@ class Soak:
         self.panics = 0
         self.errors = 0
         self.client_started = now()
+        self.last_sample_at = None
 
     # ---- bookkeeping ---------------------------------------------------------------------------
     def t(self):
@@ -393,9 +652,15 @@ class Soak:
         e.pop("WAYLAND_DISPLAY", None)
         e.pop("SAMP_RS_PRE_DLL", None)
         logf = open(d + "/run.out", "wb")
-        self.client = subprocess.Popen(
-            [self.root + "/tools/run-client.sh", "%s:%d" % (self.proxy_host, self.port), NAME],
-            stdout=logf, stderr=subprocess.STDOUT, env=e, start_new_session=True)
+        if self.orig is not None:
+            # tools/trace/lib.sh trace_launch: the launcher loads samp-tracer.dll, then samp.dll
+            e["TRACE_HOST"] = self.proxy_host
+            cmd = ["bash", "-c", 'source "$0/tools/trace/lib.sh" && trace_launch orig "$1"', self.root, NAME]
+        else:
+            cmd = [self.root + "/tools/run-client.sh", "%s:%d" % (self.proxy_host, self.port), NAME]
+        self.client = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, env=e, start_new_session=True)
+        if self.orig is not None:
+            self.orig.session(d + "/run.out")
         logf.close()
         self.client_quitting = False
         self.client_started = now()
@@ -538,16 +803,30 @@ class Soak:
     # ---- sample --------------------------------------------------------------------------------
     def sample(self):
         ts = now()
+        if self.last_sample_at is not None and ts - self.last_sample_at > PAUSE_S:
+            self.event("paused", gap_s=round(ts - self.last_sample_at, 1), since=round(self.last_sample_at - self.t0, 1))
+        self.last_sample_at = ts
         dump = self.server_dump()
         tdump = now()
         state = self.ctl("state")
-        net = self.ctl("net")
-        remote = self.ctl("remote", multi=True)
-        vehicles = self.ctl("vehicles", multi=True)
+        if self.orig is not None:
+            net, remote, vehicles = self.orig.replies() if state is not None else (None, None, None)
+            if net is not None and os.environ.get("SOAK_ORIG_RAW") and self.t() < float(os.environ["SOAK_ORIG_RAW"]):
+                with open(self.session_dir() + "/orig-raw.log", "a") as lf:
+                    lf.write("t=%.1f server_state=%s\n%s\n" % (self.t(), None, self.orig.raw()))
+            if net is not None:
+                with open(self.session_dir() + "/orig-view.log", "a") as lf:
+                    lf.write("t=%.1f %s\n%s\n%s\n" % (self.t(), net, "\n".join(remote or []), "\n".join(vehicles or [])))
+        else:
+            net = self.ctl("net")
+            remote = self.ctl("remote", multi=True)
+            vehicles = self.ctl("vehicles", multi=True)
         tc = now()
+        # the closing bracket of the client query (see BRACKETED)
+        dump2 = self.server_dump() if dump is not None else None
         pid = self.gta_pid()
         s = {"t": self.t(), "phase": self.phase, "session": self.client_session, "dump_ms": round((tdump - ts) * 1000),
-             "client_ms": round((tc - tdump) * 1000), "alive": state is not None, "gta_pid": pid,
+             "client_ms": round((tc - tdump) * 1000), "dump2_ms": round((now() - tc) * 1000), "alive": state is not None, "gta_pid": pid,
              "rss_kb": self.rss_kb(pid) if pid else None, "net": net, "server": dump is not None}
         # ticks / fps
         ticks = None
@@ -569,12 +848,29 @@ class Soak:
         if dump is not None:
             sp = next((p for p in dump["players"].values() if p["name"] == NAME), None)
         s["server_state"] = sp["st"] if sp else None
+        if self.orig is not None and net is not None and sp is not None and "spawned=false" in net and sp["st"] == 0:
+            # the original's class-selection flag is not read (see OrigView); the server's state NONE of a
+            # connected player is class selection
+            net = net.replace("class_selection=false", "class_selection=true")
+            s["net"] = net
+        if self.orig is not None and net is not None and sp is not None and sp["st"] in (1, 2, 3):
+            net = net.replace("spawned=false", "spawned=true")   # likewise for the spawned flag
+            s["net"] = net
         connected = net is not None and "phase=connected" in net
         spawned = net is not None and "spawned=true" in net
         healthy = state is not None and connected and sp is not None and (ticks is not None)
         s["healthy"] = healthy
         if healthy and dump is not None:
             comps = self.compare(dump, sp, state, remote, vehicles, spawned)
+            sp2 = next((p for p in dump2["players"].values() if p["name"] == NAME), None) if dump2 else None
+            if sp2 is not None:
+                later = {(c[0], c[1]): c[2] for c in self.compare(dump2, sp2, state, remote, vehicles, spawned, commit=False)
+                         if c[0] in BRACKETED}
+                for i, c in enumerate(comps):
+                    # bad against the first dump, but the server changed it before the second (the
+                    # comparison is gone or holds there): the client shows the later server state
+                    if not c[2] and c[0] in BRACKETED and later.get((c[0], c[1]), True):
+                        comps[i] = (c[0], c[1], True, c[3] + " [matches the dump after the client query]")
         s["n_comp"] = len(comps)
         s["bad"] = [c for c in comps if not c[2]]
         s["by_cat"] = {}
@@ -612,7 +908,9 @@ class Soak:
             self.assist(net, sp)
         return s
 
-    def compare(self, dump, sp, state, remote, vehicles, spawned):
+    def compare(self, dump, sp, state, remote, vehicles, spawned, commit=True):
+        """Comparisons (category, entity, ok, detail) of the client's state with one server dump;
+        commit=False for the bracket's second dump (leaves the seat-transition memory alone)."""
         comps = []
         # GetPlayerVelocity is 0 for a seated player: use the vehicle's velocity.
         for p in dump["players"].values():
@@ -627,7 +925,8 @@ class Soak:
         client_drives = any(re.search(r"\bdriver=local\b", l) for l in (vehicles or [])[1:])
         transition = spawned and st in (1, 2) and client_drives != (st == 2)
         skip_local = transition and not self.seat_transition
-        self.seat_transition = transition
+        if commit:
+            self.seat_transition = transition
         # local player
         m = re.search(r"pos=(-?[\d.]+),(-?[\d.]+),(-?[\d.]+) heading=\S+ health=(-?[\d.]+)", state or "")
         if m and spawned and st in (1, 2, 3) and not skip_local:
@@ -672,9 +971,12 @@ class Soak:
                 cveh = r.get("vehicle", "-")
                 comps.append(("remote_vehicle", p["name"], cveh == str(p["veh"]),
                               "server veh %d seat %d, client vehicle=%s seat=%s" % (p["veh"], p["seat"], cveh, r.get("seat"))))
+        # every player the client lists is one comparison (a ghost is the failing case)
         for cid, r in rl.items():
-            if cid not in dump["players"]:
-                comps.append(("remote_ghost", r.get("name", str(cid)), False, "client lists id %d (%s), server does not" % (cid, r.get("name"))))
+            if cid == local_id:
+                continue
+            comps.append(("remote_ghost", r.get("name", str(cid)), cid in dump["players"],
+                          "client lists id %d (%s), server does not" % (cid, r.get("name"))))
         # vehicles
         vl = {}
         hdr_ok = vehicles is not None
@@ -844,7 +1146,7 @@ class Soak:
         if rec is None:
             return self.finish(fatal="client never joined and spawned")
         self.phase = "steady"
-        n_cases = len(self.CASES)
+        n_cases = len(self.cases)
         period = min(self.event_period, max(60.0, (self.secs - (now() - self.t0)) / (n_cases + 1)))
         next_case = now() + period
         ci = 0
@@ -861,8 +1163,8 @@ class Soak:
                 self.server_start()
                 self.fs_setup()
             self.check_crash(scan=False)
-            if now() >= next_case and (elapsed < self.secs or ci < n_cases):
-                name = self.CASES[ci % n_cases]
+            if n_cases and now() >= next_case and (elapsed < self.secs or ci < n_cases):
+                name = self.cases[ci % n_cases]
                 ci += 1
                 self.phase = "event:" + name
                 self.event("case-start", case=name)
@@ -936,7 +1238,7 @@ class Soak:
             "fatal": fatal, "crashes": self.crashes, "panics": self.panics, "crash_markers": self.errors,
             "log_notes": dict(sorted(self.notes.items(), key=lambda kv: -kv[1])[:40]), "stuck": self.stuck, "server_crashes": self.server_crashes,
             "cases": self.events_done, "bots": {k: {"runs": v["runs"], "nonzero_exits": v["bad"]} for k, v in self.bots.items()},
-            "gamemode": self.gm, "soak_secs": self.secs, "wall_secs": round(now() - self.t0, 1),
+            "gamemode": self.gm, "soak_secs": self.secs, "client": self.kind, "cases_planned": self.cases, "wall_secs": round(now() - self.t0, 1),
         })
         return 0 if summ["pass"] else 1
 
@@ -960,7 +1262,7 @@ def report(out, extra=None):
     prev = {}
     if extra is None and os.path.exists(sp):
         prev = json.load(open(sp))
-    extra = extra if extra is not None else {k: prev.get(k) for k in ("fatal", "crashes", "panics", "crash_markers", "log_notes", "stuck", "server_crashes", "cases", "bots", "gamemode", "soak_secs", "wall_secs")}
+    extra = extra if extra is not None else {k: prev.get(k) for k in ("fatal", "crashes", "panics", "crash_markers", "log_notes", "stuck", "server_crashes", "cases", "bots", "gamemode", "soak_secs", "wall_secs", "client", "cases_planned")}
     steady = [s for s in samples if s["phase"] == "steady"]
     cats = {}
     for s in steady:
@@ -979,11 +1281,19 @@ def report(out, extra=None):
     if fps:
         fs = sorted(fps)
         fps_stats = {"median": statistics.median(fs), "p5": fs[int(0.05 * (len(fs) - 1))], "min": fs[0], "max": fs[-1], "n": len(fs)}
+    # pauses: the whole run stopped from outside (see PAUSE_S). Nothing ran during one, so the time
+    # axis of the memory slope skips it (otherwise a stopped session looks like hours of uptime with
+    # its warm-up RSS growth crammed into the last seconds).
+    pauses = [{"at": a["t"], "gap_s": round(b["t"] - a["t"], 1)} for a, b in zip(samples, samples[1:]) if b["t"] - a["t"] > PAUSE_S]
+
+    def active(t):
+        return t - sum(p["gap_s"] for p in pauses if p["at"] < t)
+
     # memory: per client session, after warm-up
     mem = {}
     for s in samples:
         if s.get("rss_kb") and s.get("session"):
-            mem.setdefault(s["session"], []).append((s["t"], s["rss_kb"] / 1024.0))
+            mem.setdefault(s["session"], []).append((active(s["t"]), s["rss_kb"] / 1024.0))
     mem_sessions = []
     for sess, pts in sorted(mem.items()):
         t0 = pts[0][0]
@@ -996,10 +1306,10 @@ def report(out, extra=None):
     # steady-phase slope (the RSS between the cases) and the RSS step across each case that kept
     # the game process (in-process reconnects: gmx, netloss without relaunch, srvkill)
     for m in mem_sessions:
-        pts = [(s["t"], s["rss_kb"] / 1024.0) for s in samples
+        pts = [(active(s["t"]), s["rss_kb"] / 1024.0) for s in samples
                if s.get("session") == m["session"] and s.get("rss_kb") and s["phase"] == "steady"]
         if pts:
-            t0 = min(s["t"] for s in samples if s.get("session") == m["session"])
+            t0 = min(active(s["t"]) for s in samples if s.get("session") == m["session"])
             pts = [(t, v) for t, v in pts if t - t0 >= WARMUP_S]
         sl = linreg([t for t, _ in pts], [v for _, v in pts]) if pts else None
         m["steady_slope_mb_per_h"] = round(sl * 3600, 1) if sl is not None else None
@@ -1012,7 +1322,34 @@ def report(out, extra=None):
         after = [s for s in samples if s["t"] >= en["t"] and s.get("rss_kb") and s.get("session") == st["client_session"]][:3]
         if before and after:
             steps.append({"case": st["case"], "rss_step_mb": round((after[-1]["rss_kb"] - before[-1]["rss_kb"]) / 1024.0, 1)})
-    longest = max(mem_sessions, key=lambda m: m["warm_span_s"], default=None)
+    # The judged slope. An in-process reconnect (gmx, netloss, srvkill: the reset routine deletes every
+    # remote entity and the new join streams the world in again) is a warm-up of its own: the RSS climbs
+    # for minutes after it, on the original as on ours. The slope is therefore fitted within segments
+    # (session start / case end + WARMUP_S ... next case start), pooled (one common slope, an intercept
+    # per segment), so neither the re-warm-ups nor the steps across the cases (reported separately in
+    # memory_case_steps) count as a trend. Judged when the segments cover >= 600 s.
+    case_spans = [(st["t"], en["t"]) for st, en in zip(starts, ends)]
+    for m in mem_sessions:
+        ss = [s for s in samples if s.get("session") == m["session"] and s.get("rss_kb")]
+        bounds = [ss[0]["t"]] + [en for st, en in case_spans if ss[0]["t"] < st < ss[-1]["t"]]
+        segs = {}
+        for s in ss:
+            if s["phase"] != "steady":
+                continue
+            b = max(x for x in bounds if x <= s["t"])
+            if active(s["t"]) - active(b) >= WARMUP_S:
+                segs.setdefault(b, []).append((active(s["t"]), s["rss_kb"] / 1024.0))
+        sxy = sxx = span = 0.0
+        for v in segs.values():
+            if len(v) < 3:
+                continue
+            mx, my = sum(t for t, _ in v) / len(v), sum(y for _, y in v) / len(v)
+            sxy += sum((t - mx) * (y - my) for t, y in v)
+            sxx += sum((t - mx) ** 2 for t, _ in v)
+            span += v[-1][0] - v[0][0]
+        m["judged_slope_mb_per_h"] = round(sxy / sxx * 3600, 1) if sxx else None
+        m["judged_span_s"] = round(span)
+    longest = max(mem_sessions, key=lambda m: m["judged_span_s"], default=None)
     frozen = sum(1 for e in events if e["kind"] == "client-frozen")
     persistent = [e for e in events if e["kind"] == "persistent-desync"]
     crash_events = [e for e in events if e["kind"] == "client-crash"]
@@ -1029,7 +1366,8 @@ def report(out, extra=None):
         reasons.append("%d stuck state(s)" % extra["stuck"])
     if frozen:
         reasons.append("%d frozen frame counter(s)" % frozen)
-    missing = [c for c in Soak.CASES if not any(d["case"] == c for d in (extra.get("cases") or []))]
+    planned = extra.get("cases_planned")
+    missing = [c for c in (Soak.CASES if planned is None else planned) if not any(d["case"] == c for d in (extra.get("cases") or []))]
     if missing:
         reasons.append("cases not run: %s" % missing)
     for d in extra.get("cases") or []:
@@ -1042,17 +1380,22 @@ def report(out, extra=None):
         reasons.append("%d persistent desync(s) (>= %d consecutive samples)" % (len(persistent), PERSIST))
     if fps_stats and (fps_stats["p5"] < 0.5 * fps_stats["median"] or fps_stats["median"] < 20):
         reasons.append("fps unstable: %s" % fps_stats)
-    if longest and longest["slope_mb_per_h"] is not None and longest["warm_span_s"] >= 600 and longest["slope_mb_per_h"] > MEM_SLOPE_MAX_MB_H:
-        reasons.append("memory slope %.1f MB/h > %.0f" % (longest["slope_mb_per_h"], MEM_SLOPE_MAX_MB_H))
+    if longest and longest["judged_slope_mb_per_h"] is not None and longest["judged_span_s"] >= 600 \
+            and longest["judged_slope_mb_per_h"] > MEM_SLOPE_MAX_MB_H:
+        reasons.append("memory slope %.1f MB/h > %.0f (session %d, %d s judged)" % (
+            longest["judged_slope_mb_per_h"], MEM_SLOPE_MAX_MB_H, longest["session"], longest["judged_span_s"]))
     if not steady:
         reasons.append("no steady samples")
+    if pauses:
+        reasons.append("run stopped from outside for %s s (at t=%s): it did not cover its span, rerun" % (
+            "+".join(str(round(p["gap_s"])) for p in pauses), ",".join(str(round(p["at"])) for p in pauses)))
     summ = dict(extra)
     summ.update({
         "pass": not reasons, "reasons": reasons, "samples": len(samples), "steady_samples": len(steady),
         "steady_healthy": len(healthy_steady), "desync": rates, "desync_overall_ok_rate": overall,
         "comparisons": total_n, "fps": fps_stats, "memory": mem_sessions,
-        "memory_slope_mb_per_h": longest["slope_mb_per_h"] if longest else None,
-        "memory_case_steps": steps,
+        "memory_slope_mb_per_h": longest["judged_slope_mb_per_h"] if longest else None,
+        "memory_case_steps": steps, "pauses": pauses,
         "persistent_desyncs": persistent[:50], "crash_events": crash_events,
     })
     json.dump(summ, open(sp, "w"), indent=1)

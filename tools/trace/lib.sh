@@ -78,6 +78,7 @@ trace_log_cfg() {
 # trace_launch CLIENT NAME — runs gta_sa.exe through our launcher with the tracer
 # loaded first, then the client DLL (orig = samp.dll 0.3.7-R4, ours = samp_client.dll,
 # bare = no client: the tracer boots a stock single-player game, SAMP_TRACER_BOOT=1).
+# Server 127.0.0.1:$E2E_PORT; TRACE_HOST overrides the host (the soak's proxy on 127.0.0.2).
 # Blocks until the game exits; run it in the background.
 trace_launch() {
     local client="$1" name="$2" dlls
@@ -92,7 +93,7 @@ trace_launch() {
     cd "$GTA_DIR" || return 1
     wine_launch samp-trace "$GTA_DIR/samp-rs-launcher.exe" \
         --gta "$(winepath -w "$GTA_DIR/gta_sa.exe")" "${dlls[@]}" \
-        --name "$name" --host 127.0.0.1 --port "$E2E_PORT"
+        --name "$name" --host "${TRACE_HOST:-127.0.0.1}" --port "$E2E_PORT"
 }
 
 # trace_wait_ctl SECONDS — until the tracer's control channel answers.
