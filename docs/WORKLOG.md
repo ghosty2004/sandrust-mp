@@ -340,3 +340,13 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - Verified on main in lane main under the lock: m1, saa, m2, m3, goal, m4, m5, m6, m7, m8a exit 0;
   m8b failed once on the frame-rate-sensitive drunk check, exit 0 on rerun (test to be fixed);
   555 tests; clippy 0 (host + i686).
+
+## 2026-11-05 — Audio and client features merged; every milestone implemented
+
+- Audio + client features merged (9ac9007): BASS call stream 0 differences in 16 segments
+  vs the original; sa-mp.cfg loader/rewrite; chat log; kick/lost/full/password/name/gmx/quit.
+- Full e2e on the complete main (lane ui, under the lock): m1, saa, m2, m3, goal, m4, m5, m6,
+  m7, m8a, m10, ux1 exit 0; m8b and m9 failed on test defects (time-based drunk check, missing
+  original audio reference after the worktree was removed). Fixed (d7f3173): m8b counts frames
+  (3/3 pass), m9 reference regenerated (pass, 0 BASS differences).
+- 562 tests; clippy 0 (host + i686).
