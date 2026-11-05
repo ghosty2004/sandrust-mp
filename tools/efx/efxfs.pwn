@@ -99,6 +99,11 @@ Run(seq, const line[])
     if (!strcmp(cmd, "pos")) SetPlayerPos(p, fl(line, 1), fl(line, 2), fl(line, 3));
     else if (!strcmp(cmd, "hp")) SetPlayerHealth(p, fl(line, 1));
     else if (!strcmp(cmd, "skin")) SetPlayerSkin(p, in(line, 1));
+    // M7 weapon RPCs: 22 GivePlayerWeapon, 67 SetPlayerArmedWeapon, 145 SetPlayerAmmo, 21 ResetPlayerWeapons.
+    else if (!strcmp(cmd, "weapon")) GivePlayerWeapon(p, WEAPON:in(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "armed")) SetPlayerArmedWeapon(p, WEAPON:in(line, 1));
+    else if (!strcmp(cmd, "ammo")) SetPlayerAmmo(p, WEAPON:in(line, 1), in(line, 2));
+    else if (!strcmp(cmd, "resetw")) ResetPlayerWeapons(p);
     else if (!strcmp(cmd, "putin")) PutPlayerInVehicle(p, in(line, 1), in(line, 2));
     else if (!strcmp(cmd, "veh"))
     {

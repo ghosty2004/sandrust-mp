@@ -252,10 +252,6 @@ impl Entities {
                     ],
                 );
                 self.actors.insert(a.actor_id, Actor { skin: a.skin, handle, ped, invulnerable: a.invulnerable != 0 });
-                let id = a.actor_id;
-                wh::with_shared(|s| {
-                    s.actor_peds.insert(ped, id);
-                });
             }
             W::HideActorForPlayer(h) => self.delete_actor(runner, h.actor_id),
             W::ApplyActorAnimationForPlayer(a) => {
@@ -440,9 +436,6 @@ impl Entities {
 
     fn delete_actor(&mut self, runner: &mut Runner, id: u16) {
         if let Some(a) = self.actors.remove(&id) {
-            wh::with_shared(|s| {
-                s.actor_peds.remove(&a.ped);
-            });
             // The wrapper's destructor (A 0x1009C460) deletes the ped through its own virtual destructor
             // (scalar deleting, flag 1) when the handle is still valid — no script command.
             let _ = runner;
@@ -457,7 +450,13 @@ impl Entities {
         }
     }
 
-    /// Hook events (pickup collisions, actor damage) → RPCs, in the order they happened.
+    /// The streamed actors as (ped, actor id), published every tick to the combat hooks: their damage hook (CSV
+    /// row 53, combathooks.rs) sends RPC 177 for them, and 204 carries them as the target actor.
+    pub fn hook_actors(&self) -> Vec<(u32, u16)> {
+        self.actors.iter().filter(|(_, a)| a.ped != 0).map(|(&id, a)| (a.ped, id)).collect()
+    }
+
+    /// Hook events (pickup collisions) → RPCs, in the order they happened.
     pub fn hook_events(&mut self, net: &mut NetClient) {
         let events = wh::with_shared(|s| std::mem::take(&mut s.events));
         for e in events {
@@ -465,13 +464,6 @@ impl Entities {
                 Event::PickupHit(id) => {
                     send(net, &rw::OnPlayerPickUpPickup { pickup_id: id });
                     self.sent_131 += 1;
-                }
-                Event::ActorDamage { actor, damage, weapon, part } => {
-                    send(
-                        net,
-                        &rw::OnPlayerDamageActor { unknown: false, actor_id: actor, damage, weapon, body_part: part },
-                    );
-                    self.sent_177 += 1;
                 }
             }
         }
@@ -626,7 +618,6 @@ impl Entities {
         wh::with_shared(|s| {
             s.pickups.clear();
             s.cooldown.clear();
-            s.actor_peds.clear();
             s.zones.clear();
         });
         if let Ok(mut g) = LABEL_DRAWS.lock() {

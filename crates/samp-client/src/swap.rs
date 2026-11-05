@@ -334,11 +334,28 @@ pub extern "thiscall" fn player_ped_process_control(ped: u32) {
             // so remote peds never get them.
             // SAFETY: as above.
             unsafe {
+                apply_local_masks();
                 copy_in(addr::AIM_ROT_STORE_ZELDA, &AIM_ROT_STORE_ORIGINAL);
                 copy_in(addr::AIM_ROT_STORE_DUCKED, &AIM_ROT_STORE_ORIGINAL);
                 original(ped);
                 copy_in(addr::AIM_ROT_STORE_ZELDA, &[0x90; 6]);
                 copy_in(addr::AIM_ROT_STORE_DUCKED, &[0x90; 6]);
+            }
+        }
+    }
+}
+
+/// The local pad masks of the carry / cuffs special actions (combat RE-10 §1, measured TRACE-7 "Carry / cuffs
+/// masks"): Square (jump), ShockL (crouch) and Cross (sprint) cleared in NewState and OldState of `Pads[0]`.
+unsafe fn apply_local_masks() {
+    use crate::combat::pad;
+    let m = crate::combatclient::LOCAL_MASKS.load(Ordering::Relaxed);
+    for (bit, word) in [(1u8, pad::SQUARE), (2, pad::SHOCK_L), (4, pad::CROSS)] {
+        if m & bit != 0 {
+            // SAFETY: words inside CPad::Pads[0] (.bss), main thread.
+            unsafe {
+                wr(addr::PAD0 + word as u32, 0i16);
+                wr(addr::PAD0 + (pad::OLD_STATE + word) as u32, 0i16);
             }
         }
     }

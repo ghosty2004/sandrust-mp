@@ -265,6 +265,16 @@ impl FootSender {
         changed || self.last_attempt.is_none_or(|t| now.duration_since(t) > interval)
     }
 
+    /// A foot / aim packet was sent less than [`DUPLICATE_WINDOW`] ago (the shared timestamp of §0.4).
+    pub fn recent_send(&self, now: Instant) -> bool {
+        self.last_send.is_some_and(|t| now.duration_since(t) < DUPLICATE_WINDOW)
+    }
+
+    /// Another packet type sharing the timestamp (203) was sent.
+    pub fn touch(&mut self, now: Instant) {
+        self.last_send = Some(now);
+    }
+
     /// Returns the packet to send, or None when it duplicates the last one
     /// within [`DUPLICATE_WINDOW`].
     pub fn offer(&mut self, now: Instant, f: FootSync) -> Option<FootSync> {

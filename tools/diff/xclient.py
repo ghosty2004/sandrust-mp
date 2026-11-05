@@ -54,6 +54,7 @@ PHYS_SPEED = 0x44                  # CPhysical::m_vecMoveSpeed
 PED_FLAGS = 0x46C                  # CPed bitfield block after field_468 (CPed.h, pack 1)
 PED_STATE, PED_MOVE = 0x530, 0x534  # m_nPedState, m_nMoveState
 PED_HEALTH, PED_ARMOUR, PED_HEADING = 0x540, 0x548, 0x558
+PED_WEAPONS, PED_WEAPON_SIZE, PED_SELECTED_SLOT = 0x5A0, 0x1C, 0x718  # m_aWeapons[13], m_nSelectedWepSlot (M7)
 # CAnimBlendAssociation: m_link +4 (RwLLLink next,prev), m_nAnimGroup +0xE,
 # m_pHierarchy +0x14, m_fBlendAmount +0x18, m_nAnimId +0x2C, m_nFlags +0x2E; size 0x3C.
 # CAnimBlendHierarchy::m_hashKey +0. CAnimBlendClumpData::m_associationsList +0.
@@ -110,15 +111,41 @@ STEPS = (
         "checks": ["visible", "skin", "pos", "heading"]}]
 )
 
+# M7 combat steps: weapons (RPC 22 → the other side sees the weapon through 207), aiming (203 + keys → the
+# aim pose / anims on the other side), one shot into the air (206 miss relayed → shot anims), death by health 0
+# (RPC 53 → 166 on the other side: the ped dies there) and the respawn.
+def combat_steps(a):
+    return [
+        {"name": f"aim_{a}", "actor": a, "events": [(0.0, "mousedown", "3"), (2.5, "mouseup", "3")], "window": 3.5,
+         "checks": ["visible", "weapon", "anims", "pos"]},
+        {"name": f"fire_{a}", "actor": a,
+         "events": [(0.0, "mousedown", "3"), (1.2, "mousedown", "1"), (1.4, "mouseup", "1"), (2.6, "mouseup", "3")],
+         "window": 3.5, "checks": ["visible", "weapon", "anims", "pos"]},
+    ]
+
+
+STEPS = STEPS + (
+    [{"name": "combat_weapon", "actor": "both", "events": [(0.0, "rcon_each", "xc weapon {id} 24 50 ;")],
+      "window": 3.0, "checks": ["visible", "weapon", "pos", "heading"]}]
+    + combat_steps("A") + combat_steps("B")
+    + [{"name": "combat_death_A", "actor": "A", "events": [(0.0, "rcon_each", "xc hpar {id} 0 0 ;")], "window": 3.0,
+        "checks": ["visible", "dead"]},
+       # The respawn puts the player at the gamemode's spawn far away; the actor is brought back to its spot.
+       {"name": "combat_respawn_A", "actor": "A", "events": [(2.5, "tp", None)], "window": 5.5,
+        "checks": ["visible", "dead", "pos"]},
+       {"name": "combat_death_B", "actor": "B", "events": [(0.0, "rcon_each", "xc hpar {id} 0 0 ;")], "window": 3.0,
+        "checks": ["visible", "dead"]},
+       {"name": "combat_respawn_B", "actor": "B", "events": [(2.5, "tp", None)], "window": 5.5,
+        "checks": ["visible", "dead", "pos"]}]
+)
+
 # Enabled when the milestone lands; never guessed before (PLAN §3b).
 PENDING = [
     ("vehicle_driver", "M5", "A drives a car, B sees driver sync (200): car pos/heading/speed, driver seat"),
     ("vehicle_passenger", "M5", "passenger sync (211), seat"),
     ("vehicle_enter_exit", "M5", "enter/exit animations relayed (RPC 26/154)"),
     ("vehicle_unoccupied_trailer", "M5", "unoccupied (209) and trailer (210) sync"),
-    ("combat_aim", "M7", "aim sync (203): camera mode, aim vector, weapon"),
-    ("combat_shoot", "M7", "bullet sync (206), weapon state, muzzle/impact"),
-    ("combat_damage_death", "M7", "damage (115), health loss and death/respawn on the other side"),
+    ("combat_hit", "M7", "a 206 that hits the other client (needs an aimed-hit geometry for two real clients)"),
     ("objects", "M6", "same objects/attachments visible on both"),
     ("chat", "M4", "chat lines and bubbles of the other player"),
 ]
@@ -202,7 +229,8 @@ def read_peds(conn, peds, clump_off):
     views = {p: {"ped": f"{p:#x}"} for p in peds}
     if not peds:
         return views
-    r1 = conn.peeks([r for p in peds for r in ((p, 0x60), (p + PED_FLAGS, 4), (p + PED_STATE, 0x30))])
+    r1 = conn.peeks([r for p in peds for r in ((p, 0x60), (p + PED_FLAGS, 4), (p + PED_STATE, 0x30),
+                                               (p + PED_SELECTED_SLOT, 1))])
     second = []
     for p in peds:
         h, fl, st = r1.get((p, 0x60)), r1.get((p + PED_FLAGS, 4)), r1.get((p + PED_STATE, 0x30))
@@ -222,6 +250,10 @@ def read_peds(conn, peds, clump_off):
         v["health"] = round(f32(st, PED_HEALTH - PED_STATE), 2)
         v["armour"] = round(f32(st, PED_ARMOUR - PED_STATE), 2)
         v["heading"] = round(f32(st, PED_HEADING - PED_STATE), 4)
+        slot = r1.get((p + PED_SELECTED_SLOT, 1))
+        if slot is not None and slot[0] < 13:
+            second.append((p + PED_WEAPONS + slot[0] * PED_WEAPON_SIZE, 4))
+            v["_weapon_at"] = p + PED_WEAPONS + slot[0] * PED_WEAPON_SIZE
         pos_at = v["_matrix"] + 0x30 if v["_matrix"] else p + E_PLACEMENT
         v["_pos_at"] = pos_at
         second.append((pos_at, 12))
@@ -233,6 +265,9 @@ def read_peds(conn, peds, clump_off):
         v = views[p]
         if "error" in v:
             continue
+        if "_weapon_at" in v:
+            wb = r2.get((v["_weapon_at"], 4))
+            v["weapon"] = u32(wb) if wb else None
         b = r2.get((v["_pos_at"], 12))
         v["pos"] = [round(c, 3) for c in struct.unpack("<3f", b)] if b else None
         cdb = r2.get((v["_clump"] + clump_off, 4)) if v["_clump"] and clump_off else None
@@ -394,6 +429,9 @@ class Driver:
         if kind in ("key", "keydown", "keyup"):
             for k in targets:
                 self.sides[k].xdo(kind, *(["--delay", "80"] if kind == "key" else []), arg)
+        elif kind in ("mousedown", "mouseup"):
+            for k in targets:
+                self.sides[k].xdo(kind, arg)
         elif kind == "rcon_each":
             for k in targets:
                 s = self.sides[k]
@@ -573,6 +611,14 @@ def scalar(chk, ser, last_s, last_o):
         return last_s["model"], last_o["model"]
     if chk in ("health", "armour"):
         return last_s[chk], last_o[chk]
+    if chk == "weapon":
+        return last_s.get("weapon"), last_o.get("weapon")
+    if chk == "dead":
+        # Dying / dead (ped state 54/55) at any time of the window, and at its end.
+        def dead(v):
+            return bool(v) and v.get("ped_state") in (54, 55)
+        return ((int(any(dead(v) for v, _ in ser)), int(dead(last_s))),
+                (int(any(dead(v) for _, v in ser)), int(dead(last_o))))
     if chk == "ducking":
         return int(last_s["ducking"]), int(last_o["ducking"])
     if chk == "in_air":

@@ -6,6 +6,7 @@
 
 pub mod cdstream;
 pub mod classsel;
+pub mod combat;
 pub mod cmdline;
 pub mod control;
 pub mod footsync;
@@ -32,6 +33,10 @@ pub mod worldents;
 
 #[cfg(windows)]
 mod client;
+#[cfg(windows)]
+mod combatclient;
+#[cfg(windows)]
+mod combathooks;
 #[cfg(windows)]
 mod diag;
 #[cfg(windows)]

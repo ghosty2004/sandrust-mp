@@ -437,3 +437,26 @@ settled statically; it is a measurement request (M7).
 ### 6. Drive-by (remote passengers) and 204 targets
 See `remote-players-sync.md` RE-10 additions (TASK_DRIVE_BY parameters, task type 0x3FE, deleting-destructor stop; 204
 target = `CPlayerPed` +0x79C).
+
+---
+
+## M7 implementation notes (static, samp.dll A, 2026-11-05)
+
+Corrections and details found while implementing M7 (`docs/phase3/m7-notes.md`):
+* **InitGame installs the bullet hooks only for lag-comp 1 and 2** (A 0x10010909): lag-comp 1 → S 0 and the installer
+  A 0x100A7050 (rows 98–106) plus the lock-on RETs A 0x100A1C10 (rows 4/5); 2 → S 1, the same; anything else → S 2 and
+  **neither** installer runs. So with lag-comp off GTA's own `FireInstantHit` / `FireSniper` / LOS run for every ped.
+* §3.2: the stubs return their 8th argument (`FireInstantHit` sites) / their 1st argument (`FireSniper` site) through
+  `popa`; the local shot ignores GTA's origin arguments (§5).
+* §3.3 step 5: the fire offset comes from `CWeaponInfo::GetWeaponInfo(type, 1)` +0x24 (skill 1 = standard).
+* §3.4: when the local-hit suppression clears the result, the hook returns 0 (no hit), not the original result.
+* §7 and RPC 166: the ped helper A 0x100AD130 (local death) and its use in A 0x100B0010 (remote death) **extinguish the
+  ped's fire and its vehicle's fire** (`CFire::Extinguish` 0x5393F0 on CPed +0x730 and CVehicle +0x490); they do not take
+  the ped out of the vehicle. The remote helper also removes an active jetpack task (deleting destructor 0x6801D0) and
+  teleports through the entity's `Teleport` virtual.
+* §7 detection: `(dead == 0 && ped state == 54) || health ≤ 0` (A 0x100ABE50 is "health ≤ 0.0 or no ped"). On death
+  zone names go off (A 0x100A1560(0)). Respawn branch: ped state not 54/55 → cuffs off (A 0x100ACF40(0)), then Spawn
+  when class info is valid, no forced reselection, connected and health > 0; otherwise class selection.
+* Row 45 (`TakePhotograph`): the stub's `[esp+8]` at 0x73C252 is the saved EDI of `CWeapon::Fire` = its owner entity.
+* Row 8 (crosshair): the correction (A 0x100A2440) runs only with the flag A 0x10117470, which start-up clears unless
+  sa-mp.cfg `nohudscalefix` is non-zero (A 0x100C49DD; the config getter returns the int value, 0 when missing).

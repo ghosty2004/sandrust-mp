@@ -84,6 +84,13 @@ pub mod op {
     pub const SET_VEHICLE_AREA_VISIBLE: u16 = 0x0840;
     pub const ATTACH_TRAILER_TO_CAB: u16 = 0x0893;
     pub const SET_PETROL_TANK_WEAKPOINT: u16 = 0x09C4;
+    // Combat (M7).
+    /// `EXPLODE_CHAR_HEAD` (remote death, RPC 166).
+    pub const EXPLODE_CHAR_HEAD: u16 = 0x0321;
+    /// `ADD_EXPLOSION_VARIABLE_SHAKE`-style "fffii" command samp uses for RPC 79 (player-state.md 79).
+    pub const ADD_EXPLOSION: u16 = 0x0948;
+    /// `TASK_DRIVE_BY` (drive-by of a passenger).
+    pub const TASK_DRIVE_BY: u16 = 0x0713;
 }
 
 /// One script command parameter.

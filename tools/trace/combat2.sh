@@ -18,6 +18,7 @@
 #   rmb       RemoveBuildingForPlayer(4019) then 3.3 km away and back (watch 4019,19300)
 #   world7    blanktex material (model 0), camera vs normal / no-cam-col wall, SetPlayerPosFindZ over an object
 #   respawn   death after ForceClassSelection, then death while spectating
+# COMBAT2_TARGET=TraceOurs when driving our client (bots aim at that name).
 # Decode sends: samp-dump OUT/net.pcapng --port 7790 --raw | target/debug/examples/c2s_decode --only 206,115,…
 set -uo pipefail
 U="$(cd "$(dirname "$0")" && pwd)/ui.sh"
@@ -60,7 +61,7 @@ part_cross() {
 
 part_ht1() {
     reset_local
-    bot ShootBot1 --mode shoot --target TraceOrig --weapon 24 --hit-type 1 --fire-ms 1500 --seconds 3000
+    bot ShootBot1 --mode shoot --target "${COMBAT2_TARGET:-TraceOrig}" --weapon 24 --hit-type 1 --fire-ms 1500 --seconds 3000
     sleep 9
     fs 'pos|B1|1700|-2590|13.55|180'
     sleep 1
@@ -124,7 +125,7 @@ part_satchel() {
 part_rproj() {
     reset_local
     for w in 16 35 39; do
-        bot "ProjBot$w" --mode shoot --target TraceOrig --weapon "$w" --hit-type 0 --fire-ms 900 --seconds 3000
+        bot "ProjBot$w" --mode shoot --target "${COMBAT2_TARGET:-TraceOrig}" --weapon "$w" --hit-type 0 --fire-ms 900 --seconds 3000
         sleep 9
         fs 'pos|B1|1700|-2580|13.55|180'
         sleep 1
@@ -202,7 +203,7 @@ part_skills() {
     peek_skills spawn
     fs 'skill|L|0|500'; sleep 1; peek_skills after-34-pistol-500
     fs 'skill|L|1|0'; sleep 1; peek_skills after-34-silenced-0
-    bot SkillBot --mode shoot --target TraceOrig --weapon 22 --hit-type 0 --fire-ms 100000 --seconds 3000
+    bot SkillBot --mode shoot --target "${COMBAT2_TARGET:-TraceOrig}" --weapon 22 --hit-type 0 --fire-ms 100000 --seconds 3000
     sleep 9
     fs 'pos|B1|1702.5|-2595|13.55|180'
     fs 'weapon|B1|22|500'
@@ -220,7 +221,7 @@ part_skills() {
 # Remote Colt at pistol skill 0 and 1000 (single vs dual), same placement as `skills`.
 part_rskill() {
     reset_local
-    bot SkillBot --mode shoot --target TraceOrig --weapon 22 --hit-type 0 --fire-ms 100000 --seconds 3000
+    bot SkillBot --mode shoot --target "${COMBAT2_TARGET:-TraceOrig}" --weapon 22 --hit-type 0 --fire-ms 100000 --seconds 3000
     sleep 9
     fs 'pos|B1|1702.5|-2595|13.55|180'
     fs 'weapon|B1|22|500'

@@ -33,6 +33,7 @@ usage: samp-bot [HOST:PORT] [options]
  shoot:
   --target ID|NAME     player to shoot at
   --weapon W           weapon to use (must be given by the server; default: armed)
+  --special-action N   special action in every on-foot sync (measurement, e.g. 24 cuffed)
   --hit-type T         206 hit type 0 none, 1 player (default), 2 vehicle, 3 object
   --hit-id N           206 hit id override
   --offset X,Y,Z       206 offset override
@@ -90,6 +91,7 @@ fn parse_args() -> std::result::Result<Args, String> {
                 c.offset = Some(geom::v3(x, y, z));
             }
             "--fire-ms" => c.fire_ms = Some(num("--fire-ms", it.next())?),
+            "--special-action" => c.special_action = Some(num("--special-action", it.next())?),
             "-h" | "--help" => return Err(USAGE.into()),
             other if other.starts_with("--") => return Err(format!("unknown option {other}\n{USAGE}")),
             other => a.target = other.into(),
