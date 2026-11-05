@@ -14,7 +14,7 @@ differential capture against the original client, e2e script.
 |---|---|---|
 | samp-client worktree fixa (lane main) | FIX-A: patch rows, HUD aspect, shadows, weather, 207 cadence | TEST-1 |
 | samp-client worktree m6p (lane veh) | M6-P: object editor gizmo/drag/selection, row 81, M5 leftovers (train exit, passenger weapons, trailers, aircraft z, plates), F-enter run vs walk | — |
-| lane ui | — (free) | NET-6 / SOAK |
+| samp-proto/netclient worktree net6 (lane ui) | NET-6 RakNet timing parity + tools/diff/network.sh (F2) | SOAK |
 | measurement (lane trace, REA) | — (free) | EFX-2 |
 | harness (lanes diff + diff2) | — (free) | fix agents from docs/phase3/par-audit.md |
 | no-game | — (free) | NET-6 ack/resend timing; rename to sandrust-mp |
