@@ -521,3 +521,21 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   answers the dialog. Unit tests `chat_enter_does_not_answer_the_reply_dialog` (core) and keys routing.
 - Regression: tools/e2e/m8a.sh INPUT-1 steps (command + held Enter → input dialog 90, text → message box 93,
   chain 91→92; no RPC 62 within 2 s). Specs: ui-rendering.md §6.3/§13.4, ui-chat-audio.md (Enter = key-up).
+
+## 2026-11-05 — SOAK-DESYNC: desyncs of the 2-hour derby soak (branch soak-desync)
+- Cause of every persistent desync: our RakNet duplicate filter remembered the last 8192 reliable message
+  numbers; the server's single 16-bit message counter (syncs included) wraps every ~10 min, after which a
+  new RPC with an already remembered number was acked and dropped, leaving a permanent hole in its ordered
+  channel: no RPC applied for 277 s (join/quit, stream in/out, seats). Fix: the original's window rule
+  (A 0x10049250: base + holes over all numbers, 0x8000 ahead, holes given up after 10 s) in
+  `Connection::accept_number`; spec docs/re/handshake.md §3; 2 unit tests (the old filter delivers 1714 of
+  5076 RPCs over 3 wraps). Bots fixed too (shared crate).
+- Harness (soak_mon.py): bracketed comparison of discrete state (second server dump after the client
+  query), remote_ghost denominator, pause detection (the 2 h run was stopped from outside for 3.4 h: the
+  "791 MB/h" session 2), memory slope within segments between in-process reconnects; `SOAK_CLIENT=orig`
+  (original samp.dll + tracer in the trace lane, state read via `peek`), `SOAK_CASES`; `TRACE_HOST` in
+  trace_launch.
+- Parity: same derby soak 1800 s without cases, original vs ours: both PASS, identical categories at
+  100 %, the same residual remote-car position / burning-car health misses, memory 19.3 vs 18.3 MB/h
+  (docs/phase3/soak-notes.md).
+- Verified: cargo test --workspace, clippy host + i686 0 warnings; 30-min derby soaks and e2e in the notes.

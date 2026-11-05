@@ -30,6 +30,9 @@
 //! * keep-alive (A 0x10041853): a reliable `0x17` (low priority) when connected, nothing awaits an
 //!   ack and more than 5000 ms passed since the last reliable send; the next base is moved to
 //!   now + timeout, i.e. 15 s apart while idle (send A 0x1003cbf9);
+//! * duplicate filter (A 0x10049250, docs/re/handshake.md §3): a window over the peer's single
+//!   16-bit message-number counter (every message, reliable or not), with a base and holes that are
+//!   given up after [`TIMEOUT`]; robust across the counter's wrap;
 //! * dead connection ([`Connection::is_dead`]): the "ack timer" starts when a reliable message
 //!   is first transmitted while none is awaiting an ack, is moved to the receive time of every
 //!   ack that leaves messages pending and is cleared when none are; the connection is dead when
@@ -39,7 +42,7 @@
 //! Not reproduced: RakNet's bandwidth bucket (A 0x10049ae0; floor 144400 bit/s, a 1-second
 //! burst): the client's traffic stays far below it (docs/phase3/net6-notes.md).
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::bitstream::BitWriter;
@@ -71,8 +74,9 @@ const OVER_TIMEOUT_PING_MS: u32 = 500;
 const MAX_PING_SAMPLE_MS: u32 = 1200;
 /// Samples in the ping ring (A 0x10041f40).
 const PING_RING: usize = 5;
-/// How many recent reliable message numbers are remembered for duplicate detection.
-const DEDUP_WINDOW: usize = 8192;
+/// Largest forward distance (16-bit wrapping) of a received message number from the window base
+/// that still counts as new; anything further is behind the base, i.e. a duplicate (A 0x10049250).
+const MAX_AHEAD: u16 = 0x8000;
 const CHANNELS: usize = 32;
 
 /// RakNet send priorities (PacketPriority).
@@ -116,8 +120,11 @@ pub struct Connection {
     deferred: Vec<(Vec<u8>, Reliability, u8)>,
     /// Message numbers to acknowledge in the next datagram.
     acks_due: Vec<u16>,
-    seen: HashSet<u16>,
-    seen_order: VecDeque<u16>,
+    /// Received-number window (A 0x10049250): the lowest number not yet accounted for ...
+    recv_base: u16,
+    /// ... and one slot per number from `recv_base` on: `None` = received, `Some(t)` = a hole that
+    /// is given up at `t` (receive time + [`TIMEOUT`]).
+    recv_slots: VecDeque<Option<Instant>>,
     ordered_expected: [u16; CHANNELS],
     ordered_buffer: [HashMap<u16, Delivered>; CHANNELS],
     sequenced_last: [Option<u16>; CHANNELS],
@@ -183,8 +190,8 @@ impl Connection {
             resend: VecDeque::new(),
             deferred: Vec::new(),
             acks_due: Vec::new(),
-            seen: HashSet::new(),
-            seen_order: VecDeque::new(),
+            recv_base: 0,
+            recv_slots: VecDeque::new(),
             ordered_expected: [0; CHANNELS],
             ordered_buffer: std::array::from_fn(|_| HashMap::new()),
             sequenced_last: [None; CHANNELS],
@@ -333,10 +340,10 @@ impl Connection {
         let mut out = Vec::new();
         for m in dg.messages {
             if m.reliability.is_reliable() {
-                self.acks_due.push(m.number);
-                if !self.remember(m.number) {
-                    continue; // duplicate (our ack was lost and the peer resent)
-                }
+                self.acks_due.push(m.number); // acked even when it turns out to be a duplicate
+            }
+            if !self.accept_number(m.number, now) {
+                continue; // duplicate (our ack was lost and the peer resent) or too old
             }
             let Some(d) = self.reassemble(&m) else { continue };
             self.order(&m, d, &mut out);
@@ -345,14 +352,39 @@ impl Connection {
         Ok(out)
     }
 
-    fn remember(&mut self, number: u16) -> bool {
-        if !self.seen.insert(number) {
+    /// Duplicate filter over every received message number, reliable or not (the sender numbers all
+    /// its messages from one 16-bit counter). Rule of A 0x10049250: with d = number − base (wrapping),
+    /// d == 0 takes the base slot; 1 ≤ d ≤ 0x8000 is new unless its slot was already received (a
+    /// number beyond the window opens holes up to it, each given up [`TIMEOUT`] after it opened);
+    /// d > 0x8000 lies behind the base and is dropped. The base then advances over received slots
+    /// and expired holes. Unlike a set of recently seen numbers this stays correct across the
+    /// counter's wrap (every 65536 messages), so a new message is never taken for an old one.
+    fn accept_number(&mut self, number: u16, now: Instant) -> bool {
+        let d = number.wrapping_sub(self.recv_base);
+        if d == 0 {
+            self.recv_slots.pop_front();
+            self.recv_base = self.recv_base.wrapping_add(1);
+        } else if d <= MAX_AHEAD {
+            let i = usize::from(d);
+            if i < self.recv_slots.len() {
+                if self.recv_slots[i].is_none() {
+                    return false;
+                }
+                self.recv_slots[i] = None;
+            } else {
+                let hole = Some(now + TIMEOUT);
+                self.recv_slots.resize(i, hole);
+                self.recv_slots.push_back(None);
+            }
+        } else {
             return false;
         }
-        self.seen_order.push_back(number);
-        if self.seen_order.len() > DEDUP_WINDOW {
-            let old = self.seen_order.pop_front().unwrap();
-            self.seen.remove(&old);
+        while let Some(&front) = self.recv_slots.front() {
+            if front.is_some_and(|t| now <= t) {
+                break;
+            }
+            self.recv_slots.pop_front();
+            self.recv_base = self.recv_base.wrapping_add(1);
         }
         true
     }
@@ -685,6 +717,94 @@ mod tests {
         let d = Datagram { acks: vec![], messages: vec![m(5, 0), m(3, 1), m(6, 2)] };
         let got: Vec<u8> = b.handle_datagram(&d.encode(), t).unwrap().iter().map(|d| d.data[0]).collect();
         assert_eq!(got, vec![5, 6]);
+    }
+
+    /// The sender numbers every message (syncs included) from one 16-bit counter, so it wraps every
+    /// 65536 messages. A reliable ordered RPC whose number equals that of an RPC received one wrap
+    /// earlier must still be delivered: one dropped as a "duplicate" leaves a hole in its ordering
+    /// channel and holds back every later RPC for good (the 2-hour derby soak lost all RPCs after
+    /// ~173000 messages that way). Here: 3 wraps of unreliable syncs with an RPC at irregular numbers
+    /// (about 1 in 40, from a fixed xorshift), so the numbers of later RPCs meet those of earlier ones.
+    #[test]
+    fn message_numbers_wrap_without_false_duplicates() {
+        let (_, mut b, t) = pair();
+        let mut index = 0u16;
+        let mut delivered = 0u32;
+        let mut sent = 0u32;
+        let mut x = 0x9e37_79b9u32;
+        for i in 0..(3 * 65536u32 + 500) {
+            let number = i as u16;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let rpc = x.is_multiple_of(40);
+            let msg = if rpc {
+                index = index.wrapping_add(1);
+                sent += 1;
+                Message {
+                    number,
+                    reliability: Reliability::ReliableOrdered,
+                    ordering: Some(Ordering { channel: 0, index: index - 1 }),
+                    split: None,
+                    bit_len: 8,
+                    data: vec![0x14],
+                }
+            } else {
+                Message {
+                    number,
+                    reliability: Reliability::Unreliable,
+                    ordering: None,
+                    split: None,
+                    bit_len: 8,
+                    data: vec![0xcf],
+                }
+            };
+            let d = Datagram { acks: vec![], messages: vec![msg] };
+            for got in b.handle_datagram(&d.encode(), t).unwrap() {
+                if got.data[0] == 0x14 {
+                    delivered += 1;
+                }
+            }
+        }
+        assert_eq!(delivered, sent);
+        assert!(b.recv_slots.is_empty(), "in-order numbers leave no slots");
+    }
+
+    /// Window rule: a gap opens holes; a late message fills its hole once, its duplicate is dropped;
+    /// a hole older than the timeout is given up, and a message for it is then dropped too (behind
+    /// the base); a number more than 0x8000 behind the base is a duplicate.
+    #[test]
+    fn receive_window_holes() {
+        let (_, mut b, t) = pair();
+        let ms = |n| t + Duration::from_millis(n);
+        let m = |n: u16| {
+            Datagram {
+                acks: vec![],
+                messages: vec![Message {
+                    number: n,
+                    reliability: Reliability::Reliable,
+                    ordering: None,
+                    split: None,
+                    bit_len: 8,
+                    data: vec![n as u8],
+                }],
+            }
+            .encode()
+        };
+        assert_eq!(b.handle_datagram(&m(0), t).unwrap().len(), 1);
+        assert_eq!(b.handle_datagram(&m(3), t).unwrap().len(), 1, "1 and 2 become holes");
+        assert_eq!(b.handle_datagram(&m(2), ms(10)).unwrap().len(), 1, "late, fills its hole");
+        assert!(b.handle_datagram(&m(2), ms(20)).unwrap().is_empty(), "duplicate");
+        assert!(b.handle_datagram(&m(3), ms(20)).unwrap().is_empty(), "duplicate");
+        // Hole 1 expires after the timeout; the next message drains the window past it.
+        assert_eq!(b.handle_datagram(&m(4), ms(10001)).unwrap().len(), 1);
+        assert_eq!(b.recv_base, 5);
+        assert!(b.handle_datagram(&m(1), ms(10002)).unwrap().is_empty(), "behind the base");
+        assert!(
+            b.handle_datagram(&m(5u16.wrapping_sub(0x7fff)), ms(10003)).unwrap().is_empty(),
+            "0x8001 ahead = behind"
+        );
+        assert_eq!(b.handle_datagram(&m(5 + 0x8000), ms(10004)).unwrap().len(), 1, "0x8000 ahead is new");
     }
 
     #[test]
