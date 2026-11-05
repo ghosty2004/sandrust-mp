@@ -448,3 +448,13 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   windows (crime report, Car Jacked) identical; `/ctd` D3D sprite/font stream identical but for the caller module;
   `tools/diff/network.sh` (+5 windows, lane veh, tracegm): 403 checks, 403 match.
 - New: tools/e2e/feata.sh (PASS), featscen.sh, featparity.sh; uifs.pwn callbacks/camtgt; netscen windows.
+
+## 2026-11-05 — Feature-sweep features merged
+
+- FEAT-B (1c0a90e) and FEAT-A (46300da) merged: special actions, /dl, /testdw, window title, message boxes,
+  guarded calls, crash handler (no upload), parachute; SCMEvent + mod-shop opcode fix, camera target, F4,
+  scoreboard/map clicks, Car Jacked, crime report, time resync. network.sh with the new scenarios 403/403 (agent).
+- Verified on main in lane ui under the lock: m1, saa, m2, m3, goal, m4, m5, m6, m7, m8a, m8b, m9, m10, ux1,
+  feata exit 0; 590 tests; clippy 0 (host + i686).
+- User crash on a public server (0x7F5A3A RwD3D9DynamicVertexBufferCreate NULL read after a device-loss stall)
+  handed to CRASH-1.
