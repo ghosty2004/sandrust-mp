@@ -14,7 +14,7 @@ differential capture against the original client, e2e script.
 |---|---|---|
 | samp-client worktree fixa (lane main) | FIX-A: patch rows, HUD aspect, shadows, weather, 207 cadence | TEST-1 |
 | samp-client worktree m6p (lane veh) | M6-P: object editor gizmo/drag/selection, row 81, M5 leftovers (train exit, passenger weapons, trailers, aircraft z, plates), F-enter run vs walk | — |
-| samp-client worktree m10p (lane ui) | M10-P lifecycle residuals + ClientCheck (honest computation or unanswered) | — |
+| lane ui | — (free) | NET-6 / SOAK |
 | measurement (lane trace, REA) | — (free) | EFX-2 |
 | harness (lanes diff + diff2) | — (free) | fix agents from docs/phase3/par-audit.md |
 | no-game | — (free) | NET-6 ack/resend timing; rename to sandrust-mp |
@@ -24,7 +24,6 @@ differential capture against the original client, e2e script.
 In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1, EFX-1.
 
 1. WATCH — goal.sh failed once (bot did not walk, run took 48 s), passed twice on rerun; m5 hang once (M9 run)
-1. M10-P — remaining lifecycle deviations: create audioproxyoff only after a successful BASS init (like samp); lost-connection threshold 12.0 s vs measured 12.41–12.48 s (measure RakNet's exact rule); server-full retry 3.00 vs 3.04 s (attempt time taken after Connect returns); /quit packet reliability/channel + pool teardown order; m5 hang seen once after entering a car (watch)
 1. FIX-A (from par-audit.md) — patches: HUD aspect rows 7/16/368/369, rows 165/184/166 shadows (165 was the state-block bug), CFont rows 225–239, rows 50/223/224/170/215–217; weather screen effect; 207 sent every 76 ms after leaving a car (532 ms original)
 1. M6-P — world leftovers: object editor gizmo + drag (117 response 2 every 250–287 ms), selection picking, wire TODO(input-lock) sites to ui::set_input_mode, CSV row 81 camera test for objects/vehicles; PLATE-1 number plates; M8A-PREVIEW model-preview textdraws
 1. EFX-2 — step-mode capture for OUR client too (build samp_client.dll with a symbol map so `efx arm` can single-step our handler by name) — needed to settle effect diffs like the local skin handler's extra 0247/0248 and the +0x55c write
@@ -117,6 +116,8 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | D-4 | samp.saa data overrides (10 of 23 files differ; handling/weapon identical) | **resolved (2026-11-04): option A — read ALL redirected files from the user's samp.saa at runtime, exactly like the original (user: "I want 1:1"); never redistribute; fallback to our own minimal script when SA:MP isn't installed** |
 
 ## Decisions made autonomously
+- ClientCheck (RPC 103): answered with samp's checksum algorithm computed honestly over OUR process memory (type 0x45 reads our own DLL image). Nothing is stored or replayed; values differ from the original exactly where memory really differs. Spoofing the original's values would bypass a server integrity check and is out of scope.
+- m5 occasional failure: GTA's radio thread divides by zero (0x4F1464) and Wine's debugger freezes the process; the original client shows the same crash (TRACE-7), so it is not a client difference.
 - Audio: our client loads the user's own bass.dll through a static import exactly like samp.dll (nothing redistributed; consistent with D-4 = A); BASS call stream diffed 0/16 segments vs the original.
 - Audio: two samp bugs handled safely instead of reproduced: a positional stream with no ped matrix plays at volume 0 (samp reads uninitialised stack), and a META tag without ';' keeps the whole title (samp crashes).
 - Combat: on a missed shot the original sends a bullet packet whose hitPos is an uninitialised GTA stack colpoint (values vary per session). We replicate the mechanism, not the values: our LOS hook reads the same GTA stack colpoint after the same call, so a miss sends whatever GTA's stack holds (structure identical: hit_type 0, id 0xFFFF, offset 0; weapon 34 without entity not sent). Servers cannot depend on these values.
