@@ -118,7 +118,8 @@ trace_server_start_fs() {
     ( cd "$E2E_SERVER" && LD_LIBRARY_PATH=qawno ./qawno/pawncc "$TRACE_ROOT/tools/trace/$pwn" "$@" \
         -iqawno/include -ofilterscripts/"$name".amx -d0 > /dev/null ) || return 1
     # TRACE_GAMEMODE=tracegm replaces the main script by tools/trace/tracegm.pwn (TRACE-6).
-    if [ -n "${TRACE_GAMEMODE:-}" ]; then
+    # A bundled gamemode of the server copy (e.g. TRACE_GAMEMODE=derby, gamemodes/derby.amx) runs as is.
+    if [ -n "${TRACE_GAMEMODE:-}" ] && [ -f "$TRACE_ROOT/tools/trace/$TRACE_GAMEMODE.pwn" ]; then
         ( cd "$E2E_SERVER" && LD_LIBRARY_PATH=qawno ./qawno/pawncc "$TRACE_ROOT/tools/trace/$TRACE_GAMEMODE.pwn" \
             -iqawno/include -ogamemodes/"$TRACE_GAMEMODE".amx -d0 > /dev/null ) || return 1
     fi

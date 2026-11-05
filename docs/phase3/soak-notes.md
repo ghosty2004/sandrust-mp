@@ -123,7 +123,7 @@ trials restart the game in kick / srvrestart / netloss). RSS step across in-proc
 +3.5 … +18.6 MB, srvkill +1 … +8 MB, netloss +2.5 … +31 MB (run 1 simpletdm). A 2 h soak will
 show whether these steps accumulate.
 
-## Findings for main (not fixed here)
+## Findings of the trials (resolution: next section)
 
 1. **Crash in derby, 4 times in 2 trials (2 per 10-minute run), always right after a local respawn into a
    car.** `run.out`: `wine: Unhandled division by zero at address 004F1464 (thread 01e4), starting
@@ -161,3 +161,87 @@ show whether these steps accumulate.
    netloss case now types a chat line during the gap; after the reconnect the server sometimes still
    holds the old player (nick rejected, game restarted, as samp) and sometimes has timed it out
    (reconnect joins directly). samp-bot exits non-zero on a server SIGKILL (`Connection refused`).
+
+## Resolution of the findings (2026-11-05)
+
+1. **Derby crash at 0x4F1464 — test data, not the client; fixed in the test environment.**
+   - What divides: 0x4F1464 lies in the audio stream thread's service routine (gta_sa.exe 0x4F1290,
+     `CAEStreamThread::Service` in gta-reversed's naming). When it starts a track it asks the new decoder for
+     its length in ms (decoder vtable +8) and seeks to "start position modulo length" (`div ecx`); a track of
+     length 0 divides by zero. The radio starts a station mid-track when the player gets into a car.
+   - Why the length is 0: the game copy is the 1.0 US exe with the Steam 3.0 audio data. Its track table
+     (`audio/CONFIG/TrakLkup.dat`, 1922 entries of {pack, offset, Ogg size}) points 122 entries at stub tracks
+     that replaced the removed licensed songs: 4429-byte Ogg Vorbis streams holding zero samples (last
+     granule position 0) in the packs CH 7, CR 14, DS 21, MH 13, MR 14, RE 14, RG 38, BEATS 1
+     (`tools/audio-stub-tracks.py check`). Steam's own exe copes with them; the 1.0 exe does not. Nothing in
+     samp.dll's patch table touches the stream thread or the radio (the only audio hooks are the
+     siren/horn/UsesSiren calls and the police scanner), and the original crashed at the same address
+     before (TRACE-7, M10-P, and the m5 note in ROADMAP "Decisions"). So the audio device (null sink) is not
+     involved, and the crash needs a stub to be the first track of a station start.
+   - (a) Derby with the original client: trace lane, `TRACE_GAMEMODE=derby` (tools/trace/lib.sh now runs a
+     bundled gamemode as is), an explosion at the player every ~12 s in the derby car, respawn, repeat for
+     600 s: original 32 respawns, ours 31, 0 crashes each — but both ran with the stubs already aliased
+     (the trace lane's table had been patched by a stray `ui.sh` call sourcing the new wine-env.sh; restored
+     since), so they only show the fix holds for the original too. The unpatched rerun (`derby2`) could not
+     get the trace lane (held by an orphaned headless session of another lane) and is still open. Unpatched
+     trace-lane runs in the uifs gamemode did not crash either (original: 80 car entries and 20
+     die-in-car → respawn → new car cycles; ours: 7 cycles), so the rate at which the original hits a stub in
+     derby is not measured; the soak lane (ours, stubs in place) had 4 crashes in ~20 respawns over 2 trials.
+     Which track a station starts on depends on its play position at that moment.
+   - Fix: `tools/audio-stub-tracks.py patch GTA_DIR` aliases every stub entry to the nearest real track of
+     the same pack (previous one, else next). `tools/wine-env.sh` applies it once per game copy (skipped when
+     `TrakLkup.dat.steam` exists; opt-out `SAMP_RS_KEEP_AUDIO_STUBS=1`). The table is written as a new file
+     (rename over), so the other lanes' hard links to the shared original stay untouched; the original is kept
+     as `TrakLkup.dat.steam` (`restore` puts it back). Audio routing is unchanged (still the private null sink;
+     the user's default sink is never touched).
+   - Evidence after the fix (lane main): derby 600 s in runs B, C, E below: 0 crashes in 13 + 14 + 11
+     respawns (before: 4 crashes in 2 runs).
+
+2. **Exploded unoccupied car stays on the server — same as samp.** RPC 136 (VehicleDeath) is sent only for
+   the local player's last driven vehicle (vehicles.md §136: A 0x1001F230 transmits only when the id equals
+   the "last driven" field, then clears it); a wasted car is deleted locally 15 s later without any RPC. Our
+   client implements exactly that (`vehicles.rs` `vehicle_death`, `WASTED_DELETE`). Measured on the original
+   (trace lane, uifs, `CreateExplosion` at a Sandking the player sits in as driver): the server gets
+   OnVehicleDeath from the original for the car it drives (`vehicle-death 5 by 0`, 20 of 20 cycles); the
+   never-driven case could not be run on the original (trace lane blocked, see 1) and rests on the static
+   rule. In the soak case the car had never been driven
+   by our player (it exploded from the overlap of two cars soakfs had spawned on one spot, fixed earlier),
+   so no client reports it and the server keeps it until its own respawn timer — not a client bug.
+
+3. **Pushed parked car not reported (no 209).** The car was pushed by the same overlap while our player was
+   in class selection after the gmx and then lay still. Whether a 209 goes out is the unoccupied-sync rule
+   (closest player, moving/stopped, passenger seat) that the netp lane is reworking (NET6-P3); not duplicated
+   here. The trigger (two cars on one spot) is gone with the soakfs fix.
+
+4. **Remote player without updates — the bots, not the client.** Reproduced with `SOAK_CAPTURE=1`
+   (simpletdm, SkShootC after the gmx, `target/soak-evidence/A-simpletdm`): on our client's proxy leg the
+   server relays **no** 207 for that player after the gmx (170 before, 0 after, while it relayed the other
+   players'); on the bot's own leg SkShootC sent 16 × 207 but 1145 × 203 after the gmx. Cause: samp-bot's
+   shooter stands still and aims with a swaying camera; its on-foot struct is byte-identical tick after tick
+   while every aim struct differs, and the duplicate-suppression timestamp is shared by 207/203 (samp's
+   rule, remote-players-sync §0.4), so the identical 207 is never re-sent. The server keeps its last state
+   (on foot at the teleport spot) and our ped, created by RPC 32 there, has no sync to follow (it then drops
+   to the floor or slides by GTA physics). Fix in samp-bot: the aiming ped turns with its aim sway (a real
+   aiming player's on-foot struct changes with the camera), so 207 keeps going out (unit test in
+   `shoot_cycle`). A second bot artefact showed up in derby (run B): a bot driving at the gmx kept syncing
+   in the restart gap; the restarted gamemode received an on-foot 207 before its class request, took the
+   player as on foot and ignored the request, so the bot stayed in class selection with a stale server
+   state. Fix: samp-bot stops syncing on RPC 40 until the next InitGame, as the client's reset routine does.
+   Diagnostics added to the client: `remote` lines carry `foot_rx` / `foot_late` / `last_ts` per player,
+   `net` carries `syncs_bad` (undecodable sync packets, the first 20 logged with their bytes).
+
+5. Harness: a local seat change in flight (derby's OnPlayerSpawn → PutPlayerInVehicle: the client sits in
+   the car at once, the server only after the next driver sync) made one sample's `local_pos` / `veh_driver`
+   fail (run C derby: 1 of 66 → 98.5 %). soak_mon now skips the local comparisons of the first sample in
+   which the client's driver seat and the server's state disagree; a mismatch that lasts into the next
+   sample is judged as before.
+
+### Runs (lane main, branch soak-fixes, SOAK_SECS=600)
+
+| run | gamemodes | crashes | result |
+| --- | --- | --- | --- |
+| A (capture) | gungame, simpletdm | 0 | gungame PASS; simpletdm FAIL (finding 4 reproduced, bot fix not yet in) |
+| B | derby | 0 (13 respawns) | FAIL remote_pos 90.8 % (bot stuck in class selection after the gmx) |
+| C | all three | 0 (derby 14 respawns) | gungame PASS, simpletdm PASS, derby FAIL local_pos 98.5 % (1 of 66, seat transition) |
+| D | all three | 0 | interrupted at derby 386 s by a session restart (gungame PASS) |
+| E (final build) | all three | 0 (derby 11 respawns) | **PASS** gungame, derby, simpletdm |

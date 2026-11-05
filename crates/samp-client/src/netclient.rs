@@ -125,6 +125,8 @@ pub struct Counters {
     pub rpcs_received: u64,
     pub syncs_sent: u64,
     pub syncs_received: u64,
+    /// Incoming sync packets the decoder rejected (diagnostics).
+    pub syncs_bad: u64,
 }
 
 /// The session. RakNet's part (socket, open-connection timers, reliability layer, internal
@@ -320,7 +322,7 @@ impl NetClient {
             _ => String::new(),
         };
         format!(
-            "net phase={}{reason} server={} player_id={pid} last_rpcs=[{}] sent={} received={} messages={} rpcs={} syncs={} syncs_in={}",
+            "net phase={}{reason} server={} player_id={pid} last_rpcs=[{}] sent={} received={} messages={} rpcs={} syncs={} syncs_in={} syncs_bad={}",
             c.phase.name(),
             c.server,
             rpcs.join(","),
@@ -329,7 +331,8 @@ impl NetClient {
             n.messages_received,
             n.rpcs_received,
             n.syncs_sent,
-            n.syncs_received
+            n.syncs_received,
+            n.syncs_bad
         )
     }
 
@@ -610,6 +613,12 @@ impl Core {
                 self.counters.syncs_received += 1;
                 if let Some(s) = samp_proto::sync::decode(&msg.data, msg.bit_len) {
                     self.events.push(Event::Sync(s));
+                } else {
+                    self.counters.syncs_bad += 1;
+                    if self.counters.syncs_bad <= 20 {
+                        let hex: String = msg.data.iter().take(64).map(|b| format!("{b:02x}")).collect();
+                        crate::log!("net: undecodable sync packet ({} bits): {hex}", msg.bit_len);
+                    }
                 }
             }
             // RakNet ends the connection itself on these; samp's handlers only add their own
