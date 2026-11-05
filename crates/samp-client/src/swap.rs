@@ -333,6 +333,7 @@ pub extern "thiscall" fn player_ped_process_control(ped: u32) {
             // Local player: the heading-goal stores run, then are NOPed again
             // so remote peds never get them.
             // SAFETY: as above.
+            crate::behaviourclient::bounds_jump(ped);
             unsafe {
                 apply_local_masks();
                 copy_in(addr::AIM_ROT_STORE_ZELDA, &AIM_ROT_STORE_ORIGINAL);

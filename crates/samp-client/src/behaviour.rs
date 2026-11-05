@@ -32,6 +32,11 @@ pub struct PushBack {
     pub z: f32,
 }
 
+/// B 0x1009F5F0: the entity is outside the bounds (x > maxX, x < minX, y > maxY or y < minY).
+pub fn outside(pos: [f32; 3], b: &Bounds) -> bool {
+    pos[0] > b.max_x || pos[0] < b.min_x || pos[1] > b.max_y || pos[1] < b.min_y
+}
+
 /// B 0x1009F450: strict compares in the order x > maxX, x < minX, y > maxY, y < minY. A non-zero speed on that
 /// axis becomes ∓0.2 towards the inside and speed z 0.1; the matrix is re-set with z + 0.04 in every case.
 pub fn push_back(pos: [f32; 3], speed: [f32; 3], b: &Bounds) -> Option<PushBack> {
@@ -158,6 +163,17 @@ pub fn client_check_time_arg(ms: u64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outside_is_strict() {
+        let b = Bounds { max_x: 1720.0, min_x: 1680.0, max_y: -2580.0, min_y: -2620.0 };
+        assert!(!outside([1720.0, -2600.0, 0.0], &b));
+        assert!(outside([1720.01, -2600.0, 0.0], &b));
+        assert!(outside([1679.9, -2600.0, 0.0], &b));
+        assert!(outside([1700.0, -2579.9, 0.0], &b));
+        assert!(outside([1700.0, -2620.1, 0.0], &b));
+        assert!(!outside([1700.0, -2620.0, 0.0], &b));
+    }
 
     #[test]
     fn push_back_cases() {

@@ -51,6 +51,8 @@ mod entities;
 #[cfg(windows)]
 mod filehook;
 #[cfg(windows)]
+mod mainhooks;
+#[cfg(windows)]
 mod objects;
 #[cfg(windows)]
 mod players;

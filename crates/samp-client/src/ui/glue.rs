@@ -278,6 +278,8 @@ fn ensure(g: &mut Option<State>, debug_mode: bool) -> &mut State {
         let dir = user_dir();
         crate::log!("ui: user files directory {:?}", dir);
         let core = UiCore::new(dir, debug_mode);
+        // samp clears the HUD scale fix flag only for `nohudscalefix` exactly 1 (A 0x100C49DD).
+        crate::mainhooks::set_enabled(core.cfg.get_int("nohudscalefix") != Some(1));
         crate::log!(
             "ui: sa-mp.cfg page_size={} fontsize={} timestamp={}",
             core.settings.page_size,

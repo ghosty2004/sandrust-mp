@@ -235,6 +235,11 @@ fn init_thread() {
         let failed: Vec<String> =
             combat.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
         crate::log!("main: combat rows: {} applied, failed: {failed:?}", combat.len() - failed.len());
+        // HUD scale fix around the radar (rows 7/368/369), Idle Sleep(1) (row 16), no cheats (row 50).
+        let hooks = crate::mainhooks::install(patcher, &mut mem);
+        let failed: Vec<String> =
+            hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
+        crate::log!("main: main hooks: {} installed, failed: {failed:?}", hooks.len() - failed.len());
         // CSV rows 2/3 — samp's custom script opcodes 0x09C6 / 0x09D3 (used by samp.saa's scripts).
         match crate::scmops::install(patcher, &mut mem) {
             Ok(()) => crate::log!("main: script opcodes 0x09C6 / 0x09D3 installed"),

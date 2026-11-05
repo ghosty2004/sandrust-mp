@@ -71,6 +71,8 @@ address in the code.
   192 messages in the window). Cause not found statically (samp's bounds helper writes nothing else):
   **measurement request** — EFX step capture of B 0x10003F40 plus a window of the next two frames while walking
   into a bound, to see what sets the jump.
+  **Resolved (docs/phase3/fixa-notes.md):** samp's `CPlayerPed::ProcessControl` hook presses jump on pad 0 while the
+  standing local ped is outside the bounds (B 0x100A2AF9); implemented as `behaviourclient::bounds_jump`.
 * Out of scope, seen in the diffs: player markers for streamed-out players (`04CE`/`0187` blips, 208) and the
   nametag LOS (`06BD`) for the spectated bot are not issued by ours (remote players / UI owners); CREATE_PLAYER
   argument encoding is a logged decision.

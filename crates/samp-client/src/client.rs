@@ -539,6 +539,17 @@ impl Client {
                     self.force_class_selection = true;
                 }
                 P::SetPlayerPosition(s) => self.teleport(s.pos.x, s.pos.y, s.pos.z),
+                // RPC 13 (player-state.md): the ground height at (x, y, z) from 0x02CE, plus 1.5, then as RPC 12.
+                P::SetPlayerPositionFindZ(s) => {
+                    if self.ped() != 0 {
+                        self.runner.run(
+                            op::GET_GROUND_Z_FOR_3D_COORD,
+                            &[Arg::Float(s.pos.x), Arg::Float(s.pos.y), Arg::Float(s.pos.z), Arg::Local(0)],
+                        );
+                        let z = self.runner.local_f32(0) + 1.5;
+                        self.teleport(s.pos.x, s.pos.y, z);
+                    }
+                }
                 P::SetPlayerFacingAngle(a) => self.set_facing(a.angle),
                 P::SetPlayerHealth(h) => {
                     let ped = self.ped();
@@ -931,6 +942,7 @@ impl Client {
     // ---- sync ---------------------------------------------------------------
 
     fn sync_tick(&mut self, now: Instant) {
+        crate::behaviourclient::publish_bounds(self.spawned.then_some(self.behaviour.bounds));
         let ped = self.ped();
         if ped == 0 {
             return;

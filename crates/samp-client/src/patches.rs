@@ -602,11 +602,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 159,
         what: "CGame::Process: no CCoronas::DoSunAndMoon",
     },
-    // CSV row 165 (Idle: no CRealTimeShadowManager::Update) is NOT applied: alone it breaks the
-    // world rendering in ours (white sky, black world in every lane-main shot; bisected with
-    // SAMP_RS_SKIP_CSV_ROWS, docs/phase3/parity-notes.md). samp must keep the remaining real-time
-    // shadow path from running some other way (row 184, the CPhysical destructor's shadow release,
-    // is one candidate) — open until measured.
     // CSV row 155 — CAEGlobalWeaponAudioEntity::ServiceAmbientGunFire: state always reset
     // (no ambient gunfire sounds).
     Entry {
@@ -635,6 +630,238 @@ pub const TABLE: &[Entry] = &[
         csv_row: 244,
         what: "Process_FollowPed_SA: no idle camera",
     },
+    // Parity audit L1–L6: rows samp applies at init-main that ours did not.
+    // Rows 165/184 — real-time shadows off (the earlier "black world" with row 165 was the D3D
+    // state-block bug fixed in 831455f; re-tested in docs/phase3/par-audit.md "CSV row 165 re-test").
+    // CSV row 165 — Idle: no CRealTimeShadowManager::Update.
+    Entry {
+        addr: 0x53EA08,
+        phase: Phase::Main,
+        write: Write::Nop(10),
+        original: &[0xb9, 0x50, 0x03, 0xc4, 0x00, 0xe8, 0x9e, 0x80, 0x1c, 0x00],
+        csv_row: 165,
+        what: "Idle: no CRealTimeShadowManager::Update",
+    },
+    // CSV row 184 — CPhysical dtor: no ReturnRealTimeShadow.
+    Entry {
+        addr: 0x542485,
+        phase: Phase::Main,
+        write: Write::Nop(11),
+        original: &[0x50, 0xb9, 0x50, 0x03, 0xc4, 0x00, 0xe8, 0xa0, 0x36, 0x1c, 0x00],
+        csv_row: 184,
+        what: "CPhysical dtor: no ReturnRealTimeShadow",
+    },
+    // CSV row 166 — RenderStencilShadows: overlay alpha 80.
+    Entry {
+        addr: 0x71162C,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x50]),
+        original: &[0x32],
+        csv_row: 166,
+        what: "RenderStencilShadows: overlay alpha 80",
+    },
+    // CSV row 170 — SetEventResponseTask: no editable response (facial expressions).
+    Entry {
+        addr: 0x4BC6C1,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0xb0, 0x00, 0x90]),
+        original: &[0xff, 0x50, 0x24],
+        csv_row: 170,
+        what: "SetEventResponseTask: no editable response (facial expressions)",
+    },
+    // CSV row 215 — CPlayerInfo::Process: no hold/fight test.
+    Entry {
+        addr: 0x570535,
+        phase: Phase::Main,
+        write: Write::Nop(15),
+        original: &[0x85, 0xdb, 0x74, 0x0b, 0x8b, 0x43, 0x08, 0x85, 0xc0, 0x0f, 0x85, 0x61, 0x05, 0x00, 0x00],
+        csv_row: 215,
+        what: "CPlayerInfo::Process: no hold/fight test",
+    },
+    // CSV row 216 — CPed::Render: weapon also while holding.
+    Entry {
+        addr: 0x5E7847,
+        phase: Phase::Main,
+        write: Write::Nop(17),
+        original: &[
+            0x8b, 0x8d, 0x7c, 0x04, 0x00, 0x00, 0x6a, 0x00, 0xe8, 0x9c, 0x97, 0x01, 0x00, 0x85, 0xc0, 0x75, 0x24,
+        ],
+        csv_row: 216,
+        what: "CPed::Render: weapon also while holding",
+    },
+    // CSV row 217 — CPlayerInfo::Process: no script-command task.
+    Entry {
+        addr: 0x570546,
+        phase: Phase::Main,
+        write: Write::Nop(175),
+        original: &[
+            0x0f, 0x84, 0xa9, 0x00, 0x00, 0x00, 0x8b, 0x0e, 0x8b, 0x81, 0x7c, 0x04, 0x00, 0x00, 0x8d, 0x48, 0x04, 0xe8,
+            0xc4, 0x11, 0x11, 0x00, 0x85, 0xc0, 0x74, 0x16, 0x8b, 0x0e, 0x8b, 0x10, 0x6a, 0x00, 0x6a, 0x01, 0x51, 0x8b,
+            0xc8, 0xff, 0x52, 0x18, 0x84, 0xc0, 0x0f, 0x84, 0x2f, 0x05, 0x00, 0x00, 0x6a, 0x34, 0xe8, 0x23, 0xa0, 0x0a,
+            0x00, 0x83, 0xc4, 0x04, 0x89, 0x44, 0x24, 0x30, 0x85, 0xc0, 0xc7, 0x44, 0x24, 0x60, 0x02, 0x00, 0x00, 0x00,
+            0x74, 0x0c, 0x6a, 0x51, 0x55, 0x8b, 0xc8, 0xe8, 0x26, 0x14, 0x12, 0x00, 0xeb, 0x02, 0x33, 0xc0, 0x6a, 0x00,
+            0x50, 0x83, 0xcf, 0xff, 0x6a, 0x03, 0x8d, 0x4c, 0x24, 0x40, 0x89, 0x7c, 0x24, 0x6c, 0xe8, 0x4d, 0x04, 0xf4,
+            0xff, 0x0f, 0xb6, 0x05, 0x74, 0xcd, 0xb7, 0x00, 0x69, 0xc0, 0x90, 0x01, 0x00, 0x00, 0x8b, 0x80, 0x98, 0xcd,
+            0xb7, 0x00, 0x8b, 0x80, 0x7c, 0x04, 0x00, 0x00, 0x6a, 0x00, 0x8d, 0x54, 0x24, 0x38, 0x52, 0x8d, 0x48, 0x68,
+            0xc7, 0x44, 0x24, 0x68, 0x03, 0x00, 0x00, 0x00, 0xe8, 0x3d, 0xae, 0xf3, 0xff, 0x8d, 0x4c, 0x24, 0x34, 0x89,
+            0x7c, 0x24, 0x60, 0xe8, 0x60, 0x04, 0xf4, 0xff, 0xe9, 0xb0, 0x04, 0x00, 0x00,
+        ],
+        csv_row: 217,
+        what: "CPlayerInfo::Process: no script-command task",
+    },
+    // CSV row 223 — 0x6348F0: phone model -1.
+    Entry {
+        addr: 0x6348F6,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0xff, 0xff, 0xff, 0xff]),
+        original: &[0x4a, 0x01, 0x00, 0x00],
+        csv_row: 223,
+        what: "0x6348F0: phone model -1",
+    },
+    // CSV row 224 — 0x634A40: phone model -1.
+    Entry {
+        addr: 0x634DE2,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0xff, 0xff, 0xff, 0xff]),
+        original: &[0x4a, 0x01, 0x00, 0x00],
+        csv_row: 224,
+        what: "0x634A40: phone model -1",
+    },
+    // CSV row 225 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A223,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 225,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 226 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A5D5,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 226,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 227 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A247,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 227,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 228 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A282,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 228,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 229 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A26A,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 229,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 230 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A2E5,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 230,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 231 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A3AC,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 231,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 232 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A4B9,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 232,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 233 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A53C,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 233,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 234 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A37F,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 234,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 235 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A518,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 235,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 236 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A525,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 236,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 237 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A54B,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 237,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 238 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A5B6,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 238,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
+    // CSV row 239 — CFont::ProcessCurrentString: frame 0x32C.
+    Entry {
+        addr: 0x71A3BB,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x03]),
+        original: &[0x01],
+        csv_row: 239,
+        what: "CFont::ProcessCurrentString: frame 0x32C",
+    },
 ];
 
 /// Streaming budget for `CStreaming::ms_memoryAvailable` from physical RAM in
@@ -656,14 +883,18 @@ pub struct Report {
     pub failed: Vec<(u32, &'static str, PatchError)>,
 }
 
+/// Diagnostics only: `SAMP_RS_SKIP_CSV_ROWS=158,159` leaves those rows unapplied (bisecting).
+pub fn skipped_rows() -> Vec<u32> {
+    std::env::var("SAMP_RS_SKIP_CSV_ROWS")
+        .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_default()
+}
+
 /// Applies every entry of `phase`. Entries whose original bytes do not match
 /// are skipped and reported (never partially written).
 pub fn apply_phase<M: Memory>(patcher: &mut Patcher, mem: &mut M, phase: Phase, ram_mb: u64) -> Report {
     let mut report = Report::default();
-    // Diagnostics only: SAMP_RS_SKIP_CSV_ROWS=158,159 leaves those rows unapplied (bisecting).
-    let skip: Vec<u32> = std::env::var("SAMP_RS_SKIP_CSV_ROWS")
-        .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-        .unwrap_or_default();
+    let skip = skipped_rows();
     for e in TABLE.iter().filter(|e| e.phase == phase && !skip.contains(&e.csv_row)) {
         let budget;
         let bytes: Vec<u8> = match e.write {
