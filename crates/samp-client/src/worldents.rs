@@ -285,6 +285,15 @@ pub const REMOVED_BUILDING_MODEL: i32 = 19300;
 /// Removal: occluders within this distance of the point are zeroed; matching entities sink by 2000 units.
 pub const REMOVAL_OCCLUDER_RANGE: f32 = 500.0;
 pub const REMOVAL_SINK: f32 = 2000.0;
+/// `COcclusion::Occluders` (0xC73FA0), 0x12-byte records, count at `NumOccludersOnMap` (0xC73F98).
+pub const OCCLUDERS: u32 = 0xC73FA0;
+pub const OCCLUDER_COUNT: u32 = 0xC73F98;
+pub const OCCLUDER_SIZE: u32 = 0x12;
+/// The part of an occluder record a removal clears (A 0x1009D0F0): the six i16 of centre and size (+0..+0xC). The
+/// rotation bytes and the 15-bit next-occluder link + far-away bit at +0x10 stay: GTA walks its nearby / far-away
+/// occluder lists through that link every frame (0x7201C0), so a zeroed link points at occluder 0 and can close
+/// a cycle (the main thread then spins in the list walk forever).
+pub const OCCLUDER_CLEARED: std::ops::Range<u32> = 0..0xC;
 
 /// samp's degrees → radians for actor facing (A 0x100B59B0): outside 0…360 → 0; above 180 → negative.
 pub fn samp_actor_heading(deg: f32) -> f32 {
@@ -485,5 +494,18 @@ mod tests {
         assert_eq!(actor_proofs(false), [0, 0, 0, 1, 0]);
         assert!(invulnerable_flags(0x40000 | 0x80_0000 | 0x20_0000));
         assert!(!invulnerable_flags(0x40000 | 0x80_0000));
+    }
+
+    #[test]
+    fn removal_keeps_the_occluder_list_link() {
+        // Centre (3 × i16) and size (3 × i16) only; rotation (+0xC..+0xE) and the list link (+0x10) are kept.
+        let mut rec = [0xAAu8; OCCLUDER_SIZE as usize];
+        rec[0x10..0x12].copy_from_slice(&0x0007u16.to_le_bytes());
+        for b in OCCLUDER_CLEARED {
+            rec[b as usize] = 0;
+        }
+        assert!(rec[..12].iter().all(|&b| b == 0));
+        assert!(rec[12..16].iter().all(|&b| b == 0xAA));
+        assert_eq!(u16::from_le_bytes([rec[0x10], rec[0x11]]), 7, "next-occluder link untouched");
     }
 }

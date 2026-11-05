@@ -487,3 +487,20 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - Crash diagnostics: crash report "Diagnostics (samp-rs)" section + lock-free breadcrumb ring (crash.rs), failed
   CreateVertexBuffer log (ui/d3d.rs). Regression test tools/e2e/objstress.sh (objmap + forced device loss; fails on
   a crash report, a failed CreateVertexBuffer or a failed Reset); trace lane `tools/trace/run.sh orig|ours objmap`.
+
+## 2026-11-05 — HANG-1 join hang after "Connected. Joining the game..." (branch join-hang)
+- Symptom (user, public server): main thread at 100 % after `packet Accepted`, no frame ticks; the crash breadcrumbs
+  end in a run of RPC 43 (RemoveBuildingForPlayer) sent from the server's OnPlayerConnect.
+- Root cause: our RPC 43 cleared all 0x12 bytes of every map occluder within 500 units, including the 15-bit
+  next-occluder link at +0x10. GTA's `COcclusion::ProcessBeforeRendering` (0x7201C0) walks its nearby / far-away
+  occluder lists through that link every frame with no bound; link 0 closes a cycle, so the frame never ends.
+  samp (A 0x1009D0F0) clears only centre and size (+0..+0xB). Not a network bug.
+- Fix: `worldents::OCCLUDER_CLEARED` (0..0xC) used by `Objects::remove_building`; unit test
+  `removal_keeps_the_occluder_list_link`; spec world-entities.md §7 corrected.
+- Regression: `tools/e2e/joinburst.sh [ours|orig] [RUNS]` + `tools/e2e/probe/joinburst.pwn` (1562-call join burst:
+  400 removals incl. a 500-unit grid over the map, 300+200 textdraws, 60 messages, 100 map icons, 300 player
+  objects, 621 vehicles, 4 KB split-packet dialog); `JB_LOSS=mix-sc:8` runs it through lossproxy.py's new `mix-sc`
+  rule (server→client drop + reorder + duplicate). Before the fix ours hangs (3/3 runs, with and without loss);
+  after: ours 6/6 pass (3 plain, 3 with loss, identical 1382 messages / 1377 RPCs), original 2/2 pass.
+- Parity note (not fixed here): ours requests a class while the join dialog is still open; the original sends its
+  class request only once the dialog is closed (joinburst server logs: class at +4 s vs. with the dialog response).

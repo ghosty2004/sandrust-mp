@@ -841,8 +841,12 @@ components skipped), scaled, written and re-added.
   FOGVERTEXMODE 3) for the ped draw and FOGENABLE is restored from samp's fog flag (A 0x1026EA54) afterwards.
 
 ### 7. RemoveBuildingForPlayer (RPC 43) internals (resolves player-state "internals not analysed") — Observed
-* A 0x1009D1E0: (1) every map occluder (`COcclusion::Occluders`, count `NumOccludersOnMap` 0xC73F98) whose centre is
-  within 500 units of the point is zeroed; (2) the Building pool (20000), Dummy pool (4000) and Object pool (3000) are
+* A 0x1009D1E0: (1) every map occluder (`COcclusion::Occluders` 0xC73FA0, 0x12-byte records, count
+  `NumOccludersOnMap` 0xC73F98) whose centre is within 500 units (<) of the point gets its centre and size (the six
+  i16 at +0..+0xB, helper A 0x1009D0F0) set to 0. The rotation bytes and the 15-bit next-occluder link + far-away bit
+  at +0x10 are **not** touched: GTA walks its nearby / far-away lists through that link every frame
+  (`COcclusion::ProcessBeforeRendering` 0x7201C0, unbounded `while (link != -1)`); clearing it makes the occluder
+  point at occluder 0 and can close a cycle, freezing the main thread (HANG-1); (2) the Building pool (20000), Dummy pool (4000) and Object pool (3000) are
   scanned: every live entity whose model equals the id (or id = −1) and whose position is within the radius (≤) gets
   area code (+0x2F) := 1 and is lowered by 2000 units (placement z and matrix z). Nothing is deleted.
 * Later IPL loads: `CFileLoader::LoadObjectInstance` hook (row 65, A 0x100A4AB0) replaces the model id of any instance
