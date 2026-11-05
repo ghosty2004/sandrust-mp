@@ -13,7 +13,7 @@ differential capture against the original client, e2e script.
 | Slot | Running | Next |
 |---|---|---|
 | samp-client worktree netp (lane veh) | NET6-P: 203 idle/spectate cadence, 209 after passenger exit, editor Esc, /quit flush, RPC 25 bit count | — |
-| samp-client worktree soakfix (lane main) | SOAK-FIX: derby crash (original first), exploded car respawn, pushed car sync, remote stall after gmx | 2-hour soak |
+| lane main | — (free) | 2-hour soak on final code (after FEAT-A/B) |
 | samp-client worktree feata (lane veh) | FEAT-A network-visible features | FEAT-B (lane ui) |
 | samp-client worktree featb (lane ui) | FEAT-B player-visible features (special actions, /dl, /testdw, window title, message boxes, debug lines, crash handler, parachute, -d, IME) | F1/F5 closing |
 | no-game | — (free) | rename to sandrust-mp |
