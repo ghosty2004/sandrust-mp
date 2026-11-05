@@ -184,17 +184,16 @@ pub fn route(ev: Event, s: &UiState) -> Routed {
                 Routed::none()
             }
         }
-        Event::Char(c) if s.input_open => {
-            Routed::one(if c == b'\r' { Action::SubmitInput } else { Action::InputChar(c) })
+        // samp's edit box ignores a typed CR (`WM_CHAR` 0x0D): Enter acts on its key-up only (INPUT-1),
+        // so neither key auto-repeat nor the character of the Enter that sent a chat line can
+        // answer a dialog.
+        Event::Char(b'\r') if s.input_open => Routed { actions: Vec::new(), consumed: true },
+        Event::Char(c) if s.input_open => Routed::one(Action::InputChar(c)),
+        Event::Char(b'\r') if s.dialog_open && !s.scoreboard_open && !s.gta_menu => {
+            Routed { actions: Vec::new(), consumed: s.dialog_has_edit }
         }
         Event::Char(c) if s.dialog_open && !s.scoreboard_open && !s.gta_menu => {
-            if c == b'\r' {
-                Routed::one(Action::DialogResponse(Button::Ok))
-            } else if s.dialog_has_edit {
-                Routed::one(Action::DialogChar(c))
-            } else {
-                Routed::none()
-            }
+            if s.dialog_has_edit { Routed::one(Action::DialogChar(c)) } else { Routed::none() }
         }
         Event::Char(b'T' | b't' | b'`')
             if s.input_exists && !s.input_open && !s.dialog_open && !s.gta_menu && !s.scoreboard_open =>
@@ -261,8 +260,11 @@ fn key_up(k: Vk, s: &UiState) -> Routed {
         // Unknown (notes U-F6): no condition besides the input existing.
         Vk::F6 if s.input_exists => Routed::one(if s.input_open { Action::CloseInput } else { Action::OpenInput }),
         Vk::Escape if s.input_open && !s.ime_composing => Routed::one(Action::CloseInput),
-        // Enter key-up with the input open is swallowed after the input's GUI handler.
-        Vk::Enter if s.input_open => Routed { actions: Vec::new(), consumed: true },
+        // INPUT-1: samp's edit box raises its "string" event on the Enter key-up (A 0x10089380),
+        // so the chat line is sent on the key-up, never on the key-down or the typed CR. A dialog the
+        // server shows in answer arrives after the key-up and stays open.
+        Vk::Enter if s.input_open => Routed::one(Action::SubmitInput),
+        // Dialog edit box (same key-up event) or, for the other styles, the window procedure's key-up.
         Vk::Enter if s.dialog_open => Routed::one(Action::DialogResponse(Button::Ok)),
         Vk::PageUp | Vk::PageDown if s.netgame && !s.ime_composing && !s.gta_menu => {
             Routed::one(if k == Vk::PageUp { Action::ChatPageUp } else { Action::ChatPageDown })
@@ -366,7 +368,10 @@ mod tests {
         // With the input open the character is typed.
         let s = UiState { input_open: true, ..st() };
         assert_eq!(route(Event::Char(b't'), &s).actions, vec![Action::InputChar(b't')]);
-        assert_eq!(route(Event::Char(b'\r'), &s).actions, vec![Action::SubmitInput]);
+        // INPUT-1: the typed CR does nothing; the Enter key-up sends the line.
+        let r = route(Event::Char(b'\r'), &s);
+        assert!(r.actions.is_empty() && r.consumed);
+        assert_eq!(route(Event::KeyUp(Vk::Enter), &s).actions, vec![Action::SubmitInput]);
     }
 
     #[test]
@@ -425,13 +430,17 @@ mod tests {
         let both = UiState { input_open: true, ..d };
         // TRACE-3 U-EDITKEY-CONSUME: key-ups always reach GTA; key-downs not while typing.
         let r = route(Event::KeyUp(Vk::Enter), &both);
-        assert!(r.actions.is_empty() && !r.consumed);
+        assert!(r.actions == vec![Action::SubmitInput] && !r.consumed);
+        // INPUT-1: a typed CR never answers a dialog (only the Enter key-up does).
+        assert!(route(Event::Char(b'\r'), &d).actions.is_empty());
+        let de = UiState { dialog_has_edit: true, ..d };
+        let r = route(Event::Char(b'\r'), &de);
+        assert!(r.actions.is_empty() && r.consumed);
         assert!(route(Event::KeyDown(Vk::Other(0x41)), &both).consumed);
         let list = UiState { dialog_is_list: true, ..d };
         assert_eq!(route(Event::KeyDown(Vk::Down), &list).actions, vec![Action::DialogListKey(ListKey::Down)]);
         let sel = UiState { textdraw_select: true, ..st() };
         assert_eq!(route(Event::Char(0x1B), &sel).actions, vec![Action::CancelTextDrawSelect]);
-        let de = UiState { dialog_has_edit: true, ..d };
         assert_eq!(route(Event::Char(b'x'), &de).actions, vec![Action::DialogChar(b'x')]);
         assert!(route(Event::Char(b't'), &d).actions.is_empty());
     }

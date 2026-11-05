@@ -7,6 +7,10 @@
 //   msg|RRGGBBAA|text                      SendClientMessage(L)
 //   pmsg|SENDER|text                       SendPlayerMessageToPlayer(L, sender)
 //   dialog|ID|STYLE|caption|body|b1|b2     ShowPlayerDialog(L)
+//   chatdlg|ID|STYLE|DELAYMS|VIA           INPUT-1: the next chat line answers with ShowPlayerDialog(ID, STYLE)
+//                                          (VIA 0 = a command "/dlg…" in OnPlayerCommandText, 1 = plain text in
+//                                          OnPlayerText; DELAYMS 0 = inside the callback, else a timer); ID -1 = off
+//   chaindlg|FROM|TO|STYLE                 INPUT-1: OnDialogResponse for FROM shows dialog TO (FROM -1 = off)
 //   gametext|STYLE|MS|text                 GameTextForPlayer(L)
 //   death|KILLER|VICTIM|REASON             SendDeathMessage
 //   pos|P|x|y|z|angle                      SetPlayerPos + facing (+ camera behind for L)
@@ -71,6 +75,9 @@ new gLast = 0;
 new gBots[8] = { INVALID_PLAYER_ID, ... };
 new gNumBots = 0;
 new gLocal = INVALID_PLAYER_ID;
+// INPUT-1 (chatdlg / chaindlg)
+new gCdId = -1, gCdStyle, gCdDelay, gCdVia;
+new gChFrom = -1, gChTo, gChStyle;
 
 public OnFilterScriptInit()
 {
@@ -118,18 +125,29 @@ public OnPlayerSpawn(playerid)
 public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
 {
     printf("[ui-fs] dialog-response player %d id %d response %d listitem %d text '%s'", playerid, dialogid, response, listitem, inputtext);
+    if (dialogid == gChFrom && gChFrom != -1)
+    {
+        ShowPlayerDialog(playerid, gChTo, DIALOG_STYLE:gChStyle, "Chained", "Second dialog:", "OK", "Cancel");
+        printf("[ui-fs] chain-shown %d", gChTo);
+    }
     return 1;
 }
 
 public OnPlayerText(playerid, text[])
 {
     printf("[ui-fs] text %d '%s'", playerid, text);
+    if (gCdId != -1 && gCdVia == 1) ChatDialog(playerid);
     return 1;
 }
 
 public OnPlayerCommandText(playerid, cmdtext[])
 {
     printf("[ui-fs] command %d '%s'", playerid, cmdtext);
+    if (gCdId != -1 && gCdVia == 0 && !strcmp(cmdtext, "/dlg", false, 4))
+    {
+        ChatDialog(playerid);
+        return 1;
+    }
     return 0;
 }
 
@@ -421,6 +439,14 @@ Run(seq, const line[])
         field(line, 2, a); unescape(a);
         SendPlayerMessageToPlayer(gLocal, pl(line, 1), "%s", a);
     }
+    else if (!strcmp(cmd, "chatdlg"))
+    {
+        gCdId = in(line, 1); gCdStyle = in(line, 2); gCdDelay = in(line, 3); gCdVia = in(line, 4);
+    }
+    else if (!strcmp(cmd, "chaindlg"))
+    {
+        gChFrom = in(line, 1); gChTo = in(line, 2); gChStyle = in(line, 3);
+    }
     else if (!strcmp(cmd, "dialog"))
     {
         field(line, 3, c); field(line, 4, a); field(line, 5, b); field(line, 6, d);
@@ -652,6 +678,20 @@ Run(seq, const line[])
     }
     else printf("[ui-fs] %d unknown command '%s'", seq, cmd);
     printf("[ui-fs] %d done %s", seq, cmd);
+}
+
+ChatDialog(playerid)
+{
+    if (gCdDelay <= 0) ChatDialogShow(playerid);
+    else SetTimerEx("ChatDialogShow", gCdDelay, false, "i", playerid);
+}
+
+forward ChatDialogShow(playerid);
+public ChatDialogShow(playerid)
+{
+    ShowPlayerDialog(playerid, gCdId, DIALOG_STYLE:gCdStyle, "Chat dialog", "Type here:", "OK", "Cancel");
+    printf("[ui-fs] chat-dialog-shown %d", gCdId);
+    return 1;
 }
 
 forward UiPoll();
