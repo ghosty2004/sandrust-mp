@@ -42,6 +42,7 @@ mod combat;
 mod cov;
 mod d3d;
 mod efx;
+mod fileio;
 mod remote;
 mod vehicles;
 mod window;
@@ -144,6 +145,11 @@ fn record(name: &str, caller: Option<String>, origin: Option<String>, via: Optio
 
 fn emit(rec: Val) {
     let mut g = OUT.lock().unwrap_or_else(|e| e.into_inner());
+    push_locked(&mut g, rec);
+}
+
+/// `emit` with the output lock already held.
+fn push_locked(g: &mut Out, rec: Val) {
     g.seq += 1;
     let seq = g.seq;
     let mut line = format!("{{\"seq\":{seq},");
@@ -637,6 +643,7 @@ fn read_globals(m: &ProcMem) -> (Vec<u32>, u32) {
 static FRAME_STATE: Mutex<Option<FrameState>> = Mutex::new(None);
 
 fn on_frame() {
+    fileio::arm("frame");
     let n = FRAME_TICKS.fetch_add(1, Ordering::SeqCst) + 1;
     let m = ProcMem;
     let mut extra: Vec<(&'static str, String)> = Vec::new();
@@ -1027,6 +1034,7 @@ fn request_quit() {
     }
     tlog("quit requested: setting RsGlobal.quit");
     remote::summaries();
+    fileio::end();
     emit(record("quit", None, None, None, Val::obj()));
     flush();
     d3d::flush();
@@ -1074,6 +1082,7 @@ pub extern "system" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_
     } else if reason == DLL_PROCESS_DETACH {
         // Other threads may have been killed while holding the lock: never block here.
         if let Ok(mut g) = OUT.try_lock() {
+            fileio::end_at_exit(&mut g);
             flush_locked(&mut g);
         }
     }
@@ -1102,6 +1111,7 @@ fn attach() {
         return;
     }
     capture::init();
+    fileio::init();
     remote::init();
     d3d::init(&dir);
     efx::init(&dir);

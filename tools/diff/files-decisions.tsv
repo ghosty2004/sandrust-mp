@@ -1,0 +1,4 @@
+# F6 (tools/diff/files_report.py): residual original-vs-ours file-I/O differences accepted as decisions.
+# Columns (tab-separated): check (armed | opens-set | opens-order | archive-order | sizes | hashes | ours-log | *),
+# regex on the reported difference line, decision id (must appear in docs/ROADMAP.md "Decisions made
+# autonomously", else the row is ignored), note.
