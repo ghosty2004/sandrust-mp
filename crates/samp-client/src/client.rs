@@ -36,6 +36,8 @@ const PEDSTATE_DRIVING: u32 = 50;
 /// `TheCamera.m_aCams[0].Front` (samp's camera-front pointer at A 0x101039c8 holds 0xB6F32C).
 const CAMERA_FRONT: u32 = 0xB6F32C;
 const PEDSTATE_DIE: u32 = 54;
+/// `CPed::RemoveWeaponWhenEnteringVehicle(int)` (thiscall; gta-reversed `Ped.cpp`).
+const PED_REMOVE_WEAPON_ENTERING_VEHICLE: usize = 0x5E6370;
 const PEDSTATE_DEAD: u32 = 55;
 
 /// Win32 virtual-key codes polled like the original client (player-state.md 128/129).
@@ -409,7 +411,7 @@ impl Client {
                     g.spawns_available,
                     g.on_foot_rate
                 );
-                self.players.set_init_game(g.player_id, g.death_drop_money);
+                self.players.set_init_game(g.player_id, g.death_drop_money, g.player_marker_mode);
                 self.combat.on_init_game(&g);
                 self.class_count = g.spawns_available;
                 crate::ui::on_init_game(&g);
@@ -542,6 +544,7 @@ impl Client {
                 self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors());
                 self.combat.on_bullet(&mut self.runner, &mut self.players, &self.vehicles, &b);
             }
+            S::Markers(m) => self.players.on_markers(&mut self.runner, &m),
             s => self.players.on_sync(s, now),
         }
     }
@@ -567,7 +570,12 @@ impl Client {
             }
             Incoming::Remote(r) => {
                 use samp_proto::rpcs::remote::Incoming as R;
-                if let R::PlayerJoin(j) = &r {
+                // Colour table (B 0x100A7220): PlayerJoin (B 0x1000FDE2) sets it only for a non-zero colour and an
+                // id below 1004 (the spawn of PlayerStreamIn: players.rs).
+                if let R::PlayerJoin(j) = &r
+                    && j.colour != 0
+                    && j.player_id < 1004
+                {
                     let (id, colour) = (j.player_id, j.colour);
                     crate::worldhooks::with_shared(|s| {
                         s.colours.get_or_insert_with(crate::ui::colours::PlayerColours::new).set(id, colour)
@@ -794,9 +802,16 @@ impl Client {
                 P::RemoveBuildingForPlayer(b) => {
                     self.objects.remove_building(b.model_id as i32, [b.pos.x, b.pos.y, b.pos.z], b.radius)
                 }
-                P::SetPlayerColor(c) => crate::worldhooks::with_shared(|s| {
-                    s.colours.get_or_insert_with(crate::ui::colours::PlayerColours::new).set(c.player_id, c.colour)
-                }),
+                // B 0x100197B0: the local id, or a remote id up to 1004 that is in the pool.
+                P::SetPlayerColor(c)
+                    if Some(c.player_id) == self.net.player_id()
+                        || (c.player_id <= 1004 && self.players.get(c.player_id).is_some()) =>
+                {
+                    crate::worldhooks::with_shared(|s| {
+                        s.colours.get_or_insert_with(crate::ui::colours::PlayerColours::new).set(c.player_id, c.colour)
+                    })
+                }
+                P::SetPlayerColor(_) => {}
                 P::SetPlayerArmedWeapon(w) => {
                     // A 0x10018E50: 0…46 only; set-armed-weapon (A 0x100AC0A0, not forced).
                     if w.weapon <= 46 {
@@ -1114,6 +1129,16 @@ impl Client {
         }
         // Driving: the world bounds on the vehicle (B 0x1000793D), before the driver packets.
         if state == PEDSTATE_DRIVING {
+            // B 0x10007903…0x1000792F: unless the ped is a passenger (or sits in a 569/570 carriage, B 0x100ABFD0),
+            // `CPed::RemoveWeaponWhenEnteringVehicle(0)` every driving frame.
+            let model = if veh != 0 { mem.read_u16(veh + 0x22).unwrap_or(0) } else { 0 };
+            if !(in_vehicle_flag && veh != 0 && (!is_driver || matches!(model, 569 | 570))) {
+                // SAFETY: GTA's thiscall method on the live local ped, main thread.
+                unsafe {
+                    let f: extern "thiscall" fn(u32, i32) = std::mem::transmute(PED_REMOVE_WEAPON_ENTERING_VEHICLE);
+                    f(ped, 0);
+                }
+            }
             self.behaviour.bounds_driver(&mut self.runner, &self.vehicles, ped);
         }
         // In-car packets (200/210/211/106, passenger poll); on-foot sync only in ped states 1 and 12, so nothing

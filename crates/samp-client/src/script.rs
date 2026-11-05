@@ -103,6 +103,10 @@ pub mod op {
     pub const CAMERA_SET_VECTOR_TRACK: u16 = 0x0920;
     pub const CAMERA_PERSIST_TRACK: u16 = 0x092F;
     pub const CAMERA_SET_VECTOR_MOVE: u16 = 0x0936;
+    // Player markers (samp B 0x100AF740 / 0x100A0DA0).
+    pub const ADD_BLIP_FOR_CHAR: u16 = 0x0187;
+    pub const CHANGE_BLIP_DISPLAY: u16 = 0x018B;
+    pub const ADD_SHORT_RANGE_SPRITE_BLIP_FOR_COORD: u16 = 0x04CE;
 }
 
 /// One script command parameter.

@@ -59,6 +59,10 @@ PED_WEAPONS, PED_WEAPON_SIZE, PED_SELECTED_SLOT = 0x5A0, 0x1C, 0x718  # m_aWeapo
 # m_pHierarchy +0x14, m_fBlendAmount +0x18, m_nAnimId +0x2C, m_nFlags +0x2E; size 0x3C.
 # CAnimBlendHierarchy::m_hashKey +0. CAnimBlendClumpData::m_associationsList +0.
 ASSOC_SIZE = 0x3C
+PED_VEHICLE = 0x58C                # CPed::m_pVehicle; in-vehicle = bit 8 of the PED_FLAGS block (bInVehicle)
+# CVehicle (plugin-sdk CVehicle.h VALIDATE_OFFSET): m_anUpgrades[15] +0x43A, m_pDriver +0x460,
+# m_apPassengers[8] +0x464; CMatrix forward (+0x10) and pos (+0x30).
+VEH_UPGRADES, VEH_DRIVER, VEH_PASSENGERS = 0x43A, 0x460, 0x464
 MOVE_NAMES = {0: "none", 1: "still", 2: "turn_l", 3: "turn_r", 4: "walk", 5: "jog", 6: "run", 7: "sprint"}
 
 # --- scenario -------------------------------------------------------------------------
@@ -72,7 +76,7 @@ SKIN_STEP = {"A": 101, "B": 115}
 # packets. With a --calibrate run (original vs original) the report uses
 # 1.5 x the original's own largest deviation (at least TOL_FLOOR); TOL are
 # the defaults without one. See docs/phase3/diff-notes.md "DIFF-3".
-TOL = {"pos": 0.5, "heading": 0.15, "health": 1.0, "armour": 1.0}
+TOL = {"pos": 0.5, "heading": 0.15, "health": 1.0, "armour": 1.0, "veh_pos": 1.0, "veh_heading": 0.15}
 TOL_FLOOR = {"pos": 0.1, "heading": 0.03}
 
 SAMPLE_PERIOD = 0.1
@@ -139,11 +143,40 @@ STEPS = STEPS + (
         "checks": ["visible", "dead", "pos"]}]
 )
 
+# M5 vehicle steps: each player gets its own Sultan 2.5 m north (driver door towards it); the actor enters it with F
+# (RPC 26 → the enter task on the other side), drives west for 2.5 s (200), stops and leaves it with F (RPC 154 →
+# the leave task, no warp). Then the other player is put into A's car as a passenger (RPC 70 → 211 on the other
+# side) and leaves it with F, and A is put back into its car and gets a component (RPC 96 relayed by the server).
+VEH_CHECKS = ["visible", "vehicle", "pos"]
+
+
+def vehicle_steps(a):
+    return [
+        {"name": f"veh_enter_{a}", "actor": a, "events": [(0.0, "key", "f")], "window": 7.0,
+         "checks": VEH_CHECKS + ["anims"]},
+        {"name": f"veh_drive_{a}", "actor": a, "events": [(0.0, "keydown", "w"), (2.5, "keyup", "w")], "window": 7.0,
+         "checks": VEH_CHECKS + ["veh_pos", "veh_heading"]},
+        {"name": f"veh_exit_{a}", "actor": a, "events": [(0.0, "key", "f")], "window": 6.0,
+         "checks": VEH_CHECKS + ["anims", "heading"]},
+    ]
+
+
+STEPS = STEPS + (
+    [{"name": "veh_create", "actor": "both",
+      "events": [(0.0, "tp", None), (1.0, "rcon_each", "xc car {id} ;")], "window": 4.0,
+      "checks": ["visible", "pos", "vehicle"]}]
+    + vehicle_steps("A") + vehicle_steps("B")
+    + [{"name": "veh_passenger_B", "actor": "B", "events": [(0.0, "rcon_each", "xc putin {id} {other} 1 ;")],
+        "window": 4.0, "checks": VEH_CHECKS},
+       {"name": "veh_passenger_exit_B", "actor": "B", "events": [(0.0, "key", "f")], "window": 6.0,
+        "checks": VEH_CHECKS + ["anims"]},
+       {"name": "veh_component_A", "actor": "A",
+        "events": [(0.0, "rcon_each", "xc putin {id} {id} 0 ;"), (2.0, "rcon_each", "xc comp {id} 1010 ;")],
+        "window": 5.0, "checks": VEH_CHECKS + ["veh_mods", "veh_pos"]}]
+)
+
 # Enabled when the milestone lands; never guessed before (PLAN §3b).
 PENDING = [
-    ("vehicle_driver", "M5", "A drives a car, B sees driver sync (200): car pos/heading/speed, driver seat"),
-    ("vehicle_passenger", "M5", "passenger sync (211), seat"),
-    ("vehicle_enter_exit", "M5", "enter/exit animations relayed (RPC 26/154)"),
     ("vehicle_unoccupied_trailer", "M5", "unoccupied (209) and trailer (210) sync"),
     ("combat_hit", "M7", "a 206 that hits the other client (needs an aimed-hit geometry for two real clients)"),
     ("objects", "M6", "same objects/attachments visible on both"),
@@ -230,7 +263,7 @@ def read_peds(conn, peds, clump_off):
     if not peds:
         return views
     r1 = conn.peeks([r for p in peds for r in ((p, 0x60), (p + PED_FLAGS, 4), (p + PED_STATE, 0x30),
-                                               (p + PED_SELECTED_SLOT, 1))])
+                                               (p + PED_SELECTED_SLOT, 1), (p + PED_VEHICLE, 4))])
     second = []
     for p in peds:
         h, fl, st = r1.get((p, 0x60)), r1.get((p + PED_FLAGS, 4)), r1.get((p + PED_STATE, 0x30))
@@ -245,6 +278,11 @@ def read_peds(conn, peds, clump_off):
         v["standing"] = bool(fl[0] & 1)
         v["in_air"] = bool(fl[1] & 2)
         v["ducking"] = bool(fl[3] & 4)
+        vb = r1.get((p + PED_VEHICLE, 4))
+        v["in_vehicle"] = bool(fl[1] & 1)
+        v["_veh"] = u32(vb) if vb and v["in_vehicle"] else 0
+        if v["_veh"]:
+            second += [(v["_veh"], 0x60), (v["_veh"] + VEH_UPGRADES, 30), (v["_veh"] + VEH_DRIVER, 36)]
         v["ped_state"] = u32(st, 0)
         v["move"] = u32(st, PED_MOVE - PED_STATE)
         v["health"] = round(f32(st, PED_HEALTH - PED_STATE), 2)
@@ -270,9 +308,31 @@ def read_peds(conn, peds, clump_off):
             v["weapon"] = u32(wb) if wb else None
         b = r2.get((v["_pos_at"], 12))
         v["pos"] = [round(c, 3) for c in struct.unpack("<3f", b)] if b else None
+        if v["_veh"]:
+            vh, up, occ = (r2.get((v["_veh"], 0x60)), r2.get((v["_veh"] + VEH_UPGRADES, 30)),
+                           r2.get((v["_veh"] + VEH_DRIVER, 36)))
+            if vh and up and occ:
+                occupants = struct.unpack("<9I", occ)
+                v["vehicle"] = {"model": struct.unpack_from("<h", vh, E_MODEL)[0],
+                                "seat": occupants.index(p) if p in occupants else -1,
+                                "speed": round(math.sqrt(sum(c * c for c in struct.unpack_from("<3f", vh, PHYS_SPEED))), 4),
+                                "mods": sorted(m for m in struct.unpack("<15h", up) if m > 0),
+                                "_matrix": u32(vh, E_MATRIX)}
         cdb = r2.get((v["_clump"] + clump_off, 4)) if v["_clump"] and clump_off else None
         if cdb and u32(cdb):
             cds[p] = u32(cdb)
+    mats = conn.peeks([(v["vehicle"]["_matrix"], 0x40) for v in views.values()
+                       if v.get("vehicle") and v["vehicle"]["_matrix"]])
+    for v in views.values():
+        vv = v.get("vehicle")
+        if not vv:
+            continue
+        m = mats.get((vv["_matrix"], 0x40)) if vv["_matrix"] else None
+        if m:
+            fx, fy, _fz = struct.unpack_from("<3f", m, 0x10)
+            vv["pos"] = [round(c, 3) for c in struct.unpack_from("<3f", m, 0x30)]
+            vv["heading"] = round(math.atan2(-fx, fy), 4)
+        del vv["_matrix"]
     # Association list: head at clumpdata+0 (RwLLLink next); node = assoc + 4.
     heads = conn.peeks([(cd, 4) for cd in cds.values()])
     cur = {p: u32(heads[(cd, 4)]) for p, cd in cds.items() if heads.get((cd, 4))}
@@ -435,7 +495,7 @@ class Driver:
         elif kind == "rcon_each":
             for k in targets:
                 s = self.sides[k]
-                self.xc(arg.format(id=s.pid, skin=SKIN_STEP[k]))
+                self.xc(arg.format(id=s.pid, other=self.sides[self.other(k)].pid, skin=SKIN_STEP[k]))
         elif kind == "tp":
             for k in targets:
                 x, y, z, ang = SPOT[k]
@@ -628,6 +688,14 @@ def scalar(chk, ser, last_s, last_o):
                 max((v.get("move", 0) for _, v in ser if v), default=0))
     if chk == "anim_final":
         return hkey(last_s.get("dominant")), hkey(last_o.get("dominant"))
+    if chk == "vehicle":
+        # In a vehicle, which model, which seat (0 driver, k passenger k) at the end of the window.
+        def vk(v):
+            vv = v.get("vehicle")
+            return (int(bool(v.get("in_vehicle"))), vv["model"], vv["seat"]) if vv else (int(bool(v.get("in_vehicle"))),)
+        return vk(last_s), vk(last_o)
+    if chk == "veh_mods":
+        return ((last_s.get("vehicle") or {}).get("mods"), (last_o.get("vehicle") or {}).get("mods"))
     return None
 
 
@@ -660,6 +728,15 @@ def evaluate(rec, sender, observer, tol, calib=None):
                 ok, val, extra = d <= tol["pos"], f"Δ={d:.3f} m (tol {tol['pos']:.2f})", {"delta": d}
             else:
                 ok, val = False, "position unreadable"
+        elif chk in ("veh_pos", "veh_heading"):
+            vs, vo = last_s.get("vehicle") or {}, last_o.get("vehicle") or {}
+            key = chk[4:]
+            if vs.get(key) is None or vo.get(key) is None:
+                ok, val = False, "vehicle not readable on one side"
+            else:
+                d = dist(vs["pos"], vo["pos"]) if key == "pos" else angdiff(vs["heading"], vo["heading"])
+                t_ = tol.get(chk, TOL[chk])
+                ok, val, extra = d <= t_, f"Δ={d:.3f} (tol {t_:.2f})", {"delta": d}
         elif chk == "heading":
             d = angdiff(last_s["heading"], last_o["heading"])
             ok, extra = d <= tol["heading"], {"delta": d}

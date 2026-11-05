@@ -9,8 +9,8 @@
 //!   weapon-skill cheats (vehicles.md RE-10 "Driving skills").
 //!
 //! Not here on purpose (docs/phase3/m5-notes.md): 107 (vehicle pool 710, applied by the main patch table),
-//! 181/182/189/199 (single-player removal, SP-OFF), 2/3 (samp opcodes, SAA-2), 51/59/60/62/64/379 (radar colour,
-//! plates, D3D proxy), 375 (dead code in samp, never applied), 61 (EU-only stub).
+//! 181/182/189/199 (single-player removal, SP-OFF), 2/3 (samp opcodes, SAA-2), 51/59/60/64/379 (radar colour,
+//! plates, D3D proxy; row 62 is a call hook in `vehhooks.rs`), 375 (dead code in samp, never applied), 61 (EU-only stub).
 
 use crate::patch::{Memory, PatchError, Patcher};
 
@@ -201,6 +201,14 @@ pub const INIT: &[Entry] = &[
         original: &[0x85, 0xc0, 0x74, 0x09, 0x83],
         csv_row: 222,
         what: "0x5e7cb0 CPed::AttachPedToEntity",
+    },
+    // CSV row 177 — 0x7046e0 CPostEffects::Render: the `CPostEffects::SpeedFX` call is NOPed (no speed blur).
+    Entry {
+        addr: 0x704e8a,
+        write: Write::Nop(5),
+        original: &[0xe8, 0x11, 0xe2, 0xff, 0xff],
+        csv_row: 177,
+        what: "0x7046e0 CPostEffects::Render",
     },
 ];
 
