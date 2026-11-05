@@ -12,10 +12,10 @@ differential capture against the original client, e2e script.
 
 | Slot | Running | Next |
 |---|---|---|
-| samp-client worktree m6p (lane veh) | M6-P: object editor gizmo/drag/selection, row 81, M5 leftovers (train exit, passenger weapons, trailers, aircraft z, plates), F-enter run vs walk | — |
-| lane ui | — (free) | SOAK |
-| measurement (lane trace, REA) | — (free) | EFX-2 |
-| harness (lanes diff + diff2) | — (free) | fix agents from docs/phase3/par-audit.md |
+| samp-client worktree netp (lane veh) | NET6-P: 203 idle/spectate cadence, 209 after passenger exit, editor Esc, /quit flush, RPC 25 bit count | — |
+| samp-client worktree soakfix (lane main) | SOAK-FIX: derby crash (original first), exploded car respawn, pushed car sync, remote stall after gmx | 2-hour soak |
+| audit (no-game + lane trace, REA) | FEAT-SWEEP: completeness audit of samp.dll (functions, samp.dll coverage, strings/commands, RPC handlers/senders) | FEAT-* fixes |
+| lane ui | — (free) | F1/F5 closing (remaining DIFF-2 rows, 27 CSV rows) |
 | no-game | — (free) | rename to sandrust-mp |
 
 ## Next up (ordered queue — the scheduler takes from the top)
