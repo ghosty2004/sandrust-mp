@@ -247,6 +247,7 @@ impl Objects {
             }
             W::DestroyObject(d) => {
                 if let Some(o) = self.pool.remove(&d.object_id) {
+                    crate::crash::note(crate::crash::crumb::OBJ_DESTROY, o.id, o.model as u32);
                     destroy(runner, &o);
                 }
             }
@@ -257,6 +258,7 @@ impl Objects {
                     return;
                 }
                 let now = self.now_ms();
+                crate::crash::note(crate::crash::crumb::OBJ_MOVE, m.object_id, 0);
                 if let Some(o) = self.pool.get_mut(&m.object_id).filter(|o| o.ptr != 0) {
                     start_move(o, vec(m.target_position), m.speed, vec(m.target_rotation), now);
                 }
@@ -503,6 +505,7 @@ impl Objects {
         if c.object_id >= world::MAX_OBJECTS {
             return;
         }
+        crate::crash::note(crate::crash::crumb::OBJ_CREATE, c.object_id, c.model as u32);
         if let Some(old) = self.pool.remove(&c.object_id) {
             destroy(runner, &old);
         }
@@ -868,6 +871,7 @@ fn destroy(runner: &mut Runner, o: &Obj) {
 }
 
 fn delete_object(runner: &mut Runner, handle: i32, ptr: u32, model: i32) {
+    wh::forget_material_rw(ptr);
     if ptr != 0 && rd::<u32>(ptr) != g::VTBL_PLACEABLE {
         if rd::<u32>(ptr + g::ENTITY_RW_OBJECT) != 0 {
             vcall(ptr, 0x20);
@@ -928,6 +932,11 @@ fn release_texture(tex: u32) {
 
 /// Material record (A 0x100A8570 kind 1, 0x100A86F0 kind 2). `from_create`: the RPC 44 model rule.
 fn apply_material(runner: &mut Runner, o: &mut Obj, m: &ObjectMaterial, from_create: bool) {
+    let slot = match m {
+        ObjectMaterial::Texture { slot, .. } | ObjectMaterial::Text { slot, .. } => u32::from(*slot),
+        ObjectMaterial::Unknown { .. } => u32::MAX,
+    };
+    crate::crash::note(crate::crash::crumb::OBJ_MATERIAL, o.id, slot);
     match m {
         ObjectMaterial::Texture { slot, model, txd, texture, colour } => {
             let slot = usize::from(*slot);
@@ -1030,6 +1039,7 @@ fn stream(runner: &mut Runner, o: &mut Obj, cam: [f32; 3]) {
                     return;
                 }
                 // DeleteRwObject, model index, SetModelIndex (creates the RW object through row 67).
+                crate::crash::note(crate::crash::crumb::OBJ_RW, o.id, o.model as u32);
                 vcall(o.ptr, 0x20);
                 wr(o.ptr + g::ENTITY_MODEL, o.model as u16);
                 let vt: u32 = rd(o.ptr);

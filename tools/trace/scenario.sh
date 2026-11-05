@@ -181,6 +181,64 @@ if [ "$STEPS" = idle ]; then
     end_game
     exit 0
 fi
+if [ "$STEPS" = objmap ]; then
+    # CRASH-1: tools/e2e/probe/objmap.pwn drives the object-map stress (teleport to an object island, streamer
+    # churn, hops); the game must stay up until "[objmap] done". TRACE_OBJMAP_MINIMIZE=1 also minimises and
+    # gives the focus to another window for 5 s during the churn, like an alt-tab.
+    e2e_wait_log "\[objmap\] phase 2 teleport" 30 && trace_mark teleport || fail "no teleport"
+    minimized=0
+    devreset=0
+    # TRACE_OBJMAP_DEVRESET=1: a device loss + Reset while the island (with material text render targets) is
+    # loaded. The device's TestCooperativeLevel (slot 3 of the vtable behind _RwD3DDevice 0xC97C28: samp's
+    # proxy or ours) is pointed for 0.3 s at a stub returning D3DERR_DEVICENOTRESET (written into the int3/nop
+    # padding at 0x7F5B03), so RenderWare runs its own lost-device path (release video memory, Reset, restore)
+    # for a few frames, exactly as after an alt-tab / mode switch on Windows.
+    objmap_devreset() {
+        local dev vt orig le stub_le
+        hexle() { printf '%08x' "$1" | sed -E 's/(..)(..)(..)(..)/\4\3\2\1/'; }
+        word() { trace_ctl "peek $1 4" | awk '{print "0x"$6$5$4$3}'; }
+        dev="$(word 0xC97C28)"; vt="$(word "$dev")"; orig="$(word "$((vt + 12))")"
+        trace_ctl "poke 0x7F5B03 b869087688c20400" > /dev/null
+        stub_le="$(hexle 0x7F5B03)"; le="$(hexle "$orig")"
+        trace_mark "device lost (device $dev vtable $vt TestCooperativeLevel $orig)"
+        trace_ctl "poke $(printf '0x%x' $((vt + 12))) $stub_le" > /dev/null
+        sleep 0.3
+        trace_ctl "poke $(printf '0x%x' $((vt + 12))) $le" > /dev/null
+        trace_mark "device restored"
+    }
+    for ((i = 0; i < 300; i++)); do
+        kill -0 "$LPID" 2>/dev/null || { trace_say "game exited during the object stress"; grep -aiE "unhandled|fault|exception" "$OUT/launch.out" | head -n 5; exit 1; }
+        if [ "${TRACE_OBJMAP_MINIMIZE:-0}" = 1 ] && (( !minimized )) && grep -q "\[objmap\] phase 3 churn" "$E2E_LOG"; then
+            # Focus loss: another window (xclock) on the isolated display takes the focus for 5 s, then the
+            # game window is activated again (with DXVK_CONFIG="d3d9.deviceLossOnFocusLoss = True" this loses
+            # and resets the device like an alt-tab on Windows).
+            w="$(DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool search --class gta_sa.exe 2>/dev/null | head -n 1)"
+            DISPLAY="$E2E_HEADLESS_DISPLAY" xclock -geometry 200x200+0+0 & XCLOCK_PID=$!
+            sleep 2
+            c="$(DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool search --class xclock 2>/dev/null | head -n 1)"
+            [ -n "$c" ] && DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool windowactivate "$c" 2>/dev/null
+            [ -n "$w" ] && DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool windowminimize "$w" 2>/dev/null
+            trace_mark "focus lost (game $w, xclock $c)"
+            sleep 5
+            kill "$XCLOCK_PID" 2>/dev/null; wait "$XCLOCK_PID" 2>/dev/null
+            [ -n "$w" ] && { DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool windowmap "$w" 2>/dev/null; DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool windowactivate "$w" 2>/dev/null; }
+            trace_mark "focus restored"
+            minimized=1
+        fi
+        if [ "${TRACE_OBJMAP_DEVRESET:-0}" = 1 ] && (( !devreset )) && grep -q "\[objmap\] hop 1 " "$E2E_LOG"; then
+            objmap_devreset
+            devreset=1
+        fi
+        grep -q "\[objmap\] done" "$E2E_LOG" && break
+        sleep 1
+    done
+    grep -q "\[objmap\] done" "$E2E_LOG" || fail "objmap scenario did not finish"
+    trace_mark objmap_done
+    e2e_shot "$OUT/objmap.png"
+    trace_say "objmap: $(grep -cE '\[objmap\] alive [0-9]+ updates 0 ' "$E2E_LOG") seconds without updates"
+    end_game
+    exit 0
+fi
 if [ "$STEPS" = remote ]; then
     # TRACE-2: a second player (samp-bot) streams in next to us, walks, is sent
     # away (stream-out) and brought back (stream-in again) by remotefs.pwn, leaves.

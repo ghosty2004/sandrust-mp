@@ -24,6 +24,20 @@ pub fn init(path: &Path) -> std::io::Result<()> {
 /// Writes one record; silently does nothing before [`init`].
 pub fn write(msg: std::fmt::Arguments<'_>) {
     let mut g = LOGGER.lock().unwrap_or_else(|e| e.into_inner());
+    write_to(&mut g, msg);
+}
+
+/// Like [`write`], but gives up instead of waiting when the logger is busy (the crash handler: the faulting
+/// thread may hold the lock).
+pub fn write_unblocked(msg: std::fmt::Arguments<'_>) {
+    match LOGGER.try_lock() {
+        Ok(mut g) => write_to(&mut g, msg),
+        Err(std::sync::TryLockError::Poisoned(e)) => write_to(&mut e.into_inner(), msg),
+        Err(std::sync::TryLockError::WouldBlock) => {}
+    }
+}
+
+fn write_to(g: &mut Option<Logger>, msg: std::fmt::Arguments<'_>) {
     if let Some(l) = g.as_mut() {
         let since = l.start.elapsed();
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();

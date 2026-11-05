@@ -63,6 +63,9 @@ pub enum Command {
     /// `audio`: audio stream / PlayerPlaySound state (M9).
     Audio,
     Peek { addr: u32, len: usize },
+    /// `devreset [frames]`: test hook, the device reports "lost, reset possible" for that many
+    /// `TestCooperativeLevel` calls (default 15), so RenderWare runs its lost-device path (CRASH-1).
+    DevReset(u32),
     Unknown(String),
 }
 
@@ -91,6 +94,11 @@ pub fn parse(line: &str) -> Option<Command> {
         && (1..=MAX_PEEK as u64).contains(&len)
     {
         return Some(Command::Peek { addr: addr as u32, len: len as usize });
+    }
+    match words.as_slice() {
+        ["devreset"] => return Some(Command::DevReset(15)),
+        ["devreset", n] if n.parse::<u32>().is_ok() => return Some(Command::DevReset(n.parse::<u32>().unwrap_or(15).min(600))),
+        _ => {}
     }
     if let ["chat", n] = words.as_slice()
         && let Ok(n) = n.parse::<usize>()
@@ -235,6 +243,8 @@ mod tests {
         assert_eq!(parse("foo bar"), Some(Command::Unknown("foo bar".into())));
         assert_eq!(parse("peek 0x53EB12 5"), Some(Command::Peek { addr: 0x53EB12, len: 5 }));
         assert_eq!(parse("peek 16 1"), Some(Command::Peek { addr: 16, len: 1 }));
+        assert_eq!(parse("devreset"), Some(Command::DevReset(15)));
+        assert_eq!(parse("DevReset 40"), Some(Command::DevReset(40)));
         assert!(matches!(parse("peek 0x10 999"), Some(Command::Unknown(_))));
         assert!(matches!(parse("peek 0x1ffffffff 1"), Some(Command::Unknown(_))));
     }

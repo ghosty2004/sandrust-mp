@@ -756,6 +756,9 @@ static TICK_STATS: Mutex<Option<TickStats>> = Mutex::new(None);
 
 fn tick() {
     let n = TICKS.fetch_add(1, Ordering::SeqCst) + 1;
+    if n.is_multiple_of(64) {
+        crate::crash::note(crate::crash::crumb::TICK, 0, n as u32);
+    }
     LAST_TICK_MS.store(since_start_ms().max(1), Ordering::SeqCst);
     if n == 1 {
         crate::log!("first frame tick");
@@ -842,6 +845,10 @@ fn service_control(_from: &str) {
             ),
             Err(e) => format!("error {e}"),
         },
+        Command::DevReset(n) => {
+            crate::ui::force_device_lost(*n);
+            format!("ok device reports lost for {n} checks")
+        }
         Command::Peek { addr, len } => {
             if !readable(*addr, *len) {
                 format!("error {addr:#x}+{len} is not readable")

@@ -354,12 +354,44 @@ fn apply_atomic(atomic: u32, ctx: &mut ApplyCtx) {
     }
 }
 
-/// Pre-pass (A 0x100A8C40, simplified to "save and apply every render"): slot textures and colours onto the RW
-/// materials in geometry order.
+static PRE_PASS: Mutex<Option<HashMap<u32, world::MaterialPrePass>>> = Mutex::new(None);
+
+fn with_pre_pass<R>(entity: u32, f: impl FnOnce(&mut world::MaterialPrePass) -> R) -> R {
+    let mut g = PRE_PASS.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(HashMap::new).entry(entity).or_default())
+}
+
+/// Forgets the pre-pass state of an entity whose samp object goes away (a new object starts afresh).
+pub fn forget_material_rw(entity: u32) {
+    let mut g = PRE_PASS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = g.as_mut() {
+        m.remove(&entity);
+    }
+}
+
+/// End of a draw of a material-carrying object (A 0x100AA124 / 0x100A9E9D: +0x118F := 1).
+pub fn mark_drawn(entity: u32) {
+    with_pre_pass(entity, |p| p.drawn());
+}
+
+/// Pre-pass (A 0x100A8C40, gated by +0x118F at A 0x100AA082 / 0x100A9E7D): slot textures and colours onto the
+/// RW materials in geometry order. Nothing happens before the object's first draw; the first pre-pass after the
+/// RW object changed only records (A 0x100A8C59 → record callback 0x100A8B10, +0x118F := 0) and changes nothing;
+/// later ones apply (callback 0x100A8880). A new RW object is therefore drawn twice with its own geometry
+/// flags first (`world::MaterialPrePass`). CRASH-1 (measured): applying from the first draw re-instanced a
+/// geometry with a pending prelight lock (lockedSinceLastInst 0x8, set by GTA's day/night prelight update
+/// 0x5D6850) while PRELIT was cleared (flags 0x67): RenderWare then asked for a zero-length dynamic vertex
+/// buffer (D3DERR_INVALIDCALL), kept a buffer-less record in its dynamic list (0xC97B8C) and crashed at
+/// 0x7F5A3A on the next differently sized create. The originals are saved on every applying render; the
+/// post-pass restores them.
 pub fn apply_materials(entity: u32, slots: &[MatSlot; MATERIAL_SLOTS], texts: &[(usize, u32)]) -> SavedMaterials {
     let mut saved = SavedMaterials::default();
     let rw: u32 = rd(entity + g::ENTITY_RW_OBJECT);
     if rw == 0 || (texts.is_empty() && slots.iter().all(|s| s.texture == 0 && s.colour == 0)) {
+        return saved;
+    }
+    let apply = with_pre_pass(entity, |p| p.begin(rw));
+    if !apply {
         return saved;
     }
     let mut ctx = ApplyCtx { slots, saved: &mut saved, texts, pairs: Vec::new() };
@@ -409,14 +441,19 @@ extern "thiscall" fn object_render(this: u32) {
     } else {
         None
     };
+    RENDERING.store(this, Ordering::Relaxed);
     let saved = info.map(|i| {
         let texts = if i.has_text { crate::ui::mattext::textures(this) } else { Vec::new() };
         apply_materials(this, &i.materials, &texts)
     });
+    if saved.is_some() {
+        mark_drawn(this);
+    }
     thiscall0(g::OBJECT_RENDER, this);
     if let Some(s) = saved {
         restore_materials(&s);
     }
+    RENDERING.store(0, Ordering::Relaxed);
 }
 
 // ---- rows 67/68/69 + 372/373: Create/DeleteRwObject -----------------------------------------------------
@@ -563,9 +600,13 @@ fn camera_pos() -> [f32; 3] {
     v3(g::CAMERA_POS)
 }
 
+/// The entity our render hooks are drawing (samp pass or CObject::Render), for diagnostics (0 = none).
+pub static RENDERING: AtomicU32 = AtomicU32::new(0);
+
 /// One manual draw (A 0x100A9FD0).
 fn draw_object(o: &ObjInfo) {
     let ent = o.ptr;
+    RENDERING.store(ent, Ordering::Relaxed);
     let rw: u32 = rd(ent + g::ENTITY_RW_OBJECT);
     if rw == 0 {
         return;
@@ -624,7 +665,9 @@ fn draw_object(o: &ObjInfo) {
     }
     if let Some(s) = saved {
         restore_materials(&s);
+        mark_drawn(ent);
     }
+    RENDERING.store(0, Ordering::Relaxed);
     PASS_DRAWS.fetch_add(1, Ordering::Relaxed);
 }
 

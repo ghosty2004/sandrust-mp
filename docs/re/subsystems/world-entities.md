@@ -810,6 +810,16 @@ seconds from samp's millisecond clock (A 0x1002E7F0) since the previous pass.
   &= ~PRELIT (0x08), surface properties (ambient 1, specular 0, diffuse 1), material colour := slot colour. The material
   "slot" is therefore the RW material index in geometry order. Objects with the lighting flag (+0x1193) get entity bit 28
   and `SetupLighting` / `RemoveLighting` around the render. The post-pass restores the recorded state.
+* Gate (A 0x100AA082 samp pass, A 0x100A9E70 CObject::Render hook): the pre-pass runs only for objects with
+  materials (+0x118B) whose "drawn" flag +0x118F is set; +0x118F := 1 at the end of every draw (samp pass, after
+  the visibility test) and in the CObject::Render hook before the original render; the record path (RW object ≠
+  +0x1D3) sets +0x118F := 0. So a new / re-created RW object is drawn twice unmodified before the first apply. The
+  post-pass (A 0x100A9EB0 → 0x100A8B90) runs only if a texture (+0x1CB) or colour (+0x1CF) was applied and the RW
+  object is still +0x1D3; it restores textures / colours and the geometry flags recorded at the record step, then
+  clears +0x1CB / +0x1CF. (CRASH-1: applying from the first draw made RenderWare re-instance a prelight-locked
+  geometry with PRELIT off and crash at 0x7F5A3A.)
+* Device lost (B 0x100C3F60 → object pool loop 0x10012B20 → 0x100A8EE0 per object with materials): every material
+  text render target (+0x114B + 4i) is released and its "created" flag cleared; the object pass re-creates it.
 * Material **text** slots are substituted at Direct3D level: while such an object renders, samp's device proxy
   `SetTexture` (A 0x10074BB0) replaces the slot's original texture (+0x110B + 4i) with the text render target
   (+0x114B + 4i).

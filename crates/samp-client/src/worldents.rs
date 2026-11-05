@@ -313,9 +313,53 @@ pub fn invulnerable_flags(flags: u32) -> bool {
     flags & 0x40000 != 0 && flags & 0x80_0000 != 0 && flags & 0x20_0000 != 0
 }
 
+/// Material pre-pass gate of one samp object (samp +0x1D3 = RW object of the last record, +0x118F = drawn since
+/// that record; A 0x100A8C40 / 0x100AA082 / 0x100AA124 / 0x100A9E9D). Nothing is applied before the first draw;
+/// the first pre-pass after the RW object changed only records; later ones apply. A new RW object is therefore
+/// drawn twice with the geometry's own flags before the material colour state (PRELIT off) is ever applied.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MaterialPrePass {
+    rw: u32,
+    drawn: bool,
+}
+
+impl MaterialPrePass {
+    /// Pre-pass for RW object `rw`: whether the materials are applied in this draw.
+    pub fn begin(&mut self, rw: u32) -> bool {
+        if !self.drawn {
+            return false;
+        }
+        if self.rw != rw {
+            self.rw = rw;
+            self.drawn = false;
+            return false;
+        }
+        true
+    }
+
+    /// End of a draw (+0x118F := 1).
+    pub fn drawn(&mut self) {
+        self.drawn = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn material_pre_pass_applies_from_the_third_draw_of_an_rw_object() {
+        let mut p = MaterialPrePass::default();
+        let mut applied = Vec::new();
+        for rw in [0xA0, 0xA0, 0xA0, 0xA0, 0xB0, 0xB0, 0xB0] {
+            applied.push(p.begin(rw));
+            p.drawn();
+        }
+        assert_eq!(applied, [false, false, true, true, false, true, true]);
+        // An undrawn (culled) object never gets past the first gate.
+        let mut q = MaterialPrePass::default();
+        assert!(!q.begin(0xA0) && !q.begin(0xA0));
+    }
 
     #[test]
     fn map_icons() {
