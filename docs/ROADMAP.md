@@ -14,10 +14,10 @@ differential capture against the original client, e2e script.
 |---|---|---|
 | lane main | — (free) | SOAK prep |
 | samp-client worktree m6p (lane veh) | M6-P: object editor gizmo/drag/selection, row 81, M5 leftovers (train exit, passenger weapons, trailers, aircraft z, plates), F-enter run vs walk | — |
-| samp-proto/netclient worktree net6 (lane ui) | NET-6 RakNet timing parity + tools/diff/network.sh (F2) | SOAK |
+| lane ui | — (free) | SOAK |
 | measurement (lane trace, REA) | — (free) | EFX-2 |
 | harness (lanes diff + diff2) | — (free) | fix agents from docs/phase3/par-audit.md |
-| no-game | — (free) | NET-6 ack/resend timing; rename to sandrust-mp |
+| no-game | — (free) | rename to sandrust-mp |
 
 ## Next up (ordered queue — the scheduler takes from the top)
 
@@ -32,7 +32,10 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 5. M5-P — vehicle open items (+ COV-1: CPostEffects::SpeedFX row 177, SetDirtTextures row 62, CPed::RemoveWeaponWhenEnteringVehicle direct call on enter) (train exit, remote passenger weapons/drive-by, trailer receive, aircraft remote z, plates + radar colours after the D3D proxy merge)
 6. M8A-PREVIEW — model-preview textdraws (font 5): samp creates a temporary GTA ped/vehicle/object and renders it with an RW camera into a 256×256 raster (A 0x100b34e0 → 0x1006c140 / 0x1006c3c0 / 0x1006c9b0); measure the creation frames (`d3d-preview-create.jsonl` in target/m8a-orig3 of worktree ui2) and implement. Also PLATE-1: number-plate textures (rows 59/60, samp's plate painter 128×32 RT → 64×32 texture)
 7. M8b, M9, M10 — remaining behaviour (spectating, camera RPCs, animations table, SCM events), audio streams, client features (reconnect, server restart, kicks)
-8. NET-6 — RakNet ack/resend timing parity
+8. NET6-P1 — 203 on foot while idle: the original sends one every ~10 s (network.sh idle/quit windows); measure the trigger on the original (tracer) before implementing (combat / aim owner)
+8. NET6-P2 — 203 while spectating (after death in gungame): the original every ~532 ms (2 × on-foot interval + 501 ms duplicate suppression, remote-players-sync §0.4); `behaviourclient.rs` spectator_tick sends none
+8. NET6-P3 — 209 unoccupied sync for the car the local player just left as passenger (original: two, 0.9–1.1 s after RPC 154); ours none (`vehicles.rs`)
+8. NET6-P4 — object editor: swallow Escape while editing (ours opens GTA's pause menu; RPC 117 itself matches) — part of M6-P
 9. SOAK — stability (needs M7)
 10. RENAME — samp-rs → sandrust-mp (crates sandrust-*), when no worktrees are open
 
@@ -58,7 +61,7 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | NET-3 | Bot: class selection, spawn, on-foot sync, stats sync | done | probe filterscript + differential | |
 | NET-4 | `samp-dump` + `tools/capture.sh` differential pipeline | done | used against original client | |
 | NET-5 | Differential: vehicles, passengers, dialogs, commands, death | todo | captures of original client | needs user gameplay or M3+ automation |
-| NET-6 | RakNet ack/resend timing parity | todo | `--raw` capture comparison | |
+| NET-6 | RakNet ack/resend timing parity + F2 `tools/diff/network.sh` | done (branch net-timing) | network.sh exit 0: 303 checks, 296 match, 7 accepted; RakNet level identical (ack 1.1/2.0 ms p50/p90, standalone acks, packing, 2 pings, resend 90 ms ×3 without backoff, keep-alive); app-level residuals NET6-D3..D6 → NET6-P1..P4; docs/phase3/net6-notes.md | update thread 2 ms, priority queues, 3 × ping resend, splits |
 | NET-7 | Unified outgoing (C→S) RPC enum with send params per payload | done | main session: 334 tests pass, clippy 0; capture-verified send params for 25/128/129/52, the other 28 from specs (listed in `docs/phase3/net7-notes.md` for differential confirmation) | RPC 131 has two senders (rel 9 hook / rel 10 poll) |
 
 ## Phase 3 — In-game client (Rust DLL in gta_sa.exe under Wine)
@@ -115,6 +118,12 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | D-4 | samp.saa data overrides (10 of 23 files differ; handling/weapon identical) | **resolved (2026-11-04): option A — read ALL redirected files from the user's samp.saa at runtime, exactly like the original (user: "I want 1:1"); never redistribute; fallback to our own minimal script when SA:MP isn't installed** |
 
 ## Decisions made autonomously
+- NET6-D1: RakNet's bandwidth bucket (A 0x10049ae0, floor 144.4 kbit/s, 1 s burst) is not reproduced: the client's traffic (≈ 30 datagrams/s, ≤ 150 bytes) never reaches it, so it never limits a send; every other reliability-layer rule is (docs/phase3/net6-notes.md).
+- NET6-D2: F2 tolerances (tools/diff/net_report.py): event messages exact (count, bits, order); periodic counts max(2, 35 %) per window and 20 % per session; cadence: median gap within max(15 ms, 25 %), or the gap deciles within that in the median (bimodal event-driven sends); trigger latency 250 ms; ack latency p50 4 ms / p90 10 ms; standalone-ack share 0.15; resend delay 30 ms. Frame rate and Wine timer jitter are below these.
+- NET6-D3: F2 accepts fewer 205/207 in the object-edit window: our client opens GTA's pause menu on Escape while editing (the 117 response itself matches); fix = NET6-P4 (M6-P).
+- NET6-D4: F2 accepts the missing idle on-foot 203 (original ~every 10 s) until NET6-P1 is measured and implemented.
+- NET6-D5: F2 accepts the missing 203 while spectating until NET6-P2.
+- NET6-D6: F2 accepts the missing 209 after leaving a car as passenger until NET6-P3.
 - ClientCheck (RPC 103): answered with samp's checksum algorithm computed honestly over OUR process memory (type 0x45 reads our own DLL image). Nothing is stored or replayed; values differ from the original exactly where memory really differs. Spoofing the original's values would bypass a server integrity check and is out of scope.
 - m5 occasional failure: GTA's radio thread divides by zero (0x4F1464) and Wine's debugger freezes the process; the original client shows the same crash (TRACE-7), so it is not a client difference.
 - Audio: our client loads the user's own bass.dll through a static import exactly like samp.dll (nothing redistributed; consistent with D-4 = A); BASS call stream diffed 0/16 segments vs the original.

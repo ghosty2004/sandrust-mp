@@ -213,16 +213,20 @@ def main():
                 print("[m10-net] lost: first new attempt %.3f s after the first unacked reliable message (original 10.050)" % dt)
                 if not 10.0 <= dt <= 10.12:
                     bad.append("lost connection %.3f s after the first unacked reliable send (want 10.0..10.12)" % dt)
-            # Keep-alives: > 5 s after the last reliable send, 15 s after a keep-alive (original 5.00 / 15.00).
+            # Keep-alives: > 5 s after the last reliable send, 15 s after a keep-alive. Original (NET-6,
+            # 3 network.sh sessions + m10-notes, 33 gaps): 5.0004..5.0030 s and 15.0002..15.0024 s on the
+            # wire; the rule is "> 5000 ms" between update-cycle starts on RakNet's whole-ms clock, so a
+            # gap can be short of 5 s only by the in-cycle send offset (< 1 ms). Upper bound: ~3× the
+            # original's spread plus the 2 ms update sleep.
             rel = [(t, "msg 0x17 17" in x) for t, d, x in raw if d == "C>S" and reliable(x)]
             gaps = []
             for (t0, k0), (t1, k1) in zip(rel, rel[1:]):
                 # (the join sequence's own keep-alive follows the 0x1e at once, handshake.md §1)
                 if k1 and t1 - t0 > 1.0:
                     gaps.append(t1 - t0)
-                    want = (15.0, 15.08) if k0 else (5.0, 5.08)
+                    want = (14.999, 15.010) if k0 else (4.999, 5.010)
                     if not want[0] <= t1 - t0 <= want[1]:
-                        bad.append("keep-alive %.3f s after the previous reliable send (%s; want %.2f..%.2f)" % (
+                        bad.append("keep-alive %.3f s after the previous reliable send (%s; want %.3f..%.3f)" % (
                             t1 - t0, "keep-alive" if k0 else "other", want[0], want[1]))
             print("[m10-net] lost: keep-alive gaps %s" % ["%.3f" % g for g in gaps])
             if not gaps:

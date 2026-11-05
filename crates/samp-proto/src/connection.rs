@@ -1,22 +1,43 @@
 //! Sans-IO RakNet connection: reliability, acks, resends, ordering,
-//! sequencing, split reassembly, internal ping/pong and keep-alive.
+//! sequencing, split packets, internal ping/pong and keep-alive.
 //!
 //! The caller feeds received datagrams to [`Connection::handle_datagram`],
 //! calls [`Connection::poll`] regularly to obtain plaintext datagrams to send
 //! (client→server datagrams must then go through `cipher::encrypt`), and
 //! queues application messages with [`Connection::send`].
 //!
-//! Spec: docs/re/handshake.md §3. Resend/ack timing was not recovered from the
-//! original client; the policy here is our own (see constants). Two rules are samp's
-//! RakNet's (A addresses, docs/phase3/m10-notes.md "M10-P"):
-//! * keep-alive: a reliable `0x17` when more than 5000 ms passed since the last reliable send
-//!   the application queued; after a keep-alive the next one is due 10000 ms (the timeout)
-//!   later still, i.e. 15 s apart while idle (update cycle A 0x10041853, send A 0x1003cbf9);
+//! Spec: docs/re/handshake.md §3. The rules below are those of samp's RakNet (A = 2021 build
+//! addresses; measured on the original client in docs/phase3/net6-notes.md and m10-notes.md):
+//! * one [`Connection::poll`] is one reliability-layer update (A 0x10049ae0). samp's RakNet runs
+//!   it on its own thread every 2 ms (`threadSleepTimer` 2, A 0x10008988); the caller decides the
+//!   cadence (`samp-client` runs a 2 ms network thread, the bots poll per loop);
+//! * datagram generation (A 0x10048070): pending acks first, then the due resends (oldest first;
+//!   a resend that does not fit ends the datagram), then the new messages by priority
+//!   (0 system, 1 high, 2 medium, 3 low; FIFO inside a priority; a message that does not fit
+//!   waits and the next priority is tried); as many datagrams as needed per update. A message fits
+//!   when the datagram's bits + its header estimate + its payload bits stay within
+//!   (MTU − 28) × 8; MTU 576 (samp never calls SetMTUSize);
+//! * resend timeout (A 0x10045c00 / 0x10044070): 3 × ping, ping = the last accepted internal-ping
+//!   sample (at least 30 ms; 500 when above the timeout), 1000 before the first sample, so
+//!   3000 ms. No backoff: a resent message is due again one timeout later;
+//! * split packets (A 0x10046b00 / 0x10045800): a message whose payload exceeds
+//!   MTU − 28 − ⌈header estimate / 8⌉ bytes is cut into pieces of that size; the first piece keeps
+//!   the message number, the others take the next numbers, all share the ordering index;
+//! * internal ping (A 0x10041450): the application pings once on `0x22`; the update cycle pings
+//!   again (5 s apart) only while no pong has been accepted yet, so normally once more right
+//!   after connecting and never again. Pings are answered with a pong; both go out with the
+//!   NEXT update (they are handled after the update in RakNet's cycle);
+//! * keep-alive (A 0x10041853): a reliable `0x17` (low priority) when connected, nothing awaits an
+//!   ack and more than 5000 ms passed since the last reliable send; the next base is moved to
+//!   now + timeout, i.e. 15 s apart while idle (send A 0x1003cbf9);
 //! * dead connection ([`Connection::is_dead`]): the "ack timer" starts when a reliable message
 //!   is first transmitted while none is awaiting an ack, is moved to the receive time of every
 //!   ack that leaves messages pending and is cleared when none are; the connection is dead when
 //!   messages are pending and the timer is more than 10000 ms old (A 0x10049b8b, 0x10045b70,
 //!   0x10049390).
+//!
+//! Not reproduced: RakNet's bandwidth bucket (A 0x10049ae0; floor 144400 bit/s, a 1-second
+//! burst): the client's traffic stays far below it (docs/phase3/net6-notes.md).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -24,19 +45,44 @@ use std::time::{Duration, Instant};
 use crate::bitstream::BitWriter;
 use crate::raknet::{AckRange, Datagram, Message, Ordering, Reliability, Split, ack_ranges, id};
 
-/// Usable bytes per datagram: MTU 576 − 28 (IP+UDP) − 1 (cipher checksum) − small slack.
-const MAX_DATAGRAM_BYTES: usize = 540;
-/// Keep-alive after more than this since the last reliable send (A 0x10041853 `5000 <`).
-const KEEP_ALIVE_AFTER: Duration = Duration::from_millis(5000);
+/// RakNet's default MTU (A 0x1003de50); samp never changes it.
+pub const MTU: usize = 576;
+/// IP + UDP header bytes RakNet subtracts from the MTU.
+const UDP_HEADER: usize = 28;
+/// Message bits a datagram may carry: (MTU − 28) × 8 (A 0x10048070).
+const DATAGRAM_BITS: usize = (MTU - UDP_HEADER) * 8;
+/// Ack bits a datagram may carry (MTU × 8 − 0xE1, A 0x10048070).
+const ACK_BITS: usize = MTU * 8 - 0xE1;
+/// Keep-alive after more than this many ms since the last reliable send (A 0x10041853 `5000 <`),
+/// compared on RakNet's whole-millisecond clock (µs time / 1000, A 0x1003cc13 / 0x10041660).
+const KEEP_ALIVE_AFTER_MS: u64 = 5000;
 /// RakNet's timeout (default of the reliability layer, A 0x10048e10; samp never changes it): the
 /// dead-connection limit, and the extra delay of the keep-alive after a keep-alive.
 pub const TIMEOUT: Duration = Duration::from_millis(10000);
+/// The update cycle's ping interval while no pong was accepted (A 0x10041a2c `+ 5000`).
 const PING_INTERVAL: Duration = Duration::from_millis(5000);
-const MIN_RESEND: Duration = Duration::from_millis(100);
-const MAX_RESEND: Duration = Duration::from_millis(1000);
+/// Ping before the first sample (reliability-layer reset A 0x10047780: SetPing(1000)).
+const INITIAL_PING_MS: u32 = 1000;
+/// Lowest ping the resend timeout uses (A 0x10045c00).
+const MIN_PING_MS: u32 = 30;
+/// Ping used when a sample exceeds the timeout (A 0x10045c00).
+const OVER_TIMEOUT_PING_MS: u32 = 500;
+/// Pong samples at or above this are ignored unless their ring slot is empty (A 0x10041ee0).
+const MAX_PING_SAMPLE_MS: u32 = 1200;
+/// Samples in the ping ring (A 0x10041f40).
+const PING_RING: usize = 5;
 /// How many recent reliable message numbers are remembered for duplicate detection.
 const DEDUP_WINDOW: usize = 8192;
 const CHANNELS: usize = 32;
+
+/// RakNet send priorities (PacketPriority).
+pub mod priority {
+    pub const SYSTEM: u8 = 0;
+    pub const HIGH: u8 = 1;
+    pub const MEDIUM: u8 = 2;
+    pub const LOW: u8 = 3;
+}
+const PRIORITIES: usize = 4;
 
 /// A message delivered to the application.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,16 +93,27 @@ pub struct Delivered {
 
 struct Pending {
     msg: Message,
-    last_sent: Option<Instant>,
+    /// Transmitted at least once (reliable messages stay until acked).
+    sent: bool,
+    /// When a reliable message is due for a resend.
+    next_resend: Option<Instant>,
 }
 
 pub struct Connection {
     start: Instant,
     next_number: u16,
+    next_split_id: u16,
     ordered_out: [u16; CHANNELS],
     sequenced_out: [u16; CHANNELS],
     /// Not yet sent, or sent and awaiting ack (reliable), keyed by message number.
     outgoing: BTreeMap<u16, Pending>,
+    /// New messages per priority, in send order.
+    queues: [VecDeque<u16>; PRIORITIES],
+    /// Transmitted reliable messages in resend order (acked ones are skipped lazily).
+    resend: VecDeque<u16>,
+    /// Internal replies queued while handling a datagram: they enter the queues after the next
+    /// update, like RakNet's handling after its update.
+    deferred: Vec<(Vec<u8>, Reliability, u8)>,
     /// Message numbers to acknowledge in the next datagram.
     acks_due: Vec<u16>,
     seen: HashSet<u16>,
@@ -65,13 +122,22 @@ pub struct Connection {
     ordered_buffer: [HashMap<u16, Delivered>; CHANNELS],
     sequenced_last: [Option<u16>; CHANNELS],
     splits: HashMap<u16, Vec<Option<Delivered>>>,
-    /// Last reliable message queued by the application (keep-alive base; may lie in the
-    /// future after a keep-alive).
-    last_reliable_send: Instant,
+    /// RakNet's "connected" state (8): keep-alives and the update cycle's ping run only then.
+    connected: bool,
+    /// RakNet ms ([`Self::clock_ms`]) of the update that took the last reliable message into the
+    /// layer (keep-alive base; lies in the future after a keep-alive).
+    last_reliable_ms: u64,
     /// The ack timer of [`Self::is_dead`] (`None` = cleared).
     ack_timer: Option<Instant>,
-    last_ping: Option<Instant>,
-    /// Smoothed round-trip time from internal pings.
+    /// When the update cycle's next ping is due (set once connected).
+    next_ping: Option<Instant>,
+    ping_ring: [u16; PING_RING],
+    ping_slot: usize,
+    /// Lowest accepted ping sample (`None` = no pong accepted yet).
+    lowest_ping: Option<u16>,
+    /// The reliability layer's ping (ms), the base of the resend timeout.
+    ping_ms: u32,
+    /// Last accepted round-trip sample.
     pub rtt: Duration,
 }
 
@@ -80,14 +146,42 @@ fn newer(a: u16, b: u16) -> bool {
     (a.wrapping_sub(b) as i16) > 0
 }
 
+/// RakNet's per-message header estimate in bits (A 0x10043ec0): 4 reliability bits + 32,
+/// + 21 for ordered/sequenced messages, + 97 when split, else + 17.
+fn header_estimate(reliability: Reliability, split: bool) -> usize {
+    let base = 4 + if reliability.is_ordered_or_sequenced() { 0x35 } else { 0x20 };
+    base + if split { 0x61 } else { 0x11 }
+}
+
+/// Encoded size in bits of an ack list (hasAcks bit excluded).
+fn ack_bits(ranges: &[AckRange]) -> usize {
+    let mut w = BitWriter::new();
+    w.write_compressed_u16(ranges.len() as u16);
+    w.bit_len() + ranges.iter().map(|r| if r.min == r.max { 17 } else { 33 }).sum::<usize>()
+}
+
 impl Connection {
+    /// A connection in RakNet's connected state (keep-alives run from the start). Used by the
+    /// bots; the in-game client uses [`Self::connecting`] and [`Self::mark_connected`].
     pub fn new(now: Instant) -> Self {
+        let mut c = Self::connecting(now);
+        c.connected = true;
+        c
+    }
+
+    /// A connection that is still being set up (the RakNet request is out, `0x22` not yet
+    /// received): no keep-alives, no update-cycle pings until [`Self::mark_connected`].
+    pub fn connecting(now: Instant) -> Self {
         Self {
             start: now,
             next_number: 0,
+            next_split_id: 0,
             ordered_out: [0; CHANNELS],
             sequenced_out: [0; CHANNELS],
             outgoing: BTreeMap::new(),
+            queues: std::array::from_fn(|_| VecDeque::new()),
+            resend: VecDeque::new(),
+            deferred: Vec::new(),
             acks_due: Vec::new(),
             seen: HashSet::new(),
             seen_order: VecDeque::new(),
@@ -95,10 +189,24 @@ impl Connection {
             ordered_buffer: std::array::from_fn(|_| HashMap::new()),
             sequenced_last: [None; CHANNELS],
             splits: HashMap::new(),
-            last_reliable_send: now,
+            connected: false,
+            last_reliable_ms: 0,
             ack_timer: None,
-            last_ping: None,
-            rtt: Duration::from_millis(300),
+            next_ping: None,
+            ping_ring: [0; PING_RING],
+            ping_slot: 0,
+            lowest_ping: None,
+            ping_ms: INITIAL_PING_MS,
+            rtt: Duration::from_millis(INITIAL_PING_MS.into()),
+        }
+    }
+
+    /// RakNet's state 8 (connected, after `0x22`): keep-alives start and the update cycle pings
+    /// from the next update on while no pong has been accepted.
+    pub fn mark_connected(&mut self, now: Instant) {
+        if !self.connected || self.next_ping.is_none() {
+            self.connected = true;
+            self.next_ping = Some(now);
         }
     }
 
@@ -107,9 +215,34 @@ impl Connection {
         now.duration_since(self.start).as_millis() as u32
     }
 
-    /// Queue a message. `bit_len` is the exact payload length in bits.
+    /// RakNet's millisecond clock: whole ms since the connection object was created (truncated,
+    /// like RakNet's µs time / 1000).
+    fn clock_ms(&self, now: Instant) -> u64 {
+        now.duration_since(self.start).as_millis() as u64
+    }
+
+    /// The reliability layer's ping (ms) the resend timeout is based on.
+    pub fn ping_ms(&self) -> u32 {
+        self.ping_ms
+    }
+
+    /// Resend timeout: 3 × ping (A 0x10044070).
+    pub fn resend_timeout(&self) -> Duration {
+        Duration::from_millis(u64::from(self.ping_ms) * 3)
+    }
+
+    /// Queue a message with high priority (every samp RPC and sync packet uses it).
+    /// `bit_len` is the exact payload length in bits.
     pub fn send(&mut self, data: &[u8], bit_len: usize, reliability: Reliability, channel: u8) {
-        assert!(bit_len.div_ceil(8) <= MAX_DATAGRAM_BYTES - 16, "outgoing split packets are not implemented");
+        self.send_with(data, bit_len, reliability, channel, priority::HIGH);
+    }
+
+    /// Queue a message with an explicit RakNet priority (0..=3, see [`priority`]).
+    pub fn send_with(&mut self, data: &[u8], bit_len: usize, reliability: Reliability, channel: u8, prio: u8) {
+        if bit_len == 0 {
+            return; // RakNet drops empty sends (A 0x10046b2e).
+        }
+        let prio = usize::from(prio).min(PRIORITIES - 1);
         let c = usize::from(channel) % CHANNELS;
         let ordering = match reliability {
             Reliability::ReliableOrdered => {
@@ -124,10 +257,47 @@ impl Connection {
             }
             _ => None,
         };
-        let number = self.next_number;
-        self.next_number = number.wrapping_add(1);
-        let msg = Message { number, reliability, ordering, split: None, bit_len: bit_len as u16, data: data.to_vec() };
-        self.outgoing.insert(number, Pending { msg, last_sent: None });
+        let bytes = bit_len.div_ceil(8);
+        let limit = MTU - UDP_HEADER - header_estimate(reliability, false).div_ceil(8);
+        if bytes <= limit {
+            let number = self.take_number();
+            let msg =
+                Message { number, reliability, ordering, split: None, bit_len: bit_len as u16, data: data.to_vec() };
+            self.enqueue(msg, prio);
+            return;
+        }
+        // Split (A 0x10045800): pieces of MTU − 28 − ⌈split header estimate / 8⌉ bytes.
+        let piece = MTU - UDP_HEADER - header_estimate(reliability, true).div_ceil(8);
+        let count = (bytes - 1) / piece + 1;
+        let split_id = self.next_split_id;
+        self.next_split_id = split_id.wrapping_add(1);
+        for i in 0..count {
+            let from = i * piece;
+            let len = piece.min(bytes - from);
+            let bits = if i + 1 == count { bit_len - piece * 8 * i } else { len * 8 };
+            let number = self.take_number();
+            let msg = Message {
+                number,
+                reliability,
+                ordering,
+                split: Some(Split { id: split_id, index: i as u32, count: count as u32 }),
+                bit_len: bits as u16,
+                data: data[from..from + len].to_vec(),
+            };
+            self.enqueue(msg, prio);
+        }
+    }
+
+    fn take_number(&mut self) -> u16 {
+        let n = self.next_number;
+        self.next_number = n.wrapping_add(1);
+        n
+    }
+
+    fn enqueue(&mut self, msg: Message, prio: usize) {
+        let number = msg.number;
+        self.outgoing.insert(number, Pending { msg, sent: false, next_resend: None });
+        self.queues[prio].push_back(number);
     }
 
     pub fn send_bytes(&mut self, data: &[u8], reliability: Reliability, channel: u8) {
@@ -149,7 +319,7 @@ impl Connection {
         for AckRange { min, max } in dg.acks {
             let mut n = min;
             loop {
-                if self.outgoing.get(&n).is_some_and(|p| p.last_sent.is_some()) {
+                if self.outgoing.get(&n).is_some_and(|p| p.sent && p.msg.reliability.is_reliable()) {
                     self.outgoing.remove(&n);
                 }
                 // Every acked number moves the ack timer (A 0x10049390).
@@ -243,93 +413,172 @@ impl Connection {
             [id::INTERNAL_PING, a, b, c, e] if d.bit_len == 40 => {
                 let mut pong = vec![id::CONNECTED_PONG, *a, *b, *c, *e];
                 pong.extend_from_slice(&self.time_ms(now).to_le_bytes());
-                self.send_bytes(&pong, Reliability::Unreliable, 0);
+                self.deferred.push((pong, Reliability::Unreliable, priority::SYSTEM));
                 true
             }
             [id::CONNECTED_PONG, a, b, c, e, ..] if d.bit_len == 72 => {
                 let sent = u32::from_le_bytes([*a, *b, *c, *e]);
-                let sample = Duration::from_millis(self.time_ms(now).wrapping_sub(sent).into());
-                if sample < Duration::from_millis(1200) {
-                    self.rtt = (self.rtt * 3 + sample) / 4;
-                }
+                let now_ms = self.time_ms(now);
+                let sample = now_ms.saturating_sub(sent);
+                self.ping_sample(sample);
                 true
             }
             _ => false,
         }
     }
 
-    /// Queue an internal ping now (also done automatically every 5 s).
+    /// A pong's round-trip sample (A 0x10041ea0): accepted when its ring slot is empty, or when
+    /// it is below 3 × the slot's sample and below 1200 ms; then it becomes the layer's ping.
+    fn ping_sample(&mut self, sample: u32) {
+        let slot = u32::from(self.ping_ring[self.ping_slot]);
+        if slot != 0 && !(sample < slot * 3 && sample < MAX_PING_SAMPLE_MS) {
+            return;
+        }
+        let s = sample.min(u32::from(u16::MAX)) as u16;
+        self.ping_ring[self.ping_slot] = s;
+        if self.lowest_ping.is_none_or(|l| s < l) {
+            self.lowest_ping = Some(s);
+        }
+        self.ping_ms = if sample > TIMEOUT.as_millis() as u32 { OVER_TIMEOUT_PING_MS } else { sample };
+        self.ping_ms = self.ping_ms.max(MIN_PING_MS);
+        self.rtt = Duration::from_millis(sample.into());
+        self.ping_slot = (self.ping_slot + 1) % PING_RING;
+    }
+
+    /// Queue an internal ping now (unreliable, system priority).
     pub fn ping(&mut self, now: Instant) {
         let mut p = vec![id::INTERNAL_PING];
         p.extend_from_slice(&self.time_ms(now).to_le_bytes());
-        self.send_bytes(&p, Reliability::Unreliable, 0);
-        self.last_ping = Some(now);
+        self.send_with(&p, p.len() * 8, Reliability::Unreliable, 0, priority::SYSTEM);
     }
 
-    fn resend_after(&self) -> Duration {
-        (self.rtt * 3).clamp(MIN_RESEND, MAX_RESEND)
-    }
-
-    /// Plaintext datagrams to send now.
+    /// One reliability-layer update: the plaintext datagrams to send now.
     pub fn poll(&mut self, now: Instant) -> Vec<Vec<u8>> {
-        if self.last_ping.is_some_and(|t| now.duration_since(t) >= PING_INTERVAL) {
-            self.ping(now);
+        // Reliable messages queued since the last update count as sent at this update's time
+        // (RakNet stores the cycle's time, in whole ms, when it takes a buffered send).
+        let now_ms = self.clock_ms(now);
+        if self.queues.iter().flatten().any(|n| self.outgoing.get(n).is_some_and(|p| p.msg.reliability.is_reliable())) {
+            self.last_reliable_ms = now_ms;
         }
-        // Reliable messages queued since the last poll (this frame) count as sent now.
-        if self.outgoing.values().any(|p| p.last_sent.is_none() && p.msg.reliability.is_reliable()) {
-            self.last_reliable_send = now;
-        }
-        if now > self.last_reliable_send && now - self.last_reliable_send > KEEP_ALIVE_AFTER {
-            self.send_bytes(&[id::KEEP_ALIVE], Reliability::Reliable, 0);
-            self.last_reliable_send = now + TIMEOUT;
-        }
-
-        let resend_after = self.resend_after();
-        let mut due: Vec<u16> = Vec::new();
-        for (&n, p) in &self.outgoing {
-            if p.last_sent.is_none_or(|t| now.duration_since(t) >= resend_after) {
-                due.push(n);
-            }
+        if self.connected
+            && self.awaiting_ack() == 0
+            && now_ms > self.last_reliable_ms
+            && now_ms - self.last_reliable_ms > KEEP_ALIVE_AFTER_MS
+        {
+            self.send_with(&[id::KEEP_ALIVE], 8, Reliability::Reliable, 0, priority::LOW);
+            self.last_reliable_ms = now_ms + TIMEOUT.as_millis() as u64;
         }
 
-        let mut acks = ack_ranges(&mut std::mem::take(&mut self.acks_due));
         let mut datagrams = Vec::new();
-        let mut current = Datagram { acks: std::mem::take(&mut acks), messages: Vec::new() };
-        let mut size = current.encode().len();
-        for n in due {
-            let awaiting_ack = self.awaiting_ack();
-            let p = self.outgoing.get_mut(&n).unwrap();
-            if p.last_sent.is_none()
-                && p.msg.reliability.is_reliable()
-                && (awaiting_ack == 0 || self.ack_timer.is_none())
-            {
-                self.ack_timer = Some(now);
+        loop {
+            let dg = self.generate(now);
+            if dg.acks.is_empty() && dg.messages.is_empty() {
+                break;
             }
-            let msg_size = p.msg.data.len() + 12;
-            if size + msg_size > MAX_DATAGRAM_BYTES && !current.messages.is_empty() {
-                datagrams.push(std::mem::take(&mut current).encode());
-                size = 1;
-            }
-            size += msg_size;
-            current.messages.push(p.msg.clone());
-            p.last_sent = Some(now);
+            datagrams.push(dg.encode());
         }
-        // Unreliable messages are sent once.
-        self.outgoing.retain(|_, p| p.msg.reliability.is_reliable() || p.last_sent.is_none());
-        if !current.acks.is_empty() || !current.messages.is_empty() {
-            datagrams.push(current.encode());
+
+        // RakNet's cycle handles received internal messages and pings after the update.
+        for (data, rel, prio) in std::mem::take(&mut self.deferred) {
+            self.send_with(&data, data.len() * 8, rel, 0, prio);
+        }
+        if self.connected && self.lowest_ping.is_none() && self.next_ping.is_some_and(|t| now >= t) {
+            self.next_ping = Some(now + PING_INTERVAL);
+            self.ping(now);
         }
         datagrams
     }
 
-    /// Number of reliable messages still awaiting acknowledgement.
+    /// One datagram (A 0x10048070).
+    fn generate(&mut self, now: Instant) -> Datagram {
+        let mut dg = Datagram::default();
+        let mut bits = 1usize;
+        if !self.acks_due.is_empty() {
+            let mut ranges = ack_ranges(&mut std::mem::take(&mut self.acks_due));
+            let mut rest = Vec::new();
+            while ack_bits(&ranges) > ACK_BITS {
+                rest.push(ranges.pop().unwrap());
+            }
+            for r in rest.into_iter().rev() {
+                let mut n = r.min;
+                loop {
+                    self.acks_due.push(n);
+                    if n == r.max {
+                        break;
+                    }
+                    n = n.wrapping_add(1);
+                }
+            }
+            bits += ack_bits(&ranges);
+            dg.acks = ranges;
+        }
+        let timeout = self.resend_timeout();
+        // Resends, oldest first; one that does not fit ends the datagram.
+        let mut full = false;
+        while let Some(&n) = self.resend.front() {
+            let Some(p) = self.outgoing.get(&n) else {
+                self.resend.pop_front(); // acked
+                continue;
+            };
+            if p.next_resend.is_none_or(|t| now <= t) {
+                break;
+            }
+            let need = header_estimate(p.msg.reliability, p.msg.split.is_some()) + usize::from(p.msg.bit_len);
+            if bits + need > DATAGRAM_BITS {
+                full = true;
+                break;
+            }
+            bits += need;
+            self.resend.pop_front();
+            self.resend.push_back(n);
+            let p = self.outgoing.get_mut(&n).unwrap();
+            p.next_resend = Some(now + timeout);
+            dg.messages.push(p.msg.clone());
+        }
+        if full {
+            return dg;
+        }
+        // New messages by priority.
+        for q in 0..PRIORITIES {
+            while let Some(&n) = self.queues[q].front() {
+                let Some(p) = self.outgoing.get(&n) else {
+                    self.queues[q].pop_front();
+                    continue;
+                };
+                let need = header_estimate(p.msg.reliability, p.msg.split.is_some()) + usize::from(p.msg.bit_len);
+                if bits + need > DATAGRAM_BITS {
+                    break;
+                }
+                bits += need;
+                self.queues[q].pop_front();
+                let reliable = p.msg.reliability.is_reliable();
+                if reliable {
+                    if self.awaiting_ack() == 0 || self.ack_timer.is_none() {
+                        self.ack_timer = Some(now);
+                    }
+                    let p = self.outgoing.get_mut(&n).unwrap();
+                    p.sent = true;
+                    p.next_resend = Some(now + timeout);
+                    dg.messages.push(p.msg.clone());
+                    self.resend.push_back(n);
+                } else {
+                    // Unreliable messages are sent once.
+                    let p = self.outgoing.remove(&n).unwrap();
+                    dg.messages.push(p.msg);
+                }
+            }
+        }
+        dg
+    }
+
+    /// Number of reliable messages still awaiting acknowledgement (or not sent yet).
     pub fn unacked(&self) -> usize {
         self.outgoing.values().filter(|p| p.msg.reliability.is_reliable()).count()
     }
 
     /// Reliable messages transmitted and not yet acknowledged (RakNet's resend list).
     fn awaiting_ack(&self) -> usize {
-        self.outgoing.values().filter(|p| p.last_sent.is_some() && p.msg.reliability.is_reliable()).count()
+        self.outgoing.values().filter(|p| p.sent && p.msg.reliability.is_reliable()).count()
     }
 
     /// RakNet's dead-connection test (A 0x10049b8b): messages await an ack and the ack timer is
@@ -356,6 +605,10 @@ mod tests {
         got
     }
 
+    fn decode_all(dgs: &[Vec<u8>]) -> Vec<Datagram> {
+        dgs.iter().map(|d| Datagram::decode(d).unwrap()).collect()
+    }
+
     #[test]
     fn reliable_delivery_and_ack() {
         let (mut a, mut b, t) = pair();
@@ -367,17 +620,39 @@ mod tests {
         assert_eq!(a.unacked(), 0);
     }
 
+    /// Before any pong the resend timeout is 3 × 1000 ms; no backoff afterwards.
     #[test]
     fn resend_after_loss_and_dedup() {
         let (mut a, mut b, t) = pair();
+        let ms = |n| t + Duration::from_millis(n);
         a.send_bytes(&[1], Reliability::Reliable, 0);
         let _lost = a.poll(t);
-        assert!(a.poll(t + Duration::from_millis(10)).is_empty(), "too early to resend");
-        let later = t + Duration::from_secs(2);
-        assert_eq!(pump(&mut a, &mut b, later).len(), 1);
+        assert_eq!(a.resend_timeout(), Duration::from_millis(3000));
+        assert!(a.poll(ms(3000)).is_empty(), "exactly the timeout is not enough");
+        let _lost = a.poll(ms(3001));
+        assert!(a.poll(ms(6001)).is_empty());
+        assert_eq!(pump(&mut a, &mut b, ms(6002)).len(), 1, "resent one timeout after the resend");
         // A duplicate resend (ack lost) is acked again but not delivered twice.
-        let again = later + Duration::from_secs(2);
-        assert!(pump(&mut a, &mut b, again).is_empty());
+        assert!(pump(&mut a, &mut b, ms(9003)).is_empty());
+    }
+
+    /// The resend timeout follows the last accepted pong: 3 × max(sample, 30 ms).
+    #[test]
+    fn resend_timeout_follows_ping() {
+        let (mut a, mut b, t) = pair();
+        let ms = |n| t + Duration::from_millis(n);
+        a.ping(t);
+        pump(&mut a, &mut b, t);
+        b.poll(ms(1)); // b's pong is queued after its update
+        pump(&mut b, &mut a, ms(2)); // and sent with the next one
+        assert_eq!(a.ping_ms(), 30, "2 ms sample, raised to 30");
+        assert_eq!(a.resend_timeout(), Duration::from_millis(90));
+        // A larger sample below 3 × the previous one (ring slot empty → accepted).
+        a.ping_sample(80);
+        assert_eq!(a.resend_timeout(), Duration::from_millis(240));
+        // Samples over the timeout use 500 ms (only when the ring slot is empty).
+        a.ping_sample(20_000);
+        assert_eq!(a.ping_ms(), 500);
     }
 
     #[test]
@@ -429,28 +704,162 @@ mod tests {
         assert_eq!(got, vec![Delivered { data: vec![1, 2, 3, 4, 5, 6], bit_len: 48 }]);
     }
 
-    /// Keep-alive after > 5 s without a reliable send, then 15 s apart while idle (A 0x10041853).
-    /// (Unacked messages are resent, so new messages are counted by their numbers.)
+    /// Outgoing splits (ordered): pieces of MTU − 28 − ⌈(4+53+97)/8⌉ = 528 bytes, one per datagram,
+    /// consecutive numbers, one ordering index; the peer reassembles the message.
+    #[test]
+    fn split_send_roundtrip() {
+        let (mut a, mut b, t) = pair();
+        let data: Vec<u8> = (0..1200u32).map(|i| (i * 7) as u8).collect();
+        a.send(&data, data.len() * 8 - 3, Reliability::ReliableOrdered, 2);
+        let dgs = a.poll(t);
+        let decoded = decode_all(&dgs);
+        assert_eq!(decoded.len(), 3);
+        let pieces: Vec<_> = decoded.iter().flat_map(|d| d.messages.iter()).collect();
+        assert_eq!(pieces.iter().map(|m| m.data.len()).collect::<Vec<_>>(), vec![528, 528, 144]);
+        assert_eq!(pieces.iter().map(|m| m.number).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert!(pieces.iter().all(|m| m.ordering == Some(Ordering { channel: 2, index: 0 })));
+        assert!(dgs.iter().all(|d| d.len() <= MTU - UDP_HEADER));
+        let mut got = Vec::new();
+        for d in &dgs {
+            got.extend(b.handle_datagram(d, t).unwrap());
+        }
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].bit_len, data.len() * 8 - 3);
+        assert_eq!(got[0].data[..1199], data[..1199]);
+    }
+
+    /// Packing: as many messages as fit (estimate within (576 − 28) × 8 bits), then a new datagram.
+    #[test]
+    fn packing_by_mtu() {
+        let (mut a, _, t) = pair();
+        for _ in 0..12 {
+            a.send_bytes(&[0xd0; 70], Reliability::UnreliableSequenced, 1);
+        }
+        let dgs = decode_all(&a.poll(t));
+        // Each message: 74 + 560 = 634 bits → 6 per datagram (3804 ≤ 4384 < 4438).
+        assert_eq!(dgs.iter().map(|d| d.messages.len()).collect::<Vec<_>>(), vec![6, 6]);
+    }
+
+    /// Priority order inside a datagram: system before high before low; FIFO inside one.
+    #[test]
+    fn priority_order() {
+        let (mut a, _, t) = pair();
+        a.send_with(&[0x17], 8, Reliability::Reliable, 0, priority::LOW);
+        a.send_bytes(&[0xcf], Reliability::UnreliableSequenced, 1);
+        a.send_with(&[0x09, 0, 0, 0, 0, 0, 0, 0, 0], 72, Reliability::Unreliable, 0, priority::SYSTEM);
+        a.send_bytes(&[0xcd], Reliability::Unreliable, 0);
+        let dg = &decode_all(&a.poll(t))[0];
+        let firsts: Vec<u8> = dg.messages.iter().map(|m| m.data[0]).collect();
+        assert_eq!(firsts, vec![0x09, 0xcf, 0xcd, 0x17]);
+    }
+
+    /// Acks go out in the update after the datagram arrived, alone when nothing else is queued.
+    #[test]
+    fn standalone_ack() {
+        let (mut a, mut b, t) = pair();
+        a.send_bytes(&[0x14, 1], Reliability::ReliableOrdered, 2);
+        pump(&mut a, &mut b, t);
+        let dg = &decode_all(&b.poll(t))[0];
+        assert_eq!(dg.acks, vec![AckRange { min: 0, max: 0 }]);
+        assert!(dg.messages.is_empty());
+    }
+
+    /// Pings are answered with the update after the one that follows the receipt.
+    #[test]
+    fn pong_goes_out_with_the_next_update() {
+        let (mut a, mut b, t) = pair();
+        a.ping(t);
+        pump(&mut a, &mut b, t);
+        assert!(b.poll(t).is_empty(), "nothing to send yet (the ping was unreliable)");
+        let dg = &decode_all(&b.poll(t))[0];
+        assert_eq!(dg.messages[0].data[0], id::CONNECTED_PONG);
+    }
+
+    /// The update cycle pings once more after connecting and stops once a pong was accepted.
+    #[test]
+    fn update_cycle_ping_only_until_a_pong() {
+        let t = Instant::now();
+        let ms = |n| t + Duration::from_millis(n);
+        let mut a = Connection::connecting(t);
+        let mut b = Connection::new(t);
+        let count_pings = |dgs: &[Vec<u8>]| {
+            decode_all(dgs).iter().flat_map(|d| d.messages.clone()).filter(|m| m.data[0] == id::INTERNAL_PING).count()
+        };
+        a.mark_connected(t);
+        a.ping(t);
+        assert_eq!(count_pings(&a.poll(t)), 1, "the application's ping");
+        assert_eq!(count_pings(&a.poll(ms(2))), 1, "the cycle's ping, queued after the first update");
+        assert_eq!(count_pings(&a.poll(ms(4))), 0);
+        assert_eq!(count_pings(&a.poll(ms(5000))), 0);
+        assert_eq!(count_pings(&a.poll(ms(5003))), 1, "5 s later while no pong arrived");
+        // A pong is accepted: no more pings.
+        let mut pong = vec![id::CONNECTED_PONG];
+        pong.extend_from_slice(&a.time_ms(ms(5003)).to_le_bytes());
+        pong.extend_from_slice(&0u32.to_le_bytes());
+        b.send_with(&pong, 72, Reliability::Unreliable, 0, priority::SYSTEM);
+        for d in b.poll(ms(5010)) {
+            a.handle_datagram(&d, ms(5010)).unwrap();
+        }
+        for n in [10_010, 15_010, 30_000] {
+            a.poll(ms(n));
+            assert_eq!(count_pings(&a.poll(ms(n + 2))), 0);
+        }
+    }
+
+    /// Keep-alive after > 5 s without a reliable send, then 15 s apart while idle (A 0x10041853),
+    /// only while nothing awaits an ack.
     #[test]
     fn keep_alive_cadence() {
-        let (mut a, _, t) = pair();
+        let (mut a, mut b, t) = pair();
         let ms = |n| t + Duration::from_millis(n);
-        let at = |a: &mut Connection, n| {
-            let before = a.next_number;
-            a.poll(ms(n));
-            a.next_number.wrapping_sub(before)
+        let keep_alives = |dgs: Vec<Vec<u8>>| {
+            decode_all(&dgs).iter().flat_map(|d| d.messages.clone()).filter(|m| m.data == [id::KEEP_ALIVE]).count()
+        };
+        let step = |a: &mut Connection, b: &mut Connection, n| {
+            let out = a.poll(ms(n));
+            for d in &out {
+                b.handle_datagram(d, ms(n)).unwrap();
+            }
+            for d in b.poll(ms(n)) {
+                a.handle_datagram(&d, ms(n)).unwrap();
+            }
+            keep_alives(out)
         };
         a.send_bytes(&[1], Reliability::Reliable, 0);
-        assert_eq!(at(&mut a, 0), 0);
-        assert_eq!(at(&mut a, 5000), 0, "exactly 5000 ms is not enough");
-        assert_eq!(at(&mut a, 5001), 1);
-        assert_eq!(at(&mut a, 20_001), 0);
-        assert_eq!(at(&mut a, 20_002), 1, "the next keep-alive 15 s after the previous");
+        assert_eq!(step(&mut a, &mut b, 0), 0);
+        assert_eq!(step(&mut a, &mut b, 5000), 0, "exactly 5000 ms is not enough");
+        assert_eq!(step(&mut a, &mut b, 5001), 1);
+        assert_eq!(step(&mut a, &mut b, 20_001), 0);
+        assert_eq!(step(&mut a, &mut b, 20_002), 1, "the next keep-alive 15 s after the previous");
         // An application send resets the base to now.
         a.send_bytes(&[2], Reliability::ReliableOrdered, 0);
-        assert_eq!(at(&mut a, 21_000), 0);
-        assert_eq!(at(&mut a, 26_000), 0);
-        assert_eq!(at(&mut a, 26_001), 1);
+        assert_eq!(step(&mut a, &mut b, 21_000), 0);
+        assert_eq!(step(&mut a, &mut b, 26_000), 0);
+        assert_eq!(step(&mut a, &mut b, 26_001), 1);
+        // Nothing while a reliable message awaits its ack.
+        a.send_bytes(&[3], Reliability::Reliable, 0);
+        let _lost = a.poll(ms(27_000));
+        assert_eq!(keep_alives(a.poll(ms(40_000))), 0);
+        // A connection that is not connected yet sends none.
+        let mut c = Connection::connecting(t);
+        assert_eq!(keep_alives(c.poll(ms(60_000))), 0);
+    }
+
+    /// The 5 s rule runs on whole RakNet milliseconds: a send at 0.9 ms is "ms 0"; the
+    /// keep-alive is due at the first update in ms 5001 (5000.1 ms later), not at 5000.95 ms.
+    #[test]
+    fn keep_alive_on_whole_milliseconds() {
+        let (mut a, _, t) = pair();
+        let us = |n| t + Duration::from_micros(n);
+        let ka = |dgs: Vec<Vec<u8>>| {
+            decode_all(&dgs).iter().flat_map(|d| d.messages.clone()).any(|m| m.data == [id::KEEP_ALIVE])
+        };
+        a.send_bytes(&[1], Reliability::Unreliable, 0);
+        a.send_bytes(&[2], Reliability::ReliableOrdered, 0);
+        a.poll(us(900));
+        a.outgoing.clear(); // acked
+        assert!(!ka(a.poll(us(5_000_950))));
+        assert!(ka(a.poll(us(5_001_000))));
     }
 
     /// Dead connection: an unacked reliable message and an ack timer older than 10 s.
@@ -488,7 +897,8 @@ mod tests {
         a.ping(t);
         assert!(pump(&mut a, &mut b, t).is_empty(), "ping is internal");
         let t2 = t + Duration::from_millis(40);
+        b.poll(t2);
         assert!(pump(&mut b, &mut a, t2).is_empty(), "pong is internal");
-        assert!(a.rtt < Duration::from_millis(300), "rtt sample applied: {:?}", a.rtt);
+        assert_eq!(a.rtt, Duration::from_millis(40), "rtt sample applied");
     }
 }

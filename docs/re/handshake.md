@@ -160,7 +160,7 @@ RakNet's block encryptor (A 0x10056990 flag / 0x10056cd0 encrypt) is only switch
 
 ---------------------------------------------------------------------------------------------------
 
-## 3. RakNet layer — status: PARTIAL (formats observed; ack/resend timing not analysed)
+## 3. RakNet layer — status: ANSWERED (formats observed; timing, packing, resend and ping rules in docs/phase3/net6-notes.md §1, measured)
 
 Evidence that this is a RakNet 2.x-era library: RakNet console strings (e.g. RakPeer::Connect), RakPeer/ReliabilityLayer object layout, the "connect mode" values 0…8, RangeList-style acks, DataBlockEncryptor and secure-connection messages 0x0f/0x10 of the stock design. I did not diff against stock RakNet source; differences listed below are relative to what the binary does, with "stock" claims marked as belief.
 
@@ -190,15 +190,15 @@ Reliability values on the wire (inferred from which carry ordering fields and wh
 
 **Compressed integers** (writer 0x10020130, reader 0x1001fa70; stock RakNet algorithm, unsigned variant used everywhere here): process the value's little-endian bytes from most- to least-significant; while the current high byte is 0x00 (and it is not the last byte), emit bit 1 and drop it; on the first non-zero byte emit bit 0 followed by all remaining bytes (`(k+1)*8` bits). For the final (least-significant) byte: if its high nibble is 0 emit bit 1 + low 4 bits, else bit 0 + 8 bits.
 
-**MTU / splitting**: default MTU 576 (A 0x1003de50 initialiser), SetMTU clamps to 1492 (0x10038860). Split payload per fragment = MTU − 28 − header bytes (− 36 if block encryption on) (0x10045800). Whether the SA:MP client changes the MTU: unknown. Note the cipher adds 1 byte to every client datagram.
+**MTU / splitting**: default MTU 576 (A 0x1003de50 initialiser), SetMTU clamps to 1492 (0x10038860). Split payload per fragment = MTU − 28 − header bytes (− 36 if block encryption on) (0x10045800). The SA:MP client never calls SetMTU (RakClient vtable slot 42 has no caller), so the MTU is 576. Note the cipher adds 1 byte to every client datagram.
 
 ### Internal ping / time sync (0x10041450, 0x1003f1a0)
 
 | msg | layout | reliability | behaviour |
 |---|---|---|---|
-| `0x06` internal ping | u8 0x06, u32 sender time (ms) — exactly 5 bytes | 6 (unreliable), system prio | receiver answers with `0x09` |
+| `0x06` internal ping | u8 0x06, u32 sender time (ms) — exactly 5 bytes | 6 (unreliable), system prio | receiver answers with `0x09` (next update cycle). The client pings on `0x22` and once more from its update cycle, then only while no pong has been accepted (5 s apart): measured 2 pings per session |
 | `0x09` connected pong | u8 0x09, u32 echoed ping time, u32 responder time — exactly 9 bytes | 6 | RTT = now − echoed; sample stored if the ring slot about to be overwritten is empty, or RTT < 3 × that slot's value and RTT < 1200 ms; clock offset = responderTime − (echoed + now)/2; ring of 5 samples; lowest ping tracked |
-| `0x17` keep-alive | 1 byte | 8, low prio | sent after 5000 ms idle |
+| `0x17` keep-alive | 1 byte | 8, low prio | sent when connected, nothing awaits an ack and > 5000 ms passed since the last reliable send; then 15 s apart |
 
 Time base: RakNet time in ms derived from QueryPerformanceCounter (0x1002e7f0 ms, 0x1002e850 µs).
 
@@ -206,9 +206,9 @@ Time base: RakNet time in ms derived from QueryPerformanceCounter (0x1002e7f0 ms
 
 A message may start with `0x28` + u32 time; the real ID is then at byte 5 (app dispatcher and RPC handler both honour this).
 
-### Unknown
+### Timing (answered, NET-6)
 
-Ack timing, resend timeouts (constants 250/500/750 ms and 10 s exist in 0x10049ae0/0x10047780/0x10048bf0 but semantics not analysed), sequencing/ordering buffer limits, split reassembly limits, congestion control.
+Update thread every 2 ms; acks every cycle (standalone unless a send coincides); resend timeout 3 × max(ping, 30 ms) (3000 ms before the first pong), no backoff; priority queues; packing by RakNet's header estimate within (MTU − 28) × 8 bits. Details, addresses and measurements: docs/phase3/net6-notes.md §1. Not analysed further: the bandwidth bucket (never limits the client's rates), sequencing/ordering buffer limits, split reassembly limits.
 
 ---------------------------------------------------------------------------------------------------
 
