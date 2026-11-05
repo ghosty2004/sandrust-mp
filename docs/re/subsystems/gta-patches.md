@@ -288,7 +288,7 @@ data reference in A (checked by disassembly grep and raw pointer search) and are
 | 0x5534b0 | 9 | hook-jmp-indirect(A:0x100a5150 B:0x100a5120) | `ff25a6345500909090` | 0x100a6d1a | 0x100a6cea | writes "jmp dword [slot]" stub at site and stores the samp handler address into GTA slot 0x5534a6.  () |
 | 0x5342f9 | 5 | hook-call(A:0x100a5430 B:0x100a5400) | `e8<rel32>` | 0x100a6d4b | 0x100a6d1b | unknown (-) |
 | 0x4b35a0 | 6 | hook-jmp-indirect(A:0x100a53e0 B:0x100a53b0) | `ff2533344b00` | 0x100a6d6c | 0x100a6d3c | writes "jmp dword [slot]" stub at site and stores the samp handler address into GTA slot 0x4b3433.  () |
-| 0x41b02e | 5 | hook-call(A:0x100a5990 B:0x100a5960) | `e8<rel32>` | 0x100a6d9d | 0x100a6d6d | unknown (-) |
+| 0x41b02e | 5 | hook-call(A:0x100a5990 B:0x100a5960) | `e8<rel32>` | 0x100a6d9d | 0x100a6d6d | `BuildCacheOfCameraCollision` call in `CameraConeCastVsWorldCollision`: original first; if it found nothing and the camera sphere is outside ±3000 (x or y), samp's object pool (no-camera-collision flag honoured, < 200 m), the `-d` debug-script pool and vehicles (moving list, < 300 m, not while RPC 167 disabled collisions) are sphere-cast too (M6-P, measured at x 3100) |
 | 0x41af80 | 5 | hook-call(A:0x100a5b00 B:0x100a5ad0) | `e8<rel32>` | 0x100a6dd0 | 0x100a6da0 | unknown (-) |
 | 0x41ab78 | 5 | hook-call(A:0x100a5b30 B:0x100a5b00) | `e8<rel32>` | 0x100a6e03 | 0x100a6dd3 | unknown (-) |
 | 0x871178 | 4 | pointer-redirect(A:0x100a5b50 B:0x100a5b20) | `<samp ptr>` | 0x100a6e2c | 0x100a6dfc | vtable slot +0x58 (index 22, inferred ProcessEntityCollision) of vehicle class @0x871120 (inferred CAutomobile) (medium) |

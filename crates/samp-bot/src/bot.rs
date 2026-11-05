@@ -121,6 +121,8 @@ pub struct Config {
     pub speed: f32,
     /// Extra key bits held while driving (e.g. 2 horn, 128 handbrake).
     pub extra_keys: u16,
+    /// Driving: tow this vehicle (200 trailer id + 210 every in-car tick, the trailer 9 m behind the cab).
+    pub trailer: Option<u16>,
     pub siren: bool,
     /// Passenger drive-by (211 bit 6).
     pub drive_by: bool,
@@ -154,6 +156,7 @@ impl Default for Config {
             shape: Shape::Circle { radius: 10.0 },
             speed: 5.0,
             extra_keys: 0,
+            trailer: None,
             siren: false,
             drive_by: false,
             exit_after: None,
@@ -1079,7 +1082,7 @@ impl Bot {
             weapon: WeaponByte::new(self.inv.armed, 0),
             siren: u8::from(self.cfg.siren),
             landing_gear: 0,
-            trailer_id: 0,
+            trailer_id: self.cfg.trailer.unwrap_or(0),
             extra: extra_field(model, steer, m.v),
         }
     }
@@ -1093,6 +1096,19 @@ impl Bot {
             let mut sync = self.driver_sync(vehicle, m);
             sync.rotation = self.car_rot.filter(sync.rotation);
             self.send_gated(&sync, now, out);
+            if let Some(t) = self.cfg.trailer {
+                // A towed trailer 9 m behind the cab on its heading (measurement input, M6-P).
+                let pose = m.pose();
+                let back = scale(geom::forward(pose.heading), -9.0);
+                let ts = samp_proto::sync::vehicle::TrailerSync {
+                    trailer_id: t,
+                    position: add(pose.pos, back),
+                    rotation: sync.rotation,
+                    velocity: sync.velocity,
+                    turn_velocity: v3(0.0, 0.0, 0.0),
+                };
+                self.send_gated(&ts, now, out);
+            }
             let model = self.world.vehicles.get(&vehicle).map_or(0, |v| v.model);
             if policy::ARMED_VEHICLE_MODELS.iter().any(|&a| u32::from(a) == model) {
                 self.send_aim(now, out);

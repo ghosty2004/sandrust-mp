@@ -71,6 +71,10 @@ fn edit_key(vk: u32) -> Option<EditKey> {
 /// Returns true if the UI consumed the message.
 fn translate(msg: u32, w: WPARAM, l: LPARAM) -> bool {
     let route = |ev| super::glue::on_window_event(ev, 0);
+    // Object editor / selection first (samp's window procedure checks them before the chat input, B 0x1006186A).
+    if matches!(msg, 0x200..=0x202 | WM_CHAR) && super::glue::editor_message(msg, w) {
+        return true;
+    }
     match msg {
         WM_CHAR => route(Event::Char(w as u8)),
         WM_KEYDOWN => {

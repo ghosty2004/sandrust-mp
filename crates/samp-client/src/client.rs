@@ -227,7 +227,13 @@ impl Client {
         self.objects.status_lines(&mut lines);
         self.entities.status_lines(&mut lines);
         let mut out =
-            format!("world count={} {} {}", lines.len(), self.objects.header_fields(), self.entities.header_fields());
+            format!(
+                "world count={} {} {} {}",
+                lines.len(),
+                self.objects.header_fields(),
+                self.entities.header_fields(),
+                crate::plates::status()
+            );
         for l in lines {
             out.push('\n');
             out.push_str(&l);
@@ -250,6 +256,8 @@ impl Client {
     /// CGame::Process pre-step (dll.rs): the per-frame object process (world-entities.md RE-10 §3).
     pub fn pre_process(&mut self) {
         if self.netgame.connected() {
+            // The vehicle pool's plate pass (B 0x100A2741 → 0x1001ED20) before the object process.
+            crate::plates::tick(&self.vehicles.plate_list(), &mut |t| crate::ui::paint_plate(t));
             self.objects.process(&mut self.runner, &self.vehicles, &self.players);
         }
     }
@@ -407,7 +415,7 @@ impl Client {
             self.vehicles.pool_tick(&mut self.runner, &mut self.net, &self.players, now);
             // World entities (M6): hook events (RPC 131 / 177), checkpoints, pickup poll, labels.
             self.entities.hook_events(&mut self.net);
-            self.objects.poll_escape(&mut self.net);
+            self.objects.poll_editor(&mut self.runner, &mut self.net);
             self.entities.tick(&mut self.runner, &mut self.net, &self.players, &self.vehicles);
         }
         // The hooks' view for the next CGame::Process.

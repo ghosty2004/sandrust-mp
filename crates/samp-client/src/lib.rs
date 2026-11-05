@@ -19,6 +19,7 @@ pub mod game;
 pub mod lifecycle;
 pub mod log;
 pub mod netclient;
+pub mod objedit;
 pub mod patch;
 pub mod patches;
 pub mod pe;
@@ -58,6 +59,8 @@ mod mainhooks;
 mod objects;
 #[cfg(windows)]
 mod players;
+#[cfg(windows)]
+mod plates;
 #[cfg(windows)]
 mod swap;
 #[cfg(windows)]

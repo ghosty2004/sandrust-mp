@@ -12,7 +12,7 @@
 //!
 //! Deviations (docs/phase3/m5-notes.md): every swapped global is restored to its saved value (as in swap.rs);
 //! on an enter refusal the unconstructed task memory goes back to the task pool instead of samp's call through a
-//! stale vtable (TRACE-5 MR-c); the train exit warp runs from the next client tick, not inside the constructor.
+//! stale vtable (TRACE-5 MR-c).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -165,6 +165,16 @@ pub static SHARED: Mutex<Option<Shared>> = Mutex::new(None);
 pub fn with_shared<R>(f: impl FnOnce(&mut Shared) -> R) -> R {
     let mut g = SHARED.lock().unwrap_or_else(|e| e.into_inner());
     f(g.get_or_insert_with(Shared::default))
+}
+
+/// For hooks that may run while the client holds the lock: never blocks.
+pub fn try_with_shared<R>(f: impl FnOnce(&mut Shared) -> R) -> Option<R> {
+    let mut g = match SHARED.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+    };
+    Some(f(g.get_or_insert_with(Shared::default)))
 }
 
 /// (remote, local, none-run, none-skipped) ProcessControl calls (diagnostics).
@@ -527,6 +537,28 @@ extern "C" fn leave_filter(ret: u32, _task: u32, veh: u32) -> i32 {
     let train = is_rail(info.model);
     // SAFETY: live vehicle.
     let driver = unsafe { rd::<u32>(veh + g::VEH_DRIVER) } == local && !matches!(info.model, 569 | 570);
+    if train {
+        // B 0x100A3992…0x100A39E0: inside the constructor, WARP_CHAR_FROM_CAR_TO_COORD to the train's position
+        // + (2.5, 2.5, 0); no camera call and no RPC 154 (measured, run orig-20261105-042300 mark `trainexit`:
+        // the warp precedes GTA's SetTask of the leave task in the same frame).
+        if let Ok(Some(h)) = crate::game::ped_handle(&crate::patch::ProcessMemory, local) {
+            // SAFETY: live vehicle matrix.
+            let m: u32 = unsafe { rd(veh + 0x14) };
+            if m != 0 {
+                let p: [f32; 3] = unsafe { [rd(m + 0x30), rd(m + 0x34), rd(m + 0x38)] };
+                use crate::script::{Arg, Runner, op};
+                Runner::new().run(
+                    op::WARP_CHAR_FROM_CAR_TO_COORD,
+                    &[
+                        Arg::Int(h),
+                        Arg::Float(p[0] + vehicle::TRAIN_EXIT_OFFSET),
+                        Arg::Float(p[1] + vehicle::TRAIN_EXIT_OFFSET),
+                        Arg::Float(p[2]),
+                    ],
+                );
+            }
+        }
+    }
     with_shared(|s| {
         s.events.push(HookEvent::Exit { vehicle_id: info.id, driver, rc: vehicle::is_rc(info.model), train })
     });
@@ -662,6 +694,11 @@ const SET_DIRT_TEXTURES: u32 = 0x5D5DB0;
 /// The vehicle `CVehicle::Render` is drawing (esi at row 62's call; samp B 0x10151550, read by samp's plate
 /// texture code).
 static RENDER_VEHICLE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The vehicle `CVehicle::Render` is drawing now (plate substitution, `plates.rs`).
+pub fn render_vehicle() -> u32 {
+    RENDER_VEHICLE.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Row 62 (B 0x100A4570): replaces `SetDirtTextures(modelInfo, dirt)` in `CVehicle::Render`. It only records the
 /// vehicle (esi) and returns: the dirt textures are never switched per vehicle (the caller pops the arguments).

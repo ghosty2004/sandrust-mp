@@ -20,6 +20,7 @@ use samp_proto::rpcs::world::{self as rw, ObjectMaterial};
 use samp_proto::types::Vec3;
 
 use crate::footsync::{Rotation, quat_from_matrix};
+use crate::objedit;
 use crate::netclient::NetClient;
 use crate::players::Players;
 use crate::remote::{normalise, rows_from_quat, slerp};
@@ -163,6 +164,8 @@ impl Obj {
                 Some((_, _, _, 0)) => Some(self.rotation),
                 _ => None,
             },
+            pool_object: true,
+            no_camera_collision: self.no_camera_collision,
         }
     }
 }
@@ -200,7 +203,8 @@ pub struct Objects {
     last_pass: Option<Instant>,
     epoch: Option<Instant>,
     local_id: Option<u16>,
-    esc_down: bool,
+    /// The editor's matrix copy (B +0xC3): taken at the button press, its position follows the translate drag.
+    edit_matrix: Option<(Rotation, [f32; 3])>,
     pub sent_edit: u32,
 }
 
@@ -297,56 +301,97 @@ impl Objects {
             }
             W::SetPlayerAttachedObject(a) => self.attached_object(runner, players, a),
             W::PlayerBeginObjectSelect(_) => {
-                self.stop_editing(net, false);
-                self.edit = Edit::Selecting;
-                // TODO(input-lock): samp switches the cursor mode here (A 0x1006DB80 → 0x100A0750); wire
-                // `ui::inputlock::set_mode(mode, flag)` (UI worktree ui2) once merged.
-                crate::log!("objects: selection mode on (mouse picking not implemented, MR-6.11)");
+                // B 0x1000E880: textdraw selection off, editor stopped (cancel 117/116), selection on (B 0x1006DB40).
+                crate::ui::cancel_textdraw_selection();
+                self.stop_editing(net, 0);
+                self.select(true);
             }
             W::PlayerCancelObjectEdit(_) => match self.edit {
-                Edit::Object { .. } | Edit::Attached { .. } => self.stop_editing(net, false),
-                Edit::Selecting => self.edit = Edit::None,
+                Edit::Object { .. } | Edit::Attached { .. } => self.stop_editing(net, 0),
+                Edit::Selecting => self.select(false),
                 Edit::None => {}
             },
             W::PlayerBeginObjectEdit(e) => {
-                // TODO(input-lock): editor start = cursor mode 4 (A 0x10072480 → 0x100A0750); wire
-                // `ui::inputlock::set_mode(4, …)` (UI worktree ui2) once merged.
+                // B 0x10011880: selection and textdraw selection off, editor start (B 0x10072450).
+                self.select(false);
+                crate::ui::cancel_textdraw_selection();
+                let rotation = self.pool.get(&e.object_id).map(|o| o.rotation).unwrap_or_default();
+                objedit::with(|sh| {
+                    sh.editor.start(objedit::Target::Object { id: e.object_id, player_object: e.player_object }, rotation)
+                });
+                Self::editor_input_start();
                 self.edit = Edit::Object { player_object: e.player_object, object_id: e.object_id };
-                crate::log!("objects: editing object {} (gizmo not implemented, MR-6.11)", e.object_id);
+                crate::log!("objects: editing object {}", e.object_id);
             }
             W::PlayerBeginAttachedObjectEdit(e) => {
+                // B 0x100117C0: selection off, editor start in attached mode (B 0x10072510).
+                self.select(false);
+                objedit::with(|sh| sh.editor.start(objedit::Target::Attached { slot: e.index }, [0.0; 3]));
+                Self::editor_input_start();
                 self.edit = Edit::Attached { index: e.index };
-                crate::log!("objects: editing attached object slot {} (gizmo not implemented, MR-6.11)", e.index);
+                crate::log!("objects: editing attached object slot {}", e.index);
             }
             _ => {}
         }
         self.publish(players);
     }
 
-    /// 0x10072c20(response): ends editing and sends the final/cancel 117 or 116.
-    fn stop_editing(&mut self, net: &mut NetClient, save: bool) {
-        // TODO(input-lock): samp restores cursor mode 0 here first (A 0x10072C20 → 0x100A0750(0, 1); the GTA
-        // reaction includes SetTaskSecondary(IK) on the local ped). Wire `ui::inputlock::set_mode(0, true)`
-        // (UI worktree ui2) once merged; only when an editor/selection was active.
-        let response = u32::from(save);
+    /// Editor start (B 0x10072450 / 0x10072510): cursor mode 0 with an immediate restore, then the restore runs at once.
+    fn editor_input_start() {
+        crate::ui::restore_input_now(true);
+    }
+
+    /// Selection on / off (B 0x1006DB40).
+    fn select(&mut self, on: bool) {
+        let was = objedit::with(|sh| std::mem::replace(&mut sh.selection.active, on));
+        if was && !on {
+            crate::ui::set_input_mode(0, true);
+            crate::ui::close_chat_input();
+        }
+        if !was && on {
+            crate::ui::restore_input_now(true);
+        }
+        if on {
+            self.edit = Edit::Selecting;
+        } else if self.edit == Edit::Selecting {
+            self.edit = Edit::None;
+        }
+    }
+
+    /// Editor stop (B 0x10072BF0): cursor mode 0 (immediate), the chat input closed, then the final 117 / 116.
+    fn stop_editing(&mut self, net: &mut NetClient, response: u32) {
+        if !matches!(self.edit, Edit::Object { .. } | Edit::Attached { .. }) {
+            return;
+        }
+        objedit::with(|sh| {
+            sh.editor.active = false;
+            sh.editor.dragging = false;
+        });
+        crate::ui::set_input_mode(0, true);
+        crate::ui::close_chat_input();
+        self.send_edit(net, response);
+        self.edit = Edit::None;
+        self.edit_matrix = None;
+    }
+
+    /// 117 (B 0x100728E0) or 116 (B 0x10072AF0) with `response`; 117 only for an existing object, response 2 at
+    /// most every 250 ms (the tick of every 117 send counts).
+    fn send_edit(&mut self, net: &mut NetClient, response: u32) {
         match self.edit {
             Edit::Object { player_object, object_id } => {
-                if let Some(o) = self.pool.get(&object_id).filter(|o| o.ptr != 0)
-                    && let Some((_, p)) = rows(o.ptr)
-                {
-                    let v = |a: [f32; 3]| Vec3 { x: a[0], y: a[1], z: a[2] };
-                    send(
-                        net,
-                        &rw::OnPlayerEditObject {
-                            player_object,
-                            object_id,
-                            response,
-                            position: v(p),
-                            rotation: v(o.rotation),
-                        },
-                    );
-                    self.sent_edit += 1;
+                let Some(o) = self.pool.get(&object_id).filter(|o| o.ptr != 0) else { return };
+                let Some((_, p)) = rows(o.ptr) else { return };
+                let now = tick_ms();
+                if response == 2 && !objedit::update_due(now, objedit::with(|sh| sh.editor.last_send_ms)) {
+                    return;
                 }
+                objedit::with(|sh| sh.editor.last_send_ms = now);
+                let v = |a: [f32; 3]| Vec3 { x: a[0], y: a[1], z: a[2] };
+                send(
+                    net,
+                    &rw::OnPlayerEditObject { player_object, object_id, response, position: v(p), rotation: v(o.rotation) },
+                );
+                self.sent_edit += 1;
             }
             Edit::Attached { index } => {
                 let local = self.local_id.unwrap_or(u16::MAX);
@@ -356,7 +401,101 @@ impl Objects {
             }
             _ => {}
         }
-        self.edit = Edit::None;
+    }
+
+    /// The editor / selection requests of this frame (window messages and the Present pass), and the per-frame
+    /// data the Present pass needs (edited object, pickable objects).
+    pub fn poll_editor(&mut self, runner: &mut Runner, net: &mut NetClient) {
+        let actions = objedit::with(|sh| std::mem::take(&mut sh.editor.actions));
+        for a in actions {
+            match a {
+                objedit::Action::Press => {
+                    if let Edit::Object { object_id, .. } = self.edit {
+                        self.edit_matrix = self.pool.get(&object_id).filter(|o| o.ptr != 0).and_then(|o| rows(o.ptr));
+                    }
+                }
+                objedit::Action::Drag { axis, d } => self.drag(runner, net, axis, d),
+                objedit::Action::Stop { response } => self.stop_editing(net, response),
+                objedit::Action::Select { id } => self.send_select(net, id),
+            }
+        }
+        let local = rd::<u32>(g::CWORLD_PLAYERS);
+        let frame = match self.edit {
+            Edit::Object { object_id, .. } => {
+                self.pool.get(&object_id).filter(|o| o.ptr != 0).map(|o| objedit::EditFrame { object: o.ptr, ped: 0, bone: 0 })
+            }
+            Edit::Attached { index } => self
+                .local_id
+                .and_then(|l| self.attached.get(&(l, index)))
+                .filter(|s| s.ptr != 0)
+                .map(|s| objedit::EditFrame { object: s.ptr, ped: local, bone: s.data.bone }),
+            _ => None,
+        };
+        let pickable = self.pool.values().filter(|o| o.ptr != 0).map(|o| (o.id, o.ptr, o.model)).collect();
+        objedit::with(|sh| {
+            sh.frame = frame;
+            sh.pickable = pickable;
+        });
+    }
+
+    /// Drag step: objects B 0x10073240 (translate along the edit matrix with MoveObject at speed 1, rotate the
+    /// rotation copy; then a rate-limited 117 response 2), attached objects B 0x10072240 (slot data only).
+    fn drag(&mut self, runner: &mut Runner, net: &mut NetClient, axis: usize, d: f32) {
+        let mode = objedit::with(|sh| sh.editor.mode);
+        match self.edit {
+            Edit::Object { object_id, .. } => {
+                let now = self.now_ms();
+                let Some(o) = self.pool.get_mut(&object_id).filter(|o| o.ptr != 0) else { return };
+                // B 0x1009F7B0: physical flag bit 3 cleared on every step.
+                wr(o.ptr + g::PHYSICAL_FLAGS, rd::<u32>(o.ptr + g::PHYSICAL_FLAGS) & !8);
+                match mode {
+                    0 => {
+                        let Some((r, p)) = self.edit_matrix else { return };
+                        let mut v = [0.0f32; 3];
+                        v[axis] = d;
+                        let m = matrix16(&r, p);
+                        let target = objedit::transform(&m, v);
+                        self.edit_matrix = Some((r, target));
+                        let keep = [world::NO_ROTATION - 1.0; 3];
+                        start_move(o, target, 1.0, keep, now);
+                    }
+                    1 => {
+                        let mut rot = o.rotation;
+                        objedit::rotate(&mut rot, axis, d);
+                        runner.run(
+                            op::SET_OBJECT_ROTATION,
+                            &[Arg::Int(o.handle), Arg::Float(rot[0]), Arg::Float(rot[1]), Arg::Float(rot[2])],
+                        );
+                        o.rotation = rot;
+                    }
+                    _ => {}
+                }
+                self.send_edit(net, 2);
+            }
+            Edit::Attached { index } => {
+                let Some(l) = self.local_id else { return };
+                if let Some(s) = self.attached.get_mut(&(l, index)) {
+                    let (mut off, mut rot, mut sc) = (vec(s.data.offset), vec(s.data.rotation), vec(s.data.scale));
+                    objedit::attached_drag(&mut off, &mut rot, &mut sc, mode, axis, d);
+                    let v = |a: [f32; 3]| Vec3 { x: a[0], y: a[1], z: a[2] };
+                    s.data.offset = v(off);
+                    s.data.rotation = v(rot);
+                    s.data.scale = v(sc);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 27 C→S (B 0x1006DC90): type 0, id, model, position of an existing object.
+    fn send_select(&mut self, net: &mut NetClient, id: u16) {
+        let Some(o) = self.pool.get(&id).filter(|o| o.ptr != 0) else { return };
+        let Some((_, p)) = rows(o.ptr) else { return };
+        send(
+            net,
+            &rw::OnPlayerSelectObject { select_type: 0, object_id: id, model: o.model as u32, position: Vec3 { x: p[0], y: p[1], z: p[2] } },
+        );
+        self.sent_edit += 1;
     }
 
     /// RPC 44 (A 0x1001b340 → pool create 0x100128d0 → wrapper 0x100a9150).
@@ -664,26 +803,18 @@ impl Objects {
         }
     }
 
-    /// Per frame: ESC while editing ends the editor with response 0 (TRACE-6: 117 / 116 response 0 with the
-    /// current values). The gizmo itself is not implemented (MR-6.11).
-    pub fn poll_escape(&mut self, net: &mut NetClient) {
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-        // SAFETY: plain Win32 query.
-        let down = (unsafe { GetAsyncKeyState(0x1B) } as u16) & 0x8000 != 0;
-        let pressed = down && !self.esc_down;
-        self.esc_down = down;
-        if pressed && matches!(self.edit, Edit::Object { .. } | Edit::Attached { .. }) {
-            self.stop_editing(net, false);
-        }
-    }
-
     pub fn header_fields(&self) -> String {
         format!(
-            "objects={} attached={} removals={} edit={:?} samp_draws={} filtered={} zone_hook={}/{}/{}",
+            "objects={} attached={} removals={} edit={:?} editor={} selected={} cam={:.2},{:.2},{:.2} samp_draws={} filtered={} zone_hook={}/{}/{}",
             self.pool.len(),
             self.attached.len(),
             self.removals,
             self.edit,
+            objedit::with(|sh| format!("{}/{}/{}", u8::from(sh.editor.active), sh.editor.mode, sh.editor.hovered)),
+            objedit::with(|sh| sh.selection.hovered),
+            rd::<f32>(g::CAMERA_POS),
+            rd::<f32>(g::CAMERA_POS + 4),
+            rd::<f32>(g::CAMERA_POS + 8),
             wh::PASS_DRAWS.load(std::sync::atomic::Ordering::Relaxed),
             wh::FILTERED.load(std::sync::atomic::Ordering::Relaxed),
             wh::ZONE_CALLS[0].load(std::sync::atomic::Ordering::Relaxed),
@@ -945,6 +1076,106 @@ fn stream(runner: &mut Runner, o: &mut Obj, cam: [f32; 3]) {
 fn local_in_vehicle() -> bool {
     let ped: u32 = rd(g::CWORLD_PLAYERS);
     ped != 0 && rd::<u32>(ped + crate::game::off::PED_FLAGS) & 0x100 != 0
+}
+
+/// `CCollision::SphereCastVsEntity` (cdecl), `CCollision::TestLineSphere` (cdecl), `CEntity::GetBoundCentre`
+/// (thiscall) and `gpColCache`, used by samp's pick ray test (B 0x10012E40).
+const SPHERE_CAST_VS_ENTITY: u32 = 0x419F00;
+const TEST_LINE_SPHERE: u32 = 0x417470;
+const GET_BOUND_CENTRE: u32 = 0x534250;
+const COL_CACHE_PTR: u32 = 0x9655CC;
+
+/// samp's own collision cache for the pick (B 0x1026CDF8, zero-initialised .bss; swapped into `gpColCache` around
+/// the sphere cast, B 0x100B6560).
+static mut PICK_COL_CACHE: [u32; 0x420] = [0; 0x420];
+
+fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// The pool ray test of selection mode (B 0x10012E40): of the objects closer to `start` than the best so far
+/// (initially 150), the ones the segment hits — a sphere cast (radius 0.25 spheres) against the collision model
+/// when the entity uses collision and has collision data, else a frustum-checked line-vs-bounding-sphere test
+/// (B 0x100B65E0) — and the nearest of those wins.
+pub fn pick(start: [f32; 3], end: [f32; 3], list: &[(u16, u32, i32)]) -> Option<(u16, u32, i32)> {
+    let mut best_d = objedit::PICK_DISTANCE;
+    let mut best = None;
+    for &(id, ptr, model) in list {
+        let Some((_, p)) = rows(ptr) else { continue };
+        let d = dist3(p, start);
+        if d >= best_d {
+            continue;
+        }
+        let mi = wh::model_info(model);
+        let col: u32 = if mi != 0 { rd(mi + g::MI_COL_MODEL) } else { 0 };
+        if col == 0 {
+            continue;
+        }
+        let uses_collision = rd::<u8>(ptr + g::ENTITY_FLAGS) & 1 != 0;
+        let hit = if uses_collision && rd::<u32>(col + 0x2C) != 0 {
+            let r = objedit::PICK_SPHERE_RADIUS;
+            let a: [f32; 5] = [start[0], start[1], start[2], r, 0.0];
+            let b: [f32; 5] = [end[0], end[1], end[2], r, 0.0];
+            // SAFETY: GTA's cdecl sphere cast on a live object; gpColCache points at our buffer during the call.
+            unsafe {
+                let old: u32 = rd(COL_CACHE_PTR);
+                wr(COL_CACHE_PTR, std::ptr::addr_of_mut!(PICK_COL_CACHE) as u32);
+                let f: extern "C" fn(*const [f32; 5], *const [f32; 5], u32) -> u8 =
+                    std::mem::transmute(SPHERE_CAST_VS_ENTITY as usize);
+                let h = f(&a, &b, ptr) & 1 != 0;
+                wr(COL_CACHE_PTR, old);
+                h
+            }
+        } else {
+            let mut c = [0.0f32; 3];
+            // SAFETY: CEntity::GetBoundCentre(CVector&) on a live object.
+            unsafe {
+                let f: extern "thiscall" fn(u32, *mut [f32; 3]) = std::mem::transmute(GET_BOUND_CENTRE as usize);
+                f(ptr, &mut c);
+            }
+            let col_r: f32 = rd(col + 0x24);
+            let sphere: [f32; 4] = [c[0], c[1], c[2], col_r];
+            let cam: u32 = rd(g::SCENE_CAMERA);
+            // SAFETY: RwCameraFrustumTestSphere(camera, RwSphere*) (cdecl).
+            let visible = cam != 0
+                && unsafe {
+                    let f: extern "C" fn(u32, *const [f32; 4]) -> i32 =
+                        std::mem::transmute(g::RW_CAMERA_FRUSTUM_TEST_SPHERE as usize);
+                    f(cam, &sphere) != 0
+                };
+            visible && {
+                let line: [f32; 8] =
+                    [start[0] - c[0], start[1] - c[1], start[2] - c[2], 0.0, end[0] - c[0], end[1] - c[1], end[2] - c[2], 0.0];
+                let sph: [f32; 5] = [0.0, 0.0, 0.0, objedit::pick_radius(col_r), 0.0];
+                // SAFETY: CCollision::TestLineSphere(const CColLine&, const CColSphere&) (cdecl).
+                unsafe {
+                    let f: extern "C" fn(*const [f32; 8], *const [f32; 5]) -> u8 =
+                        std::mem::transmute(TEST_LINE_SPHERE as usize);
+                    f(&line, &sph) & 1 != 0
+                }
+            }
+        };
+        if hit {
+            best_d = d;
+            best = Some((id, ptr, model));
+        }
+    }
+    best
+}
+
+/// `GetTickCount` (samp's clock for the 117 rate).
+fn tick_ms() -> u32 {
+    // SAFETY: plain Win32 call.
+    unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount() }
+}
+
+/// Rows + position as samp's 16-float matrix (right, forward, up, position).
+fn matrix16(r: &Rotation, p: [f32; 3]) -> [f32; 16] {
+    let mut m = [0.0f32; 16];
+    for (i, row) in [r.right, r.forward, r.up, p].iter().enumerate() {
+        m[4 * i..4 * i + 3].copy_from_slice(row);
+    }
+    m
 }
 
 /// MoveObject setup (A 0x100A9C10).

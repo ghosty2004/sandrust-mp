@@ -19,6 +19,7 @@
 //   vhp|VEH|health                         SetVehicleHealth
 //   vdmg|VEH|panels|doors|lights|tires     UpdateVehicleDamageStatus
 //   vdel|VEH                               DestroyVehicle
+//   plate|VEH|text                         SetVehicleNumberPlate
 //   weapon|P|weapon|ammo                   GivePlayerWeapon
 //   time|h|m   weather|w   interior|P|i    SetPlayerTime / SetPlayerWeather / SetPlayerInterior
 //   nametagdist|meters                     (no runtime native; logged only)
@@ -451,6 +452,11 @@ Run(seq, const line[])
     else if (!strcmp(cmd, "vdmg"))
         UpdateVehicleDamageStatus(in(line, 1), VEHICLE_PANEL_STATUS:in(line, 2), VEHICLE_DOOR_STATUS:in(line, 3), VEHICLE_LIGHT_STATUS:in(line, 4), VEHICLE_TYRE_STATUS:in(line, 5));
     else if (!strcmp(cmd, "vdel")) DestroyVehicle(in(line, 1));
+    else if (!strcmp(cmd, "plate"))
+    {
+        field(line, 2, a);
+        SetVehicleNumberPlate(in(line, 1), a);
+    }
     else if (!strcmp(cmd, "weapon")) GivePlayerWeapon(pl(line, 1), WEAPON:in(line, 2), in(line, 3));
     else if (!strcmp(cmd, "time")) SetPlayerTime(gLocal, in(line, 1), in(line, 2));
     else if (!strcmp(cmd, "weather")) SetPlayerWeather(gLocal, in(line, 1));

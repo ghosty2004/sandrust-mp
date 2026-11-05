@@ -724,7 +724,8 @@ ped (+0x1dd), state (+0x10a) ≠ 0, "show nametag" (+0x04, set by RPC 80) ≠ 0,
 valid, the distance (A 0x1009f1f0) < the server's nametag draw distance (settings +0x27,
 float), and the player is not an NPC (+0x10c = 0).
 - Anchor: the ped position, or for state 0x13 with a vehicle the vehicle position (only if
-  that vehicle is valid). If server "nametag LOS" (+0x2f) is on, script opcode 0x06BD
+  that vehicle is valid). If "nametag LOS" (+0x2f) is on — always in R4: the RPC 139 handler reads the bit into
+  +0x2f and then writes 1 there (B 0x10010778), whatever the server sent — script opcode 0x06BD
   (line-of-sight clear: buildings and objects only) from the anchor to the camera position
   must pass.
 - Screen point: project `(x, y, z + 0.0475·d + 0.2)` with the device viewport and samp's copy

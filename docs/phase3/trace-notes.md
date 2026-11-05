@@ -1353,8 +1353,9 @@ So samp never nests scenes: the RT scene opens and closes completely between two
 
 ### Still open (M6)
 * 116 (attached-object editor) drag rate: not measured (see above).
-* Camera collision: which objects GTA's own camera pass misses (where samp's no-camera-collision flag matters) and the
-  source of netgame byte +0x232 (vehicle camera collision off): not measured.
+* Camera collision: M6-P (docs/phase3/m6p-notes.md §2): samp's own test runs only when the camera is **outside**
+  ±3000 (the "inside" above misread the fcomp tests); measured at x 3100: the wall pulls the camera in, with
+  `SetObjectNoCameraCol` it does not. Netgame byte +0x232 = RPC 167 (vehicle collisions off), as row 82.
 
 ## Combat (TRACE-6)
 

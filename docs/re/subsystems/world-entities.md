@@ -338,8 +338,8 @@ Client behaviour (observed):
 
 - Behaviour: leaves selection mode and textdraw-select mode. Then the editor (global A 0x1026e9d8)
   starts in mode 1 = object (0x10072480): stores the id, the player-object bit (+0x8E) and the
-  object's current rotation (from wrapper +0xAD..), and shows the cursor. The gizmo UI is
-  0x100735b0 / 0x10073270 (not analysed).
+  object's current rotation (from wrapper +0xAD..), and shows the cursor. The gizmo UI is described in
+  "Object editor and selection UI" below (M6-P).
 
 ### 117 OnPlayerEditObject (C→S)
 - Send site A 0x10072910 (B 0x100728e0), rel 9. Called with response 0 (cancel, from
@@ -376,6 +376,50 @@ Client behaviour (observed):
 - If the index is outside 0…9 or the slot is unused, the 52-byte block is **omitted** (null
   source → write-bytes writes nothing). The payload is then 8 bytes, and open.mp's reader fails.
 - open.mp: same layout when the slot exists.
+
+### Object editor and selection UI (M6-P; samp.dll B addresses, measured in run orig-20261105-042300)
+
+- Editor object (global 0x1026E9D8): made at start-up with one `ID3DXLine` and two SAMPAUX3 fonts (22 and 28).
+  State: active, kind (1 object / 2 attached slot), mode (0 translate, 1 rotate, 2 scale; objects never get 2),
+  dragging flag, hovered handle (−1, 0–2 axes, 3–5 mode buttons, 10 save), a "drawn" flag, the size of the
+  background glyph, seven hit rects, per-axis screen-direction flags (mostly vertical? inverted?), the cursor at the
+  press, a rotation copy, an edit-matrix copy and the tick of the last 117.
+- Start (117 or 116 S→C): kind/mode set, cursor mode 0 with an immediate restore, run the restore at once; the
+  scale button is shown only for attached slots. Stop (cancel, save or RPC 28): cursor mode 0 (immediate), the chat
+  input is closed, then the final 117 (only if the object exists) or 116.
+- Per Present (UI step 12, before the selection): when not dragging, cursor mode 3 with flag 1 and the real device's
+  cursor shown, or cursor mode 0 while the sprint key is held; while dragging the device cursor is hidden. Then the
+  gizmo is drawn around the edited object's matrix (attached slots in translate mode: the bone's axes, the object's
+  position), half length = camera distance × 0.125:
+  - probe: background glyph `C` measured with DT_CALCRECT (only its size is kept);
+  - for X, Y, Z: both ends (±half length along the axis) projected; any end with z > 1 ends the whole drawing (not
+    "drawn"); an antialiased 2-point line (X 0xFF9999CC, Y 0xFFCC9999, Z 0xFF99CC99); unless dragging, the axis'
+    screen direction is stored (mostly vertical or horizontal, and whether + points left/up); a handle at the + end;
+  - buttons at the − end of Z, right to left 2 px + glyph width apart: save, [scale], rotate, translate.
+  - Handle = background `C` (SAMPAUX3 28, count 1, rect = the point + 1, format 0x105; 0x99222222, hovered
+    0xFFAAAAAA, the dragged axis / the active mode 0xFF774444) and its glyph (SAMPAUX3 22): axes `6 7 8`
+    (translate), `3 4 5` (rotate), `9 A B` (scale) in the axis colours; buttons `2` / `0` / `1` / `H` in 0xFF999999.
+    The hit rect is the glyph size centred on the point.
+  - Unless dragging: hover test of the client cursor against the rects (only when drawn and the cursor mode ≠ 0).
+- Window messages (checked before the chat input): LMB down on an axis handle starts a drag (capture, Windows
+  cursor hidden, clip off, the object matrix copied as the edit matrix); every mouse move during the drag takes the
+  cursor delta on x when the axis is mostly horizontal (on y otherwise; swapped in rotate mode), negated when
+  inverted, × 0.01, applies it and puts the cursor back to the client centre; LMB up ends the drag (capture off,
+  cursor shown at the handle's rect corner, hover test). LMB up on a mode button sets the mode, on save stops with
+  response 1. `WM_CHAR` ESC stops with response 0 (the key-down still reaches GTA).
+- Drag apply, objects: clear physical flag bit 3; translate moves the edit matrix' position along its own axis and
+  starts MoveObject at speed 1 towards it (no rotation change), so the object follows with a lag; rotate adds d × 10°
+  to the rotation copy (wrapped once by ±360 outside (−180, 180]) and sets it; then 117 response 2 when ≥ 250 ms
+  (GetTickCount) passed since the last 117. Attached slots: offset ± d × 0.1, rotation ± d × 10 (wrapped), scale
+  ± d × 0.1 (negative → 0); nothing is sent until the end.
+- Selection (global 0x1026E9DC): per Present cursor mode 3 / flag 0 with the device cursor (0 / 1 while sprint is
+  held); with a visible cursor a ray through the cursor (inverse of WORLD × VIEW from the device proxy's copies,
+  unnormalised direction, 150 m) picks the nearest pool object (by distance to the ray start, < 150) the segment
+  hits: a sphere cast with 0.25-radius spheres (with samp's own collision cache swapped in) when the object uses
+  collision and its model has collision data, otherwise a frustum-checked line test against the bounding sphere
+  (radius < 0.5 → 0.75, < 1 → × 1.5). The hovered object (< 150 m from the camera) gets its axis cross (length 1,
+  0xFFCC9999) and the label `[id: %d, type: %d]\nDistance: %.2fm\n` (outlined small font, 0xFFD47B75, no LOS test).
+  LMB up sends 27 for the hovered object; ESC (`WM_CHAR`) leaves the mode.
 
 ---------------------------------------------------------------------------------------------------
 

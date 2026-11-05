@@ -24,7 +24,8 @@ use samp_ui::input::{self, ChatInput};
 use samp_ui::nametags;
 use samp_ui::scoreboard::Row;
 
-use super::d3d::{self, D3dx, Font, FontArgs, Rect, RenderTarget, Sprite, devcall, dt};
+use super::d3d::{self, D3dx, Font, FontArgs, Line, Rect, RenderTarget, Sprite, devcall, dt};
+use crate::objedit::{self, Editor};
 use super::dxut::{self, EditView, ScrollBar};
 
 /// `RsGlobal.maximumWidth` / `maximumHeight` (UR §3.2 `W`).
@@ -358,6 +359,8 @@ pub struct Renderer {
 struct Unused {
     plate_font: Font,
     logo: Logo,
+    /// Object editor line and SAMPAUX3 22 / 28 (`editor_gizmo`, `select_highlight`).
+    editor_line: Option<Line>,
     editor_fonts: (Option<Font>, Option<Font>),
     plate_rt: Option<RenderTarget>,
     extra: [Sprite; 2],
@@ -504,7 +507,8 @@ impl Renderer {
         // Nametag painter and 3D-text painter sprites.
         let tags = Sprite::create(&d3dx)?;
         let text3d = Sprite::create(&d3dx)?;
-        // Object editor fonts (A 0x10071bc0).
+        // Object editor (B 0x10071b90): its line, then its two fonts.
+        let editor_line = Line::create(&d3dx).ok();
         let aux_font = |h: i32| {
             Font::create(&d3dx, FontArgs { height: h, width: 0, weight: 400, charset: 2, quality: 0, face: b"SAMPAUX3".to_vec() })
         };
@@ -561,7 +565,7 @@ impl Renderer {
             rt_scroll: 0,
             built_for: (w, font_size),
             host_size: (w, video_height()),
-            unused: Unused { plate_font, logo, editor_fonts, plate_rt, extra },
+            unused: Unused { plate_font, logo, editor_line, editor_fonts, plate_rt, extra },
         })
     }
 
@@ -627,6 +631,9 @@ impl Renderer {
         for f in [&u.editor_fonts.0, &u.editor_fonts.1].into_iter().flatten() {
             f.on_lost();
         }
+        if let Some(l) = &u.editor_line {
+            l.on_lost();
+        }
         for sp in &u.extra {
             sp.on_lost();
         }
@@ -649,6 +656,9 @@ impl Renderer {
         u.plate_font.on_reset();
         for f in [&u.editor_fonts.0, &u.editor_fonts.1].into_iter().flatten() {
             f.on_reset();
+        }
+        if let Some(l) = &u.editor_line {
+            l.on_reset();
         }
         for sp in &u.extra {
             sp.on_reset();
@@ -940,6 +950,157 @@ impl Renderer {
             }
             let mut r = Rect { left: x, top: y, right: x + 1, bottom: y + 1 };
             font.draw(s.ptr, &text, &mut r, dt::CENTER | dt::NOCLIP, l.argb);
+        }
+        s.end();
+    }
+
+    /// The plate painter (B 0x1006D840): a 64×32 texture (default pool, the painter's format), the 128×32 render
+    /// target cleared to 0xFFBEB6A8 with the plate text drawn by the font renderer (B 0x1006B610: Arial 38/10 bold,
+    /// four 0xB4F0EEE4 outline passes at (0,−2)/(+2,0)/(0,+2)/(−2,0) around (0, 3), then 0xEE444470; rect right /
+    /// bottom 128 / 32, format 0x105, colour codes removed), then copied with a linear filter. 0 on failure.
+    pub fn paint_plate(&self, text: &[u8]) -> u32 {
+        const FMT: u32 = 0x105;
+        const OUTLINE: u32 = 0xB4F0_EEE4;
+        const TEXT: u32 = 0xEE44_4470;
+        let Some(rt) = &self.unused.plate_rt else { return 0 };
+        let mut tex = std::ptr::null_mut();
+        // 22 = X8R8G8B8, the painter's format in the measured runs.
+        let hr = (self.d3dx.create_texture)(d3d::real_device(), 64, 32, 1, 0, 22, 0, &mut tex);
+        if hr < 0 || tex.is_null() {
+            return 0;
+        }
+        rt.begin();
+        devcall::clear(3, 0xFFBE_B6A8, 1.0, 0);
+        let stripped = colour::strip_codes(text);
+        let s = &self.sprites.text;
+        s.begin(d3d::sprite::ALPHABLEND);
+        let font = &self.unused.plate_font;
+        // Every pass goes through the font renderer's colour proxy (measured: the DrawTexts carry a non-sprite
+        // pointer, the glyphs land on the renderer's sprite).
+        for (dx, dy, argb) in [(0, -2, OUTLINE), (2, 0, OUTLINE), (0, 2, OUTLINE), (-2, 0, OUTLINE), (0, 0, TEXT)] {
+            let mut r = Rect { left: dx, top: 3 + dy, right: 128, bottom: 32 };
+            let glyphs: Vec<u32> = colour::glyph_colours(&stripped, argb).iter().map(|g| g.colour).collect();
+            d3d::draw_glyph_coloured(font, s, &stripped, &mut r, FMT, argb, glyphs);
+        }
+        s.end();
+        rt.end();
+        // SAFETY: the new texture (IDirect3DBaseTexture9::SetAutoGenFilterType = 14, GetSurfaceLevel = 18), the
+        // surface's Release, D3DXLoadSurfaceFromSurface(dst, NULL, NULL, src, NULL, NULL, LINEAR, 0).
+        unsafe {
+            let f: extern "system" fn(*mut c_void, u32) -> d3d::HResult = d3d::vfn(tex, 14);
+            f(tex, 2);
+            let mut surf = std::ptr::null_mut();
+            let f: extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> d3d::HResult = d3d::vfn(tex, 18);
+            f(tex, 0, &mut surf);
+            if !surf.is_null() {
+                (self.d3dx.load_surface_from_surface)(
+                    surf,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    rt.surface,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    3,
+                    0,
+                );
+                d3d::release(surf);
+            }
+        }
+        tex as u32
+    }
+
+    /// One editor handle (B 0x10072570): background glyph (SAMPAUX3 28), then the handle glyph (SAMPAUX3 22), both
+    /// count 1 at the point, format 0x105; the hit rect is centred on the point.
+    fn editor_handle(&self, ed: &mut Editor, index: i32, x: i32, y: i32) {
+        let (Some(small), Some(big)) = (&self.unused.editor_fonts.0, &self.unused.editor_fonts.1) else { return };
+        let mut r = Rect { left: x, top: y, right: x + 1, bottom: y + 1 };
+        big.draw_n(std::ptr::null_mut(), objedit::GLYPH_BACKGROUND, 1, &mut r, objedit::FMT_HANDLE, ed.background(index));
+        let (glyph, argb) = ed.glyph_of(index);
+        let mut r = Rect { left: x, top: y, right: x + 1, bottom: y + 1 };
+        small.draw_n(std::ptr::null_mut(), glyph, 1, &mut r, objedit::FMT_HANDLE, argb);
+        ed.place(index, x, y);
+    }
+
+    /// Both ends of `axis` (±`s` in the matrix frame) on screen; `None` when either z > 1.
+    fn axis_ends(&self, m: &[f32; 16], axis: usize, s: f32) -> Option<([f32; 3], [f32; 3])> {
+        let mut v = [0.0f32; 3];
+        v[axis] = s;
+        let a = self.project(objedit::transform(m, v));
+        if a[2] > 1.0 {
+            return None;
+        }
+        v[axis] = -s;
+        let b = self.project(objedit::transform(m, v));
+        (b[2] <= 1.0).then_some((a, b))
+    }
+
+    /// The editor gizmo (B 0x10072C60): glyph probe, antialiased line per axis (aborting at the first end point
+    /// behind the camera), axis handle at the + end; save / scale / rotate / translate buttons left of the − end of
+    /// Z. Returns whether all of it was drawn.
+    pub fn editor_gizmo(&self, ed: &mut Editor, m: &[f32; 16], s: f32) -> bool {
+        let Some(line) = &self.unused.editor_line else { return false };
+        if let Some(big) = &self.unused.editor_fonts.1 {
+            // samp passes an uninitialised rect; the size of the result is what it keeps.
+            let mut r = Rect::default();
+            big.draw_n(std::ptr::null_mut(), objedit::GLYPH_BACKGROUND, -1, &mut r, objedit::FMT_PROBE, objedit::PROBE_COLOUR);
+            ed.glyph = (r.right - r.left, r.bottom - r.top);
+        }
+        line.set_antialias(true);
+        let mut last_b = [0.0f32; 3];
+        for axis in 0..3 {
+            let Some((a, b)) = self.axis_ends(m, axis, s) else { return false };
+            line.segment([a[0], a[1]], [b[0], b[1]], objedit::AXIS_COLOURS[axis]);
+            ed.set_direction(axis, [a[0], a[1]], [b[0], b[1]]);
+            self.editor_handle(ed, axis as i32, a[0] as i32, a[1] as i32);
+            last_b = b;
+        }
+        let (mut x, y) = (last_b[0] as i32, last_b[1] as i32);
+        self.editor_handle(ed, objedit::HANDLE_SAVE, x, y);
+        let step = -2 - ed.glyph.0;
+        if ed.show_scale {
+            x += step;
+            self.editor_handle(ed, 5, x, y);
+        } else {
+            ed.clear_rect(5);
+        }
+        x += step;
+        self.editor_handle(ed, 4, x, y);
+        x += step;
+        self.editor_handle(ed, 3, x, y);
+        true
+    }
+
+    /// Selection highlight (B 0x1006DA20): the object's axis cross (B 0x10071D50, length 1, one colour) and the
+    /// id / model / distance label through the 3D-text painter (B 0x1006BC50 with outline 1 and its LOS test off
+    /// — measured: no IS_LINE_OF_SIGHT_CLEAR while selecting; the font renderer's outlined small text, B 0x1006B4A0,
+    /// rect [x, y, x+1, y+1], format 0x101).
+    pub fn select_highlight(&self, m: &[f32; 16], label: &[u8]) {
+        if let Some(line) = &self.unused.editor_line {
+            line.set_antialias(true);
+            for axis in 0..3 {
+                let Some((a, b)) = self.axis_ends(m, axis, objedit::SELECT_CROSS) else { break };
+                line.segment([a[0], a[1]], [b[0], b[1]], objedit::SELECT_LINE_COLOUR);
+            }
+        }
+        let s = &self.sprites.text3d;
+        s.begin(d3d::sprite::ALPHABLEND);
+        let pos = [m[12], m[13], m[14]];
+        {
+            let p = self.project(pos);
+            if p[2] <= 1.0 {
+                let (x, y) = (p[0] as i32, p[1] as i32);
+                let rect = Rect { left: x, top: y, right: x + 1, bottom: y + 1 };
+                Self::outlined(
+                    s,
+                    &self.fonts.small,
+                    &self.fonts.small_outline,
+                    label,
+                    rect,
+                    dt::CENTER,
+                    objedit::SELECT_LABEL_COLOUR,
+                    &fonts::OUTLINE_4,
+                );
+            }
         }
         s.end();
     }
