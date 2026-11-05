@@ -388,7 +388,7 @@ impl Vehicles {
             }
             V::ScmEvent(e) => self.scm_event(runner, &e),
             V::SetVehiclePlate(p) => {
-                // Text only; the texture is created once (vehicles.md RE-10 "number plates"; textures not drawn yet).
+                // Text only; the texture is created once by the plate pass (`plates.rs`).
                 if p.plate.len() <= 32
                     && let Some(v) = self.pool.get_mut(&p.vehicle_id)
                 {
@@ -1182,16 +1182,7 @@ impl Vehicles {
                         self.last_driven = Some(vehicle_id);
                     }
                     if train {
-                        if let (Some(h), Some(p)) = (h, self.get(vehicle_id).and_then(|v| pos_of(v.ptr))) {
-                            let a = [
-                                Arg::Int(h),
-                                Arg::Float(p[0] + vm::TRAIN_EXIT_OFFSET),
-                                Arg::Float(p[1] + vm::TRAIN_EXIT_OFFSET),
-                                Arg::Float(p[2]),
-                            ];
-                            runner.run(op::WARP_CHAR_FROM_CAR_TO_COORD, &a);
-                        }
-                        camera_behind(runner);
+                        // Warped inside the constructor hook (vehhooks::leave_filter); nothing else.
                     } else if !rc {
                         crate::log!("vehicles: exit vehicle {vehicle_id}");
                         send(net, &rv::OnPlayerExitVehicle { vehicle_id });
@@ -1399,6 +1390,11 @@ impl Vehicles {
     }
 
     // ---- per frame: the vehicle pool (A 0x1001F3C0) ----------------------------------------------------------
+
+    /// (id, CVehicle*, plate text) of every vehicle in pool order (the plate pass, `plates.rs`).
+    pub fn plate_list(&self) -> Vec<(u16, u32, Vec<u8>)> {
+        self.pool.iter().map(|(id, v)| (*id, v.ptr, v.plate.clone())).collect()
+    }
 
     pub fn pool_tick(&mut self, runner: &mut Runner, net: &mut NetClient, players: &Players, now: Instant) {
         self.frame += 1;

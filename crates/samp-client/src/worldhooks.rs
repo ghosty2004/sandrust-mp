@@ -125,6 +125,10 @@ pub struct ObjInfo {
     pub has_text: bool,
     /// Object-to-object attachment with sync rotation 0 keeps its own rotation (row 75).
     pub keep_rotation: Option<[f32; 3]>,
+    /// An object of samp's object pool (not a player-attached slot); row 81 tests only these.
+    pub pool_object: bool,
+    /// Wrapper +0x53: no camera collision (RPC 44 field / RPC 169).
+    pub no_camera_collision: bool,
 }
 
 /// A building removal (RPC 43).
@@ -742,6 +746,93 @@ unsafe extern "C" fn check_camera_collision_vehicles_stub() {
     )
 }
 
+/// `CCollision::BuildCacheOfCameraCollision(CColSphere*, CColSphere*)` (cdecl, bool), the row-81 call target.
+const BUILD_CACHE_OF_CAMERA_COLLISION: u32 = 0x41AC40;
+/// `CCollision::SphereCastVsEntity(CColSphere*, CColSphere*, CEntity*)` (cdecl, bool; samp's pointer B 0x1011742C).
+const SPHERE_CAST_VS_ENTITY: u32 = 0x419F00;
+/// `CWorld::pIgnoreEntity`.
+const WORLD_IGNORE_ENTITY: u32 = 0xB7CD68;
+/// `CPhysical::m_pMovingList` (samp's vehicle test, B 0x1009F400, requires it).
+const PHYSICAL_MOVING_LIST: u32 = 0xB4;
+/// samp adds its own tests only while the camera sphere is outside this square (B 0x100A59DC…0x100A5A18: |x| or
+/// |y| > 3000, i.e. outside GTA's sector grid). Measured (run orig-20261105-042300, mark `cam81`): at x = 3100 a
+/// wall behind the player pulls the camera in; with `SetObjectNoCameraCol` it does not.
+const CAMERA_TEST_LIMIT: f32 = 3000.0;
+/// Camera-distance limits of samp's object (B 0x10012DB0, < 200) and vehicle (B 0x1001EDD0, < 300) tests.
+const CAMERA_OBJECT_RANGE: f32 = 200.0;
+const CAMERA_VEHICLE_RANGE: f32 = 300.0;
+
+fn sphere_cast(a: u32, b: u32, ent: u32) -> bool {
+    // SAFETY: GTA's cdecl function on the two spheres of the running camera test and a live entity.
+    unsafe {
+        let f: extern "C" fn(u32, u32, u32) -> u8 = std::mem::transmute(SPHERE_CAST_VS_ENTITY as usize);
+        f(a, b, ent) & 1 != 0
+    }
+}
+
+/// samp's per-entity camera test (B 0x1009FC30 with the direct call): alive, not `pIgnoreEntity`, in range, a
+/// collision model with radius > 0, then the sphere cast.
+fn camera_entity_hit(a: u32, b: u32, ent: u32, range: f32) -> bool {
+    if ent == 0 || rd::<u32>(ent) == g::VTBL_PLACEABLE || ent == rd::<u32>(WORLD_IGNORE_ENTITY) {
+        return false;
+    }
+    let m: u32 = rd(ent + g::ENTITY_MATRIX);
+    if m == 0 {
+        return false;
+    }
+    let p = v3(m + 0x30);
+    let c = v3(g::CAMERA_POS);
+    let d = ((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2)).sqrt();
+    if d >= range {
+        return false;
+    }
+    let mi = model_info(i32::from(rd::<u16>(ent + g::ENTITY_MODEL)));
+    let col: u32 = if mi != 0 { rd(mi + g::MI_COL_MODEL) } else { 0 };
+    if col == 0 || rd::<f32>(col + 0x24) <= 0.0 {
+        return false;
+    }
+    sphere_cast(a, b, ent)
+}
+
+/// Row 81 (B 0x100A5960): GTA's camera cache first; when it found nothing and the camera is outside GTA's world
+/// square, samp's object pool (objects with the no-camera-collision flag skipped) and then the vehicles (skipped
+/// while RPC 167 disabled collisions). samp's second object pool (B 0x1014FE24) is the `-d` debug-script pool,
+/// absent in network play.
+extern "C" fn build_cache_of_camera_collision(a: u32, b: u32) -> u32 {
+    // SAFETY: the original cdecl call this site made.
+    let found = unsafe {
+        let f: extern "C" fn(u32, u32) -> u8 = std::mem::transmute(BUILD_CACHE_OF_CAMERA_COLLISION as usize);
+        f(a, b) & 1 != 0
+    };
+    if found || b == 0 {
+        return u32::from(found);
+    }
+    let (x, y): (f32, f32) = (rd(b), rd(b + 4));
+    if (-CAMERA_TEST_LIMIT..=CAMERA_TEST_LIMIT).contains(&x) && (-CAMERA_TEST_LIMIT..=CAMERA_TEST_LIMIT).contains(&y) {
+        return 0;
+    }
+    let objects: Vec<u32> = try_shared(|s| {
+        if !s.active {
+            return Vec::new();
+        }
+        s.objects.values().filter(|o| o.pool_object && !o.no_camera_collision && o.ptr != 0).map(|o| o.ptr).collect()
+    })
+    .unwrap_or_default();
+    if objects.into_iter().any(|o| rd::<u32>(o + g::ENTITY_RW_OBJECT) != 0 && camera_entity_hit(a, b, o, CAMERA_OBJECT_RANGE)) {
+        return 1;
+    }
+    let Some((off, vehicles)) = crate::vehhooks::try_with_shared(|s| (s.disable_collisions, s.by_ptr.keys().copied().collect::<Vec<_>>())) else {
+        return 0;
+    };
+    if off {
+        return 0;
+    }
+    let hit = vehicles
+        .into_iter()
+        .any(|v| rd::<u32>(v + PHYSICAL_MOVING_LIST) != 0 && camera_entity_hit(a, b, v, CAMERA_VEHICLE_RANGE));
+    u32::from(hit)
+}
+
 /// Row 83 (A 0x100A5B30): the camera ignores attached objects (`m_pAttachedTo` set).
 #[unsafe(naked)]
 unsafe extern "C" fn camera_ignore_object_stub() {
@@ -989,7 +1080,7 @@ fn rotate_local(r: [[f32; 3]; 3], axis: usize, a: f32) -> [[f32; 3]; 3] {
 
 /// LTM of the ped bone `bone` (SA:MP bone id 1…18 = `ePedNode`): the frame data in `CPed::m_apBones` (+0x488)
 /// gives the node id; its matrix comes from the skin clump's animation hierarchy.
-fn bone_matrix(ped: u32, bone: i32) -> Option<[f32; 16]> {
+pub fn bone_matrix(ped: u32, bone: i32) -> Option<[f32; 16]> {
     if !(1..=18).contains(&bone) {
         return None;
     }
@@ -1079,7 +1170,7 @@ fn expect_ptr(slot: u32, want: u32) -> Result<(), PatchError> {
 }
 
 /// samp's hook-jmp-indirect form: the handler address in `slot`, `jmp dword [slot]` (+ NOP padding) at `site`.
-fn jmp_indirect(
+pub(crate) fn jmp_indirect(
     patcher: &mut Patcher,
     mem: &mut ProcessMemory,
     label: &'static str,
@@ -1177,7 +1268,7 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
             .and_then(|()| patcher.swap_pointer(mem, "CCivilianPed::ProcessControl", 0x86C0D0, cpc).map(|_| ())),
     ));
     // Call sites.
-    let calls: [(u32, u32, u32, u32, &'static str); 10] = [
+    let calls: [(u32, u32, u32, u32, &'static str); 11] = [
         (
             25,
             0x53EA03,
@@ -1233,6 +1324,13 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
             roadsign_guard_stub as unsafe extern "C" fn() as usize as u32,
             g::ROADSIGN_RENDER_ATOMIC,
             "RenderEffects roadsign guard",
+        ),
+        (
+            81,
+            0x41B02E,
+            build_cache_of_camera_collision as extern "C" fn(u32, u32) -> u32 as usize as u32,
+            BUILD_CACHE_OF_CAMERA_COLLISION,
+            "camera collision cache",
         ),
         (
             82,

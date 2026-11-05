@@ -27,6 +27,7 @@ usage: samp-bot [HOST:PORT] [options]
   --radius M           circle / turn radius (default 10 / 20)
   --speed M/S          cruise speed (default 5)
   --keys N             extra key bits held while driving (2 horn, 128 handbrake)
+  --trailer ID         tow vehicle ID: trailer id in 200 and a 210 every in-car tick (9 m behind)
   --siren              siren on
   --drive-by           passenger drive-by (211 bit 6)
   --exit-after S       leave the vehicle (RPC 154) S seconds after sitting down
@@ -74,6 +75,7 @@ fn parse_args() -> std::result::Result<Args, String> {
             "--radius" => radius = Some(num("--radius", it.next())?),
             "--speed" => c.speed = num("--speed", it.next())?,
             "--keys" => c.extra_keys = num("--keys", it.next())?,
+            "--trailer" => c.trailer = Some(num("--trailer", it.next())?),
             "--siren" => c.siren = true,
             "--drive-by" => c.drive_by = true,
             "--exit-after" => c.exit_after = Some(Duration::from_secs_f32(num("--exit-after", it.next())?)),

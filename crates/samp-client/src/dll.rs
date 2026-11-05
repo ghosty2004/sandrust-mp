@@ -309,6 +309,11 @@ fn init_thread() {
         let failed: Vec<String> =
             hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
         crate::log!("main: vehicle hooks: {} installed, failed: {failed:?}", hooks.len() - failed.len());
+        // Number plates (rows 59/60).
+        let hooks = crate::plates::install(patcher, &mut mem);
+        let failed: Vec<String> =
+            hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
+        crate::log!("main: plate rows: {} installed, failed: {failed:?}", hooks.len() - failed.len());
         // World entities (M6): byte rows and hooks.
         let hooks = crate::worldhooks::install(patcher, &mut mem);
         let failed: Vec<String> =

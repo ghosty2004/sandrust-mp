@@ -92,6 +92,10 @@ if [[ "${1:-}" == --inner ]]; then
         sleep "$(awk "BEGIN{print $1/1000}")"
         DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool mouseup 1
     }
+    mouse() { DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool "$@"; LAST_INPUT=$SECONDS; }
+    lastobj() { grep -oE "\[ui-fs\] [0-9]+ object [0-9]+" "$E2E_LOG" | tail -n 1 | awk '{print $4}'; }
+    lastveh() { grep -oE "\[ui-fs\] [0-9]+ veh-created [0-9]+" "$E2E_LOG" | tail -n 1 | awk '{print $4}'; }
+    key() { e2e_key "$@"; LAST_INPUT=$SECONDS; }
     world() { ctl_multi world; }
     wline() { world | grep -E "^$1" | head -n 1; }
     field() { sed -nE "s/.* $1=([^ ]+).*/\1/p" <<< "$2"; }
@@ -181,6 +185,54 @@ if [[ "${1:-}" == --inner ]]; then
                     || fail "object 6 has no blank material: $l"
                 grep -q "blanktex.txd could not be loaded" "$CLIENT_LOG" && fail "SAMP\\blanktex.txd not loaded"
                 say "blanktex: $l" ;;
+            editor-on)
+                [[ "$(head_field editor)" == 1/0/* ]] || fail "editor not active: $(world | head -n 1)" ;;
+            editor-save)
+                n="$(grep -cE "\[ui-fs\] edit-object .* response 2 " "$E2E_LOG")"
+                (( n >= 5 )) || fail "only $n 117 response-2 updates while dragging"
+                l="$(grep -E "\[ui-fs\] edit-object .* response 1 " "$E2E_LOG" | tail -n 1)"
+                [[ -n "$l" ]] || fail "no 117 response 1 from the save button"
+                x="$(sed -nE 's/.* pos ([0-9.-]+) .*/\1/p' <<< "$l")"; rz="$(awk '{print $NF}' <<< "$l")"
+                awk -v x="$x" -v r="$rz" 'BEGIN { exit !(x > 1701.5 && r < -1.0) }' || fail "save values not dragged: $l"
+                [[ "$(head_field editor)" == 0/* ]] || fail "editor still active after save"
+                say "editor: $n updates, final $l" ;;
+            attedit)
+                l="$(grep -E "\[ui-fs\] edit-attached .* response 1 " "$E2E_LOG" | tail -n 1)"
+                [[ "$l" == *"off 0.060 "* ]] || fail "attached-object save not dragged to 0.060: $l"
+                grep -qE "\[ui-fs\] edit-attached .* response 2 " "$E2E_LOG" && fail "116 sent during the drag"
+                say "attached editor: $l" ;;
+            select)
+                l="$(grep -E "\[ui-fs\] select-object .* model 1271 " "$E2E_LOG" | tail -n 1)"
+                [[ -n "$l" ]] || fail "no OnPlayerSelectObject (RPC 27)"
+                say "select: $l" ;;
+            plates)
+                h="$(world | head -n 1)"
+                [[ "$(field default "$h")" != 0x0 && "$(field vehicles "$h")" -ge 1 ]] || fail "no plate textures: $h"
+                say "plates: $(sed -nE 's/.*(plates .*)/\1/p' <<< "$h")" ;;
+            train-exit)
+                st="$(e2e_ctl state)"; p="$(sed -nE 's/.*pos=([^ ]+).*/\1/p' <<< "$st")"
+                IFS=, read -r x y _ <<< "$p"
+                awk -v x="$x" -v y="$y" 'BEGIN { exit !(x > 1702 && x < 1704 && y > -1952 && y < -1950) }' \
+                    || fail "not warped beside the train (train + 2.5, 2.5): $st"
+                e2e_wait_log "\[ui-fs\] state [0-9]+ 2->1 veh 0" 5 || fail "server did not see the player leave the train"
+                say "train exit: $p" ;;
+            cam81-free|cam81-wall)
+                # Wall (y −2602.3): the camera stays in front of it, closer than 3 m (measured −2600.57). Free: ~3.3 m behind the ped (the
+                # swimming ped drifts, e.g. after fs's idle Space tap). Poll up to 6 s (the camera eases back).
+                ok=0
+                for _ in $(seq 1 12); do
+                    c="$(head_field cam)"; IFS=, read -r _ cy _ <<< "$c"
+                    st="$(e2e_ctl state)"; py="$(sed -nE 's/.*pos=[^,]+,([^,]+),.*/\1/p' <<< "$st")"
+                    if [[ $1 == cam81-wall ]]; then
+                        awk -v y="$cy" -v p="$py" 'BEGIN { exit !(y > -2602.3 && p - y < 3.0) }' && { ok=1; break; }
+                    else
+                        awk -v y="$cy" -v p="$py" 'BEGIN { exit !(p - y > 3.0) }' && { ok=1; break; }
+                    fi
+                    sleep 0.5
+                done
+                (( ok )) || fail "camera y $cy, ped y $py ($1): $c"
+                c="$c ped_y=$py"
+                say "$1: camera $c" ;;
             labels)
                 [[ "$(head_field labels)" == 2 ]] || fail "world shows $(head_field labels) labels, want 2"
                 n="$(field count "$(wline labels_drawn)")"

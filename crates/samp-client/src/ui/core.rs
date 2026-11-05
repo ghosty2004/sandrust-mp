@@ -493,7 +493,10 @@ impl UiCore {
         self.local_id = Some(g.player_id);
         self.show_name_tags = g.show_name_tags;
         self.name_tag_distance = g.name_tag_distance;
-        self.name_tag_los = g.name_tag_los;
+        // samp reads the bit into settings +0x2F and then stores 1 there unconditionally (B 0x10010778): the
+        // nametag LOS test always runs in R4 (measured: 0x06BD per pass with the bit 0 from open.mp).
+        self.name_tag_los = true;
+        let _ = g.name_tag_los;
         self.server_name = g.server_name.as_bytes().to_vec();
         self.print_debug(&msg::connected_to(g.server_name.as_bytes()));
     }

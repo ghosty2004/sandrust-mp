@@ -105,6 +105,11 @@ if [[ "${1:-}" == --inner ]]; then
     [[ -n "$line" ]] || fail "car A never streamed in (vehicles: $(ctl_multi vehicles | tr '\n' '|'))"
     say "car A in game: $line"
     sleep 2
+    # M6-P: number plates (rows 59/60): the default texture and car A's own one exist after the stream-in.
+    wh="$(e2e_ctl world | head -n 1)"
+    [[ "$wh" =~ plates\ raster=0x[0-9a-f]+\ default=0x([0-9a-f]+)\ vehicles=([0-9]+) ]] \
+        && [[ "${BASH_REMATCH[1]}" != 0 && "${BASH_REMATCH[2]}" -ge 1 ]] || fail "no plate textures: $wh"
+    say "plates: ${wh##*plates }"
 
     # ---- (a) remote driver -------------------------------------------------------------------------
     say "starting $BOT"

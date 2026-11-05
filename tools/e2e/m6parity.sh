@@ -65,11 +65,20 @@ inner() {
     for ((i = 0; i < 200; i++)); do [ -e "$out/ready" ] && break; sleep 1; done
     [ -e "$out/ready" ] || { cat "$log"; say "session not ready"; return 1; }
     say "session $sess ($out)"
-    fs() { "$TR/ui.sh" fs "$1" > /dev/null || say "fs failed: $1"; }
+    fs() { LASTFS="$("$TR/ui.sh" fs "$1")" || say "fs failed: $1"; }
+    lastobj() { sed -nE 's/.*\[ui-fs\] [0-9]+ object ([0-9]+).*/\1/p' <<< "$LASTFS" | tail -n 1; }
+    mouse() { "$TR/ui.sh" mouse "$@" > /dev/null; }
+    lastveh() { sed -nE 's/.*\[ui-fs\] [0-9]+ veh-created ([0-9]+).*/\1/p' <<< "$LASTFS" | tail -n 1; }
+    key() { "$TR/ui.sh" key "$@" > /dev/null; }
     mark() { "$TR/ui.sh" mark "$1" > /dev/null; }
     shot() { "$TR/ui.sh" shot "w-$1" > /dev/null; }
     fire() { "$TR/ui.sh" fire "$1" > /dev/null; }
-    check() { :; }
+    # Parity runs assert nothing; the camera-collision steps log TheCamera's position (tracer peek) for comparison.
+    check() {
+        case "$1" in
+            cam81-*) say "$1 camera $("$TR/ui.sh" ctl peek 0xB6F9CC 12 | python3 -c 'import struct,sys; h=sys.stdin.read().split()[2:]; print("%.2f,%.2f,%.2f" % struct.unpack("<3f", bytes(int(x, 16) for x in h)))')" ;;
+        esac
+    }
     source "$M6_WT/tools/e2e/m6scen.sh"
     sleep 2
     m6_scenario

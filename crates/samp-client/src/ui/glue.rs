@@ -27,6 +27,7 @@ use super::inputlock::{InputLock, Op};
 use super::render::{self, BubbleDraw, CursorReq, Frame, Renderer, ScoreboardDraw, TagDraw};
 use crate::game::{self, off};
 use crate::netclient::NetClient;
+use crate::objedit;
 use crate::patch::{Memory, ProcessMemory};
 use crate::script::{Arg, Runner};
 
@@ -150,6 +151,187 @@ pub fn restore_input_now(flag: bool) {
     if let Some(ops) = with_ui(|st| st.lock.restore_now(flag)) {
         exec_ops(ops);
     }
+}
+
+/// The plate painter (B 0x1006D840) for the vehicle pool pass; 0 when the renderer is not up.
+pub fn paint_plate(text: &[u8]) -> u32 {
+    with_ui(|st| st.renderer.as_mut().map(|r| r.paint_plate(text))).flatten().unwrap_or(0)
+}
+
+/// RPC 27 / 117 (B 0x1000E880 / 0x10011880): textdraw selection off when it is active (B 0x10071550).
+pub fn cancel_textdraw_selection() {
+    with_ui(|st| {
+        if st.core.textdraws.selection.active {
+            st.core.cancel_textdraw_select();
+        }
+    });
+}
+
+/// The chat input closed when the editor or selection ends (B 0x10069540 / 0x10069440).
+pub fn close_chat_input() {
+    with_ui(|st| {
+        if st.core.input.is_open() {
+            st.core.input.close();
+        }
+    });
+}
+
+// ---- object editor and selection (Present step 12, window messages) ------------------------------------------
+
+/// Pad 0 `Cross` (the sprint key; samp tests key bit 8 of its on-foot key word, B 0x100AF5E0).
+fn sprint_held() -> bool {
+    crate::worldhooks::rd::<i16>(crate::game::PAD0 + 0x20) != 0
+}
+
+fn matrix_of(ent: u32) -> Option<[f32; 16]> {
+    use crate::worldhooks::rd;
+    let m: u32 = rd(ent + 0x14);
+    (m != 0).then(|| std::array::from_fn(|i| rd(m + 4 * i as u32)))
+}
+
+fn camera_distance(p: [f32; 3]) -> f32 {
+    dist(p, camera_pos())
+}
+
+/// The cursor ray of the selection pick (B 0x10073F70) from samp's copies of WORLD, VIEW and PROJECTION.
+fn pick_ray(cursor: (i32, i32)) -> Option<([f32; 3], [f32; 3])> {
+    let lock = |m: &Mutex<[f32; 16]>| *m.lock().unwrap_or_else(|e| e.into_inner());
+    let (world, view, proj) = (lock(&d3d::WORLD), lock(&d3d::VIEW), lock(&d3d::PROJECTION));
+    let inv = objedit::mat_inverse(&objedit::mat_mul(&world, &view))?;
+    let size = (render::video_width().max(1) as u32, render::video_height().max(1) as u32);
+    Some(objedit::pick_ray(cursor, size, &proj, &inv))
+}
+
+/// Editor per-frame (B 0x100737B0) then selection per-frame (B 0x1006DBC0).
+fn editor_pass(lock: &mut InputLock, r: &Renderer) {
+    let sprint = sprint_held();
+    let cursor = render::cursor_pos();
+    objedit::with(|sh| {
+        let frame = sh.frame;
+        let ed = &mut sh.editor;
+        ed.drawn = false;
+        if ed.active {
+            if ed.dragging {
+                d3d::show_cursor(false);
+            } else if sprint {
+                exec_ops(lock.set_mode(0, true));
+            } else {
+                d3d::show_cursor(true);
+                exec_ops(lock.set_mode(3, true));
+            }
+            if let Some(f) = frame
+                && let Some(mut m) = matrix_of(f.object)
+            {
+                let s = camera_distance([m[12], m[13], m[14]]) * objedit::SCALE_PER_METRE;
+                if f.ped != 0
+                    && ed.mode == 0
+                    && let Some(b) = crate::worldhooks::bone_matrix(f.ped, f.bone)
+                {
+                    m[..12].copy_from_slice(&b[..12]);
+                }
+                ed.drawn = r.editor_gizmo(ed, &m, s);
+            }
+            if !ed.dragging {
+                ed.hover(cursor, lock.mode());
+            }
+        }
+        let sel = &mut sh.selection;
+        if sel.active {
+            if sprint {
+                exec_ops(lock.set_mode(0, true));
+            } else {
+                d3d::show_cursor(true);
+                exec_ops(lock.set_mode(3, false));
+            }
+            sel.hovered = 0xFFFF;
+            if lock.mode() != 0
+                && let Some((start, end)) = pick_ray(cursor)
+                && let Some((id, ptr, model)) = crate::objects::pick(start, end, &sh.pickable)
+                && let Some(m) = matrix_of(ptr)
+            {
+                let d = camera_distance([m[12], m[13], m[14]]);
+                if d < objedit::PICK_DISTANCE {
+                    sel.hovered = id;
+                    r.select_highlight(&m, objedit::select_label(id, model, d).as_bytes());
+                }
+            }
+        }
+    });
+}
+
+/// Editor / selection window messages (B 0x10073580, 0x1006DE00, and the ESC `WM_CHAR` checks of samp's window
+/// procedure B 0x100618A1 / 0x100618FA). Returns whether the message is consumed.
+pub(super) fn editor_message(msg: u32, w: usize) -> bool {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ClipCursor, GetCursorPos, SetCursorPos, ShowCursor};
+    const WM_CHAR: u32 = 0x102;
+    let mut screen = POINT { x: 0, y: 0 };
+    // SAFETY: plain Win32 query.
+    unsafe { GetCursorPos(&mut screen) };
+    let client = render::cursor_pos();
+    let hwnd = render::hwnd();
+    let mut deselect = false;
+    let (consumed, fx) = objedit::with(|sh| {
+        if sh.editor.active {
+            let fx = sh.editor.on_mouse(msg, (screen.x, screen.y), client);
+            if fx.consumed {
+                return (true, Some(fx));
+            }
+            if msg == WM_CHAR && w == 0x1B {
+                sh.editor.stop(0);
+                return (true, None);
+            }
+        }
+        if sh.selection.active {
+            if msg == objedit::WM_LBUTTONUP {
+                if sh.selection.hovered != 0xFFFF {
+                    let id = sh.selection.hovered;
+                    sh.editor.actions.push(objedit::Action::Select { id });
+                }
+                return (true, None);
+            }
+            if msg == WM_CHAR && w == 0x1B {
+                sh.selection.active = false;
+                deselect = true;
+                return (true, None);
+            }
+        }
+        (false, None)
+    });
+    if deselect {
+        set_input_mode(0, true);
+        close_chat_input();
+    }
+    let Some(fx) = fx else { return consumed };
+    // SAFETY: plain Win32 calls on the game window.
+    unsafe {
+        if fx.capture {
+            SetCapture(hwnd as _);
+            ShowCursor(0);
+            ClipCursor(std::ptr::null());
+        }
+        if let Some((x, y)) = fx.release_to {
+            ReleaseCapture();
+            ShowCursor(1);
+            let mut p = POINT { x, y };
+            ClientToScreen(hwnd as _, &mut p);
+            SetCursorPos(p.x, p.y);
+        }
+        if fx.recentre {
+            let (cw, ch) = render::client_size();
+            let c = (cw / 2, ch / 2);
+            objedit::with(|sh| sh.editor.recentred(c));
+            SetCursorPos(c.0, c.1);
+        }
+    }
+    if fx.hover {
+        let mode = try_with_ui(|st| st.lock.mode()).unwrap_or(0);
+        let client = render::cursor_pos();
+        objedit::with(|sh| sh.editor.hover(client, mode));
+    }
+    consumed
 }
 
 /// F5 values: memory from the process and GTA's streaming globals, the rest from what our
@@ -542,6 +724,7 @@ extern "system" fn reset_hook(_this: *mut std::ffi::c_void, params: *mut std::ff
             if let Some(r) = st.renderer.as_mut() {
                 r.on_lost();
             }
+            crate::plates::on_lost();
         })
     }));
     let hr = d3d::call_reset(params);
@@ -549,6 +732,7 @@ extern "system" fn reset_hook(_this: *mut std::ffi::c_void, params: *mut std::ff
     if hr >= 0 {
         let _ = catch_unwind(AssertUnwindSafe(|| {
             try_with_ui(|st| {
+                crate::plates::on_reset();
                 if let Some(r) = st.renderer.as_mut() {
                     r.on_reset();
                     // The chat render target is re-created through the same routine (B 0x10068190).
@@ -812,6 +996,10 @@ fn present_pass() {
         st.class_buttons = Some(r.class_panel(cursor));
     } else {
         st.class_buttons = None;
+    }
+    // Step 12: object editor and object selection (B 0x100737B0, 0x1006DBC0).
+    if !sb_open {
+        editor_pass(&mut st.lock, r);
     }
     // Step 12 end: textdraw selection per-frame logic (UR §14.4).
     if st.core.textdraws.selection.active && !sb_open {

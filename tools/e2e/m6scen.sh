@@ -7,6 +7,10 @@
 #   shot NAME        isolated-display screenshot
 #   check STEP       acceptance assertions after STEP (no-op for parity runs)
 #   fire MS          hold the left mouse button MS ms on the isolated display
+#   mouse ARGS…      xdotool mouse command on the isolated display (editor / selection blocks)
+#   lastobj          id of the object the last `obj` command created (from the server log)
+#   lastveh          id of the vehicle the last `veh` command created
+#   key KEY          key press on the isolated display
 # The player stands at the LS airport apron (1700, -2600) like TRACE-6's runs; all ids are the first ones the
 # server hands out (objects 1…5, pickups 0…2, gang zones 0…2, actor 0, labels 0…1).
 
@@ -109,6 +113,52 @@ m6_scenario() {
         fs "obj|1271|1695|-2595|13.9|0|0|0|0"; sleep 1
         fs "objmat|6|0|0|none|none|FF00FF00"; sleep 3
         shot blanktex; check blanktex
+    fi
+    # ---- object editor, attached-object editor, selection (M6-P; positions measured at 1280x720 with the player at
+    # the apron facing north and the crate 4 m ahead — identical on both clients, docs/phase3/m6p-notes.md)
+    if [[ $only == all || $only == *editor* ]]; then
+        fs "pos|L|$M6_X|$M6_Y|$M6_Z|0"; fs "camera|L"; sleep 2
+        fs "obj|1271|1700|-2596|13.9|0|0|0|0"; local eid; eid="$(lastobj)"; sleep 2
+        mark objedit; fs "objedit|L|$eid"; sleep 2; shot editor; check editor-on
+        mark drag; mouse mousemove 754 364; sleep 0.5; mouse mousedown 1; sleep 0.3
+        for _ in $(seq 1 70); do mouse mousemove_relative -- 3 0; sleep 0.05; done
+        mouse mouseup 1; sleep 3
+        mark rotmode; mouse mousemove 872 452; sleep 0.3; mouse click 1; sleep 0.5
+        mark rotdrag; mouse mousemove 897 274; sleep 0.3; mouse mousedown 1; sleep 0.3
+        for _ in $(seq 1 10); do mouse mousemove_relative -- 0 3; sleep 0.05; done
+        for _ in $(seq 1 10); do mouse mousemove_relative -- 3 0; sleep 0.05; done
+        mouse mouseup 1; sleep 0.5
+        mark save; mouse mousemove 894 452; sleep 0.3; mouse click 1; sleep 1; check editor-save
+        mark attedit; fs "att|L|0|18645|2|0.1|0|0|0|90|0|1|1|1"; sleep 1; fs "attedit|L|0"; sleep 1.5
+        mouse mousemove 660 254; sleep 0.3; mouse mousedown 1; sleep 0.3
+        for _ in $(seq 1 20); do mouse mousemove_relative -- 2 2; sleep 0.05; done
+        mouse mouseup 1; sleep 0.5; mouse mousemove 755 351; sleep 0.3; mouse click 1; sleep 1; check attedit
+        fs "attdel|L|0"
+        mark objsel; fs "objsel|L"; sleep 1; mouse mousemove 900 365; sleep 0.5; shot select; mouse click 1; sleep 1
+        check select; fs "editcancel|L"; sleep 0.5
+        fs "objdel|$eid"; sleep 0.5
+    fi
+    # ---- CSV row 81: samp's camera test outside GTA's ±3000 world square (water at x 3100, wall behind the player)
+    if [[ $only == all || $only == *cam81* ]]; then
+        mark cam81; fs "pos|L|3100|-2600|1|0"; sleep 4; fs "camera|L"; sleep 3; check cam81-free
+        fs "obj|19353|3100|-2602.3|0|0|0|0|0"; local wid; wid="$(lastobj)"; sleep 2; fs "camera|L"; sleep 3; check cam81-wall
+        fs "nocamcol|$wid"; sleep 2; fs "camera|L"; sleep 3; check cam81-free
+        fs "objdel|$wid"; fs "pos|L|$M6_X|$M6_Y|$M6_Z|0"; sleep 2
+    fi
+    # ---- number plates (RPC 123 before the stream-in) and the train exit (uifs.pwn's static train, vehicle 1)
+    if [[ $only == all || $only == *plates* ]]; then
+        fs "pos|L|1500|-1505|13.55|0"; sleep 3
+        fs "veh|560|1700|-2590|13.2|0|1|1"; local vid; vid="$(lastveh)"
+        fs "plate|$vid|RUST 42"
+        mark plate; fs "pos|L|1704|-2596|$M6_Z|0"; sleep 2
+        fs "campos|L|1700|-2594.8|13.5"; fs "camlook|L|1700|-2590|13.2|2"; sleep 2
+        shot plate; check plates
+        fs "camera|L"; fs "vdel|$vid"; sleep 1
+    fi
+    if [[ $only == all || $only == *train* ]]; then
+        fs "pos|L|1705|-1950|13.6|0"; sleep 3; fs "putin|L|1|0"; sleep 3
+        mark trainexit; key f; sleep 2; check train-exit
+        fs "pos|L|$M6_X|$M6_Y|$M6_Z|0"; sleep 2
     fi
     mark scenario-end
 }

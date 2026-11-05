@@ -117,6 +117,7 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | D-4 | samp.saa data overrides (10 of 23 files differ; handling/weapon identical) | **resolved (2026-11-04): option A — read ALL redirected files from the user's samp.saa at runtime, exactly like the original (user: "I want 1:1"); never redistribute; fallback to our own minimal script when SA:MP isn't installed** |
 
 ## Decisions made autonomously
+- Object editor (M6-P): the glyph-size probe (`DrawTextA("C", DT_CALCRECT)`) gets a zeroed RECT; samp passes an uninitialised stack RECT and keeps only the size, so the D3D stream differs only in that rect (`tools/diff/editor_d3d_diff.py` drops it).
 - Audio: our client loads the user's own bass.dll through a static import exactly like samp.dll (nothing redistributed; consistent with D-4 = A); BASS call stream diffed 0/16 segments vs the original.
 - Audio: two samp bugs handled safely instead of reproduced: a positional stream with no ped matrix plays at volume 0 (samp reads uninitialised stack), and a META tag without ';' keeps the whole title (samp crashes).
 - Combat: on a missed shot the original sends a bullet packet whose hitPos is an uninitialised GTA stack colpoint (values vary per session). We replicate the mechanism, not the values: our LOS hook reads the same GTA stack colpoint after the same call, so a miss sends whatever GTA's stack holds (structure identical: hit_type 0, id 0xFFFF, offset 0; weapon 34 without entity not sent). Servers cannot depend on these values.

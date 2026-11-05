@@ -350,3 +350,14 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   original audio reference after the worktree was removed). Fixed (d7f3173): m8b counts frames
   (3/3 pass), m9 reference regenerated (pass, 0 BASS differences).
 - 562 tests; clippy 0 (host + i686).
+
+## 2026-11-05 — M6-P world/vehicle parity follow-ups (worktree m6p, branch world-leftovers)
+
+- Measured on the original first (trace lane runs orig-20261105-042300 / -051538), then implemented and diffed
+  with the same input on ours (lane veh): object editor gizmo + drag + save, attached-object editor, selection
+  picking (27), CSV row 81 (samp's camera test outside ±3000), number plates (rows 59/60 + SetTexture), train exit
+  inside the constructor hook, nametag LOS always on (samp overwrites the InitGame bit). Details:
+  docs/phase3/m6p-notes.md.
+- Diffs: `tools/diff/editor_d3d_diff.py` MATCH for the editor (154 calls), hover, drag, rotate mode and selection
+  (179); plate painter MATCH (58); 117 drag cadence/values and 116/27 equal; DIFF-3 45/45 MATCH incl. veh_enter_B.
+- 569 tests; clippy 0 (host + i686).

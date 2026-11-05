@@ -213,6 +213,8 @@ extern "system" fn proxy_set_texture(_this: *mut c_void, stage: u32, tex: *mut c
     } else {
         tex
     };
+    // Number plates (B 0x10074BC3): the shared plate raster's texture → the rendered vehicle's plate.
+    let tex = crate::plates::substitute(tex as u32).map(|t| t as usize as *mut c_void).unwrap_or(tex);
     let dev = real_device();
     // SAFETY: the real device's SetTexture.
     let f: SetTextureFn = unsafe { vfn(dev, dev::SET_TEXTURE) };
@@ -224,6 +226,8 @@ extern "system" fn proxy_set_texture(_this: *mut c_void, stage: u32, tex: *mut c
 /// bubble and label projections use them.
 pub static VIEW: std::sync::Mutex<[f32; 16]> = std::sync::Mutex::new(IDENTITY);
 pub static PROJECTION: std::sync::Mutex<[f32; 16]> = std::sync::Mutex::new(IDENTITY);
+/// WORLD (state 256; B 0x100748B0 keeps it at 0x10140C68): the selection pick ray uses world × view.
+pub static WORLD: std::sync::Mutex<[f32; 16]> = std::sync::Mutex::new(IDENTITY);
 pub const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
 extern "system" fn proxy_set_transform(_this: *mut c_void, state: u32, m: *const [f32; 16]) -> HResult {
@@ -233,6 +237,7 @@ extern "system" fn proxy_set_transform(_this: *mut c_void, state: u32, m: *const
         match state {
             2 => *VIEW.lock().unwrap_or_else(|e| e.into_inner()) = v,
             3 => *PROJECTION.lock().unwrap_or_else(|e| e.into_inner()) = v,
+            256 => *WORLD.lock().unwrap_or_else(|e| e.into_inner()) = v,
             _ => {}
         }
     }
@@ -433,6 +438,9 @@ type LoadSurfaceFromFileA = extern "system" fn(
     u32,
     *mut c_void,
 ) -> HResult;
+type CreateLine = extern "system" fn(*mut c_void, *mut *mut c_void) -> HResult;
+type LoadSurfaceFromSurface =
+    extern "system" fn(*mut c_void, *const c_void, *const Rect, *mut c_void, *const c_void, *const Rect, u32, u32) -> HResult;
 type CreateTexture = extern "system" fn(*mut c_void, u32, u32, u32, u32, u32, u32, *mut *mut c_void) -> HResult;
 type CreateRenderToSurface = extern "system" fn(*mut c_void, u32, u32, u32, i32, u32, *mut *mut c_void) -> HResult;
 type Vec3Project = extern "system" fn(
@@ -454,6 +462,8 @@ pub struct D3dx {
     pub create_texture: CreateTexture,
     pub create_render_to_surface: CreateRenderToSurface,
     pub vec3_project: Vec3Project,
+    pub create_line: CreateLine,
+    pub load_surface_from_surface: LoadSurfaceFromSurface,
 }
 
 /// The D3DX build samp links against.
@@ -487,6 +497,10 @@ impl D3dx {
                     b"D3DXCreateRenderToSurface\0",
                 )?),
                 vec3_project: std::mem::transmute::<usize, Vec3Project>(get(b"D3DXVec3Project\0")?),
+                create_line: std::mem::transmute::<usize, CreateLine>(get(b"D3DXCreateLine\0")?),
+                load_surface_from_surface: std::mem::transmute::<usize, LoadSurfaceFromSurface>(get(
+                    b"D3DXLoadSurfaceFromSurface\0",
+                )?),
             })
         }
     }
@@ -604,6 +618,69 @@ impl Font {
 }
 
 impl Drop for Font {
+    fn drop(&mut self) {
+        // SAFETY: we own one reference.
+        unsafe { release(self.ptr) };
+    }
+}
+
+/// An `ID3DXLine` (the object editor's, B 0x10071B90: `D3DXCreateLine` before its two fonts).
+pub struct Line {
+    pub ptr: *mut c_void,
+}
+
+/// `ID3DXLine` vtable slots.
+mod line {
+    pub const BEGIN: usize = 4;
+    pub const DRAW: usize = 5;
+    pub const SET_ANTIALIAS: usize = 13;
+    pub const END: usize = 17;
+    pub const ON_LOST_DEVICE: usize = 18;
+    pub const ON_RESET_DEVICE: usize = 19;
+}
+
+impl Line {
+    pub fn create(d3dx: &D3dx) -> Result<Self, String> {
+        let mut out = std::ptr::null_mut();
+        let hr = (d3dx.create_line)(real_device(), &mut out);
+        if hr < 0 || out.is_null() {
+            return Err(format!("D3DXCreateLine failed: {hr:#x}"));
+        }
+        Ok(Self { ptr: out })
+    }
+
+    fn call0(&self, slot: usize) {
+        // SAFETY: live ID3DXLine; an argument-less method returning HRESULT.
+        let f: extern "system" fn(*mut c_void) -> HResult = unsafe { vfn(self.ptr, slot) };
+        f(self.ptr);
+    }
+
+    pub fn set_antialias(&self, on: bool) {
+        // SAFETY: live ID3DXLine; SetAntialias(BOOL).
+        let f: extern "system" fn(*mut c_void, i32) -> HResult = unsafe { vfn(self.ptr, line::SET_ANTIALIAS) };
+        f(self.ptr, i32::from(on));
+    }
+
+    /// `Begin`, `Draw(points, colour)`, `End` (how samp draws every editor line).
+    pub fn segment(&self, a: [f32; 2], b: [f32; 2], colour: u32) {
+        let pts = [a, b];
+        self.call0(line::BEGIN);
+        // SAFETY: live ID3DXLine; Draw(const D3DXVECTOR2*, DWORD count, D3DCOLOR).
+        let f: extern "system" fn(*mut c_void, *const [f32; 2], u32, u32) -> HResult = unsafe { vfn(self.ptr, line::DRAW) };
+        f(self.ptr, pts.as_ptr(), 2, colour);
+        self.call0(line::END);
+    }
+
+    pub fn on_lost(&self) {
+        self.call0(line::ON_LOST_DEVICE);
+    }
+
+    pub fn on_reset(&self) {
+        self.call0(line::ON_RESET_DEVICE);
+    }
+}
+
+impl Drop for Line {
     fn drop(&mut self) {
         // SAFETY: we own one reference.
         unsafe { release(self.ptr) };

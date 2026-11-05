@@ -76,7 +76,12 @@ public M5LocalSetup()
     SetPlayerPos(gLocal, LOCAL_X, LOCAL_Y - 2.5, GROUND_Z);
     SetPlayerFacingAngle(gLocal, 0.0); // facing +y, towards car A's driver door
     SetCameraBehindPlayer(gLocal);
-    if (gCarA == INVALID_VEHICLE_ID) gCarA = CreateVehicle(560, LOCAL_X, LOCAL_Y, GROUND_Z, 90.0, 1, 1, -1);
+    if (gCarA == INVALID_VEHICLE_ID)
+    {
+        gCarA = CreateVehicle(560, LOCAL_X, LOCAL_Y, GROUND_Z, 90.0, 1, 1, -1);
+        // M6-P: a plate text that reaches the client with the stream-in (RPC 123 after 164).
+        SetVehicleNumberPlate(gCarA, "M5 RUST");
+    }
     printf("[m5] local ready id=%d carA=%d", gLocal, gCarA);
     return 1;
 }
