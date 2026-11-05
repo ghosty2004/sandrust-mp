@@ -210,6 +210,11 @@ impl Objects {
         e.elapsed().as_millis() as u32
     }
 
+    /// GTA object of pool slot `id`, if the slot exists (camera attachment, RPC 81); 0 = no GTA object.
+    pub fn gta_ptr(&self, id: u16) -> Option<u32> {
+        self.pool.get(&id).map(|o| o.ptr)
+    }
+
     pub fn set_local_id(&mut self, id: u16) {
         self.local_id = Some(id);
         wh::with_shared(|s| s.active = true);

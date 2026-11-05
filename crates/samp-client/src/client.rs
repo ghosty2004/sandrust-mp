@@ -98,6 +98,8 @@ pub struct Client {
     objects: crate::objects::Objects,
     /// Pickups, actors, checkpoints, gang zones, map icons, 3D labels (M6, entities.rs).
     entities: crate::entities::Entities,
+    /// Camera, spectating, bounds, drunk, animations, ClientCheck (M8b, behaviourclient.rs).
+    behaviour: crate::behaviourclient::Behaviour,
 }
 
 /// Raw write into game data (heap objects, .data/.bss); no protection change.
@@ -167,6 +169,7 @@ impl Client {
             class_count: 0,
             objects: crate::objects::Objects::default(),
             entities: crate::entities::Entities::default(),
+            behaviour: crate::behaviourclient::Behaviour::new(),
         })
     }
 
@@ -202,6 +205,18 @@ impl Client {
             out.push_str(&l);
         }
         out
+    }
+
+    /// Control-channel `behaviour`: one line of M8b state.
+    pub fn behaviour_line(&self) -> String {
+        self.behaviour.status_line(self.spawned)
+    }
+
+    /// The call of `CCamera::Process` in `CGame::Process` (CSV row 9, dll.rs): the camera follows an attached object.
+    pub fn camera_process(&mut self) {
+        if matches!(self.net.phase(), Phase::Connected) {
+            self.behaviour.camera_follow(&mut self.runner, &self.objects);
+        }
     }
 
     /// CGame::Process pre-step (dll.rs): the per-frame object process (world-entities.md RE-10 §3).
@@ -290,7 +305,23 @@ impl Client {
         self.vehicles.hook_events(&mut self.runner, &mut self.net);
         crate::ui::set_remotes(self.players.ui_snapshot(now));
         crate::ui::set_class_selection(self.class_sel.is_active());
-        if self.class_sel.is_active() {
+        if self.behaviour.spectate.on && !self.spawned && matches!(self.net.phase(), Phase::Connected) {
+            // Spectating without being spawned (B 0x10007A9A): class selection is left, then the spectator tick.
+            self.behaviour.drunk_not_spawned(&mut self.runner);
+            if self.class_sel.is_active() {
+                self.class_sel.leave();
+                crate::ui::class_selection_release();
+            }
+            let interval = footsync::on_foot_interval(self.on_foot_rate, self.players.streamed());
+            self.behaviour.spectator_tick(
+                &mut self.runner,
+                &mut self.net,
+                &self.players,
+                &self.vehicles,
+                interval,
+                now,
+            );
+        } else if self.class_sel.is_active() {
             self.class_selection_tick(now);
         } else {
             // Death (RPC 53) and the respawn after the wasted sequence (local tick A 0x100074C0).
@@ -340,6 +371,8 @@ impl Client {
                 crate::world::apply(&self.world.weather_writes(g.weather));
                 self.zone_names = g.zone_names;
                 crate::pedhooks::set_cj_walk(g.cj_walk);
+                self.behaviour.on_init_game(g.gravity);
+                self.behaviour.hash_table();
                 crate::log!(
                     "client: InitGame: server {:?}, our id {}, {} class(es), on-foot rate {} ms",
                     g.server_name,
@@ -418,6 +451,22 @@ impl Client {
                     }
                     _ => (None, None),
                 };
+                match &r {
+                    R::PlayerJoin(j) => self.behaviour.forget_remote(j.player_id),
+                    R::PlayerQuit(q) => self.behaviour.forget_remote(q.player_id),
+                    R::TogglePlayerSpectating(t) => {
+                        if self.behaviour.toggle_spectating(t.enable != 0) {
+                            self.spawn();
+                        }
+                    }
+                    R::PlayerSpectatePlayer(p) => {
+                        self.behaviour.spectate_player(&self.players, p.player_id, p.gta_camera_mode())
+                    }
+                    R::PlayerSpectateVehicle(v) => {
+                        self.behaviour.spectate_vehicle(&self.vehicles, v.vehicle_id, v.gta_camera_mode())
+                    }
+                    _ => {}
+                }
                 self.players.on_rpc(&mut self.runner, r);
                 if let Some(id) = streamed_in {
                     self.vehicles.after_stream_in(&mut self.runner, &mut self.players, id);
@@ -448,6 +497,9 @@ impl Client {
                     }
                     w => self.entities.on_rpc(&mut self.runner, w),
                 }
+            }
+            Incoming::Session(samp_proto::rpcs::session::Incoming::ClientCheckRequest(c)) => {
+                self.behaviour.client_check(&mut self.net, &c)
             }
             Incoming::Session(samp_proto::rpcs::session::Incoming::SetVehicleTyreStatus(t)) => {
                 self.vehicles.on_tyres(t.vehicle_id, t.tyres)
@@ -502,19 +554,55 @@ impl Client {
                 }
                 P::TogglePlayerControllable(t) => self.set_controllable(t.enable != 0),
                 P::SetPlayerCameraPosition(c) => {
-                    self.runner.run(op::CAMERA_RESET_NEW_SCRIPTABLES, &[]);
-                    let v = [c.pos.x, c.pos.y, c.pos.z, 0.0, 0.0, 0.0].map(Arg::Float);
-                    self.runner.run(op::SET_FIXED_CAMERA_POSITION, &v);
+                    self.behaviour.camera_position(&mut self.runner, [c.pos.x, c.pos.y, c.pos.z])
                 }
                 P::SetPlayerCameraLookAt(c) => {
-                    let cut = if c.cut == 0 || c.cut > 2 { 2 } else { c.cut };
-                    self.runner.run(op::CAMERA_RESET_NEW_SCRIPTABLES, &[]);
-                    self.runner.run(
-                        op::POINT_CAMERA_AT_POINT,
-                        &[Arg::Float(c.pos.x), Arg::Float(c.pos.y), Arg::Float(c.pos.z), Arg::Int(i32::from(cut))],
-                    );
+                    self.behaviour.camera_look_at(&mut self.runner, [c.pos.x, c.pos.y, c.pos.z], c.cut)
                 }
                 P::SetPlayerCameraBehindPlayer(_) => self.camera_behind_player(),
+                P::InterpolateCamera(c) => self.behaviour.interpolate(
+                    &mut self.runner,
+                    c.is_position,
+                    [c.from.x, c.from.y, c.from.z],
+                    [c.to.x, c.to.y, c.to.z],
+                    c.time,
+                    c.cut,
+                ),
+                P::AttachCameraToObject(a) => {
+                    self.behaviour.attach_camera(&mut self.runner, &self.objects, a.object_id)
+                }
+                P::ToggleWidescreen(w) => crate::behaviourclient::widescreen(&mut self.runner, w.enable),
+                P::SetWorldBounds(b) => {
+                    self.behaviour.bounds =
+                        crate::behaviour::Bounds { max_x: b.max_x, min_x: b.min_x, max_y: b.max_y, min_y: b.min_y }
+                }
+                P::SetPlayerGravity(g) => crate::behaviourclient::set_gravity(g.gravity),
+                P::SetPlayerInterior(i) => crate::behaviourclient::set_interior(&mut self.runner, i.interior),
+                P::ApplyPlayerAnimation(a) => {
+                    let local = self.net.player_id();
+                    self.behaviour.apply_animation(&mut self.runner, &self.players, local, &a)
+                }
+                P::ClearPlayerTasks(c) => {
+                    let local = self.net.player_id();
+                    self.behaviour.clear_animations(&self.players, local, c.player_id)
+                }
+                P::SetPlayerDrunkLevel(d) => self.behaviour.drunk = d.level,
+                P::SetPlayerFightingStyle(f) => {
+                    let ped = if Some(f.player_id) == self.net.player_id() {
+                        self.ped()
+                    } else {
+                        self.players.get(f.player_id).map(|p| p.ped).unwrap_or(0)
+                    };
+                    crate::behaviourclient::fighting_style(&mut self.runner, ped, f.style)
+                }
+                P::SetPlayerShopName(n) => crate::behaviourclient::shop_name(&n.name),
+                P::SetPlayerWantedLevel(w) => crate::behaviourclient::set_wanted(w.level),
+                P::EnableStuntBonusForPlayer(e) => crate::behaviourclient::set_stunt_bonus(e.enable),
+                P::GivePlayerMoney(m) => crate::behaviourclient::give_money(&mut self.runner, m.amount),
+                P::ResetPlayerMoney(_) => crate::behaviourclient::reset_money(&mut self.runner),
+                P::SetPlayerVelocity(v) => {
+                    crate::behaviourclient::set_velocity([v.velocity.x, v.velocity.y, v.velocity.z])
+                }
                 P::GivePlayerWeapon(g) => {
                     let ped = self.ped();
                     if ped != 0 {
@@ -696,6 +784,7 @@ impl Client {
         }
         crate::ui::class_selection_release();
         // 3. camera, HUD, control (TRACE-1 order: 02EB, 0930/0925/0373/02EB, 01B4, 04D7, teleport).
+        self.behaviour.attached = None;
         self.runner.run(op::RESTORE_CAMERA_JUMPCUT, &[]);
         self.camera_behind_player();
         set_hud(true);
@@ -852,6 +941,20 @@ impl Client {
         {
             return;
         }
+        // Spectating (B 0x100078E9): the spectator tick replaces the on-foot / driver branches.
+        if self.behaviour.spectate.on {
+            let interval = footsync::on_foot_interval(self.on_foot_rate, self.players.streamed());
+            self.behaviour.spectator_tick(
+                &mut self.runner,
+                &mut self.net,
+                &self.players,
+                &self.vehicles,
+                interval,
+                now,
+            );
+            self.stats_tick(now);
+            return;
+        }
         // On foot: the surf probe (A 0x10003730), before the head look.
         if matches!(state, PEDSTATE_IDLE | PEDSTATE_SNIPER) {
             surf_probe(ped);
@@ -861,11 +964,7 @@ impl Client {
             self.head_look(ped, now);
         }
         // 205 (> 1000 ms) and 204 (every tick) come before the per-state packets (A 0x100078A8 / 0x100078C9).
-        if self.last_stats.is_none_or(|t| now.duration_since(t) > footsync::STATS_INTERVAL) {
-            self.last_stats = Some(now);
-            let money = mem.read_i32(game::PLAYER_MONEY).unwrap_or(0);
-            self.net.send_sync(&StatsSync { money, drunk_level: 0 });
-        }
+        self.stats_tick(now);
         self.combat.weapons_tick(&mut self.net, &self.players, ped, now);
         self.combat.cuffed_tick(&mut self.runner, ped);
         // Local passenger drive-by (A 0x10007B68), before the 211.
@@ -877,6 +976,10 @@ impl Client {
         } else if self.combat.drive_by {
             self.combat.drive_by = false;
         }
+        // Driving: the world bounds on the vehicle (B 0x1000793D), before the driver packets.
+        if state == PEDSTATE_DRIVING {
+            self.behaviour.bounds_driver(&mut self.runner, &self.vehicles, ped);
+        }
         // In-car packets (200/210/211/106, passenger poll); on-foot sync only in ped states 1 and 12, so nothing
         // is sent while entering a seat from the server's warp or during the exit animation (TRACE-4 §4).
         self.vehicles.local_drive_by = self.combat.drive_by;
@@ -886,8 +989,8 @@ impl Client {
             self.combat.aim_in_car(&mut self.net, &mut self.vehicles, ped, is_driver, now);
         }
         if !in_car && state != PEDSTATE_DRIVING {
-            // On foot (A 0x10003f50): GET_AREA_VISIBLE for the world-bounds check (bounds: M8b).
-            self.runner.run(op::GET_AREA_VISIBLE, &[Arg::Local(0)]);
+            // On foot (B 0x10003F40): the world-bounds check.
+            self.behaviour.bounds_on_foot(&mut self.runner, ped);
             match game::read_local_sample(&mem, ped) {
                 Ok(sample) => {
                     let keys = footsync::key_word(&sample.pad, sample.key_ctx);
@@ -900,6 +1003,7 @@ impl Client {
                         if self.phone && matches!(sample.special_action, 0 | 1) {
                             sample.special_action = crate::remote::special::PHONE;
                         }
+                        sample.animation = self.behaviour.anim.take();
                         let f = footsync::build_foot_sync(&sample, self.sender.last_rotation());
                         if let Some(f) = self.sender.offer(now, f) {
                             self.net.send_sync(&f);
@@ -910,6 +1014,15 @@ impl Client {
                 }
                 Err(e) => crate::log!("client: cannot read local ped: {e}"),
             }
+        }
+    }
+
+    /// 205 every > 1000 ms (B 0x100078A3): money and the drunk level (B 0x100ADFB0).
+    fn stats_tick(&mut self, now: Instant) {
+        if self.last_stats.is_none_or(|t| now.duration_since(t) > footsync::STATS_INTERVAL) {
+            self.last_stats = Some(now);
+            let money = ProcessMemory.read_i32(game::PLAYER_MONEY).unwrap_or(0);
+            self.net.send_sync(&StatsSync { money, drunk_level: self.behaviour.drunk });
         }
     }
 
@@ -928,9 +1041,9 @@ impl Client {
         if triangle != 0 && self.hands_up(ped) {
             self.set_controllable(true);
         }
-        // Drunk handling (A 0x100ade30): no drunk level is ever set here (RPC 35 is M8b),
-        // so it always resets the drunkenness to 0.
-        self.runner.run(op::SET_PLAYER_DRUNKENNESS, &[Arg::Int(0), Arg::Int(0)]);
+        // Drunk handling (B 0x100ADE00), then the 207 animation encoder (B 0x100AE7A0).
+        self.behaviour.drunk_tick(&mut self.runner, ped);
+        self.behaviour.anim_tick(ped);
         if self.zone_names_from.is_some_and(|t| now >= t) {
             self.runner.run(op::DISPLAY_ZONE_NAMES, &[Arg::Int(i32::from(self.zone_names))]);
         }
@@ -955,7 +1068,8 @@ impl Client {
         if matrix == 0 {
             return;
         }
-        let v3 = |a: u32| [m.read_f32(a).unwrap_or(0.0), m.read_f32(a + 4).unwrap_or(0.0), m.read_f32(a + 8).unwrap_or(0.0)];
+        let v3 =
+            |a: u32| [m.read_f32(a).unwrap_or(0.0), m.read_f32(a + 4).unwrap_or(0.0), m.read_f32(a + 8).unwrap_or(0.0)];
         if self.look_refresh.is_none_or(|t| now.duration_since(t) > crate::remote::LOOK_REFRESH) {
             self.look_refresh = Some(now);
             self.look_offset = v3(CAMERA_FRONT).map(|c| c * crate::remote::LOOK_DISTANCE);
@@ -1085,10 +1199,11 @@ impl Client {
         }
     }
 
-    /// RPC 162 behaviour (Camera method 0x1009d7a0).
+    /// RPC 162 behaviour (Camera method 0x1009d7a0): the attachment ends too.
     fn camera_behind_player(&mut self) {
         self.runner.run(op::CAMERA_PERSIST_POS, &[Arg::Int(0)]);
         self.runner.run(op::CAMERA_RESET_NEW_SCRIPTABLES, &[]);
+        self.behaviour.attached = None;
         self.runner.run(op::SET_CAMERA_BEHIND_PLAYER, &[]);
         self.runner.run(op::RESTORE_CAMERA_JUMPCUT, &[]);
     }
@@ -1187,7 +1302,7 @@ const VTBL_CPLACEABLE: u32 = 0x863C40;
 const PHYSICAL_MOVING_LIST: u32 = 0xB4;
 
 /// HUD drawing on/off (samp's 0x100a1df0: menu "HUD on" flag and the script radar flag).
-fn set_hud(on: bool) {
+pub(crate) fn set_hud(on: bool) {
     poke(game::MENU_HUD_ON, u8::from(on));
     poke(game::HUD_SCRIPT_DONT_DISPLAY_RADAR, u8::from(!on));
 }

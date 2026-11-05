@@ -91,17 +91,31 @@ pub mod op {
     pub const ADD_EXPLOSION: u16 = 0x0948;
     /// `TASK_DRIVE_BY` (drive-by of a passenger).
     pub const TASK_DRIVE_BY: u16 = 0x0713;
+    // Remaining behaviour (M8b): camera, spectating, interiors, animations, misc.
+    pub const ADD_SCORE: u16 = 0x0109;
+    pub const CLEAR_PRINTS: u16 = 0x00BE;
+    pub const POINT_CAMERA_AT_CHAR: u16 = 0x0159;
+    pub const SWITCH_WIDESCREEN: u16 = 0x02A3;
+    pub const SET_AREA_VISIBLE: u16 = 0x04BB;
+    pub const SET_CHAR_AREA_VISIBLE: u16 = 0x0860;
+    pub const GIVE_MELEE_ATTACK_TO_CHAR: u16 = 0x07FE;
+    pub const TASK_PLAY_ANIM_NON_INTERRUPTABLE: u16 = 0x0812;
+    pub const CAMERA_SET_VECTOR_TRACK: u16 = 0x0920;
+    pub const CAMERA_PERSIST_TRACK: u16 = 0x092F;
+    pub const CAMERA_SET_VECTOR_MOVE: u16 = 0x0936;
 }
 
 /// One script command parameter.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Arg {
+pub enum Arg<'a> {
     /// 32-bit integer immediate (type byte 0x01).
     Int(i32),
     /// Float immediate (type byte 0x06).
     Float(f32),
     /// Variable-length string (type byte 0x0E + u8 length + bytes).
-    Text(&'static str),
+    Text(&'a str),
+    /// The same encoding for raw bytes (network strings, not necessarily UTF-8).
+    Bytes(&'a [u8]),
     /// Global variable (type byte 0x02 + u16 byte offset into ScriptSpace).
     Global(u16),
     /// Local variable of the private thread (type byte 0x03 + u16 index);
@@ -130,8 +144,13 @@ pub fn encode(opcode: u16, args: &[Arg], out: &mut Vec<u8>) {
                 out.push(T_FLOAT);
                 out.extend_from_slice(&v.to_le_bytes());
             }
-            Arg::Text(t) => {
-                let b = &t.as_bytes()[..t.len().min(255)];
+            Arg::Text(_) | Arg::Bytes(_) => {
+                let raw = match *a {
+                    Arg::Text(t) => t.as_bytes(),
+                    Arg::Bytes(b) => b,
+                    _ => &[],
+                };
+                let b = &raw[..raw.len().min(255)];
                 out.push(T_VARLEN_STRING);
                 out.push(b.len() as u8);
                 out.extend_from_slice(b);

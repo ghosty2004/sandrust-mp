@@ -314,6 +314,23 @@ fn init_thread() {
         let failed: Vec<String> =
             hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
         crate::log!("main: world rows: {} applied, failed: {failed:?}", hooks.len() - failed.len());
+        // Remaining behaviour (M8b): the anim recorders (rows 17/18) and the camera follow before CCamera::Process
+        // (row 9).
+        let hooks = crate::behaviourclient::install(patcher, &mut mem);
+        let failed: Vec<String> =
+            hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
+        crate::log!("main: behaviour rows: {} applied, failed: {failed:?}", hooks.len() - failed.len());
+        let hook = camera_process_hook as extern "thiscall" fn(u32) as usize as u32;
+        match patcher.retarget_branch(
+            &mut mem,
+            "CGame::Process -> CCamera::Process hook",
+            CAMERA_PROCESS_CALL,
+            hook,
+            Some(CAMERA_PROCESS),
+        ) {
+            Ok(old) => ORIGINAL_CAMERA_PROCESS.store(old, Ordering::SeqCst),
+            Err(e) => crate::log!("main: CCamera::Process hook (row 9) FAILED: {e}"),
+        }
         // CSV row 6 — retarget the Render2dStuff call in Idle to our per-frame entry.
         let hook = frame_hook as extern "C" fn() as usize as u32;
         match patcher.retarget_branch(
@@ -498,6 +515,29 @@ static SCANNER_DUMMY_PED: AtomicU32 = AtomicU32::new(0);
 /// Replaces `FindPlayerPed(player)` in `CAEPoliceScannerAudioEntity::AddAudioEvent` (cdecl).
 extern "C" fn scanner_find_player_ped(_player: i32) -> u32 {
     SCANNER_DUMMY_PED.load(Ordering::Relaxed)
+}
+
+/// `CCamera::Process` (thiscall) and its call in `CGame::Process` (CSV row 9, samp B 0x100A2640).
+const CAMERA_PROCESS: u32 = 0x52B730;
+const CAMERA_PROCESS_CALL: u32 = 0x53C104;
+static ORIGINAL_CAMERA_PROCESS: AtomicU32 = AtomicU32::new(0);
+
+/// Replaces `TheCamera.Process()` in `CGame::Process`: samp's camera follow first (attached object), then the
+/// original.
+extern "thiscall" fn camera_process_hook(this: u32) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if let Ok(mut g) = CLIENT.try_lock()
+            && let Some(c) = g.as_mut()
+        {
+            c.camera_process();
+        }
+    }));
+    let orig = ORIGINAL_CAMERA_PROCESS.load(Ordering::Relaxed);
+    if orig != 0 {
+        // SAFETY: `orig` is CCamera::Process (thiscall, no arguments), read from the call we retargeted.
+        let f: extern "thiscall" fn(u32) = unsafe { std::mem::transmute(orig as usize) };
+        f(this);
+    }
 }
 
 /// Original target of the call at 0x53E981 (`CGame::Process`).
@@ -754,6 +794,10 @@ fn service_control(_from: &str) {
         },
         Command::World => match CLIENT.try_lock() {
             Ok(g) => g.as_ref().map(|c| c.world_lines()).unwrap_or_else(|| "world count=0".into()),
+            Err(_) => "error client busy".into(),
+        },
+        Command::Behaviour => match CLIENT.try_lock() {
+            Ok(g) => g.as_ref().map(|c| c.behaviour_line()).unwrap_or_else(|| "behaviour none".into()),
             Err(_) => "error client busy".into(),
         },
         Command::Spawn => match CLIENT.try_lock() {

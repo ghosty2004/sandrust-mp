@@ -153,6 +153,22 @@ for step in ${EFX_STEPS:-pos hp skin putin}; do
         dlg) capture dlg 1 61 "dlg|1|0"; sleep 1; capture dlg 2 61 "dlg|-1|0" ;;
         gametext) capture gametext 1 73 "gametext|EFX|3000|3"; sleep 1 ;;
         td) capture tdshow 1 134 "tdshow"; sleep 1; capture tdhide 1 135 "tdhide" ;;
+        # M8b: camera RPCs, widescreen, gravity, spectating.
+        b8campos) capture campos 1 157 "campos|1700|-2620|25"; capture campos 2 157 "campos|1690|-2620|25" ;;
+        b8camlook) capture camlook 1 158 "camlookc|1700|-2600|14|2"; capture camlook 2 158 "camlookc|1710|-2600|14|1" ;;
+        behind) capture behind 1 162 "camera"; efx_fs "campos|1700|-2620|25" > /dev/null; sleep 1; capture behind 2 162 "camera" ;;
+        wide) capture wide 1 111 "wide|1"; capture wide 2 111 "wide|0" ;;
+        gravity) capture gravity 1 146 "gravity|0.002"; capture gravity 2 146 "gravity|0.008" ;;
+        specon) capture specon 1 124 "specon"; sleep 2; capture specon 2 124 "specoff"; sleep 3 ;;
+        specpl)
+            ( cd "$EFX_LANE" && exec target/debug/samp-bot "127.0.0.1:$E2E_PORT" --name EfxBot --seconds 180 ) \
+                > "$OUT/bot.out" 2>&1 &
+            e2e_wait_log "connect id=[0-9]+ name=EfxBot" 30 || efx_say "specpl: bot did not join"
+            sleep 6
+            efx_fs "specon" > /dev/null; sleep 2
+            capture specpl 1 126 "specpl|1"; sleep 2; capture specpl 2 126 "specpl|2"
+            efx_fs "specoff" > /dev/null; sleep 3
+            ;;
         *) efx_say "unknown step $step" ;;
     esac
     e2e_shot "$OUT/$step.png"
