@@ -207,7 +207,7 @@ static SHOP_NAME: StaticText<32> = StaticText::new();
 static BIG_MESSAGE: StaticText<0x200> = StaticText::new();
 
 /// `CMessages::AddBigMessage` after `CLEAR_PRINTS` (B 0x100A0D10; only for styles ≤ 200).
-fn big_message(runner: &mut Runner, text: &str, ms: u32, style: u32) {
+pub(crate) fn big_message(runner: &mut Runner, text: &str, ms: u32, style: u32) {
     if style > 200 {
         return;
     }

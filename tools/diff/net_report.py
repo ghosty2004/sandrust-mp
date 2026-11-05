@@ -36,7 +36,7 @@ RESEND_TOL = 0.030        # s, first transmission → resend
 def detect_port(pcap):
     out = subprocess.run(["tshark", "-r", pcap, "-T", "fields", "-e", "udp.dstport"],
                          capture_output=True, text=True).stdout.split()
-    for p in (7790, 7800, 7777, 7795):
+    for p in (7790, 7800, 7777, 7795, 7820):
         if str(p) in out:
             return p
     raise SystemExit("no SA:MP port in %s" % pcap)

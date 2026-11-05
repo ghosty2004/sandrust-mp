@@ -276,6 +276,18 @@ public OnObjectMoved(objectid)
     return 1;
 }
 
+public OnPlayerClickPlayer(playerid, clickedplayerid, CLICK_SOURCE:source)
+{
+    printf("[ui-fs] click-player %d %d source %d", playerid, clickedplayerid, _:source);
+    return 1;
+}
+
+public OnEnterExitModShop(playerid, enterexit, interiorid)
+{
+    printf("[ui-fs] modshop %d enterexit %d interior %d", playerid, enterexit, interiorid);
+    return 1;
+}
+
 public OnPlayerClickMap(playerid, Float:fX, Float:fY, Float:fZ)
 {
     printf("[ui-fs] click-map %d %.2f %.2f %.2f", playerid, fX, fY, fZ);
@@ -616,6 +628,12 @@ Run(seq, const line[])
     else if (!strcmp(cmd, "clock")) TogglePlayerClock(pl(line, 1), bool:in(line, 2));
     else if (!strcmp(cmd, "vehcol")) DisableRemoteVehicleCollisions(pl(line, 1), bool:in(line, 2));
     else if (!strcmp(cmd, "camtarget")) EnablePlayerCameraTarget(pl(line, 1), bool:in(line, 2));
+    else if (!strcmp(cmd, "camtgt"))
+    {
+        new p = pl(line, 1);
+        printf("[ui-fs] %d camtgt object %d vehicle %d player %d actor %d", seq, GetPlayerCameraTargetObject(p),
+            GetPlayerCameraTargetVehicle(p), GetPlayerCameraTargetPlayer(p), GetPlayerCameraTargetActor(p));
+    }
     else if (!strcmp(cmd, "kick")) Kick(pl(line, 1));
     else if (!strcmp(cmd, "ban")) Ban(pl(line, 1));
     else if (!strcmp(cmd, "rcon")) { field(line, 1, a); SendRconCommand(a); }

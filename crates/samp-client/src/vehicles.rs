@@ -12,8 +12,8 @@
 //! animation, stream-out order.
 //!
 //! Not implemented (TODO-unknown or later milestones, see docs/phase3/m5-notes.md): weapons / drive-by / cuffs of
-//! remote occupants and the 203 aim sender (M7), "Car Jacked" ejection, the RC-driver world removal, plate
-//! textures (D3D proxy), model release on stream-out (MR-5.9), SCM event type 4 (mod shop), spectating.
+//! remote occupants and the 203 aim sender (M7), the RC-driver world removal, plate
+//! textures (D3D proxy), model release on stream-out (MR-5.9), SCM event type 4 S→C (mod-shop follow), spectating.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -34,6 +34,11 @@ use crate::remote::{self, PadInput, accept_timestamp, normalise, rows_from_quat,
 use crate::script::{Arg, Runner, op};
 use crate::vehhooks::{self, HookEvent, VehInfo};
 use crate::vehicle::{self as vm, DriverData, Kind, PassengerData, RemoteVeh, VehCorrection, state};
+
+/// "Car Jacked" game text (B string 0x100E6158; shown by B 0x10016220 for 1000 ms in style 5).
+pub const CAR_JACKED_TEXT: &str = "~r~Car Jacked~w~!";
+const CAR_JACKED_MS: u32 = 1000;
+const CAR_JACKED_STYLE: u32 = 5;
 
 /// GTA addresses / fields (names via gta-reversed / plugin-sdk).
 mod g {
@@ -243,6 +248,8 @@ struct Counters {
     sent_154: u32,
     sent_106: u32,
     sent_136: u32,
+    sent_96: u32,
+    jacked: u32,
     applied_209: u32,
 }
 
@@ -811,6 +818,7 @@ impl Vehicles {
                 let d = DriverData::from_sync(&sync);
                 p.health = d.health;
                 p.armour = d.armour;
+                let old_state = p.state;
                 p.state = state::DRIVER;
                 p.last_sync = Some(now);
                 let r = self.remote.entry(sync.player_id).or_default();
@@ -821,6 +829,10 @@ impl Vehicles {
                 let ped = p.ped;
                 if ped != 0 && !in_vehicle(ped) && self.seat_remote(runner, ped, d.vehicle_id, 0) {
                     self.remote.entry(sync.player_id).or_default().warps_in += 1;
+                }
+                // The state change to driver comes last (B 0x100172F0 → 0x10016220).
+                if old_state != state::DRIVER {
+                    self.car_jacked(runner, old_state, d.vehicle_id);
                 }
             }
             IncomingSync::Passenger(ps) => {
@@ -847,6 +859,25 @@ impl Vehicles {
             IncomingSync::Trailer(t) => self.apply_trailer(runner, t.player_id, &t.sync),
             _ => {}
         }
+    }
+
+    /// "Car Jacked" (B 0x10016220): a remote player goes from on foot to driving the vehicle the local ped is
+    /// driving → the local ped is warped out of it to its own position + 1 m up, game text "~r~Car Jacked~w~!"
+    /// (1000 ms, style 5).
+    fn car_jacked(&mut self, runner: &mut Runner, old_state: u8, vehicle_id: u16) {
+        let ped = local_ped();
+        if old_state != remote::state::ON_FOOT || ped == 0 || !in_vehicle(ped) {
+            return;
+        }
+        let veh: u32 = rd(ped + g::PED_VEHICLE);
+        if veh == 0 || rd::<u32>(veh + g::VEH_DRIVER) != ped || self.id_of_ptr(veh) != Some(vehicle_id) {
+            return;
+        }
+        let (Some(p), Some(h)) = (pos_of(ped), game::ped_handle(&ProcessMemory, ped).ok().flatten()) else { return };
+        runner.run(op::WARP_CHAR_FROM_CAR_TO_COORD, &[Arg::Int(h), Arg::Float(p[0]), Arg::Float(p[1]), Arg::Float(p[2] + 1.0)]);
+        crate::behaviourclient::big_message(runner, CAR_JACKED_TEXT, CAR_JACKED_MS, CAR_JACKED_STYLE);
+        self.n.jacked += 1;
+        crate::log!("vehicles: car jacked (vehicle {vehicle_id}): local ped warped out");
     }
 
     /// Driver/passenger seat warp (A 0x10014800 → A 0x100AC2D0). The weapon switch before it is M7.
@@ -1189,7 +1220,39 @@ impl Vehicles {
                         self.n.sent_154 += 1;
                     }
                 }
+                HookEvent::Scm { handle, arg1, arg2, kind } => self.scm_event_out(net, handle, arg1, arg2, kind),
             }
+        }
+    }
+
+    /// RPC 96 C→S (B 0x10001CE0, vehicles.md "96 SCMEvent (C→S)"): only for a vehicle of the pool; type 3 then
+    /// applies the colours locally, type 4 sets / clears the "in mod shop" flag (on leaving, the vehicle's current
+    /// GTA colours become its stored colours).
+    fn scm_event_out(&mut self, net: &mut NetClient, handle: i32, arg1: i32, arg2: i32, kind: i32) {
+        let ptr = vehicle_at(handle);
+        let Some(id) = self.id_of_ptr(ptr) else {
+            crate::log!("vehicles: SCM event type {kind} for handle {handle}: not a pool vehicle, not sent");
+            return;
+        };
+        crate::log!("vehicles: RPC 96 vehicle {id} arg1 {arg1} arg2 {arg2} type {kind}");
+        send(
+            net,
+            &rv::OnPlayerScmEvent { vehicle_id: u32::from(id), arg1: arg1 as u32, arg2: arg2 as u32, event_type: kind as u32 },
+        );
+        self.n.sent_96 += 1;
+        match kind {
+            3 => self.set_colours(id, arg1 as u8, arg2 as u8),
+            4 => {
+                let Some(v) = self.pool.get_mut(&id).filter(|v| v.ptr != 0) else { return };
+                if arg1 == 0 {
+                    let (c1, c2) = (rd::<u8>(v.ptr + g::VEH_PRIMARY_COLOUR), rd::<u8>(v.ptr + g::VEH_SECONDARY_COLOUR));
+                    v.in_mod_shop = false;
+                    self.set_colours(id, c1, c2);
+                } else {
+                    v.in_mod_shop = true;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1668,7 +1731,7 @@ impl Vehicles {
         let n = &self.n;
         let mut out = format!(
             "vehicles count={} process_control_calls={a}/{b}/{c}/{d} sent_200={} sent_210={} sent_211={} sent_209={} \
-             sent_26={} sent_154={} sent_106={} sent_136={} applied_209={} last_driven={}",
+             sent_26={} sent_154={} sent_106={} sent_136={} applied_209={} last_driven={} sent_96={} jacked={}",
             self.pool.len(),
             n.sent_200,
             n.sent_210,
@@ -1680,6 +1743,8 @@ impl Vehicles {
             n.sent_136,
             n.applied_209,
             self.last_driven.map(|i| i.to_string()).unwrap_or_else(|| "-".into()),
+            n.sent_96,
+            n.jacked,
         );
         for v in self.pool.values() {
             let ptr = if v.ptr != 0 { vehicle_at(v.handle) } else { 0 };
@@ -1800,6 +1865,42 @@ fn warp_into(runner: &mut Runner, ped_handle: i32, v: &Veh, seat: u8) {
             &[Arg::Int(ped_handle), Arg::Int(v.handle), Arg::Int(i32::from(seat) - 1)],
         );
     }
+}
+
+/// PlayCrimeReport's temporary vehicle (B 0x100A17A0 → samp's vehicle constructor B 0x100B83E0 at (0, 0, 0)
+/// with heading 0, then colours (colour, 0xFF) and CWorld::Remove): the stream-in creation sequence without
+/// a pool entry. Returns (script handle, CVehicle*).
+pub fn create_detached(runner: &mut Runner, model: u16, colour: u8) -> Option<(i32, u32)> {
+    let (x, y, z) = (0.0f32, 0.0f32, 0.0f32);
+    busy_load(runner, i32::from(model));
+    runner.run(op::CREATE_CAR, &[Arg::Int(i32::from(model)), Arg::Float(x), Arg::Float(y), Arg::Float(z), Arg::Local(0)]);
+    let handle = runner.local_i32(0);
+    runner.run(op::SET_CAR_HEADING, &[Arg::Int(handle), Arg::Float(0.0)]);
+    runner.run(op::SET_PETROL_TANK_WEAKPOINT, &[Arg::Int(handle), Arg::Int(0)]);
+    runner.run(op::SET_CAR_HYDRAULICS, &[Arg::Int(handle), Arg::Int(0)]);
+    runner.run(op::SET_CAN_BURST_CAR_TYRES, &[Arg::Int(handle), Arg::Int(0)]);
+    let ptr = vehicle_at(handle);
+    if ptr == 0 {
+        crate::log!("Warning: couldn't create vehicle type: {model}");
+        return None;
+    }
+    poke(ptr + g::VEH_DOOR_LOCK, 0u32);
+    poke(ptr + g::VEH_DIRT, 0.0f32);
+    let m = matrix(ptr);
+    if m != 0 {
+        let dz = if matches!(kind_of(ptr), Kind::Bike | Kind::Bmx) { 0.0 } else { vm::CREATE_Z_OFFSET };
+        put_v3(m + off::MATRIX_POS, [x, y, z + dz]);
+    }
+    poke(ptr + g::VEH_PRIMARY_COLOUR, colour);
+    poke(ptr + g::VEH_SECONDARY_COLOUR, 0xFFu8);
+    if crate::client::ped_in_world(ptr) {
+        // SAFETY: CWorld::Remove(CEntity*) (cdecl) on a live vehicle, main thread.
+        unsafe {
+            let f: extern "C" fn(u32) = std::mem::transmute(0x563280usize);
+            f(ptr);
+        }
+    }
+    Some((handle, ptr))
 }
 
 /// WARP_CHAR_FROM_CAR_TO_COORD to the ped's own current position (TRACE-4 §3).

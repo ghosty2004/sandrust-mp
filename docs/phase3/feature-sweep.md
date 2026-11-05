@@ -76,6 +76,9 @@ roadmap's milestone areas.
 
 ### A. Live features we do not implement
 
+Status 2026-11-05: rows A1, A2, A5–A10 and A19 implemented and diffed against the original in FEAT-A
+(docs/phase3/feata-notes.md); A19 has no effect in R4 (logged only).
+
 | ID | feature (samp behaviour, our words) | evidence (B) | trigger | ours | owner | sev | covered |
 |---|---|---|---|---|---|---|---|
 | A1 | **F4 = back to class selection after the next death.** While spawned, F4 (polled with GetAsyncKeyState in the local-player tick) sets the local player's "class selection on next respawn" flag once and prints the client line "Returning to class selection after next death"; a second F4 does nothing until the flag is consumed. After the next death the client enters class selection instead of re-spawning (same flag RPC 74 sets) | 0x100074b0 (key test + line), flag local player +0x2fa; string 0x100e5910 | F4 key | missing (RPC 74 sets our `force_class_selection`; no key) | player-state / M8b | U, N (128 instead of 52 after death) | yes, **live-checked**: two F4 presses → one line |

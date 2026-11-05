@@ -218,6 +218,79 @@ for ((i = 0; i < 60; i++)); do (( $(count "\[e2e\] spawn id=") > n )) && break; 
 sleep 3
 end
 
+# ---- FEAT-A: F4 class reselection (128 after the death instead of 52), camera target (168), scoreboard
+# double click (23), pause-map right click (119), mod shop (96) ---------------------------------------------
+home
+begin f4
+ev f4_key; key F4
+sleep 1
+nc=$(count "\[e2e\] class id="); n=$(count "\[e2e\] spawn id=")
+ev f4_kill; fs 'kill|L'
+# A gamemode without death handling (NET_GAMEMODE=tracegm): class selection (RPC 128) instead of the respawn;
+# the bundled gungame spectates and respawns the player itself.
+for ((i = 0; i < 60; i++)); do
+    (( $(count "\[e2e\] class id=") > nc || $(count "\[e2e\] spawn id=") > n )) && break; sleep 0.5
+done
+if (( $(count "\[e2e\] class id=") > nc )); then
+    sleep 3
+    for _ in 1 2 3 4; do
+        ev f4_spawn; key shift; sleep 4
+        (( $(count "\[e2e\] spawn id=") > n )) && break
+    done
+fi
+sleep 3
+end
+
+home
+fs "camera|L"; sleep 1
+begin camtarget
+ev camtarget_on; fs "camtarget|L|1"
+fs "veh|416|$(awk "BEGIN{print $X0+10}")|$Y0|$Z0|0|1|1"
+veh="$(fs_out | sed -nE 's/.* veh-created ([0-9]+).*/\1/p')"
+sleep 2.5
+ev camtarget_del; fs "vdel|${veh:-1}"
+sleep 2
+fs "camtarget|L|0"
+sleep 1
+end
+
+begin scoreboard_click
+ev sb_tab; key Tab
+sleep 2
+X mousemove 500 134; sleep 0.3; X click 1; sleep 1.5
+ev sb_dbl; X click --repeat 2 --delay 120 1
+sleep 2
+end
+
+begin map_click
+key Escape; sleep 2.5; key Down Down; sleep 0.5; key Return; sleep 2.5
+X mousemove 700 300; sleep 0.5
+ev map_rclick; X mousedown 3; sleep 0.3; X mouseup 3
+sleep 1.5
+key Escape; sleep 1.5; key Escape; sleep 2.5
+end
+
+# Wheel Arch Angels with a Sultan: enter (96 type 4), paint job preview (types 1 and 3), leave (type 4).
+fs "money|L|50000"
+fs "veh|560|-2706|217.5|4.4|90|1|1"
+mveh="$(fs_out | sed -nE 's/.* veh-created ([0-9]+).*/\1/p')"
+sleep 2
+fs "pos|L|-2700|213|4.3|90"; sleep 3
+for _ in 1 2 3 4; do fs "putin|L|${mveh:-1}|0"; sleep 3; fs "where|L"; fs_out | grep -q " veh ${mveh:-1} " && break; done
+begin modshop
+for _ in $(seq 16); do
+    waitlog "modshop [0-9]+ enterexit 1" 1 && break
+    fs "where|L"; mx="$(fs_out | sed -nE 's/.* pos (-?[0-9.]+) .*/\1/p')"
+    if awk -v x="${mx:-0}" 'BEGIN { exit !(x > -2722) }'; then hold w 0.35; sleep 1.2; else hold space 0.5; sleep 2.5; fi
+done
+sleep 3
+ev mod_paint; key space; sleep 2; key space; sleep 3
+ev mod_buy; key space; sleep 3
+ev mod_exit; key Return; sleep 5
+end
+fs "vdel|${mveh:-1}"
+home
+
 begin quit
 chat "/q" quit_key
 sleep 4

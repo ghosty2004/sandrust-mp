@@ -20,8 +20,12 @@
 //!   every other type does nothing more. It then continues like the
 //!   unimplemented case (result 0, keep running).
 //! * 0x09D3 sets the condition flag: false while the local player is in a
-//!   vehicle (ped flag bit 8 at +0x46C) but neither its driver nor in a train
-//!   carriage (models 569, 570); true otherwise.
+//!   vehicle (ped flag bit 8 at +0x46C) as its driver, unless that vehicle is a
+//!   train carriage (models 569, 570), and also false when the flag is set but
+//!   the ped has no vehicle pointer; true otherwise (on foot, passenger,
+//!   carriage). B 0x10001C30 → 0x100ABE80 / 0x100ABFD0 ("in a vehicle, not as
+//!   its driver or in a carriage"); measured: carmod1.scm only closes the mod
+//!   garage once this is false for the driver (feata-notes.md "FEAT-1").
 
 /// Jump-table slot of opcode 0x09C6 (CSV row 2).
 pub const OP_09C6_SLOT: u32 = 0x47BF54;
@@ -44,7 +48,7 @@ pub fn op_09d3_result(in_vehicle_flag: bool, vehicle: Option<(bool, u16)>) -> bo
     if !in_vehicle_flag {
         return true;
     }
-    matches!(vehicle, Some((driver, model)) if driver || TRAIN_CARRIAGE_MODELS.contains(&model))
+    matches!(vehicle, Some((driver, model)) if !driver || TRAIN_CARRIAGE_MODELS.contains(&model))
 }
 
 #[cfg(windows)]
@@ -109,9 +113,12 @@ mod hooks {
         let p = |i: u32| m.read_i32(SCRIPT_PARAMS + 4 * i).unwrap_or(0);
         let (kind, a, b, c) = (p(0), p(1), p(2), p(3));
         if super::is_network_event(kind) {
-            // samp sends RPC 96 only for vehicles in its own pool; we have no
-            // vehicle pool yet (M5), so every handle is unknown and nothing is sent.
-            crate::log!("scm: 09C6 SCM event type {kind} (vehicle handle {a}, {b}, {c}): no synced vehicle, not sent");
+            // samp sends RPC 96 right here (B 0x10001CE0); the vehicle pool turns the handle into an id and
+            // sends it in this frame's client tick (vehicles.rs `hook_events`).
+            crate::log!("scm: 09C6 SCM event type {kind} (vehicle handle {a}, {b}, {c})");
+            crate::vehhooks::with_shared(|s| {
+                s.events.push(crate::vehhooks::HookEvent::Scm { handle: a, arg1: b, arg2: c, kind })
+            });
         }
     }
 
@@ -171,12 +178,13 @@ mod tests {
 
     #[test]
     fn op_09d3_rules() {
-        assert!(op_09d3_result(false, None));
+        assert!(op_09d3_result(false, None), "on foot");
         assert!(op_09d3_result(false, Some((false, 411))));
-        assert!(op_09d3_result(true, Some((true, 411))), "driver");
-        assert!(!op_09d3_result(true, Some((false, 411))), "passenger");
-        assert!(op_09d3_result(true, Some((false, 570))), "train carriage");
-        assert!(!op_09d3_result(true, None));
+        assert!(!op_09d3_result(true, Some((true, 411))), "driver");
+        assert!(op_09d3_result(true, Some((false, 411))), "passenger");
+        assert!(op_09d3_result(true, Some((true, 570))), "train carriage driver");
+        assert!(op_09d3_result(true, Some((false, 569))), "train carriage passenger");
+        assert!(!op_09d3_result(true, None), "flag without a vehicle");
         assert!(is_network_event(1) && is_network_event(4));
         assert!(!is_network_event(5) && !is_network_event(22) && !is_network_event(0));
     }
