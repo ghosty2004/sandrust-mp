@@ -744,16 +744,16 @@ extern "thiscall" fn render_weapon_skill(ped: u32) -> u32 {
 /// Replaces `call CamShakeNoPos` in `FireSniper` (A 0x100A3DA0: a bare `ret`).
 extern "C" fn no_cam_shake() {}
 
-/// Crosshair correction (row 8, A 0x100A2590): only active with samp's flag A 0x10117470, which is 0 unless
-/// sa-mp.cfg sets `nohudscalefix` to a non-zero value (A 0x100C49DD). That configuration path is not wired yet, so
-/// the wrapper only calls the original (identical to samp with the default configuration).
+/// Crosshair wrapper (row 8, A 0x100A2590): samp's HUD scale fix around the draw while the local camera mode is
+/// 0x35 (mainhooks.rs).
 extern "C" fn crosshairs_site() {
-    // TODO-unknown: the corrected branch (A 0x100A2440) for `nohudscalefix` = 1 is not implemented.
-    // SAFETY: the original cdecl function.
-    unsafe {
-        let f: extern "C" fn() = std::mem::transmute(g::DRAW_CROSSHAIRS as usize);
-        f();
-    }
+    crate::mainhooks::crosshairs(|| {
+        // SAFETY: the original cdecl function.
+        unsafe {
+            let f: extern "C" fn() = std::mem::transmute(g::DRAW_CROSSHAIRS as usize);
+            f();
+        }
+    });
 }
 
 /// `CWeapon::TakePhotograph` (row 45, A 0x100A3DB0): the photo flags only for the local photographer.

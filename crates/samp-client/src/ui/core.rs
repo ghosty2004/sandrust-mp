@@ -960,6 +960,9 @@ impl UiCore {
             }
             Effect::RebuildFonts(_) => self.requests.rebuild_fonts = true,
             Effect::SetTimestamps(on) => self.chat.set_timestamps(on),
+            // `/hudscalefix`: samp's flag A 0x10117470 (mainhooks.rs).
+            #[cfg(windows)]
+            Effect::SetHudScaleFix(on) => crate::mainhooks::set_enabled(on),
             // Stored in `settings`; their game effects belong to later milestones.
             other => crate::log!("ui: effect {other:?} stored only (not applied in M4)"),
         }

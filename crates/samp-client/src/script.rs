@@ -40,6 +40,8 @@ pub mod op {
     pub const SET_FIXED_CAMERA_POSITION: u16 = 0x015F;
     pub const POINT_CAMERA_AT_POINT: u16 = 0x0160;
     pub const SET_CHAR_HEADING: u16 = 0x0173;
+    /// `GET_GROUND_Z_FOR_3D_COORD` (x, y, z → float); SetPlayerPosFindZ (RPC 13).
+    pub const GET_GROUND_Z_FOR_3D_COORD: u16 = 0x02CE;
     pub const GIVE_WEAPON_TO_CHAR: u16 = 0x01B2;
     pub const SET_CURRENT_CHAR_WEAPON: u16 = 0x01B9;
     pub const SET_PLAYER_CONTROL: u16 = 0x01B4;

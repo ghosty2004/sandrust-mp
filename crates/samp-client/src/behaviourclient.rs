@@ -934,6 +934,42 @@ fn area_visible(runner: &mut Runner) -> i32 {
     runner.local_i32(0) & 0xFF
 }
 
+/// The world bounds while the local player is spawned (samp: local player +0xF0), published by the client tick
+/// for the `CPlayerPed::ProcessControl` hook ([`bounds_jump`]).
+static LOCAL_BOUNDS: std::sync::Mutex<Option<Bounds>> = std::sync::Mutex::new(None);
+
+pub fn publish_bounds(b: Option<Bounds>) {
+    *LOCAL_BOUNDS.lock().unwrap_or_else(|e| e.into_inner()) = b;
+}
+
+/// samp's local branch of the `CPlayerPed::ProcessControl` hook (B 0x100A2AF9, measured with the effect tracer:
+/// `Pads[0]` Square written by samp B+0xA2B70 one frame before `CTaskComplexJump` is created from
+/// `PlayerControlZelda`): while the local player is spawned, the local ped is outside the bounds (same strict
+/// compares as the push-back, B 0x1009F5F0), the area is 0 (GET_AREA_VISIBLE, B 0x100A0EF0) and the ped is not in a
+/// vehicle and stands (flags +0x46C: bit 8 clear, bit 0 or 1 set), the pad gets a fresh jump press
+/// (NewState.Square := 0xFF, OldState.Square := 0) before GTA processes the ped. Runs before the special-action
+/// masks, like samp.
+pub fn bounds_jump(ped: u32) {
+    let Some(b) = *LOCAL_BOUNDS.lock().unwrap_or_else(|e| e.into_inner()) else { return };
+    let Some(p) = matrix_pos(ped) else { return };
+    if !bh::outside(p, &b) {
+        return;
+    }
+    thread_local! {
+        static RUNNER: std::cell::RefCell<Runner> = std::cell::RefCell::new(Runner::new());
+    }
+    if RUNNER.with(|r| area_visible(&mut r.borrow_mut())) != 0 {
+        return;
+    }
+    let flags: u32 = rd(ped + off::PED_FLAGS);
+    if flags & 0x100 != 0 || flags & 0x3 == 0 {
+        return;
+    }
+    use crate::combat::pad;
+    poke(game::PAD0 + pad::SQUARE as u32, 0xFFi16);
+    poke(game::PAD0 + (pad::OLD_STATE + pad::SQUARE) as u32, 0i16);
+}
+
 /// B 0x1009F450 on a live entity: speed, then the matrix rows written back with z + 0.04.
 fn push_back_entity(e: u32, b: &Bounds) -> bool {
     let m: u32 = rd(e + off::PLACEABLE_MATRIX);
