@@ -22,6 +22,7 @@ differential capture against the original client, e2e script.
 
 In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1, EFX-1.
 
+1. JOIN-P — ours sends RequestClass while the join dialog is still open; the original waits until the dialog closes (found by the join-burst test)
 1. WATCH — goal.sh failed once (bot did not walk, run took 48 s), passed twice on rerun; m5 hang once (M9 run)
 1. M6-P — world leftovers: object editor gizmo + drag (117 response 2 every 250–287 ms), selection picking, wire TODO(input-lock) sites to ui::set_input_mode, CSV row 81 camera test for objects/vehicles; PLATE-1 number plates; M8A-PREVIEW model-preview textdraws
 1. EFX-2 — step-mode capture for OUR client too (build samp_client.dll with a symbol map so `efx arm` can single-step our handler by name) — needed to settle effect diffs like the local skin handler's extra 0247/0248 and the +0x55c write
