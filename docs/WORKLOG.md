@@ -563,3 +563,10 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - tools/diff/files.sh on main (9f47445): exit 0 — orig 240 opens (29 from samp.saa, 27 distinct), ours 240;
   29 archive + 176 disk content hashes compared; opens-set, opens-order, archive-order, sizes, hashes,
   ours-log all OK; IDENTICAL, PASS.
+
+## 2026-11-06 — Final proof run (first pass)
+
+- F6 files.sh: exit 0 (IDENTICAL). F2 network.sh: exit 0, `checks: 388, matching: 388, accepted decisions: 0, open differences: 0`.
+- F5 exit 1: row 368 frame-local toggle caught by snapshot luck; harness now watches the writes (ff689b8): 2 runs PASS, negative test FAIL as expected.
+- F1 exit 1 (130/131: gangzone_stopflash screenshot phase), F3 exit 1 (44/45: veh_enter_B short anim sampling) — handed to a deflaking agent.
+- F4 exit 1: vehtag DIFF, netstats DIFF 2 lines, dl/dloff/testdw MISSING (scenario not driven for ours) — handed to a visual agent.
