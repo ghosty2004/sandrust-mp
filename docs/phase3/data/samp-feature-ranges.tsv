@@ -1,0 +1,19 @@
+# FEAT-SWEEP: manual feature labels for samp.dll build B (2019) address ranges that the specs do
+# not cover (libraries, dormant machinery, undocumented features). start/end inclusive-exclusive.
+# Used by tools/cov/samp_features.py before the spec-based propagation. Our own words only.
+start	end	feature
+0x100022e0	0x10002e90	http client for artwork downloads (dormant)
+0x1000bd50	0x1000e580	custom-model download manager (dormant)
+0x10020000	0x10058000	RakNet library
+0x10058000	0x10060000	big-int / RSA (ttmath) + gpci serial
+0x10060000	0x10060be0	crash handler + crash report
+0x10063000	0x10064840	SHA-1 / signature check
+0x10075f30	0x1009c400	DXUT framework + GUI controls
+0x1006a720	0x1006b090	model download progress UI (dormant)
+0x1009e140	0x1009ea80	debug mode (vehicle select, debug script)
+0x100a5ec0	0x100a5f40	frame-name length guard
+0x100a76f0	0x100a7e30	custom model loader (dormant)
+0x100b8ce0	0x100c3a10	custom model / texture stream reader (dormant)
+0x100c5c80	0x100de000	MSVC CRT / C++ runtime
+0x100de000	0x100e0000	detours library
+0x100e0000	0x100e5000	EH unwind funclets

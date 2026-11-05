@@ -1,0 +1,433 @@
+va_B	kind	string	referencing_function_B	our_status	our_location	behaviour	trigger	severity
+0x100e55fc	msg	Warning: actor %u was not deleted	0x10001900	partial	crates/samp-client/src/entities.rs:218	Same as vehicle: chat debug line on actor slot reuse; ours logs only	actor create on occupied slot	user-visible
+0x100e57f8	other	FollowPedSA	0x10002fa0,0x10014350	implemented	crates/samp-client/src/players.rs:56			user-visible
+0x100e5818	msg	Stay within the ~r~world boundries	0x10003f40,0x10003fb0	implemented	crates/samp-client/src/behaviour.rs:24		world bounds violation (RPC SetWorldBounds)	user-visible
+0x100e5844	fmt	CAMERA_TARGET_TYPE_ACTOR: ID(%u)	0x10004830	partial	crates/samp-ui/src/commands.rs:430	/ctd toggles a flag; when set, every frame the client draws a 3D text label (colour 0xFFD47B75) at the local camera target entity showing its kind and id (vehicle / player / actor / object) for whichever of the four target ids is valid. Ours only flips settings.camera_target_labels; nothing is drawn (effect logged as "stored only")	/ctd	user-visible
+0x100e5868	fmt	CAMERA_TARGET_TYPE_PLAYER: ID(%u)	0x10004830	partial	crates/samp-ui/src/commands.rs:430	/ctd toggles a flag; when set, every frame the client draws a 3D text label (colour 0xFFD47B75) at the local camera target entity showing its kind and id (vehicle / player / actor / object) for whichever of the four target ids is valid. Ours only flips settings.camera_target_labels; nothing is drawn (effect logged as "stored only")	/ctd	user-visible
+0x100e588c	fmt	CAMERA_TARGET_TYPE_VEHICLE: ID(%u)	0x10004830	partial	crates/samp-ui/src/commands.rs:430	/ctd toggles a flag; when set, every frame the client draws a 3D text label (colour 0xFFD47B75) at the local camera target entity showing its kind and id (vehicle / player / actor / object) for whichever of the four target ids is valid. Ours only flips settings.camera_target_labels; nothing is drawn (effect logged as "stored only")	/ctd	user-visible
+0x100e58b0	fmt	CAMERA_TARGET_TYPE_OBJECT: ID(%u)	0x10004830	partial	crates/samp-ui/src/commands.rs:430	/ctd toggles a flag; when set, every frame the client draws a 3D text label (colour 0xFFD47B75) at the local camera target entity showing its kind and id (vehicle / player / actor / object) for whichever of the four target ids is valid. Ours only flips settings.camera_target_labels; nothing is drawn (effect logged as "stored only")	/ctd	user-visible
+0x100e5910	msg	Returning to class selection after next death	0x100074b0	missing		F4 key (polled with GetAsyncKeyState in the netgame tick, once per life) sets a "reselect class" flag and prints this info line; after the next death the player is sent back to class selection instead of being respawned	press F4 while connected and spawned	user-visible
+0x100e596c	msg	{FFFFFF}SA-MP {B9C9BF}0.3.7-R4 {FFFFFF}Started	0x1000b920,code@1000875a	implemented	crates/samp-proto/src/rpcs/session.rs:396		connection state machine	user-visible
+0x100e599c	msg	Connecting to %s:%d...	0x10008930	implemented	crates/samp-client/src/lifecycle.rs:10		connection state machine	user-visible
+0x100e59f4	msg	Failed to initialize encryption.	0x1000b250,code@10008d46	implemented	crates/samp-client/src/lifecycle.rs:38		connection state machine	user-visible
+0x100e5a18	msg	You are banned from this server.	0x1000b250,code@10008d66	implemented	crates/samp-client/src/lifecycle.rs:39		connection state machine	user-visible
+0x100e5a3c	msg	Server has accepted the connection.	0x10008d80	n-a		Tiny helper (0x10008d80) that prints this debug line; no call or pointer reference found in B -> dead code	none (unreferenced)	internal
+0x100e5a60	msg	The server is full. Retrying...	0x1000b250,code@10008da7	implemented	crates/samp-client/src/lifecycle.rs:34		connection state machine	user-visible
+0x100e5a80	msg	Server closed the connection.	0x10008dd0	implemented	crates/samp-client/src/lifecycle.rs:35		connection state machine	user-visible
+0x100e5aa0	msg	Wrong server password.	0x1000b250,code@10008e17	implemented	crates/samp-client/src/lifecycle.rs:40		connection state machine	user-visible
+0x100e5ab8	msg	The server didn't respond. Retrying..	0x1000b250,code@10008e57	implemented	crates/samp-client/src/lifecycle.rs:33		connection state machine	user-visible
+0x100e5ae0	msg	NameTag Player Status: OFF	0x10008e80	implemented	crates/samp-ui/src/commands.rs:25		local command	user-visible
+0x100e5afc	cfg	nonametagstatus	0x10008e80,0x1000b920	implemented	crates/samp-ui/src/config.rs:30		sa-mp.cfg key	user-visible
+0x100e5b0c	msg	NameTag Player Status: ON	0x10008e80	implemented	crates/samp-ui/src/commands.rs:24		local command	user-visible
+0x100e5b3c	msg	The server is restarting..	0x1000a530	implemented	crates/samp-client/src/lifecycle.rs:41		connection state machine	user-visible
+0x100e5b58	msg	Lost connection to the server. Reconnecting..	0x1000ace0	implemented	crates/samp-client/src/lifecycle.rs:36		connection state machine	user-visible
+0x100e5b98	msg	Connected. Joining the game...	0x1000ad70	implemented	crates/samp-client/src/lifecycle.rs:37		connection state machine	user-visible
+0x100e5bb8	other	SA-MP	0x1000b920,0x10060560,0x1006baf0,0x100a5ec0	implemented	crates/samp-client/src/ui/core.rs:39		MessageBox caption / BASS user agent	internal
+0x100e5bc0	msg	%s\\%s.%d	0x1000bd50	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5bcc	file	%s\\local	0x100c3b00	partial		At startup the client also creates <user>\SAMP\cache and cache\local (cache root overridable by HKCU\Software\SAMP\model_cache). Ours creates SAMP and SAMP\screens only	client start	internal
+0x100e5bd8	msg	%s/0x%X.dff	0x1000be20,0x1000e150	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5be4	msg	%s/0x%X.txd	0x1000beb0,0x1000e150	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5bf0	msg	[error] AddURLRequest: No free slots!	0x1000c370	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5c18	msg	[url 0x%X]: %s	0x1000c370	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5c28	cmd	logurls	0x100687c0	implemented	crates/samp-ui/src/commands.rs:416	(toggle + message + cfg; the URL log it controls belongs to the dormant download code)	/logurls (also cfg key)	user-visible
+0x100e5c30	msg	[warning] Too many textures in 0x%X.txd. (%u) Deleting..	0x1000c450	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5c6c	msg	[warning] Could not verify 0x%X.txd. Error(%d) Deleting..	0x1000c450	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5ca8	msg	%s\\0x%X.dff	0x1000c580,0x1000c640,0x1000c760	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5cb4	msg	%s\\0x%X.txd	0x1000c5c0,0x1000c640,0x1000c760	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5cc0	msg	%s\\%s	0x1000bd50,0x1000c600,0x100768a0,0x10076a20,0x10096770,0x100968d0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5ccc	msg	%s/%05d_%X.temp	0x1000ccb0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5cdc	msg	%s/*.txd	0x1000d070	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5ce8	msg	%s/*.dff	0x1000d070	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5cf4	msg	%s/*.temp	0x1000d070	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5d00	msg	DownloadRedirect: Can't open temp file for writing!	0x1000d640	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5d38	msg	DownloadRedirect: Can't fill download info!	0x1000d640	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5d64	msg	Can't fill download info for CRC: 0x%X	0x1000d740	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5d98	msg	[warning] Could not validate 0x%X.dff. Error(%d:0x%X) Deleting..	0x1000e000	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5ddc	msg	[warning] Could not validate 0x%X.dff. Error(%d) Deleting..	0x1000e000	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5e18	msg	[error] file 0x%X bad checksum (0x%X). Deleting..	0x1000e150	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5e4c	msg	[error] file 0x%X bad length got:%u expected:%u. Deleting..	0x1000e150	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100e5f20	msg	CONNECTION REJECTED: Unable to allocate a player slot.	0x10010520	implemented	crates/samp-client/src/lifecycle.rs:50		connection state machine	user-visible
+0x100e5f58	msg	CONNECTION REJECTED: Bad mod version.	0x10010520	implemented	crates/samp-client/src/lifecycle.rs:49		connection state machine	user-visible
+0x100e5f80	msg	Use /quit to exit or press ESC and select Quit Game	0x10010520	implemented	crates/samp-client/src/lifecycle.rs:47		connection state machine	user-visible
+0x100e5fb4	msg	Please use only a-z, A-Z, 0-9	0x10010520	implemented	crates/samp-client/src/lifecycle.rs:46		connection state machine	user-visible
+0x100e5fd4	msg	Please choose another nick between and 3-20 characters	0x10010520	implemented	crates/samp-client/src/lifecycle.rs:45		connection state machine	user-visible
+0x100e600c	msg	CONNECTION REJECTED: Unacceptable NickName	0x10010520	implemented	crates/samp-client/src/lifecycle.rs:43		connection state machine	user-visible
+0x100e6038	msg	CONNECTION REJECTED: Incorrect Version.	0x10010520	implemented	crates/samp-client/src/lifecycle.rs:42		connection state machine	user-visible
+0x100e6060	msg	Connected to {B9C9BF}%.64s	0x10010640	implemented	crates/samp-client/src/ui/core.rs:46		connection state machine	user-visible
+0x100e607c	msg	Warning: Couldn't spawn player(%u)	0x10010ae0	partial	crates/samp-proto/src/rpcs/remote.rs:101	When creating a streamed-in remote player (WorldPlayerAdd) fails (e.g. invalid skin), a debug chat line is printed. Ours has no such chat line in samp-client	RPC 32 with unusable skin	user-visible
+0x100e60a8	other	Sphere2	0x10013020	n-a		Debug 3D labels "Sphere1"/"Sphere2" drawn at two stored sphere positions (checkpoint debug); function has no xrefs	none	internal
+0x100e60b0	other	Sphere1	0x10013020	n-a		same as Sphere2	none	internal
+0x100e6158	msg	~r~Car Jacked~w~!	0x10016220	missing		When a remote player switches from on-foot to driver of the vehicle the local player is driving, the local ped is ejected and the big game text "~r~Car Jacked~w~!" is shown for 1 s (style 5)	remote driver sync claiming local vehicle	user-visible
+0x100e6174	other	crry_prtial	0x10016660	implemented	crates/samp-client/src/behaviourclient.rs:910			user-visible
+0x100e6180	other	CARRY	0x10016660	implemented	crates/samp-client/src/client.rs:46		anim block names preloaded	internal
+0x100e6188	other	VEND_EAT_P	0x10016660	implemented	crates/samp-client/src/client.rs:46		anim block names preloaded	internal
+0x100e6194	other	VENDING	0x10016660,0x100a18b0	implemented	crates/samp-client/src/client.rs:46		anim block names preloaded	internal
+0x100e61a0	other	ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=	ptr@100fe4cc	n-a		base64 alphabet for the crash-report upload body	crash report	internal
+0x100e63bc	fmt	Widescreen = %i	0x10018a70	implemented	crates/samp-client/src/behaviourclient.rs:1055		RPC 111	internal
+0x100e63cc	msg	Warning: SetPlayerSkin %d isn't a valid ped model.	0x10019140	implemented	crates/samp-client/src/client.rs:1317		SetPlayerSkin with invalid model	user-visible
+0x100e6404	msg	Warning: ignoring large TextDraw size=%u	0x1001cd40	implemented	crates/samp-client/src/ui/core.rs:608		oversized TextDraw RPC	user-visible
+0x100e6434	msg	All vehicle waiting slots are consumed!	code@1001eceb	missing		Vehicle pool deferred-creation queue full: debug chat line, the vehicle is not queued	more pending vehicle creates than queue slots	internal
+0x100e645c	other	XYZSR998	0x1001ed20	implemented	crates/samp-client/src/plates.rs:40			user-visible
+0x100e6468	msg	Warning: vehicle %u was not deleted	0x1001f030	partial	crates/samp-client/src/vehicles.rs:466	Original prints this to chat as a debug line when a vehicle slot is reused before its old vehicle was deleted; ours writes it only to the log file	vehicle create on an occupied slot	user-visible
+0x100e6490	msg	No bits	code@1001fbcb	n-a		Assertion-style debug output in a bit-stream helper; unreferenced by a decompiled function	malformed internal bitstream	internal
+0x100e9424	fmt	P%u (%u,%u) 	0x10060110	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e9436	fmt	State Information: Ped Context: %u	0x10060560,0x10060110 (multi-line report format)	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e9460	fmt	+%04X: %02X %02X %02X %02X   %02X %02X %02X %02X   %02X %02X %02X %02X   %02X %02X %02X %02X	0x10060240	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e94c0	fmt	+%04X: 0x%08X   0x%08X   0x%08X   0x%08X	0x10060240	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e94ec	fmt	%s\tB: 0x%08X\tS: 0x%08X\t(%s)	0x100603d0	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e950c	fmt	-FailedFirst-	0x100603d0	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e951c	fmt	-FailedCreate-	0x100603d0	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e9532	fmt	Loaded Modules:	0x10060560,0x10060110 (multi-line report format)	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e9546	fmt	Game Version: %s	0x10060560,0x10060110 (multi-line report format)	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e955c	fmt	UNKNOWN	0x10060560	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e9576	fmt	SCM Op: 0x%X, lDbg: %d LastRendObj: %u	0x10060560,0x10060110 (multi-line report format)	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e95a0	fmt	SA-MP %s	0x10060560	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e95aa	fmt	Exception At Address: 0x%08X	0x10060560,0x10060110 (multi-line report format)	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e95c8	fmt	Base: 0x%08X	0x10060560,0x10060110 (multi-line report format)	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e95d8	fmt	Registers:	0x10060560,0x10060110 (multi-line report format)	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e95e4	fmt	EAX: 0x%08X\tEBX: 0x%08X\tECX: 0x%08X\tEDX: 0x%08X	0x10060560,0x10060110 (multi-line report format)	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e9615	fmt	ESI: 0x%08X\tEDI: 0x%08X\tEBP: 0x%08X\tESP: 0x%08X	0x10060560,0x10060110 (multi-line report format)	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e9646	fmt	EFLAGS: 0x%08X	0x10060560,0x10060110 (multi-line report format)	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e9658	fmt	Stack:	0x10060560,0x10060110 (multi-line report format)	missing		Crash handler (unhandled-exception filter): builds a text report (SA-MP version, exception address, module base, registers, stack dump, loaded module list, game version, last SCM opcode / debug state / last rendered object, ped context) and shows it in the crash dialog	unhandled exception	user-visible
+0x100e9664	url	www.sa-mp.com	0x10060750	missing		"Report Crash" button: base64-encodes the report and POSTs it as data= to team.sa-mp.com/report_037.php?addr=<fault>&gta=sa (host www.sa-mp.com) via the built-in HTTP client	crash dialog Report Crash	network-visible
+0x100e9674	url	team.sa-mp.com/report_037.php?addr=0x%X&gta=sa	0x10060750	missing		"Report Crash" button: base64-encodes the report and POSTs it as data= to team.sa-mp.com/report_037.php?addr=<fault>&gta=sa (host www.sa-mp.com) via the built-in HTTP client	crash dialog Report Crash	network-visible
+0x100e96a4	url	data=	0x10060750	missing		"Report Crash" button: base64-encodes the report and POSTs it as data= to team.sa-mp.com/report_037.php?addr=<fault>&gta=sa (host www.sa-mp.com) via the built-in HTTP client	crash dialog Report Crash	network-visible
+0x100e96ac	msg	Thanks for reporting this problem.	code@10060866	missing		Shown after the crash report was submitted	crash dialog Report Crash	user-visible
+0x100e96d0	msg	Warning(%s): Exception 0x%X at 0x%X	code@100609f8	partial	crates/samp-client/src/players.rs:628	Generic SEH reporter: a guarded call that faults prints "Warning(<name>): Exception X at Y" to chat (first N faults handled, later ones crash). Ours only covers the playerped context	exception in a guarded game call	user-visible
+0x100e96f4	msg	Warning(opcode 0x%X): Exception 0x%X at 0x%X	code@100609dd	missing		Same SEH reporter for a script opcode executed by samp; prints the opcode number	exception while running a script opcode	user-visible
+0x100e9724	msg	Warning(add_car_component %u): Exception 0x%X at 0x%X	code@100609b3	missing		Same SEH reporter for add_car_component (vehicle tuning)	exception while adding a vehicle component	user-visible
+0x100e975c	other	opcode	code@10060977,code@100b24fc	n-a		name tag used by the opcode SEH wrapper		internal
+0x100e977c	fmt	Client Network Stats	0x10060d20	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e9794	fmt	Process Mem: %uKB Working Set: %uKB	0x10060d20	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e97bc	fmt	Streaming Mem: %uMB Total: %uMB System: %uMB	0x10060d20	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e97ec	fmt	InCar Send Rate: %u	0x10060d20	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e9804	fmt	OnFoot Send Rate: %u	0x10060d20	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e9820	fmt	Vehicles: %u	0x10060d20	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e982d	fmt	Vehicle Models: %u	0x10060d20 (continuation of F5 format)	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e9840	fmt	Vehicle Models Loaded: %u	0x10060d20 (continuation of F5 format)	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e985a	fmt	RWObjects: %u	0x10060d20 (continuation of F5 format)	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e9868	fmt	PedSlotsUsed: %u	0x10060d20 (continuation of F5 format)	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e9879	fmt	ObjectSlotsUsed: %u	0x10060d20 (continuation of F5 format)	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e988d	fmt	ShotCompMode: %u	0x10060d20 (continuation of F5 format)	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e989e	fmt	FreeIDEs: %u	0x10060d20 (continuation of F5 format)	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e98ac	fmt	Download Rate: %.2f KB/s	0x10060d20	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e98c5	fmt	Upload Rate: %.2f KB/s	0x10060d20 (continuation of F5 format)	implemented	crates/samp-client/src/ui/core.rs:173		F5	user-visible
+0x100e98e4	other	GTA:SA:MP	0x10061eb0	missing		On window hook-up the client sets the GTA window title to "GTA:SA:MP" (SetWindowTextA) and subclasses its window proc	game window creation	user-visible
+0x100e98f0	file	\\screens\\sa-mp-%03i.png	0x10062230	implemented	crates/samp-client/src/ui/core.rs:448		F8	user-visible
+0x100e9908	other	user32.dll	0x10062930,0x100dc4ce	implemented	crates/samp-client/src/filehook.rs:5		dynamic imports for the samp.saa file hook / cursor	internal
+0x100e9914	other	ShowCursor	0x10062930	implemented	crates/samp-client/src/filehook.rs:5		dynamic imports for the samp.saa file hook / cursor	internal
+0x100e9920	other	GetFileType	0x10062c60	implemented	crates/samp-client/src/filehook.rs:5		dynamic imports for the samp.saa file hook / cursor	internal
+0x100e992c	other	CloseHandle	0x10062c60	implemented	crates/samp-client/src/filehook.rs:5		dynamic imports for the samp.saa file hook / cursor	internal
+0x100e9938	other	SetFilePointer	0x10062c60	implemented	crates/samp-client/src/filehook.rs:5		dynamic imports for the samp.saa file hook / cursor	internal
+0x100e9948	other	GetFileSize	0x10062c60	implemented	crates/samp-client/src/filehook.rs:5		dynamic imports for the samp.saa file hook / cursor	internal
+0x100e9954	other	ReadFile	0x10062c60	implemented	crates/samp-client/src/filehook.rs:5		dynamic imports for the samp.saa file hook / cursor	internal
+0x100e9960	other	kernel32.dll	0x10062c60,0x100cd01f,0x100d7745	implemented	crates/samp-client/src/filehook.rs:5		dynamic imports for the samp.saa file hook / cursor	internal
+0x100e9970	other	CreateFileA	0x10062c60	implemented	crates/samp-client/src/filehook.rs:5		dynamic imports for the samp.saa file hook / cursor	internal
+0x100e997c	fmt	%08X%08X%08X%08X%08X	code@1006305d	n-a		Hex digest formatting (SHA-1 style 5x32-bit) used for the gpci/serial hash; no user-visible text	connect	network-visible
+0x100e9acc	other	SAMP	0x10002a60,0x10069b70,0x10071b90,0x100a7750,0x100b2ba0,ptr@10102798	implemented	crates/samp-proto/src/connection.rs:71			internal
+0x100e9b80	cfg	%s=%d	0x10065f90	implemented	crates/samp-ui/src/config.rs:5		sa-mp.cfg write	internal
+0x100e9b88	cfg	%s="%s"	0x10065f90	implemented	crates/samp-ui/src/config.rs:5		sa-mp.cfg write	internal
+0x100e9b94	cfg	%s=%f	0x10065f90	implemented	crates/samp-ui/src/config.rs:5		sa-mp.cfg write	internal
+0x100e9ba4	cfg	audioproxyoff	0x10066440	implemented	crates/samp-ui/src/config.rs:38		sa-mp.cfg key	user-visible
+0x100e9bb8	fmt	%s - %s	0x10066580,0x10066a70	implemented	crates/samp-client/src/audio.rs:167		audio stream metadata	user-visible
+0x100e9bc0	other	title=	0x10066580	implemented	crates/samp-client/src/audio.rs:124		audio stream metadata	user-visible
+0x100e9bc8	other	artist=	0x10066580	implemented	crates/samp-client/src/audio.rs:124		audio stream metadata	user-visible
+0x100e9bd0	other	StreamTitle='	0x10066580	implemented	crates/samp-client/src/audio.rs:124		audio stream metadata	user-visible
+0x100e9be4	other	icy-url:	code@10066782	implemented	crates/samp-client/src/audio.rs:124		audio stream metadata	user-visible
+0x100e9bf0	other	icy-name:	code@10066753	implemented	crates/samp-client/src/audio.rs:124		audio stream metadata	user-visible
+0x100e9bfc	msg	Audio stream: %s	0x10066920	implemented	crates/samp-client/src/audio.rs:15		PlayAudioStream	user-visible
+0x100e9c10	cfg	audiomsgoff	0x10066920,code@10068757,code@10068770,code@10068794	implemented	crates/samp-ui/src/config.rs:31		sa-mp.cfg key	user-visible
+0x100e9c1c	msg	BASS_ChannelSet3DPosition Error	code@10066d7c	missing		Debug chat lines printed when BASS rejects 3D position/attribute updates of a positional audio stream (the third also dumps the offset)	positional audio stream update failure	internal
+0x100e9c3c	msg	BASS_ChannelSet3DAttributes Error	code@10066d4f	missing		Debug chat lines printed when BASS rejects 3D position/attribute updates of a positional audio stream (the third also dumps the offset)	positional audio stream update failure	internal
+0x100e9c60	msg	BASS_ChannelSet3DAttributes offset: %f %f %f	code@10066d10	missing		Debug chat lines printed when BASS rejects 3D position/attribute updates of a positional audio stream (the third also dumps the offset)	positional audio stream update failure	internal
+0x100e9ca8	fmt	%s <%s> %s	0x10067790	implemented	crates/samp-ui/src/chat.rs:56		chatlog line	internal
+0x100e9cb8	fmt	%s %s	0x10067790	implemented	crates/samp-ui/src/chat.rs:56		chatlog line	internal
+0x100e9cc0	fmt	[%H:%M:%S]	0x10067790,0x10067900	implemented	crates/samp-ui/src/chat.rs:89		/timestamp	user-visible
+0x100e9cd0	msg	ChatWindow: Can't create a render to surface. Will use direct mode.	0x10068190	missing		Chat window construction: if the render-to-surface helper cannot be created, prints this debug line and falls back to direct drawing. Ours logs renderer errors to file only	D3DX render-to-surface failure	user-visible
+0x100e9d18	msg	ChatWindow: Can't create a render surface texture. Will use direct mode.	0x10068190	missing		Same fallback when the off-screen chat texture cannot be created	texture creation failure	user-visible
+0x100e9d64	msg	ChatWindow: Using direct drawing mode.	0x10068190	implemented	crates/samp-client/src/ui/glue.rs:518		directmode=1	user-visible
+0x100e9d8c	cfg	directmode	0x10068190	implemented	crates/samp-ui/src/config.rs:35		sa-mp.cfg key	user-visible
+0x100e9dd4	other	PooperPooperPooper0001	0x100684c0	partial	crates/samp-ui/src/commands.rs:435	/testdw fills the death window with test rows using these placeholder names (killer/victim) so the layout can be checked; ours returns Effect::FillTestDeathWindow which the client never applies	/testdw	user-visible
+0x100e9dec	other	Pooper	0x100684c0	partial	crates/samp-ui/src/commands.rs:435	/testdw fills the death window with test rows using these placeholder names (killer/victim) so the layout can be checked; ours returns Effect::FillTestDeathWindow which the client never applies	/testdw	user-visible
+0x100e9df4	other	Pooper333	0x100684c0	partial	crates/samp-ui/src/commands.rs:435	/testdw fills the death window with test rows using these placeholder names (killer/victim) so the layout can be checked; ours returns Effect::FillTestDeathWindow which the client never applies	/testdw	user-visible
+0x100e9e00	msg	pagesize [10-20] (lines)	code@10068618	implemented	crates/samp-ui/src/commands.rs:19		local command	user-visible
+0x100e9e1c	cmd	pagesize	0x100685b0	implemented	crates/samp-ui/src/commands.rs:366		/pagesize (also cfg key)	user-visible
+0x100e9e28	msg	Valid fontsize: -3 to 5	code@100686c4	implemented	crates/samp-ui/src/commands.rs:20		local command	user-visible
+0x100e9e40	cmd	fontsize	0x10068630	implemented	crates/samp-ui/src/commands.rs:376		/fontsize (also cfg key)	user-visible
+0x100e9e4c	cmd	timestamp	0x100686f0	implemented	crates/samp-ui/src/commands.rs:386		/timestamp (also cfg key)	user-visible
+0x100e9e58	msg	Audio messages: Off	code@100687a7	implemented	crates/samp-ui/src/commands.rs:27		local command	user-visible
+0x100e9e6c	msg	Audio messages: On	code@10068783	implemented	crates/samp-ui/src/commands.rs:26		local command	user-visible
+0x100e9e80	msg	URL messages: On	code@10068817	implemented	crates/samp-ui/src/commands.rs:28		local command	user-visible
+0x100e9e94	msg	URL messages: Off	code@100687f3	implemented	crates/samp-ui/src/commands.rs:29		local command	user-visible
+0x100e9ea8	cfg	nohudscalefix	0x100c47b0,code@10068844,code@10068858	implemented	crates/samp-ui/src/config.rs:29		sa-mp.cfg key	user-visible
+0x100e9eb8	fmt	Memory: %u	code@1006887d	implemented	crates/samp-ui/src/commands.rs:48		local command	user-visible
+0x100e9ec4	msg	-> Frame Limiter: valid amounts are 20-90	code@10068906	implemented	crates/samp-ui/src/commands.rs:21		local command	user-visible
+0x100e9ef0	fmt	-> Frame Limiter: %u	code@100688ee	implemented	crates/samp-ui/src/commands.rs:46		local command	user-visible
+0x100e9f08	cmd	fpslimit	0x10068890	implemented	crates/samp-ui/src/commands.rs:355		/fpslimit (also cfg key)	user-visible
+0x100e9f14	msg	-> Head movements enabled	code@10068989	implemented	crates/samp-ui/src/commands.rs:22		local command	user-visible
+0x100e9f30	msg	-> Head movements disabled	code@10068955	implemented	crates/samp-ui/src/commands.rs:23		local command	user-visible
+0x100e9f4c	cfg	disableheadmove	0x100c47b0,code@10068946,code@10068979	implemented	crates/samp-ui/src/config.rs:28		sa-mp.cfg key	user-visible
+0x100e9f5c	msg	-> OnFoot position saved	0x100689c0	implemented	crates/samp-ui/src/commands.rs:31		local command	user-visible
+0x100e9f78	fmt	AddPlayerClass(%u,%.4f,%.4f,%.4f,%.4f,0,0,0,0,0,0); // %s	0x100689c0	implemented	crates/samp-ui/src/commands.rs:279		local command	user-visible
+0x100e9fb4	msg	-> InCar position saved	0x100689c0	implemented	crates/samp-ui/src/commands.rs:30		local command	user-visible
+0x100e9fcc	fmt	AddStaticVehicle(%u,%.4f,%.4f,%.4f,%.4f,%u,%u); // %s	0x100689c0	implemented	crates/samp-ui/src/commands.rs:279		local command	user-visible
+0x100ea004	msg	I can't open the savepositions.txt file for append.	0x100689c0	implemented	crates/samp-ui/src/commands.rs:32		local command	user-visible
+0x100ea038	file	%s\\savedpositions.txt	0x100689c0	implemented	crates/samp-ui/src/commands.rs:187		local command	user-visible
+0x100ea050	msg	-> OnFoot pos saved	0x10068b40	implemented	crates/samp-ui/src/commands.rs:34		local command	user-visible
+0x100ea064	fmt	%.4f,%.4f,%.4f,%.4f ; %s	0x10068b40	implemented	crates/samp-ui/src/commands.rs:303		local command	user-visible
+0x100ea080	msg	I can't open the rawvehicles.txt file for append.	0x10068b40	implemented	crates/samp-ui/src/commands.rs:36		local command	user-visible
+0x100ea0b4	file	%s\\rawpositions.txt	0x10068b40	implemented	crates/samp-ui/src/commands.rs:189		local command	user-visible
+0x100ea0c8	msg	-> InCar pos saved	0x10068b40	implemented	crates/samp-ui/src/commands.rs:33		local command	user-visible
+0x100ea0dc	fmt	%u,%.4f,%.4f,%.4f,%.4f,%u,%u ; %s	0x10068b40	implemented	crates/samp-ui/src/commands.rs:303		local command	user-visible
+0x100ea100	file	rawvehicles.txt	0x10068b40	implemented	crates/samp-client/src/ui/core.rs:944		local command	user-visible
+0x100ea110	msg	Usage: player_skin (skin number).	code@10068ce9	partial	crates/samp-ui/src/commands.rs:39	Debug-mode (-d, offline) command usage text. Texts exist but debug mode is never enabled in our client (frame_entry(false), no -d parsing) and Effect::Debug is not applied	debug-mode commands	internal
+0x100ea134	msg	game not loaded.	0x10068d30	missing		Debug /v, /vehicle: refused with this line when the game world is not loaded yet	debug mode /v before game load	internal
+0x100ea148	msg	I couldn't find the player actor.	0x10068d30	missing		Debug /v, /vehicle: refused when the local player ped cannot be found	debug mode /v without ped	internal
+0x100ea170	fmt	TYPE_%d	0x1009e140	missing		Debug vehicle selector (/vsel) and /v label vehicles as TYPE_<n> on screen	debug mode /vsel	internal
+0x100ea178	msg	Usage: /v (vehicle id).	code@10068d65	partial	crates/samp-ui/src/commands.rs:38	Debug-mode (-d, offline) command usage text. Texts exist but debug mode is never enabled in our client (frame_entry(false), no -d parsing) and Effect::Debug is not applied	debug-mode commands	internal
+0x100ea190	msg	Usage: set_weather (weather number)	code@10068eb5	partial	crates/samp-ui/src/commands.rs:40	Debug-mode (-d, offline) command usage text. Texts exist but debug mode is never enabled in our client (frame_entry(false), no -d parsing) and Effect::Debug is not applied	debug-mode commands	internal
+0x100ea1b4	msg	Invalid Time. Use /set_time (hour 0-23) (minute 0-59)	code@10068f71	partial	crates/samp-ui/src/commands.rs:42	Debug-mode (-d, offline) command usage text. Texts exist but debug mode is never enabled in our client (frame_entry(false), no -d parsing) and Effect::Debug is not applied	debug-mode commands	internal
+0x100ea1ec	fmt	%d%d	0x10068ee0	partial	crates/samp-ui/src/commands.rs:450	sscanf pattern for /set_time hour minute; parsed in ours but never executed (debug mode off)	/set_time	internal
+0x100ea1f4	msg	Usage: set_time (hour) (minute)	code@10068f06	partial	crates/samp-ui/src/commands.rs:41	Debug-mode (-d, offline) command usage text. Texts exist but debug mode is never enabled in our client (frame_entry(false), no -d parsing) and Effect::Debug is not applied	debug-mode commands	internal
+0x100ea214	fmt	Current Interior: %u	code@10068fab	implemented	crates/samp-ui/src/commands.rs:51		local command	user-visible
+0x100ea22c	cmd	audiomsg	0x10068750	implemented	crates/samp-ui/src/commands.rs:115		/audiomsg	user-visible
+0x100ea240	cmd	cmpstat	0x100689b0	implemented	crates/samp-ui/src/commands.rs:434	(original handler is a bare RET, a no-op; ours matches)	/cmpstat	user-visible
+0x100ea248	cmd	togobjlight	0x10068fc0	implemented	crates/samp-ui/src/commands.rs:422	(flag 0x101166c0 has no reader in B other than the toggle itself; storing only is equivalent)	/togobjlight	user-visible
+0x100ea254	cmd	interior	0x10068f90	implemented	crates/samp-ui/src/commands.rs:117		/interior	user-visible
+0x100ea260	cmd	set_time	0x10068ee0	partial	crates/samp-ui/src/commands.rs:450	debug-mode only: sets game clock; ours never in debug mode, effect not applied	/set_time	internal
+0x100ea26c	cmd	set_weather	0x10068e90	partial	crates/samp-ui/src/commands.rs:446	debug-mode only: forces weather; not applied	/set_weather	internal
+0x100ea278	cmd	player_skin	0x10068cc0	partial	crates/samp-ui/src/commands.rs:442	debug-mode only: changes local skin; not applied	/player_skin	internal
+0x100ea284	cmd	vehicle	0x10068d30	partial	crates/samp-ui/src/commands.rs:438	debug-mode only: spawns a vehicle near the player; not applied	/vehicle	internal
+0x100ea28c	cmd	vsel	0x10068e70	partial	crates/samp-ui/src/commands.rs:435	debug-mode only: opens the vehicle selection screen ("Vehicle Select"); not applied	/vsel	internal
+0x100ea294	cmd	testdw	0x100684c0	partial	crates/samp-ui/src/commands.rs:435	fills the death window with test rows; effect not applied by samp-client	/testdw	user-visible
+0x100ea29c	cmd	hudscalefix	0x10068830	implemented	crates/samp-client/src/ui/core.rs:968		/hudscalefix	user-visible
+0x100ea2a8	cmd	headmove	0x10068920	implemented	crates/samp-client/src/client.rs:1163		/headmove	user-visible
+0x100ea2b4	cmd	nametagstatus	0x100686e0	implemented	crates/samp-client/src/ui/render.rs:902		/nametagstatus	user-visible
+0x100ea2c8	cmd	rcon	0x10068ff0	implemented	crates/samp-ui/src/commands.rs:352		/rcon	user-visible
+0x100ea2d4	cmd	save	0x100689c0	implemented	crates/samp-ui/src/commands.rs:328		/save	user-visible
+0x100ea2e4	cfg	ime	0x10069800,0x1006f9f0	partial	crates/samp-ui/src/config.rs:349	cfg key "ime": when non-zero the chat input box and the dialog edit box are created with IME support enabled (DXUT IME edit box with IME turned on). Ours parses the key but never uses it	ime=1 in sa-mp.cfg	user-visible
+0x100ea2ec	msg	I don't know that command.	0x10069990	implemented	crates/samp-ui/src/commands.rs:37		local command	user-visible
+0x100ea308	other	SAMPAUX3	0x10069b70,0x10071b90	implemented	crates/samp-ui/src/nametags.rs:17		UI	user-visible
+0x100ea324	other	GTAWEAPON3	0x1006a110	implemented	crates/samp-ui/src/fonts.rs:16		UI	user-visible
+0x100ea330	other	LONGESTNICKNICK_NICKNICK	0x1006a110	implemented	crates/samp-ui/src/deathwindow.rs:13		UI	user-visible
+0x100ea354	msg	Updating models..	0x1006a830,0x1006aca0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ea368	msg	Updating models.. [%d/%d] (%.2f KB/s)	0x1006aca0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ea390	msg	{77AA77}%.0f%%	0x1006aca0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ea3a0	msg	{CC8888}Error(%d) %d/%d	0x1006aca0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ea3b8	msg	{CC8888}(%d) %.16s..	0x1006aca0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ea3d0	msg	%.0f%%	0x1006aca0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ea3dc	msg	0x%X	0x1006aca0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ea3e4	msg	Texture	0x1006aca0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ea3ec	msg	Model	0x1006aca0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ea3f4	msg	Progress	0x1006af90	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ea404	msg	Type	0x1006af90	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ea458	other	Arial	0x1006b8a0,code@1009a12d,code@1009a146	implemented	crates/samp-client/src/ui/render.rs:1		UI	user-visible
+0x100ea460	other	SA-MP Keys:	0x1006baf0	implemented	crates/samp-ui/src/dialog.rs:60		UI	user-visible
+0x100ea470	key	{BB9999}F1\t{BBBBBB}Display this help dialog	0x1006baf0	implemented	crates/samp-ui/src/dialog.rs:63		F1 help dialog	user-visible
+0x100ea49c	key	{BB9999}Tab\t{BBBBBB}Display the scoreboard	F1 help text (continuation of SA-MP Keys: string)	implemented	crates/samp-ui/src/dialog.rs:63		F1 help dialog	user-visible
+0x100ea4c7	key	{BB9999}F4\t{BBBBBB}Allows you to change class next time you respawn	F1 help text (continuation of SA-MP Keys: string)	implemented	crates/samp-ui/src/dialog.rs:63		F1 help dialog	user-visible
+0x100ea50b	key	{BB9999}F5\t{BBBBBB}Show bandwidth statistics	F1 help text (continuation of SA-MP Keys: string)	implemented	crates/samp-ui/src/dialog.rs:63		F1 help dialog	user-visible
+0x100ea538	key	{BB9999}F7\t{BBBBBB}Toggle the chat box	F1 help text (continuation of SA-MP Keys: string)	implemented	crates/samp-ui/src/dialog.rs:63		F1 help dialog	user-visible
+0x100ea55f	key	{BB9999}F8\t{BBBBBB}Take a screenshot	F1 help text (continuation of SA-MP Keys: string)	implemented	crates/samp-ui/src/dialog.rs:63		F1 help dialog	user-visible
+0x100ea584	key	{BB9999}F9\t{BBBBBB}Toggle the deathwindow	F1 help text (continuation of SA-MP Keys: string)	implemented	crates/samp-ui/src/dialog.rs:63		F1 help dialog	user-visible
+0x100ea5ae	key	{BB9999}T/F6\t{BBBBBB}Allows you to enter a chat message	F1 help text (continuation of SA-MP Keys: string)	implemented	crates/samp-ui/src/dialog.rs:63		F1 help dialog	user-visible
+0x100ea5e6	key	{BB9999}G\t{BBBBBB}Enter vehicle as passenger	F1 help text (continuation of SA-MP Keys: string)	implemented	crates/samp-ui/src/dialog.rs:63		F1 help dialog	user-visible
+0x100ea664	fmt	[id: %d, type: %d]	0x1006da20	implemented	crates/samp-client/src/objedit.rs:446		object editing debug label	internal
+0x100ea677	fmt	Distance: %.2fm	(continuation of [id: %d, type: %d] label)	implemented	crates/samp-client/src/objedit.rs:446			internal
+0x100ea694	file	bland.png	0x1006e050	missing		A UI widget loads the texture file "bland.png" (from the game directory) with D3DX at creation; result unused if missing. Not referenced anywhere in ours	UI construction (0x1006e050)	internal
+0x100ea6b0	other	ping	0x1006f080	implemented	crates/samp-ui/src/scoreboard.rs:1		scoreboard column headers	user-visible
+0x100ea6b8	other	score	0x1006f080	implemented	crates/samp-ui/src/scoreboard.rs:1		scoreboard column headers	user-visible
+0x100ea6c0	other	name	0x100690d0,0x1006f080	implemented	crates/samp-ui/src/scoreboard.rs:1		scoreboard column headers	user-visible
+0x100ea6e0	fmt	Players: %d	0x1006f080	implemented	crates/samp-ui/src/scoreboard.rs:24		Tab	user-visible
+0x100ea6ec	other	BUTTON2	0x1006f9f0	implemented	crates/samp-ui/src/dialog.rs:1		dialog buttons (placeholder labels replaced by server text)	user-visible
+0x100ea6f4	other	BUTTON1	0x1006f9f0	implemented	crates/samp-ui/src/dialog.rs:1		dialog buttons	user-visible
+0x100ea704	msg	SignText: Can't create font %s	0x100708e0	missing		Object material-text: when D3DXCreateFont fails for the requested font face, a debug chat line names the font. Ours only logs mattext errors to file	SetObjectMaterialText with an unusable font	user-visible
+0x100ea734	other	Transform	0x100718e0	n-a		D3D effect/technique name		internal
+0x100ea790	fmt	%s (%d)	0x10075360	implemented	crates/samp-client/src/ui/glue.rs:844		name tags "name (id)"	user-visible
+0x100ea798	msg	Unable to save screenshot.	0x100755f0	implemented	crates/samp-client/src/ui/core.rs:472		F8 failure	user-visible
+0x100ea7b4	msg	Screenshot Taken - sa-mp-%03i.png	0x100755f0	implemented	crates/samp-client/src/ui/core.rs:471		F8	user-visible
+0x100ea7d8	fmt	[id: %d, type: %d subtype: %d Health: %.1f preloaded: %u]	0x10075760	partial	crates/samp-ui/src/commands.rs:426	/dl: when on, every frame each streamed vehicle within about 20 m gets a 3D label: id, model, subtype, health, preloaded flag, distance, passenger seat count, client and last server positions. Ours toggles settings.vehicle_labels only; nothing drawn	/dl	user-visible
+0x100ea812	fmt	Distance: %.2fm	0x10075760	partial	crates/samp-ui/src/commands.rs:426	/dl: when on, every frame each streamed vehicle within about 20 m gets a 3D label: id, model, subtype, health, preloaded flag, distance, passenger seat count, client and last server positions. Ours toggles settings.vehicle_labels only; nothing drawn	/dl	user-visible
+0x100ea822	fmt	PassengerSeats: %u	0x10075760	partial	crates/samp-ui/src/commands.rs:426	/dl: when on, every frame each streamed vehicle within about 20 m gets a 3D label: id, model, subtype, health, preloaded flag, distance, passenger seat count, client and last server positions. Ours toggles settings.vehicle_labels only; nothing drawn	/dl	user-visible
+0x100ea835	fmt	cPos: %.3f,%.3f,%.3f	0x10075760	partial	crates/samp-ui/src/commands.rs:426	/dl: when on, every frame each streamed vehicle within about 20 m gets a 3D label: id, model, subtype, health, preloaded flag, distance, passenger seat count, client and last server positions. Ours toggles settings.vehicle_labels only; nothing drawn	/dl	user-visible
+0x100ea84a	fmt	sPos: %.3f,%.3f,%.3f	0x10075760	partial	crates/samp-ui/src/commands.rs:426	/dl: when on, every frame each streamed vehicle within about 20 m gets a 3D label: id, model, subtype, health, preloaded flag, distance, passenger seat count, client and last server positions. Ours toggles settings.vehicle_labels only; nothing drawn	/dl	user-visible
+0x100ec308	fmt	%s:%s	0x1009ce20	implemented	crates/samp-client/src/anims.rs:1		"LIB:NAME" animation lookup key (36-char limit)	internal
+0x100ec3e0	msg	HM Setup Block: %d Row/Col: %d,%d XY: %.2f,%.2f	code@1009de09	missing		Offline debug mode heightmap setup (loads a SA2_bos.hmap block file from a hard-coded developer path and prints progress); developer-only	-d debug mode	internal
+0x100ec414	msg	c:\\blocks\\SA2_bos.hmap	0x1009dd90 (code)	missing		Offline debug mode heightmap setup (loads a SA2_bos.hmap block file from a hard-coded developer path and prints progress); developer-only	-d debug mode	internal
+0x100ec42c	msg	Finished HM	code@1009e006	missing		Offline debug mode heightmap setup (loads a SA2_bos.hmap block file from a hard-coded developer path and prints progress); developer-only	-d debug mode	internal
+0x100ec438	other	Vehicle Select	0x1009e140	missing		Debug-mode vehicle selection screen title ("Vehicle Select") used by /vsel	-d debug mode /vsel	internal
+0x100ec448	other	SetPlayerInterior	0x1009e8d0	missing		Debug script loader (offline -d mode with a script file): each line starting with CreateObject/CreateVehicle/AddStaticVehicle/SetPlayerCameraPos/SetPlayerCameraLookAt/RemoveBuildingForPlayer/SetPlayerInterior is parsed and executed locally	-d debug mode script	internal
+0x100ec45c	other	RemoveBuildingForPlayer	0x1009e8d0	missing		Debug script loader (offline -d mode with a script file): each line starting with CreateObject/CreateVehicle/AddStaticVehicle/SetPlayerCameraPos/SetPlayerCameraLookAt/RemoveBuildingForPlayer/SetPlayerInterior is parsed and executed locally	-d debug mode script	internal
+0x100ec474	other	SetPlayerCameraLookAt	0x1009e8d0	missing		Debug script loader (offline -d mode with a script file): each line starting with CreateObject/CreateVehicle/AddStaticVehicle/SetPlayerCameraPos/SetPlayerCameraLookAt/RemoveBuildingForPlayer/SetPlayerInterior is parsed and executed locally	-d debug mode script	internal
+0x100ec48c	other	SetPlayerCameraPos	0x1009e8d0	missing		Debug script loader (offline -d mode with a script file): each line starting with CreateObject/CreateVehicle/AddStaticVehicle/SetPlayerCameraPos/SetPlayerCameraLookAt/RemoveBuildingForPlayer/SetPlayerInterior is parsed and executed locally	-d debug mode script	internal
+0x100ec4a0	other	AddStaticVehicle	0x1009e8d0	missing		Debug script loader (offline -d mode with a script file): each line starting with CreateObject/CreateVehicle/AddStaticVehicle/SetPlayerCameraPos/SetPlayerCameraLookAt/RemoveBuildingForPlayer/SetPlayerInterior is parsed and executed locally	-d debug mode script	internal
+0x100ec4b4	other	CreateVehicle	0x1009e8d0	missing		Debug script loader (offline -d mode with a script file): each line starting with CreateObject/CreateVehicle/AddStaticVehicle/SetPlayerCameraPos/SetPlayerCameraLookAt/RemoveBuildingForPlayer/SetPlayerInterior is parsed and executed locally	-d debug mode script	internal
+0x100ec4c4	other	CreateObject	0x1009e8d0	missing		Debug script loader (offline -d mode with a script file): each line starting with CreateObject/CreateVehicle/AddStaticVehicle/SetPlayerCameraPos/SetPlayerCameraLookAt/RemoveBuildingForPlayer/SetPlayerInterior is parsed and executed locally	-d debug mode script	internal
+0x100ec4d4	msg	DEBUGSCRIPT: I can't open %s	0x1009e9e0	missing		Debug script loader: file cannot be opened	-d debug mode script	internal
+0x100ec4f4	msg	DEBUGSCRIPT: Loading %s	0x1009e9e0	missing		Debug script loader: announces the script file being loaded	-d debug mode script	internal
+0x100ec520	msg	Warning: Model %u wouldn't load in time!	0x1009ef80	partial	crates/samp-client/src/client.rs:1532	Model request helper waits up to ~200 polls for a model to stream; on timeout prints this chat debug line and gives up. Ours logs to file only	model that never loads	user-visible
+0x100ec788	error	I can't determine your GTA version.	0x100a08c0	partial	crates/samp-client/src/dll.rs:100	Startup: if the gta_sa.exe version cannot be identified a MessageBox "Version Error" with this two-line text is shown and the process exits. Ours only logs and skips patching (no message box, no exit)	unsupported gta_sa.exe	user-visible
+0x100ec7ad	error	SA-MP only supports GTA:SA v1.0 USA/EU	0x100a08c0	partial	crates/samp-client/src/dll.rs:100	second line of the same MessageBox	unsupported gta_sa.exe	user-visible
+0x100ec7d4	error	Version Error	0x100a08c0	partial	crates/samp-client/src/dll.rs:100	MessageBox caption	unsupported gta_sa.exe	user-visible
+0x100ec7ec	other	Splat	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec7f4	other	Drowned	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec7fc	other	Vehicle	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec804	other	Parachute	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec810	other	Camera	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec818	other	Fire Extinguisher	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec82c	other	Spray Can	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec838	other	Bomb	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec840	other	Satchel Explosives	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec854	other	Minigun	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec85c	other	Flamethrower	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec86c	other	Heat Seaker	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec878	other	Rocket Launcher	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec888	other	Sniper Rifle	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec898	other	Rifle	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec8a0	other	TEC9	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec8bc	other	Combat Shotgun	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec8cc	other	Sawn-off Shotgun	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec8e0	other	Shotgun	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec8e8	other	Desert Eagle	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec8f8	other	Silenced Pistol	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec908	other	Colt 45	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec910	other	Molotov	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec918	other	Teargas	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec920	other	Grenade	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec928	other	Cane	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec930	other	Flowers	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec938	other	Vibrator	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec944	other	Dildo	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec94c	other	Chainsaw	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec958	other	Katana	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec960	other	Pool Cue	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec96c	other	Shovel	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec974	other	Baseball Bat	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec984	other	Knife	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec98c	other	Nite Stick	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec998	other	Golf Club	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec9a4	other	Brass Knuckles	0x100a0fb0	n-a		Weapon id -> name switch (0x100a0fb0); no call or pointer reference found in B (dead)	none	internal
+0x100ec9b4	other	FIGHT_E	0x100a18b0	implemented	crates/samp-client/src/client.rs:46		anim block names preloaded	internal
+0x100ec9bc	other	FIGHT_D	0x100a18b0	implemented	crates/samp-client/src/client.rs:46		anim block names preloaded	internal
+0x100ec9c4	other	FIGHT_C	0x100a18b0	implemented	crates/samp-client/src/client.rs:46		anim block names preloaded	internal
+0x100ec9cc	other	FIGHT_B	0x100a18b0	implemented	crates/samp-client/src/client.rs:46		anim block names preloaded	internal
+0x100ec9d4	other	PAULNMAC	0x100a18b0,0x100ae110	implemented	crates/samp-client/src/client.rs:46		anim block names preloaded	internal
+0x100ec9e0	other	GANGS	0x100a18b0,0x100adcb0	implemented	crates/samp-client/src/client.rs:46		anim block names preloaded	internal
+0x100ec9ec	other	PARACHUTE	0x100a18b0,0x100ad4e0,0x100ad630,0x100ae7e0	implemented	crates/samp-client/src/client.rs:46		anim block names preloaded	internal
+0x100ecab4	msg	Removed player %u due to error.	code@100a28a0	implemented	crates/samp-client/src/players.rs:637		remote ped ProcessControl fault	user-visible
+0x100ecad4	other	playerped	code@100a2817	implemented	crates/samp-client/src/players.rs:628			internal
+0x100ecaec	fmt	CPed::Say(%u,%u,%f,%u,%u,%u)	code@100a3ee7	n-a		Developer debug line for CPed::Say calls; code block not reachable from decompiled functions	debug	internal
+0x100ecb0c	fmt	Joypad: %d LocalContext: %u UpdateCameraAim: %f %f %f	code@100a55d6	n-a		Developer debug line for local joypad/aim context; debug only	debug	internal
+0x100ecb48	error	SA-MP: FrameNode name was too long (%u). SA-MP must exit.	0x100a5ec0	missing		RenderWare frame-name hook: a frame (bone/node) name longer than 23 chars makes the client minimise the game, show a MessageBox titled SA-MP with this text, and exit	loading a model with an over-long frame name	user-visible
+0x100ecbfc	other	DUMMY	0x100a76f0,0x100a7750	implemented	crates/samp-ui/src/menu.rs:21			user-visible
+0x100ecc04	other	SAMPRW2	0x100a7750	implemented	crates/samp-ui/src/menu.rs:13		menu GXT keys	user-visible
+0x100ecc0c	other	SAMPRW1	0x100a7750	implemented	crates/samp-ui/src/menu.rs:13		menu GXT keys	user-visible
+0x100ecc14	other	SAMPHED	0x100a7750	implemented	crates/samp-ui/src/menu.rs:13		menu GXT keys	user-visible
+0x100ecc1c	msg	[error] Failed to load texture for model ID: %d	0x100a7c40	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ecc4c	msg	[error] Failed to load model ID: %d	0x100a7c40	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ecc70	msg	[Error] model loader failed to allocated a new col.	0x100a7cd0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ecca4	msg	[Error] model loader failed to load col.	0x100a7cd0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100eccd0	msg	[Error] not a COL3 collision	0x100a7cd0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ecd68	file	blanktex	0x100a8540	implemented	crates/samp-client/src/objects.rs:891			user-visible
+0x100ecd8c	other	title	0x10066580,0x100aa720	implemented	crates/samp-client/src/patches.rs:469		loading screen texture "title"	user-visible
+0x100ed170	other	PARA_OPEN_O	0x100ad630	missing	crates/samp-client/src/animtable.rs:977	Remote parachute helper: when a remote player plays a PARACHUTE library animation, the matching parachute-object animation (*_O) is applied to the parachute model so it opens/steers/lands with the player. Ours has the names only in the anim table	remote sync anim in PARACHUTE library	user-visible
+0x100ed188	other	PARA_LAND_WATER_O	0x100ad630	missing	crates/samp-client/src/animtable.rs:977	Remote parachute helper: when a remote player plays a PARACHUTE library animation, the matching parachute-object animation (*_O) is applied to the parachute model so it opens/steers/lands with the player. Ours has the names only in the anim table	remote sync anim in PARACHUTE library	user-visible
+0x100ed19c	other	PARA_LAND_WATER	0x100ad630	missing	crates/samp-client/src/animtable.rs:977	Remote parachute helper: when a remote player plays a PARACHUTE library animation, the matching parachute-object animation (*_O) is applied to the parachute model so it opens/steers/lands with the player. Ours has the names only in the anim table	remote sync anim in PARACHUTE library	user-visible
+0x100ed1ac	other	PARA_STEERL_O	0x100ad630	missing	crates/samp-client/src/animtable.rs:977	Remote parachute helper: when a remote player plays a PARACHUTE library animation, the matching parachute-object animation (*_O) is applied to the parachute model so it opens/steers/lands with the player. Ours has the names only in the anim table	remote sync anim in PARACHUTE library	user-visible
+0x100ed1bc	other	PARA_STEERL	0x100ad630	missing	crates/samp-client/src/animtable.rs:977	Remote parachute helper: when a remote player plays a PARACHUTE library animation, the matching parachute-object animation (*_O) is applied to the parachute model so it opens/steers/lands with the player. Ours has the names only in the anim table	remote sync anim in PARACHUTE library	user-visible
+0x100ed1c8	other	PARA_STEERR_O	0x100ad630	missing	crates/samp-client/src/animtable.rs:977	Remote parachute helper: when a remote player plays a PARACHUTE library animation, the matching parachute-object animation (*_O) is applied to the parachute model so it opens/steers/lands with the player. Ours has the names only in the anim table	remote sync anim in PARACHUTE library	user-visible
+0x100ed1d8	other	PARA_STEERR	0x100ad630	missing	crates/samp-client/src/animtable.rs:977	Remote parachute helper: when a remote player plays a PARACHUTE library animation, the matching parachute-object animation (*_O) is applied to the parachute model so it opens/steers/lands with the player. Ours has the names only in the anim table	remote sync anim in PARACHUTE library	user-visible
+0x100ed1e4	other	PARA_FLOAT_O	0x100ad630	missing	crates/samp-client/src/animtable.rs:977	Remote parachute helper: when a remote player plays a PARACHUTE library animation, the matching parachute-object animation (*_O) is applied to the parachute model so it opens/steers/lands with the player. Ours has the names only in the anim table	remote sync anim in PARACHUTE library	user-visible
+0x100ed1f4	other	PARA_FLOAT	0x100ad630	missing	crates/samp-client/src/animtable.rs:977	Remote parachute helper: when a remote player plays a PARACHUTE library animation, the matching parachute-object animation (*_O) is applied to the parachute model so it opens/steers/lands with the player. Ours has the names only in the anim table	remote sync anim in PARACHUTE library	user-visible
+0x100ed200	other	PARA_DECEL_O	0x100ad630	missing	crates/samp-client/src/animtable.rs:977	Remote parachute helper: when a remote player plays a PARACHUTE library animation, the matching parachute-object animation (*_O) is applied to the parachute model so it opens/steers/lands with the player. Ours has the names only in the anim table	remote sync anim in PARACHUTE library	user-visible
+0x100ed210	other	PARA_DECEL	0x100ad630	missing	crates/samp-client/src/animtable.rs:977	Remote parachute helper: when a remote player plays a PARACHUTE library animation, the matching parachute-object animation (*_O) is applied to the parachute model so it opens/steers/lands with the player. Ours has the names only in the anim table	remote sync anim in PARACHUTE library	user-visible
+0x100ed21c	other	PARA_OPEN	0x100ad630	missing	crates/samp-client/src/animtable.rs:977	Remote parachute helper: when a remote player plays a PARACHUTE library animation, the matching parachute-object animation (*_O) is applied to the parachute model so it opens/steers/lands with the player. Ours has the names only in the anim table	remote sync anim in PARACHUTE library	user-visible
+0x100ed228	other	NULL	0x100adc10,0x100b02e0	n-a		"NULL" anim/name sentinel		internal
+0x100ed230	other	dnk_stndF_loop	0x100adcb0	missing		Held-item special actions: while the server-given item is beer/wine/sprunk/cigar and the player presses fire, the local ped plays a drink (female or male variant chosen from the ped type) or smoke animation; beer/wine add 1250 drunk level (cap 50000). Not implemented (special actions 20-23 unsupported)	SetPlayerSpecialAction 20-23 then fire	network-visible
+0x100ed240	other	dnk_stndM_loop	0x100adcb0	missing		see dnk_stndF_loop		network-visible
+0x100ed250	other	smkcig_prtl	0x100adcb0	missing		smoking animation for the cigar item		network-visible
+0x100ed25c	other	PETROLCAN	0x100ae110	missing		Pissing special action (68): attaches the PETROLCAN particle effect to the ped as the urine stream	SetPlayerSpecialAction 68	user-visible
+0x100ed280	other	PISS_LOOP	0x100ae110	missing		pissing loop animation check for the same effect		user-visible
+0x100ed2d4	fmt	Material Index: %d Texture: NULL	code@100b1642	n-a		Developer diagnostics (material dump / raster dump to bmp); not reachable in normal play	debug	internal
+0x100ed2f8	fmt	Material Index: %d TextureName: %s	code@100b162d	n-a		Developer diagnostics (material dump / raster dump to bmp); not reachable in normal play	debug	internal
+0x100ed31c	fmt	NumMaterials = %d	code@100b15f5	n-a		Developer diagnostics (material dump / raster dump to bmp); not reachable in normal play	debug	internal
+0x100ed3e4	file	%s\\%s.txd	0x100b2ba0	implemented	crates/samp-client/src/objects.rs:891			internal
+0x100ed3f0	file	models\\txd	0x100b2ba0	implemented	crates/samp-client/src/ui/textdraws.rs:8		textdraw sprites	user-visible
+0x100ed3fc	file	SAMP\\	0x100b2ba0	implemented	crates/samp-client/src/objects.rs:891			internal
+0x100ed408	file	vehicles128	0x100b2ce0	implemented	crates/samp-client/src/ui/textdraws.rs:8		textdraw sprite txds	user-visible
+0x100ed414	file	vehicleprev	0x100b2ce0	implemented	crates/samp-client/src/ui/textdraws.rs:8		textdraw sprite txds	user-visible
+0x100ed420	file	samaps	0x100b2ce0	implemented	crates/samp-client/src/ui/textdraws.rs:8		textdraw sprite txds	user-visible
+0x100ed42c	msg	Error: can't use k-codes in long string	0x100b2f70	implemented	crates/samp-ui/src/textdraw.rs:8			user-visible
+0x100ed454	msg	Error: unmatched tilde	0x100b2f70	implemented	crates/samp-ui/src/textdraw.rs:7			user-visible
+0x100ed473	other	CNone	0x10031080,code@100b4101	n-a		RW plugin name		internal
+0x100ed49c	fmt	No texture!	0x100b5bd0 (code)	n-a		Developer diagnostics (material dump / raster dump to bmp); not reachable in normal play	debug	internal
+0x100ed4a8	fmt	Raster2.bmp	code@100b5c69	n-a		Developer diagnostics (material dump / raster dump to bmp); not reachable in normal play	debug	internal
+0x100ed4b4	fmt	Width %u Height: %u Depth: %u	code@100b5c2b,code@100b5c8e	n-a		Developer diagnostics (material dump / raster dump to bmp); not reachable in normal play	debug	internal
+0x100ed4d4	fmt	Raster1.bmp	code@100b5c07	n-a		Developer diagnostics (material dump / raster dump to bmp); not reachable in normal play	debug	internal
+0x100ed4f4	other	particle	0x100b6ae0	n-a		particle texture dictionary name used by an effect helper (pissing/fx); see special actions row		internal
+0x100ed6f4	msg	Warning: bad train carriages	0x100b83e0	missing		Chat debug line when a train is created but its carriages cannot be found/linked	train vehicle creation	user-visible
+0x100ed714	msg	Warning: couldn't create vehicle type: %u	0x100b83e0	partial	crates/samp-client/src/vehicles.rs:493	Chat debug line when the game refuses to create a vehicle model; ours logs only	vehicle creation failure	user-visible
+0x100ed754	msg	[info] Read geometry failed error = %u	0x100ba3d0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ed77c	msg	[geometry:error] Only a clump with 1 geometry is supported	0x100ba3d0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ed7b8	msg	[geometry:info] Geometry list contains %u geometries	0x100ba3d0	n-a		Custom-model (artwork) download/cache machinery: dormant in 0.3.7-R4 (RPCs 179/183 unregistered, see docs/re/subsystems/session-misc.md); progress dialog "Updating models.." never shown	never (dormant)	internal
+0x100ed8b0	reg	model_cache	0x100c3b00	missing		Registry value HKCU\Software\SAMP\model_cache: overrides the cache directory path (read at startup)	client start	internal
+0x100ed8bc	reg	Software\\SAMP	0x100c3b00,0x100c3c10	missing		Registry key HKCU\Software\SAMP opened (read-only) for model_cache and artwork_proxy	client start	internal
+0x100ed8cc	file	%s\\cache	0x100c3b00	missing		Default model cache directory <user>\SAMP\cache, created at startup if missing	client start	internal
+0x100ed8d8	reg	artwork_proxy	0x100c3c10	n-a		Registry value artwork_proxy (proxy for model downloads); consumer is the dormant download code	dormant	internal
+0x100ed8e8	file	%s\\screens	0x100c3c80	implemented	crates/samp-client/src/ui/glue.rs:105		client start	internal
+0x100ed8f4	file	%s\\SAMP	0x100c3c80	implemented	crates/samp-client/src/ui/glue.rs:103		client start	internal
+0x100ed8fc	file	mouse.png	0x100c41c0,0x100c5640	implemented	crates/samp-client/src/ui/render.rs:443		cursor	user-visible
+0x102710be	error	SA:MP An exception occured	0x10060820 (crash dialog resource)	missing		Crash dialog resource (title, two-line explanation, Close and Report Crash buttons, MS Sans Serif)	unhandled exception	user-visible
+0x102710fa	error	MS Sans Serif	0x10060820 (crash dialog resource)	missing		Crash dialog resource (title, two-line explanation, Close and Report Crash buttons, MS Sans Serif)	unhandled exception	user-visible
+0x10271154	error	SA:MP has crashed. The error report has been generated below.	0x10060820 (crash dialog resource)	missing		Crash dialog resource (title, two-line explanation, Close and Report Crash buttons, MS Sans Serif)	unhandled exception	user-visible
+0x102711d6	error	Using the 'Report Crash' button will submit a crash report	0x10060820 (crash dialog resource)	missing		Crash dialog resource (title, two-line explanation, Close and Report Crash buttons, MS Sans Serif)	unhandled exception	user-visible
+0x1027124e	error	that will help us to fix this problem in future versions.	0x10060820 (crash dialog resource)	missing		Crash dialog resource (title, two-line explanation, Close and Report Crash buttons, MS Sans Serif)	unhandled exception	user-visible
+0x102712e0	error	Close	0x100351c0,0x10062c60	missing		Crash dialog resource (title, two-line explanation, Close and Report Crash buttons, MS Sans Serif)	unhandled exception	user-visible
+0x1027130c	error	Report Crash	0x10060820 (crash dialog resource)	missing		Crash dialog resource (title, two-line explanation, Close and Report Crash buttons, MS Sans Serif)	unhandled exception	user-visible
+0x1027132e	other	VS_VERSION_INFO	0x10060820 (crash dialog resource)	n-a		PE version resource		internal
+0x1027138a	other	StringFileInfo	(PE resource)	n-a		PE version resource		internal
+0x102713c6	other	Comments	(PE resource)	n-a		PE version resource		internal
+0x102713d8	other	A library that extends GTA: San Andreas to give it multiplayer functionality.	(PE resource)	n-a		PE version resource		internal
+0x1027147a	other	CompanyName	(PE resource)	n-a		PE version resource		internal
+0x10271494	other	SA-MP TEAM	(PE resource)	n-a		PE version resource		internal
+0x102714b2	other	FileDescription	(PE resource)	n-a		PE version resource		internal
+0x102714d4	other	SA-MP Client DLL	(PE resource)	n-a		PE version resource		internal
+0x102714fe	other	FileVersion	(PE resource)	n-a		PE version resource		internal
+0x10271536	other	InternalName	(PE resource)	n-a		PE version resource		internal
+0x10271550	other	samp	0x1008d7b0,0x100c50e0,0x100c5290	n-a		PE version resource		internal
+0x10271562	other	LegalCopyright	(PE resource)	n-a		PE version resource		internal
+0x10271580	other	Copyright (C) 2004-2019 SA-MP Team	(PE resource)	n-a		PE version resource		internal
+0x102715ce	other	OriginalFilename	(PE resource)	n-a		PE version resource		internal
+0x102715f0	other	samp.dll	(PE resource)	n-a		PE version resource		internal
+0x1027160a	other	ProductName	(PE resource)	n-a		PE version resource		internal
+0x10271624	other	SA-MP	0x10060560,0x1006baf0,0x100a5ec0	n-a		PE version resource		internal
+0x10271636	other	ProductVersion	(PE resource)	n-a		PE version resource		internal
+0x10271672	other	VarFileInfo	(PE resource)	n-a		PE version resource		internal
+0x10271692	other	Translation	(PE resource)	n-a		PE version resource		internal
+0x100ea238	cmd	ctd	0x100685a0	partial	crates/samp-ui/src/commands.rs:430	toggles camera-target debug labels (see CAMERA_TARGET_TYPE rows); ours stores flag only	/ctd	user-visible
+0x100ea23c	cmd	dl	0x10068fe0	partial	crates/samp-ui/src/commands.rs:426	toggles vehicle debug labels (see [id: ... subtype] row); ours stores flag only	/dl	user-visible
+0x100ea2c4	cmd	mem	0x10068870	implemented	crates/samp-ui/src/commands.rs:353		/mem	user-visible
+0x100ea2d0	cmd	rs	0x10068b40	implemented	crates/samp-ui/src/commands.rs:328		/rs	user-visible
+0x100e6300	cmd	q	0x100689a0	implemented	crates/samp-ui/src/commands.rs:103		/q	user-visible
+0x100e6678	cmd	quit	0x100689a0	implemented	crates/samp-ui/src/commands.rs:102		/quit (string shared with the RakNet console)	user-visible
+0x100e58e8	cmd	v	0x10068d30	partial	crates/samp-ui/src/commands.rs:436	debug-mode vehicle spawn; never reachable (debug mode off, effect not applied)	/v in -d mode	internal
+0x100edb00	file	%s\\sa-mp.cfg	0x100c47b0	implemented	crates/samp-ui/src/config.rs:13		start	internal
+0x100edaf0	file	%s\\chatlog.txt	0x100c47b0	implemented	crates/samp-client/src/ui/core.rs:348		start	internal
+0x100edb10	file	sampaux3.ttf	0x100c47b0	implemented	crates/samp-client/src/ui/d3d.rs:991		start	user-visible
+0x100edb20	file	gtaweap3.ttf	0x100c47b0	implemented	crates/samp-client/src/ui/d3d.rs:991		start	user-visible
+0x100edb30	file	samp.saa	0x100c47b0	implemented	crates/samp-client/src/filehook.rs:1		start	internal
+0x100edae4	cfg	multicore	0x100c47b0	implemented	crates/samp-ui/src/config.rs:37		start	internal
+0x100edb3c	cfg	fontweight	0x100c47b0	implemented	crates/samp-ui/src/config.rs:34		start	user-visible
+0x100edb48	cfg	fontface	0x100c47b0	implemented	crates/samp-ui/src/config.rs:33		start	user-visible
+0x100eb32c	file	sampgui.png	0x1008d7b8	implemented	crates/samp-client/src/ui/dxut.rs:6		UI	user-visible
+0x100edb54	other	Spawn	0x100c5640	implemented	crates/samp-client/src/ui/render.rs:1361		class selection buttons	user-visible
+0x100fe0c8	other	SAMP000..SAMP111 (24 GXT keys)	0x100a7708	implemented	crates/samp-ui/src/menu.rs:14		menus	user-visible
+0x100fe440	other	Timeout / Leaving / Kicked (char[32] table)	(no xref)	n-a		disconnect-reason names; no reference found in B		internal
+BULK	other	RakNet console/transport/logger/stats strings (~330, 0x100e649c-0x100e8a88)	RakNet	n-a		library (RakNet 2.x command console, PacketLogger, statistics text); none user-visible in the client		internal
+BULK	other	HTTP client + SMTP strings (0x100e5628-0x100e57b4, 0x100e6a88-0x100e6d70)	CHttpClient	partial		HTTP client is used by the crash reporter (missing) and the dormant URL downloader; SMTP/mail code unused		internal
+BULK	other	DXUT / D3D enum strings (~300, 0x100ea870-0x100ec22c)	DXUT	n-a		DirectX sample framework (device settings dialog, D3DFMT names, IME hooks); only the IME edit box and sampgui.png skin matter		internal
+BULK	other	MSVC CRT + import names (~600, 0x100ed908-0x100fdf18)	CRT	n-a		runtime library		internal
+BULK	other	X-file templates (.data 0x10102xxx)	D3DX	n-a		DirectX .x templates		internal
+BULK	other	Animation table LIB:NAME (1812 entries, .data 0x101039e8-0x10113894) + dance/strip names	anim table	implemented	crates/samp-client/src/animtable.rs:1			internal
+BULK	other	ttmath assertion paths, ImageHlp/Detours names	lib	n-a				internal
+

@@ -1,0 +1,189 @@
+va_B	size	feature	docs	trigger_hint	strings	spec_section
+0x100053c0	446	spec:remote-players-sync	remote-players-sync.md	via 0x10007070,0x100074b0,0x10008b10		remote-players-sync: Remote players and sync packets (SA:MP 0.3.7-R4 client) — cl
+0x10005fe0	139	spec:player-state	m9-notes.md,player-state.md	via 0x100060f0,0x100074b0,0x10008b10		player-state: 128 PlayerRequestClass (C→S)
+0x10006070	126	spec:player-state	m9-notes.md,player-state.md	via 0x100060f0,0x100074b0,0x10008b10		player-state: 128 PlayerRequestClass (C→S)
+0x100069a0	267	spec:remote-control-combat	rpc-ids.md,player-state.md,remote-control-combat.md	via 0x100a3bc0		player-state: Summary table
+0x10007f60	71	spec:ui-chat-audio	ui-chat-audio.md	RPC 76 PlayerInitMenu		ui-chat-audio: 76 PlayerInitMenu (S→C)
+0x10008a50	185	spec:player-state	player-state.md	via 0x1000b5a0,0x100c4f90,0x100c5010		player-state: 48 SetPlayerVirtualWorld (S→C)
+0x10008dd0	58	spec:handshake	m10-notes.md,build-diff-r4.md,handshake.md	via 0x1000b250,0x1000b5a0,0x100c4f90	Server closed the connection.	build-diff-r4: Functions involved in handshake.md §1–6
+0x10009870	441	notes:m10-notes	m10-notes.md	via 0x100c5010		m10-notes: /quit (item 4)
+0x10009b30	252	spec:remote-players-sync	build-diff-r4.md,handshake.md,remote-players-sync.md	via 0x1000b250,0x1000b5a0,0x100c4f90		remote-players-sync: Remote players and sync packets (SA:MP 0.3.7-R4 client) — cl
+0x10009e10	228	spec:remote-players-sync	build-diff-r4.md,handshake.md,remote-players-sync.md	via 0x1000b250,0x1000b5a0,0x100c4f90		remote-players-sync: Remote players and sync packets (SA:MP 0.3.7-R4 client) — cl
+0x1000ace0	143	spec:handshake	m10-notes.md,build-diff-r4.md,handshake.md	via 0x1000b250,0x1000b5a0,0x100c4f90	Lost connection to the server. Reconnect	build-diff-r4: Functions involved in handshake.md §1–6
+0x1000e590	132	spec:vehicles	rpc-ids.md,session-misc.md,vehicles.md,world-entities.md	RPC 102 no open.mp struct; stores 29		session-misc: Overview
+0x1000ec90	559	notes:m10-notes		via 0x10009870,0x100c5010		
+0x1000f1b0	159	spec:session-misc	rpc-ids.md,session-misc.md	RPC 151 no open.mp struct; u8 owner;		session-misc: Overview
+0x10010520	285	spec:session-misc	m10-notes.md,build-diff-r4.md,handshake.md,rpc-ids.md,session-misc.md	RPC 130 no open.mp struct; OBSERVED:	CONNECTION REJECTED: Incorrect Version. | CONNECTION REJECTED: Unacceptable NickNa | Please choose another nick between 	session-misc: Overview
+0x10012b20	60	spec:ui-rendering		via 0x100c3f60		
+0x10013350	95	spec:session-misc		RPC 151 no open.mp struct; u8 owner;		
+0x100140d0	130	notes:m10-notes		via 0x10009870,0x100c5010		
+0x10015600	269	spec:remote-control-vehicles	remote-control-vehicles.md,remote-players-sync.md	via 0x10008b10,0x1000a530,0x1000ace0		remote-control-vehicles: 2.2 Applying driver sync (A 0x100166B0; constants in remote-
+0x10015c40	782	spec:remote-control-vehicles	remote-control-vehicles.md,remote-players-sync.md	via 0x10009e10,0x1000b250,0x1000b5a0		remote-control-vehicles: 4.1 Trailers (Observed)
+0x10016320	563	spec:remote-control-combat	remote-control-combat.md,remote-players-sync.md	via 0x10009b30,0x1000b250,0x1000b5a0		remote-control-combat: 3.3 Applying bullet sync (Observed, A 0x10016370, called dir
+0x100175c0	119	spec:ui-chat-audio	ui-chat-audio.md	RPC 101 PlayerChatMessage		ui-chat-audio: 101 PlayerChatMessage (S→C)
+0x10017b40	161	crash handler + crash report			ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn | ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn	
+0x100180c0	1135	spec:session-misc	rpc-ids.md,session-misc.md	via 0x10009870,0x100c5010		session-misc: Overview
+0x10018b20	219	spec:session-misc	rpc-ids.md,session-misc.md	RPC 98 no open.mp struct; vehicle t		session-misc: Overview
+0x10018c00	166	spec:session-misc	rpc-ids.md,session-misc.md	RPC 92 no open.mp struct; u32 value		session-misc: Overview
+0x10018cb0	166	spec:session-misc	rpc-ids.md,session-misc.md	RPC 150 no open.mp struct; u32 value		session-misc: Overview
+0x10019e10	205	spec:session-misc	rpc-ids.md,session-misc.md	RPC 161 no open.mp struct; u16 vehic		session-misc: Overview
+0x1001a6b0	132	spec:session-misc	rpc-ids.md,session-misc.md	RPC 64 no open.mp struct; reads u16		session-misc: Overview
+0x1001c120	184	spec:world-entities	rpc-ids.md,session-misc.md,world-entities.md	RPC 169 no open.mp struct; u16 objec		session-misc: Overview
+0x1001dc70	174	spec:player-state	rpc-ids.md,player-state.md	RPC 48 SetPlayerVirtualWorld		player-state: Summary table
+0x1001e850	36	spec:ui-rendering		via 0x100c3f60		
+0x1001eae0	84	spec:session-misc	session-misc.md	RPC 161 no open.mp struct; u16 vehic		session-misc: 161 (S→C) — vehicle params for player (old 3-field form)
+0x1001ed90	52	spec:ui-rendering		via 0x100c3f60		
+0x1001f1e0	205	spec:vehicles	rpc-ids.md,vehicles.md	via 0x10008b10,0x1000b5a0,0x1001f370		vehicles: Overview
+0x10060110	290	crash handler + crash report			\r\nState Information: Ped Context: %u\r | P%u (%u,%u)  | \n	
+0x10060240	385	crash handler + crash report			+%04X: 0x%08X   0x%08X   0x%08X   0x%08X | +%04X: %02X %02X %02X %02X   %02X %02X %	
+0x100603d0	397	crash handler + crash report			\r\nLoaded Modules:\r\n | \r\nLoaded Modules:\r\n | \r\nLoaded Modules:\r\n | \r\nLoaded Modules:\r\n | \r\nLoaded Modul	
+0x10060560	481	crash handler + crash report			0.3.7-R4 | SA-MP %s\r\nException At Address: 0x%08X | \r\nSCM Op: 0x%X, lDbg: %d LastRendObj:  | US 1.0 | EU 1.0 | UNKNO	
+0x10060a30	23	crash handler + crash report		via 0x10065310,0x100c50e0,0x100c5290		
+0x10060a50	92	crash handler + crash report				
+0x10060ab0	88	crash handler + crash report		no callers (indirect/vtable)		
+0x10060b70	69	crash handler + crash report		via 0x10060be0		
+0x10060bc0	19	crash handler + crash report				
+0x10060be0	198	spec:samp-saa	samp-saa.md	no callers (indirect/vtable)	rb	samp-saa: 3. File layout
+0x10060cb0	43	crash handler + crash report		no callers (indirect/vtable)		
+0x10061280	47	spec:ui-rendering	ui-rendering.md	via 0x10061320		ui-rendering: 7.3 Display modes (F7, A 0x100612c0) [O]
+0x10061f20	233	spec:ui-rendering		via 0x10062230,0x100755f0,0x10075760		
+0x10062930	32	spec:ui-rendering		via 0x100c50e0,0x100c5290	ShowCursor | user32.dll	
+0x10062c60	238	spec:samp-saa	saa2-notes.md,samp-saa.md	via 0x100c50e0,0x100c5290	CreateFileA | kernel32.dll | ReadFile | GetFileSize | SetFilePointer | CloseHandle | GetFileType	samp-saa: 2. Life cycle in samp.dll
+0x10062d50	136	spec:ui-rendering		via 0x100c50e0,0x100c5290		
+0x10064cf0	221	spec:samp-saa	samp-saa.md	no callers (indirect/vtable)		
+0x10064dd0	40	spec:samp-saa	samp-saa.md	no callers (indirect/vtable)		
+0x10065130	86	spec:samp-saa		via 0x10065460		
+0x10065310	70	spec:samp-saa	samp-saa.md	via 0x100c50e0,0x100c5290		samp-saa: Constants (build B addresses; same in build A)
+0x10065460	239	spec:samp-saa	samp-saa.md	no callers (indirect/vtable)		samp-saa: 2. Life cycle in samp.dll
+0x100660a0	155	notes:m10-notes		via 0x10066230,0x100c47b0,0x100c4f90		
+0x10066140	95	notes:m10-notes		via 0x10066230,0x100c47b0,0x100c4f90		
+0x100670a0	29	spec:ui-rendering	ui-rendering.md	via 0x10061320,0x10067290,0x100672f0		ui-rendering: 20. Address table (A / B)
+0x10067160	83	spec:ui-rendering		via 0x100c3f60		
+0x10067260	38	spec:ui-rendering	ui-rendering.md	via 0x100c47b0,0x100c4f90,0x100c5010		ui-rendering: 7.4 Scrollbar and paging [O]
+0x10067290	82	spec:ui-rendering	ui-rendering.md	via 0x10061320		ui-rendering: 20. Address table (A / B)
+0x100672f0	91	spec:ui-rendering	ui-rendering.md	via 0x10061320		ui-rendering: 20. Address table (A / B)
+0x100689c0	370	spec:ui-chat-audio	ui-chat-audio.md	no callers (indirect/vtable)	%s\savedpositions.txt | I can't open the savepositions.txt file  | AddStaticVehicle(%u,%.4f,%.4f,%.4f,%.4f, | -> InCar p	ui-chat-audio: Local chat input and built-in commands
+0x10068b40	382	spec:remote-players-sync	remote-players-sync.md,session-misc.md,ui-chat-audio.md	via 0x10061320	rawvehicles.txt | %u,%.4f,%.4f,%.4f,%.4f,%u,%u ; %s\n | -> InCar pos saved | %s\rawpositions.txt | I can't open the rawv	ui-chat-audio: Local chat input and built-in commands
+0x100695f0	100	spec:ui-rendering	ui-rendering.md	via 0x10061320		ui-rendering: 20. Address table (A / B)
+0x10069660	78	spec:ui-rendering	ui-rendering.md	via 0x10061320		ui-rendering: 20. Address table (A / B)
+0x1006b090	44	spec:remote-control-onfoot		via 0x1000b5a0,0x100c4f90,0x100c5010		
+0x1006b0c0	103	spec:remote-control-onfoot				
+0x1006b140	58	spec:ui-rendering		via 0x100c3f60		
+0x1006b180	58	spec:ui-rendering	ui-rendering.md	via 0x10070c20,0x100c41c0,0x100c47b0		ui-rendering: 20. Address table (A / B)
+0x1006bbb0	14	spec:ui-rendering		via 0x100c3f60		ui-rendering: 1.1 UI objects (all created once, on the first frame; A 0x10
+0x1006bbc0	14	spec:ui-rendering		via 0x100c41c0		
+0x1006c970	694	notes:ux1-notes	ROADMAP.md,ux1-notes.md	via 0x1001e820,0x100a2670,0x100b34b0		ux1-notes: Open / decisions
+0x1006d610	38	spec:ui-rendering		via 0x100c3f60		
+0x1006d640	42	spec:ui-rendering		via 0x100c41c0		
+0x1006d770	73	spec:ui-rendering		via 0x100c3f60		
+0x1006e050	1082	spec:world-entities			=bland.png	
+0x10070860	45	spec:ui-rendering		via 0x100c3f60		
+0x10070ed0	80	spec:ui-rendering		via 0x100c3f60		
+0x10071850	95	spec:ui-rendering				
+0x10071960	165	spec:ui-rendering		via 0x10071af0,0x10075760		
+0x10071a10	222	spec:ui-rendering		via 0x10071af0,0x10075760		
+0x1009cf00	34	notes:trace-notes	trace-notes.md	via 0x10008b10,0x1000a530,0x1000ace0		trace-notes: Animations (86/87) and the 207 animation table — MEASURED
+0x1009e100	59	debug mode (vehicle select, debug script)		via 0x10075760,0x1009e4c0		
+0x1009e140	886	debug mode (vehicle select, debug script)		via 0x10075760,0x1009e4c0	Vehicle Select | @TYPE_%d	
+0x1009e4c0	20	debug mode (vehicle select, debug script)	ui-rendering.md	via 0x10075760		ui-rendering: 2.3 Present: per-frame draw order (A 0x10075790) [O]
+0x1009e4e0	70	debug mode (vehicle select, debug script)		via 0x100c47b0,0x100c4f90,0x100c5010		
+0x1009e530	265	debug mode (vehicle select, debug script)		via 0x100c47b0,0x100c4f90,0x100c5010		
+0x1009e640	260	debug mode (vehicle select, debug script)		via 0x100c47b0,0x100c4f90,0x100c5010		
+0x1009e750	112	debug mode (vehicle select, debug script)		via 0x100c47b0,0x100c4f90,0x100c5010		
+0x1009e7c0	172	debug mode (vehicle select, debug script)		via 0x100c47b0,0x100c4f90,0x100c5010		
+0x1009e880	70	debug mode (vehicle select, debug script)		via 0x100c47b0,0x100c4f90,0x100c5010		
+0x1009e8d0	259	debug mode (vehicle select, debug script)		via 0x100c47b0,0x100c4f90,0x100c5010	CreateObject | CreateVehicle | AddStaticVehicle | SetPlayerCameraPos | SetPlayerCameraLookAt | RemoveBuildingForPlayer |	
+0x1009e9e0	308	debug mode (vehicle select, debug script)		via 0x100c47b0,0x100c4f90,0x100c5010	DEBUGSCRIPT: Loading %s | DEBUGSCRIPT: I can't open %s	
+0x1009ffb0	133	notes:parity-notes	parity-notes.md	via 0x100c50e0,0x100c5290		parity-notes: Local player
+0x100a00c0	43	spec:remote-control-onfoot		via 0x100a1c20,0x100a2670		
+0x100a04e0	20	spec:gta-patches		via 0x1000b5a0,0x10075760,0x1009d8e0		
+0x100a0500	8	spec:gta-patches		via 0x1000b5a0,0x10075760,0x1009d8e0		
+0x100a0510	75	spec:ui-rendering	gta-patches-r4-annotated.csv,gta-patches-r4.csv,gta-patches.md,ui-rendering.md	RPC 116 PlayerBeginAttachedObjectEdi; RPC 117 PlayerBeginObjectEdit; RPC 124 TogglePlayerSpectating; RPC 129 PlayerRequestSpawnResponse /		ui-rendering: 5. Cursor and input-lock modes [O]
+0x100a1570	72	notes:trace-notes	trace-notes.md	RPC 139 PlayerInit; OBSERVED: InitGa		trace-notes: Interiors (156, enex) — MEASURED
+0x100a5900	82	spec:remote-control-combat	gta-patches-r4-annotated.csv,gta-patches-r4.csv,gta-patches.md,remote-control-combat.md	no callers (indirect/vtable)		gta-patches: applied_when = rpc139-InitGame*
+0x100a7000	31	spec:gta-patches	gta-patches-r4-annotated.csv,gta-patches-r4.csv,gta-patches.md	via 0x1000bd50,0x1000eb70,0x10011e90		gta-patches: 2. When patches are applied (A addresses; B = same flow)
+0x100a71d0	69	spec:gta-patches	gta-patches-r4-annotated.csv,gta-patches-r4.csv,gta-patches.md	RPC 139 PlayerInit; OBSERVED: InitGa		gta-patches: 2. When patches are applied (A addresses; B = same flow)
+0x100a72b0	29	spec:remote-control-combat	remote-control-combat.md	via 0x100a08c0		remote-control-combat: 1.2 Per-slot tables (A .data, 210 slots each; init A 0x1009c
+0x100a76d0	18	notes:m8a-notes		via 0x10008050,0x100a4040		
+0x100a7f60	102	spec:world-entities		via 0x10012a20,0x100a2670,0x100a9570		
+0x100a8120	129	spec:world-entities	world-entities.md	RPC 44 CreateObject		world-entities: 44 CreateObject (S→C)
+0x100a81b0	146	spec:world-entities	world-entities.md	RPC 44 CreateObject		world-entities: 44 CreateObject (S→C)
+0x100a8250	115	spec:world-entities		via 0x10012a20,0x100a2670,0x100a9660		
+0x100a82d0	115	spec:world-entities		via 0x10012a20,0x100a2670,0x100a9660		
+0x100a84d0	105	spec:remote-control-vehicles		RPC 99 MoveObject		
+0x100aa130	78	spec:gta-patches	gta-patches-r4-annotated.csv,gta-patches-r4.csv,gta-patches.md	via 0x100aa180		gta-patches: 3. Patch helper functions
+0x100aabf0	377	spec:gta-patches	gta-patches-r4-annotated.csv,gta-patches-r4.csv,gta-patches.md	RPC 139 PlayerInit; OBSERVED: InitGa		gta-patches: 2. When patches are applied (A addresses; B = same flow)
+0x100abe60	24	spec:remote-control-onfoot		via 0x10008b10,0x1000a530,0x1000ace0		
+0x100ac170	59	spec:remote-control-onfoot		via 0x100074b0,0x10008b10,0x1000a530		
+0x100acc20	57	spec:remote-players-sync	remote-players-sync.md	RPC 99 MoveObject		remote-players-sync: Local surfing (resolves §4 "where the local surf offset is c
+0x100acd20	67	spec:remote-control-combat		RPC 124 TogglePlayerSpectating; RPC 129 PlayerRequestSpawnResponse /; RPC 138 PlayerQuit; RPC 88 SetPlayerSpecialAction		
+0x100acd70	88	notes:m10-notes	m10-notes.md	RPC 124 TogglePlayerSpectating; RPC 129 PlayerRequestSpawnResponse /; RPC 138 PlayerQuit; RPC 166 PlayerDeath		m10-notes: Decisions / open items
+0x100ace60	60	spec:remote-control-combat	remote-control-combat.md	RPC 124 TogglePlayerSpectating; RPC 129 PlayerRequestSpawnResponse /; RPC 138 PlayerQuit; RPC 88 SetPlayerSpecialAction		remote-control-combat: 1. Local pad masks (§1.3 / §11 "who sets +0x2f6/+0x2f7/+0x2f
+0x100acea0	81	spec:remote-control-onfoot		via 0x100074b0,0x10008b10,0x1000a530		
+0x100acf10	24	spec:remote-control-combat	remote-control-combat.md,remote-players-sync.md	RPC 124 TogglePlayerSpectating; RPC 129 PlayerRequestSpawnResponse /; RPC 138 PlayerQuit; RPC 88 SetPlayerSpecialAction		remote-control-combat: 1. Local pad masks (§1.3 / §11 "who sets +0x2f6/+0x2f7/+0x2f
+0x100acf30	107	spec:remote-control-combat	remote-control-combat.md	via 0x100074b0,0x10008b10,0x1000a530		remote-control-combat: 1. Local pad masks (§1.3 / §11 "who sets +0x2f6/+0x2f7/+0x2f
+0x100acfa0	146	notes:trace-notes	trace-notes.md	via 0x100074b0,0x10008b10,0x1000a530		trace-notes: Drive-by (MR-7.6) — MEASURED except remote firing (`combat2.
+0x100ad090	104	spec:remote-control-onfoot		via 0x100074b0,0x10008b10,0x1000a530		
+0x100ad4e0	327	spec:remote-control-onfoot		via 0x10008b10,0x1000a530,0x1000ace0	PARACHUTE | r@PARA_OPEN_O	
+0x100ad630	571	spec:remote-control-onfoot	m8b-notes.md,remote-control-onfoot.md	via 0x10008b10,0x1000a530,0x1000ace0	PARA_OPEN | PARA_OPEN | PARA_DECEL | PARA_DECEL | PARACHUTE | PARA_DECEL_O | PARA_FLOAT | PARA_FLOAT | PARA_FLOAT_O | PA	remote-control-onfoot: 4.1 The sync "animation" field (one-shot, A 0x100166B0 → A 0
+0x100adae0	79	spec:remote-control-combat		RPC 124 TogglePlayerSpectating; RPC 129 PlayerRequestSpawnResponse /; RPC 138 PlayerQuit; RPC 88 SetPlayerSpecialAction	WOP | DANCE_LOOP	
+0x100adb30	53	notes:parity-notes	parity-notes.md	RPC 124 TogglePlayerSpectating; RPC 129 PlayerRequestSpawnResponse /; RPC 138 PlayerQuit; RPC 88 SetPlayerSpecialAction		parity-notes: Remote peds
+0x100adb80	130	spec:remote-control-onfoot		via 0x100074b0,0x10008b10,0x1000a530	DANCE_B1 | DANCE_G1 | strip_A	
+0x100ae2f0	32	spec:remote-control-onfoot		via 0x10008b10,0x1000b5a0,0x100c4f90		
+0x100ae340	79	spec:remote-control-onfoot		via 0x10008b10,0x1000b5a0,0x100c4f90		
+0x100ae7e0	389	spec:remote-control-onfoot	m8b-notes.md,remote-control-onfoot.md,remote-players-sync.md	via 0x10008b10,0x1000a530,0x1000ace0	PARACHUTE | PARACHUTE	remote-control-onfoot: 4.1 The sync "animation" field (one-shot, A 0x100166B0 → A 0
+0x100aeb20	152	spec:remote-control-combat				
+0x100aebc0	91	spec:remote-control-onfoot		via 0x10013920,0x100b1280		
+0x100aecc0	163	spec:remote-control-onfoot		via 0x10013920,0x100b1280		
+0x100aefa0	138	notes:m6p-notes			%d	
+0x100af8a0	290	spec:remote-control-onfoot				
+0x100afc80	485	spec:remote-control-combat	remote-control-combat.md			remote-control-combat: 1.3 Where the swap is applied (Observed)
+0x100b00c0	539	spec:remote-control-onfoot		via 0x100074b0,0x10008b10,0x1000a530	WOP | DANCE_LOOP	
+0x100b0770	842	spec:remote-control-onfoot		via 0x10013920,0x100b1280		
+0x100b0ac0	86	spec:remote-control-onfoot		via 0x100074b0,0x10008b10,0x1000a530		
+0x100b10f0	168	spec:remote-control-combat				
+0x100b17e0	38	notes:ux1-notes		via 0x1001e820,0x1006c970,0x100a2670		
+0x100b1810	38	notes:ux1-notes		via 0x1001e820,0x1006c970,0x100a2670		
+0x100b19e0	38	notes:trace-notes		via 0x1001e820,0x1006c970,0x100a2670		
+0x100b1c90	53	notes:ux1-notes		via 0x1001e820,0x1006c970,0x100a2670		
+0x100b1dd0	61	spec:gta-patches		via 0x100128a0,0x10018eb0,0x1001b2f0		
+0x100b1e10	57	spec:gta-patches		via 0x100128a0,0x10018eb0,0x1001b2f0		
+0x100b1e50	61	spec:remote-control-onfoot		via 0x100a5f40		
+0x100b1e90	65	spec:gta-patches		via 0x1001e820,0x100b1f20,0x100b34b0		
+0x100b1ee0	53	spec:gta-patches	gta-patches-r4-annotated.csv,gta-patches-r4.csv,gta-patches.md	via 0x1001e820,0x100b1f20,0x100b34b0		
+0x100b1f20	137	spec:gta-patches	gta-patches-r4-annotated.csv,gta-patches-r4.csv,gta-patches.md	via 0x1001e820,0x100a2670,0x100b34b0		
+0x100b1fb0	32	spec:gta-patches	gta-patches-r4-annotated.csv,gta-patches-r4.csv,gta-patches.md	via 0x100128a0,0x10018eb0,0x1001b2f0		
+0x100b1fd0	127	spec:gta-patches	gta-patches-r4-annotated.csv,gta-patches-r4.csv,gta-patches.md	RPC 113 SetPlayerAttachedObject; RPC 44 CreateObject		
+0x100b36c0	44	spec:ui-rendering		via 0x100c3f60		
+0x100b3b30	20	spec:player-state				
+0x100b3bb0	35	spec:remote-control-vehicles		via 0x100b7ef0,0x100b8900		remote-control-onfoot: 1.2 Creation (PlayerStreamIn → spawn A 0x10017130 → A 0x100A
+0x100b3d40	82	spec:handshake		RPC 103 ClientCheck (request); RPC 113 SetPlayerAttachedObject; RPC 139 PlayerInit; OBSERVED: InitGa; RPC 44 CreateObject		
+0x100b4190	52	spec:remote-control-onfoot		via 0x10013920,0x100b1280		
+0x100b4530	9	notes:ux1-notes		via 0x1001e820,0x1006c970,0x100a2670		
+0x100b4740	36	spec:gta-patches		via 0x100128a0,0x10018eb0,0x1001b2f0		
+0x100b5700	47	spec:remote-control-combat		via 0x100afc80		
+0x100b57f0	68	spec:remote-control-onfoot		via 0x10013920,0x100b1280		
+0x100b58b0	46	spec:remote-control-onfoot		via 0x10013920,0x100b1280		
+0x100b6260	81	notes:ux1-notes		via 0x1001e820,0x1006c970,0x100a2670		
+0x100b62c0	57	notes:ux1-notes		via 0x1001e820,0x1006c970,0x100a2670		
+0x100b6520	24	spec:remote-control-combat		via 0x10009b30,0x1000b250,0x1000b5a0		
+0x100b6ae0	1469	spec:remote-control-onfoot		via 0x100a5f40	Gparticle	
+0x100b7590	18	spec:vehicles		RPC 24 SetVehicleParams		
+0x100b76b0	20	spec:remote-control-onfoot		via 0x10008b10,0x1000a530,0x1000ace0		
+0x100b76d0	17	spec:remote-players-sync		via 0x10007070,0x100074b0,0x10008b10		
+0x100b7910	54	spec:remote-control-vehicles		via 0x10008b10,0x1000a530,0x1000ace0		
+0x100b7de0	43	spec:remote-players-sync	m5-notes.md,remote-players-sync.md	via 0x10009e10,0x1000b250,0x1000b5a0		remote-players-sync: 210 PlayerTrailerSync
+0x100b7e60	86	spec:remote-control-vehicles		via 0x10008b10,0x1000b5a0,0x1001f370		
+0x100b8220	10	spec:vehicles		RPC 24 SetVehicleParams		
+0x100b8240	10	spec:vehicles		RPC 24 SetVehicleParams		
+0x100b8260	84	spec:vehicles		RPC 24 SetVehicleParams		
+0x100b82c0	42	spec:remote-players-sync	remote-players-sync.md	via 0x10007070,0x100074b0,0x10008b10		remote-players-sync: 200 PlayerVehicleSync (driver)
+0x100b82f0	74	spec:remote-control-onfoot		via 0x10008b10,0x1000a530,0x1000ace0		remote-players-sync: 200 PlayerVehicleSync (driver)
+0x100b8380	36	spec:vehicles		RPC 24 SetVehicleParams		
+0x100b83b0	36	spec:vehicles		RPC 24 SetVehicleParams		
+0x100b8a50	40	spec:remote-control-onfoot		no callers (indirect/vtable)		
+0x100c3a10	53	spec:gta-patches	gta-patches.md	via 0x1000d4f0,0x10012090		
+0x100c3ed0	69	spec:ui-chat-audio		via 0x100c45d0,0x100c50e0,0x100c5290		
+0x100c3f20	63	spec:ui-chat-audio		via 0x100c45d0,0x100c50e0,0x100c5290		
+0x100c4550	101	spec:gta-patches	gta-patches-r4-annotated.csv,gta-patches-r4.csv,gta-patches.md	via 0x1000b5a0,0x10075760,0x1009d8e0		gta-patches: 5. Runtime patches (summary)
+0x100c45d0	195	spec:ui-chat-audio	ui-chat-audio.md	via 0x100c50e0,0x100c5290		ui-chat-audio: Local chat input and built-in commands

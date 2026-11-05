@@ -1,0 +1,214 @@
+direction	id	name	samp_B_function	trigger	send_params	ours_status	ours_location	notes	severity
+S2C	11	SetPlayerName	0x1001df80 (script)	rename a remote player (pool + nametag/scoreboard)	-	implemented	samp-client/src/players.rs:270	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	12	SetPlayerPosition	0x100192d0 (script)	teleport local ped	-	implemented	samp-client/src/client.rs:718	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	13	SetPlayerPositionFindZ	0x100193f0 (script)	teleport local ped to ground Z (+1.5) at x,y	-	implemented	samp-client/src/client.rs:720	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	14	SetPlayerHealth	0x10019500 (script)	set local ped health	-	implemented	samp-client/src/client.rs:731	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	15	TogglePlayerControllable	0x1001a240 (script)	toggle local player control	-	implemented	samp-client/src/client.rs:743	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	16	PlayerPlaySound	0x1001a2e0 (script)	frontend/mission/one-off sound by id range	-	implemented	samp-client/src/client.rs:877	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	17	SetWorldBounds	0x1001a3c0 (script)	store world bounds (enforced per frame)	-	implemented	samp-client/src/client.rs:763	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	18	GivePlayerMoney	0x1001a4b0 (script)	add to local money	-	implemented	samp-client/src/client.rs:789	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	19	SetPlayerFacingAngle	0x1001a550 (script)	set local ped heading	-	implemented	samp-client/src/client.rs:730	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	20	ResetPlayerMoney	0x10018040 (script)	zero local money	-	implemented	samp-client/src/client.rs:790	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	21	ResetPlayerWeapons	0x10018050 (script)	remove all local weapons	-	implemented	samp-client/src/client.rs:871	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	22	GivePlayerWeapon	0x1001a5f0 (script)	give local weapon+ammo	-	implemented	samp-client/src/client.rs:794	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	24	SetVehicleParams	0x100112d0 (core)	per-player vehicle params (objective/doors)	-	implemented	samp-client/src/vehicles.rs:353	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	26	EnterVehicle	0x100115b0 (core)	remote player enters vehicle (task)	-	implemented	samp-client/src/vehicles.rs:438	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	27	PlayerBeginObjectSelect	0x1000e880 (core)	start object selection mode (cursor)	-	implemented	samp-client/src/objects.rs:303	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	28	PlayerCancelObjectEdit	0x1000e940 (core)	cancel object edit/selection	-	implemented	samp-client/src/objects.rs:309	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	29	SetPlayerTime	0x1000f3f0 (core)	set GTA clock hour/minute	-	implemented	samp-client/src/client.rs:826	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	30	TogglePlayerClock	0x1000f4d0 (core)	show/hide HUD clock (freezes time when off)	-	implemented	samp-client/src/client.rs:835	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	32	PlayerStreamIn	0x10010ae0 (core)	create remote player ped (stream in)	-	implemented	samp-client/src/players.rs:219	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	33	SetPlayerShopName	0x10017e00 (script)	set shop name (interior shop script)	-	implemented	samp-client/src/client.rs:786	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	34	SetPlayerSkillLevel	0x1000f5b0 (core)	weapon skill level for a player	-	implemented	samp-client/src/client.rs:804	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	35	SetPlayerDrunkLevel	0x10018d60 (script)	local drunk level (camera wobble, stats)	-	implemented	samp-client/src/client.rs:777	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	36	PlayerShowTextLabel	0x1000f6f0 (core)	create 3D text label	-	implemented	samp-client/src/entities.rs:414	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	37	DisableCheckpoint	0x1000e570 (core)	hide checkpoint	-	implemented	samp-client/src/entities.rs:327	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	38	SetRaceCheckpoint	0x10010260 (core)	show race checkpoint	-	implemented	samp-client/src/entities.rs:328	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	39	DisableRaceCheckpoint	0x1000e580 (core)	hide race checkpoint	-	implemented	samp-client/src/entities.rs:359	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	40	PlayerClose	0x1000e620 (core)	server restart (gmx): reset routine, wait for InitGame	-	implemented	samp-client/src/client.rs:596	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	41	PlayAudioStreamForPlayer	0x1001d370 (script)	start audio stream (URL)	-	implemented	samp-client/src/client.rs:605	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	42	StopAudioStreamForPlayer	0x100180a0 (script)	stop audio stream	-	implemented	samp-client/src/client.rs:606	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	43	RemoveBuildingForPlayer	0x1001d4e0 (script)	remove world buildings by model/radius	-	implemented	samp-client/src/client.rs:851	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	44	CreateObject	0x1001b2f0 (script)	create object	-	implemented	samp-client/src/objects.rs:232	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	45	SetObjectPosition	0x1001b9c0 (script)	move object instantly	-	implemented	samp-client/src/objects.rs:233	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	46	SetObjectRotation	0x1001bad0 (script)	rotate object	-	implemented	samp-client/src/objects.rs:238	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	47	DestroyObject	0x1001bbd0 (script)	destroy object	-	implemented	samp-client/src/objects.rs:248	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	48	SetPlayerVirtualWorld	0x1001dc70 (script)	store local virtual world; reader only gates a freeze-while-pending step	-	codec-only	samp-proto/src/rpcs/player.rs (decode only)	decoded (player::SetPlayerVirtualWorld), no match arm; original only stores it and uses it to gate a short freeze; streaming by VW is server-side; DIFF-2@9abe8a7: MATCH	internal
+S2C	55	SendDeathMessage	0x1001dd20 (script)	add death-window line (kill feed)	-	implemented	samp-client/src/ui/core.rs:644	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	56	SetPlayerMapIcon	0x1001a740 (script)	create radar map icon	-	implemented	samp-client/src/entities.rs:382	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	57	RemoveVehicleComponent	0x1001c570 (script)	remove a vehicle component	-	implemented	samp-client/src/vehicles.rs:365	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	58	PlayerHideTextLabel	0x1000f8a0 (core)	delete 3D text label	-	implemented	samp-client/src/entities.rs:430	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	59	SetPlayerChatBubble	0x1000f960 (core)	chat bubble above a player	-	implemented	samp-client/src/ui/core.rs:591	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	60	SendGameTimeUpdate	0x1000ff10 (core)	when HUD clock disabled: overwrite GTA ms timer base with server time	-	codec-only	samp-proto/src/rpcs/player.rs (decode only)	decoded, no arm. With TogglePlayerClock(0) the original resyncs GTA time base to server time; ours keeps local time (minor drift between clients); DIFF-2@9abe8a7: DIFF	user-visible
+S2C	61	ShowDialog	0x1000fad0 (core)	show/hide dialog	-	implemented	samp-client/src/ui/core.rs:596	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	63	PlayerDestroyPickup	0x1000f110 (core)	destroy pickup	-	implemented	samp-client/src/entities.rs:203	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	64	Unused64	0x1001a6b0 (script)	reads u16, no effect	-	codec-only	samp-proto/src/rpcs/session.rs (decode only)	original is a no-op too: equivalent; DIFF-2@9abe8a7: UNTRIGGERABLE	internal
+S2C	65	LinkVehicleToInterior	0x10019ee0 (script)	set vehicle interior	-	implemented	samp-client/src/vehicles.rs:370	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	66	SetPlayerArmour	0x1001ab10 (script)	set local armour	-	implemented	samp-client/src/client.rs:737	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	67	SetPlayerArmedWeapon	0x10018e00 (script)	switch armed weapon	-	implemented	samp-client/src/client.rs:864	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	68	SetSpawnInfo	0x10017f00 (script)	store spawn info	-	implemented	samp-client/src/client.rs:707	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	69	SetPlayerTeam	0x100196c0 (script)	set team (local/remote; friendly fire)	-	implemented	samp-client/src/client.rs:811	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	70	PutPlayerInVehicle	0x100195b0 (script)	put local ped in vehicle seat	-	implemented	samp-client/src/vehicles.rs:425	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	71	RemovePlayerFromVehicle	0x10017fa0 (script)	remove local ped from vehicle	-	implemented	samp-client/src/vehicles.rs:426	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	72	SetPlayerColor	0x100197b0 (script)	set player colour (nametag/chat/radar)	-	implemented	samp-client/src/client.rs:855	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	73	SendGameText	0x100198a0 (script)	show game text	-	implemented	samp-client/src/ui/core.rs:562	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	74	ForcePlayerClassSelection	0x10018080 (script)	force class selection on next death	-	implemented	samp-client/src/client.rs:714	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	75	AttachObjectToPlayer	0x1001c650 (script)	attach object to player	-	implemented	samp-client/src/objects.rs:269	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	76	PlayerInitMenu	0x1001c820 (script)	define menu	-	implemented	samp-client/src/ui/core.rs:624	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	77	PlayerShowMenu	0x1001cb40 (script)	show menu	-	implemented	samp-client/src/ui/core.rs:627	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	78	PlayerHideMenu	0x1001cbf0 (script)	hide menu	-	implemented	samp-client/src/ui/core.rs:632	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	79	CreateExplosion	0x1001bcc0 (script)	create explosion	-	implemented	samp-client/src/client.rs:825	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	80	ShowPlayerNameTagForPlayer	0x1001bdd0 (script)	show/hide nametag of one player	-	implemented	samp-client/src/ui/core.rs:584	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	81	AttachCameraToObject	0x10019fa0 (script)	attach camera to object	-	implemented	samp-client/src/client.rs:759	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	82	InterpolateCamera	0x1001a0a0 (script)	interpolate camera pos/lookat	-	implemented	samp-client/src/client.rs:751	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	83	PlayerBeginTextDrawSelect	0x1001d600 (script)	textdraw select mode on/off + hover colour	-	implemented	samp-client/src/ui/core.rs:617	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	84	SetPlayerObjectMaterial	0x1001b650 (script)	object material/material text	-	implemented	samp-client/src/objects.rs:292	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	85	StopFlashGangZone	0x1001d2c0 (script)	stop gang zone flash	-	implemented	samp-client/src/entities.rs:376	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	86	ApplyPlayerAnimation	0x1001a900 (script)	apply animation to a player	-	implemented	samp-client/src/client.rs:769	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	87	ClearPlayerTasks	0x10018530 (script)	clear tasks/animations of a player	-	implemented	samp-client/src/client.rs:773	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	88	SetPlayerSpecialAction	0x10018640 (script)	special action (jetpack, dance, cuff, ...)	-	implemented	samp-client/src/client.rs:849	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	89	SetPlayerFightingStyle	0x100186f0 (script)	fighting style	-	implemented	samp-client/src/client.rs:778	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	90	SetPlayerVelocity	0x10018800 (script)	set local ped velocity	-	implemented	samp-client/src/client.rs:791	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	91	SetVehicleVelocity	0x10018900 (script)	set vehicle velocity (linear/angular)	-	implemented	samp-client/src/vehicles.rs:375	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	92	SetPlayerDrunkVisuals	0x10018c00 (script)	u32 -> GTA opcode 0x052C on local player (drunk visuals)	-	codec-only	samp-proto/src/rpcs/session.rs (decode only)	no stock/open.mp sender (DIFF-2 UNTRIGGERABLE); original runs opcode 0x052C. Only custom servers affected; DIFF-2@9abe8a7: UNTRIGGERABLE	user-visible
+S2C	93	SendClientMessage	0x1000ef60 (core)	client message line in chat	-	implemented	samp-client/src/ui/core.rs:554	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	94	SetPlayerWorldTime	0x1000eec0 (core)	store world hour	-	implemented	samp-client/src/client.rs:834	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	95	PlayerCreatePickup	0x1000f050 (core)	create pickup	-	implemented	samp-client/src/entities.rs:168	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	96	SCMEvent	0x1000f250 (core)	paintjob/component/respray on a vehicle	-	implemented	samp-client/src/vehicles.rs:389	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	98	SetVehicleTyreStatus	0x10018b20 (script)	set tyre burst bits on a vehicle	-	implemented	samp-client/src/client.rs:681	DIFF-2@9abe8a7: UNTRIGGERABLE	user-visible
+S2C	99	MoveObject	0x1001beb0 (script)	start object movement	-	implemented	samp-client/src/objects.rs:253	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	101	PlayerChatMessage	0x100122d0 (core)	player chat line in chat	-	implemented	samp-client/src/ui/core.rs:561	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	102	ServerNetStats	0x1000e590 (core)	store 296-byte server net-stats blob (no reader found)	-	codec-only	samp-proto/src/rpcs/session.rs (decode only)	original stores the blob, no reader found: effectively equivalent; DIFF-2@9abe8a7: UNTRIGGERABLE	internal
+S2C	103	ClientCheck (request)	0x10011a40 (core)	ClientCheck request: compute memory/checksum, reply 103	-	implemented	samp-client/src/client.rs:678	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	104	EnableStuntBonusForPlayer	0x10017d00 (script)	stunt bonus on/off	-	implemented	samp-client/src/client.rs:788	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	105	PlayerTextDrawSetString	0x1001cf20 (script)	set textdraw text	-	implemented	samp-client/src/ui/core.rs:614	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	106	SetVehicleDamageStatus	0x100111a0 (core)	apply vehicle panel/door/light/tyre damage	-	implemented	samp-client/src/vehicles.rs:359	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	107	SetCheckpoint	0x10010150 (core)	show checkpoint	-	implemented	samp-client/src/entities.rs:318	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	108	ShowGangZone	0x1001d030 (script)	show gang zone on radar	-	implemented	samp-client/src/entities.rs:361	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	111	ToggleWidescreen	0x10018a70 (script)	widescreen on/off	-	implemented	samp-client/src/client.rs:762	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	112	PlayCrimeReport	0x10019000 (script)	police-scanner crime report audio (temp vehicle for description)	-	codec-only	samp-proto/src/rpcs/player.rs (decode only)	PlayCrimeReport ignored: no police-scanner voice. Also the original NOPs 39 bytes at 0x4E7529 here; DIFF-2@9abe8a7: NOT-IMPLEMENTED	user-visible
+S2C	113	SetPlayerAttachedObject	0x10018eb0 (script)	attach/remove attached object slot	-	implemented	samp-client/src/objects.rs:302	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	116	PlayerBeginAttachedObjectEdit	0x100117c0 (core)	begin attached-object editor	-	implemented	samp-client/src/objects.rs:326	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	117	PlayerBeginObjectEdit	0x10011880 (core)	begin object editor	-	implemented	samp-client/src/objects.rs:314	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	120	HideGangZone	0x1001d150 (script)	hide gang zone	-	implemented	samp-client/src/entities.rs:368	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	121	FlashGangZone	0x1001d200 (script)	flash gang zone	-	implemented	samp-client/src/entities.rs:371	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	122	StopObject	0x1001c060 (script)	stop object movement	-	implemented	samp-client/src/objects.rs:264	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	123	SetVehiclePlate	0x1001c1e0 (script)	set number plate text	-	implemented	samp-client/src/vehicles.rs:390	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	124	TogglePlayerSpectating	0x1001c300 (script)	toggle spectating	-	implemented	samp-client/src/client.rs:634	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	125	Unused125	0x10018070 (script)	empty handler	-	codec-only	samp-proto/src/rpcs/session.rs (decode only)	original handler is a bare return: equivalent; DIFF-2@9abe8a7: UNTRIGGERABLE	internal
+S2C	126	PlayerSpectatePlayer	0x1001c3b0 (script)	spectate player	-	implemented	samp-client/src/client.rs:639	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	127	PlayerSpectateVehicle	0x1001c490 (script)	spectate vehicle	-	implemented	samp-client/src/client.rs:642	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	128	PlayerRequestClassResponse	0x1000ffb0 (core)	class response: show class skin/spawn info	-	implemented	samp-client/src/client.rs:688	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	129	PlayerRequestSpawnResponse / ImmediatelySpawnPlayer	0x10010080 (core)	spawn response / force spawn	-	implemented	samp-client/src/client.rs:708	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	130	ConnectionRejected	0x10010520 (core)	join rejected (reason) -> message, disconnect after 500 ms	-	implemented	samp-client/src/netclient.rs:599 -> lifecycle.rs:158	DIFF-2@9abe8a7: UNTRIGGERABLE	user-visible
+S2C	133	SetPlayerWantedLevel	0x1001cca0 (script)	wanted stars (HUD only)	-	implemented	samp-client/src/client.rs:787	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	134	PlayerShowTextDraw	0x1001cd40 (script)	show textdraw	-	implemented	samp-client/src/ui/core.rs:606	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	135	PlayerHideTextDraw	0x1001ce70 (script)	hide textdraw	-	implemented	samp-client/src/ui/core.rs:613	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	137	PlayerJoin	0x1000fcc0 (core)	player joined (pool, name, colour, NPC flag)	-	implemented	samp-client/src/players.rs:200	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	138	PlayerQuit	0x1000fe50 (core)	player quit (pool, chat line?)	-	implemented	samp-client/src/players.rs:213	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	139	InitGame (PlayerInit)	0x10010640 (core)	InitGame: settings, local id, enter class selection	-	implemented	samp-client/src/netclient.rs:594	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	144	RemovePlayerMapIcon	0x1001a860 (script)	remove map icon	-	implemented	samp-client/src/entities.rs:407	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	145	SetPlayerAmmo	0x1001abc0 (script)	set ammo of a weapon	-	implemented	samp-client/src/client.rs:800	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	146	SetPlayerGravity	0x1001ac80 (script)	set gravity	-	implemented	samp-client/src/client.rs:767	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	147	SetVehicleHealth	0x1001ad20 (script)	set vehicle health	-	implemented	samp-client/src/vehicles.rs:354	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	148	AttachTrailer	0x1001ae00 (script)	attach trailer	-	implemented	samp-client/src/vehicles.rs:398	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	149	DetachTrailer	0x1001af40 (script)	detach trailer	-	implemented	samp-client/src/vehicles.rs:406	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	150	SetPlayerDrunkHandling	0x10018cb0 (script)	u32 -> GTA opcode 0x03FD on local player (drunk handling)	-	codec-only	samp-proto/src/rpcs/session.rs (decode only)	no stock/open.mp sender (UNTRIGGERABLE); original runs opcode 0x03FD. Only custom servers affected; DIFF-2@9abe8a7: UNTRIGGERABLE	user-visible
+S2C	151	DestroyDroppedWeaponPickups	0x1000f1b0 (core)	destroy dropped-weapon pickups of owner (dead path in R4)	-	codec-only	samp-proto/src/rpcs/session.rs (decode only)	dead path in R4 (dropped-weapon pickups never created); UNTRIGGERABLE; DIFF-2@9abe8a7: UNTRIGGERABLE	internal
+S2C	152	SetPlayerWeather	0x1000f340 (core)	set weather	-	implemented	samp-client/src/client.rs:844	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	153	SetPlayerSkin	0x10019140 (script)	set skin of a player	-	implemented	samp-client/src/client.rs:848	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	154	ExitVehicle	0x100116d0 (core)	remote player exits vehicle (task)	-	implemented	samp-client/src/vehicles.rs:439	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	155	SendPlayerScoresAndPings	0x100103c0 (core)	scoreboard scores/pings	-	implemented	samp-client/src/ui/core.rs:637	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	156	SetPlayerInterior	0x100199b0 (script)	set local interior (area, streaming)	-	implemented	samp-client/src/client.rs:768	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	157	SetPlayerCameraPosition	0x10019a50 (script)	fixed camera position	-	implemented	samp-client/src/client.rs:744	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	158	SetPlayerCameraLookAt	0x10019b20 (script)	camera look-at	-	implemented	samp-client/src/client.rs:747	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	159	SetVehiclePosition	0x10019c20 (script)	set vehicle position	-	implemented	samp-client/src/vehicles.rs:407	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	160	SetVehicleZAngle	0x10019d30 (script)	set vehicle Z angle	-	implemented	samp-client/src/vehicles.rs:420	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	161	SetVehicleParamsForPlayerOld	0x10019e10 (script)	old per-player vehicle params (objective arrow, doors locked)	-	implemented	samp-client/src/client.rs:684	DIFF-2@9abe8a7: UNTRIGGERABLE	user-visible
+S2C	162	SetPlayerCameraBehindPlayer	0x10018030 (script)	camera behind player	-	implemented	samp-client/src/client.rs:750	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	163	PlayerStreamOut	0x10010de0 (core)	remove remote player ped (stream out)	-	implemented	samp-client/src/players.rs:260	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	164	StreamInVehicle	0x1000e640 (core)	create vehicle (stream in)	-	implemented	samp-client/src/vehicles.rs:351	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	165	StreamOutVehicle	0x10010ec0 (core)	destroy vehicle (stream out)	-	implemented	samp-client/src/vehicles.rs:352	DIFF-2@9abe8a7: DIFF	user-visible
+S2C	166	PlayerDeath	0x10010d20 (core)	remote player died (death anim)	-	implemented	samp-client/src/client.rs:818	DIFF-2@9abe8a7: NOT-IMPLEMENTED (stale: a handler now exists, re-run DIFF-2)	user-visible
+S2C	167	DisableRemoteVehicleCollisions	0x10017d90 (script)	disable collisions with remote vehicles	-	implemented	samp-client/src/client.rs:850	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	169	SetObjectNoCameraCollision	0x1001c120 (script)	exclude object from camera collision	-	implemented	samp-client/src/objects.rs:297	DIFF-2@9abe8a7: UNTRIGGERABLE	user-visible
+S2C	170	SetPlayerCameraTargeting	0x1000e9f0 (core)	enable/disable camera-target reporting (gates C2S 168)	-	codec-only	samp-proto/src/rpcs/player.rs (decode only)	EnablePlayerCameraTarget ignored, so C2S 168 can never fire (OnPlayerCameraTarget dead on our client); DIFF-2@9abe8a7: NOT-IMPLEMENTED	network-visible
+S2C	171	ShowActorForPlayer	0x1000ea80 (core)	create actor	-	implemented	samp-client/src/entities.rs:213	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	172	HideActorForPlayer	0x10011de0 (core)	destroy actor	-	implemented	samp-client/src/entities.rs:256	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	173	ApplyActorAnimationForPlayer	0x1001d700 (script)	actor animation	-	implemented	samp-client/src/entities.rs:257	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	174	ClearActorAnimationsForPlayer	0x1001d8e0 (script)	clear actor animation	-	implemented	samp-client/src/entities.rs:290	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	175	SetActorFacingAngleForPlayer	0x1001d9a0 (script)	actor heading	-	implemented	samp-client/src/entities.rs:302	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	176	SetActorPosForPlayer	0x1001da80 (script)	actor position	-	implemented	samp-client/src/entities.rs:307	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	178	SetActorHealthForPlayer	0x1001db90 (script)	actor health	-	implemented	samp-client/src/entities.rs:312	DIFF-2@9abe8a7: MATCH	user-visible
+S2C	179	ModelRequest	not registered in R4	custom-model download (later client versions)	-	codec-only	samp-proto/src/rpcs/world.rs:1252	decoded by us although samp R4 has no handler (DORMANT_IN_R4); not dispatched in client: correct	internal
+S2C	183	ModelUrl	not registered in R4	custom-model download (later client versions)	-	codec-only	samp-proto/src/rpcs/world.rs:1252	decoded by us although samp R4 has no handler (DORMANT_IN_R4); not dispatched in client: correct	internal
+S2C	185	DownloadCompleted	not registered in R4	custom-model download (later client versions)	-	codec-only	samp-proto/src/rpcs/world.rs:1252	decoded by us although samp R4 has no handler (DORMANT_IN_R4); not dispatched in client: correct	internal
+S2C	12	packet AUTH_KEY challenge	dispatch 0x1000b250 -> 0x1000a0f0	answer auth challenge (0x0c reply, rel 8 system prio)	-	implemented	samp-client/src/netclient.rs:563	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	user-visible
+S2C	29	packet CONNECTION_ATTEMPT_FAILED (synthetic, 6 unanswered requests or 0x1d reply)	dispatch 0x1000b250 -> inline	'The server didn't respond. Retrying..' -> state 1	-	implemented	samp-client/src/lifecycle.rs:121	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	user-visible
+S2C	31	packet NO_FREE_INCOMING_CONNECTIONS	dispatch 0x1000b250 -> inline	'The server is full. Retrying...' -> state 1	-	implemented	samp-client/src/lifecycle.rs:125	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	user-visible
+S2C	32	packet DISCONNECTION_NOTIFICATION	dispatch 0x1000b250 -> 0x10008dd0	'Server closed the connection.' (kick/ban/shutdown), no reset	-	implemented	samp-client/src/lifecycle.rs:130	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	user-visible
+S2C	33	packet CONNECTION_LOST (synthetic timeout)	dispatch 0x1000b250 -> 0x1000ace0	'Lost connection...' -> reset, delete players, state 1	-	implemented	samp-client/src/netclient.rs:476 -> lifecycle.rs:134	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	user-visible
+S2C	34	packet CONNECTION_REQUEST_ACCEPTED	dispatch 0x1000b250 -> 0x1000ad70	send RPC 25 join (challenge^4057)	-	implemented	samp-client/src/netclient.rs:582,661	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	user-visible
+S2C	35	packet MODIFIED_PACKET/encryption failed	dispatch 0x1000b250 -> inline	'Failed to initialize encryption.'	-	implemented	samp-client/src/lifecycle.rs:150	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	user-visible
+S2C	36	packet CONNECTION_BANNED	dispatch 0x1000b250 -> inline	'You are banned from this server.'	-	implemented	samp-client/src/lifecycle.rs:151	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	user-visible
+S2C	37	packet INVALID_PASSWORD	dispatch 0x1000b250 -> inline	'Wrong server password.' + Disconnect	-	implemented	samp-client/src/lifecycle.rs:152	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	user-visible
+S2C	200	packet VehicleSync (remote driver)	dispatch 0x1000b250 -> 0x1000aa00	store/apply remote driver sync	-	implemented	samp-client/src/client.rs:576 -> vehicles.rs:800	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	network-visible
+S2C	203	packet AimSync	dispatch 0x1000b250 -> 0x10009c30	remote aim/camera	-	implemented	samp-client/src/players.rs:289	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	network-visible
+S2C	206	packet BulletSync	dispatch 0x1000b250 -> 0x10009b30	fire remote shot at once	-	implemented	samp-client/src/client.rs:580	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	network-visible
+S2C	207	packet OnFootSync	dispatch 0x1000b250 -> 0x1000a730	remote on-foot	-	implemented	samp-client/src/client.rs:571 -> players.rs:281	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	network-visible
+S2C	208	packet MarkersSync	dispatch 0x1000b250 -> 0x10009f00	radar markers of far players	-	implemented	samp-client/src/client.rs:584	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	network-visible
+S2C	209	packet UnoccupiedSync	dispatch 0x1000b250 -> 0x10009a30	apply unoccupied vehicle	-	implemented	samp-client/src/vehicles.rs:846	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	network-visible
+S2C	210	packet TrailerSync	dispatch 0x1000b250 -> 0x10009e10	apply trailer	-	implemented	samp-client/src/vehicles.rs:847	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	network-visible
+S2C	211	packet PassengerSync	dispatch 0x1000b250 -> 0x10009d20	remote passenger	-	implemented	samp-client/src/vehicles.rs:826	app packet switch case set is identical to ours (no other ids handled; 202/204/205/212 not handled by samp either)	network-visible
+S2C	26	unconnected cookie (0x1a) / 0x19 open-connection reply	RakPeer 0x1003f3f0	store cookie / send 0x0b+password	-	implemented	samp-client/src/netclient.rs:527	RakNet layer, not app dispatch	network-visible
+C2S	23	OnPlayerClickPlayer	0x1006ebd0	scoreboard: row activated (double-click/enter) -> playerid parsed from row, source 0; scoreboard then closes	prio 1, rel 9, ch 0, no ts	codec-only	samp-proto/src/rpcs/session.rs:625 (no sender)	our scoreboard has selection but never sends 23	network-visible
+C2S	25	PlayerConnect (join)	0x1000ad70	on packet 0x22: version 4057, mod 1, nick, challenge^4057, gpci, '0.3.7-R4', response again	prio 1, rel 8, ch 0, no ts	implemented	samp-client/src/netclient.rs:666	captured identical (616 bits)	network-visible
+C2S	26	OnPlayerEnterVehicle	0x10005ac0	GTA enter-car task hook (player input) after gate (vehicle id, not locked, ...); driver/passenger flag	prio 1, rel 10, ch 0, no ts	implemented	samp-client/src/vehicles.rs:1176,1387		network-visible
+C2S	27	OnPlayerSelectObject	0x1006dc90 (send 0x1006ddc7)	object select mode: click on object within ~150 units	prio 1, rel 9, ch 0, no ts	implemented	samp-client/src/objects.rs:496	absent from rpc-ids.md send table; found via cell 0x100e5e9c	network-visible
+C2S	50	PlayerRequestCommandMessage	0x100698c0	chat input starting with / (not a local cmd)	prio 1, rel 8, ch 0, no ts	implemented	samp-client/src/ui/glue.rs:1265		network-visible
+C2S	52	PlayerSpawn	0x10003c10	local spawn routine (after spawn response / respawn)	prio 1, rel 9, ch 0, no ts	implemented	samp-client/src/client.rs:1036	captured	network-visible
+C2S	53	OnPlayerDeath	0x10005800	per-frame local routine detects death: reason+killer from GTA damage source (also records passenger vehicle; no separate exit RPC on death)	prio 1, rel 9, ch 0, no ts	implemented	samp-client/src/client.rs:1105		network-visible
+C2S	62	OnPlayerDialogResponse	0x10070660	dialog button/list activation/ESC; then dialog closes	prio 1, rel 9, ch 0, no ts	implemented	samp-client/src/ui/glue.rs:1276		network-visible
+C2S	83	OnPlayerClickTextDraw	0x100714b0	textdraw select mode: click on selectable textdraw, or ESC -> 0xFFFF	prio 1, rel 9, ch 0, no ts	implemented	samp-client/src/ui/glue.rs:1280		network-visible
+C2S	96	SCMEvent	0x10001ce0 (4 send sites)	samp opcode 0x09C6 from mod-shop scripts: paintjob(1)/component(2)/respray(3)/enter-exit shop(4), vehicle must be in samp pool	prio 1, rel 10, ch 0, no ts	codec-only	samp-client/src/scmops.rs:111-114	hook installed and logs, but never sends (stale comment says no vehicle pool); also local side effects of type 3/4 missing	user-visible
+C2S	97	PickedUpDroppedWeapon	0x100134f0	pickup poll for dropped-weapon pickups	prio 1, rel 10, ch 0, no ts	codec-only	samp-proto/src/rpcs/session.rs:625	dormant in R4 (dropped weapons never created)	internal
+C2S	101	PlayerRequestChatMessage	0x10005a00	chat input text	prio 1, rel 8, ch 0, no ts	implemented	samp-client/src/ui/glue.rs:1261		network-visible
+C2S	103	ClientCheckResponse	0x10011970	reply to RPC 103 request	prio 1, rel 9, ch 0, no ts	implemented	samp-client/src/behaviourclient.rs:836		network-visible
+C2S	106	SetVehicleDamageStatus	0x10005dd0	per frame while driving: panels/doors/lights/tyres differ from cache	prio 1, rel 8, ch 0, no ts	implemented	samp-client/src/vehicles.rs:1235		network-visible
+C2S	115	OnPlayerGiveTakeDamage	0x10006890 / 0x100069a0	GTA damage hook: local victim (take) or local attacker of remote player (give); damage scaled	prio 1, rel 9, ch 0, no ts	implemented	samp-client/src/combatclient.rs:117		network-visible
+C2S	116	OnPlayerEditAttachedObject	0x10072af0	attached-object editor save/cancel	prio 1, rel 9, ch 0, no ts	implemented	samp-client/src/objects.rs:399		network-visible
+C2S	117	OnPlayerEditObject	0x100728e0	object editor update/save/cancel	prio 1, rel 9, ch 0, no ts	implemented	samp-client/src/objects.rs:392		network-visible
+C2S	118	OnPlayerInteriorChange	0x10005960	GTA area id changed (per frame)	prio 1, rel 8, ch 0, no ts	implemented	samp-client/src/client.rs:1268		network-visible
+C2S	119	OnPlayerClickMap	0x10075760	pause-menu map open + right-click edge: waypoint pos, z = ground+2	prio 1, rel 8, ch 0, no ts	codec-only	samp-proto/src/rpcs/session.rs:625 (no sender)	map click never reported	network-visible
+C2S	128	PlayerRequestClass	0x100058c0	class selection first tick and on left/right	prio 1, rel 8, ch 0, no ts	implemented	samp-client/src/client.rs:956	captured	network-visible
+C2S	129	PlayerRequestSpawn	0x10003b60	class selection Shift/Spawn	prio 1, rel 8, ch 0, no ts	implemented	samp-client/src/client.rs:960	captured	network-visible
+C2S	131	OnPlayerPickUpPickup	0x10013410 (hook, rel 9) / 0x100134f0 (poll, rel 10)	GTA pickup collision hook; type-14 pickups polled every ~6 ticks	prio 1, rel 9/10, ch 0, no ts	implemented	samp-client/src/entities.rs:465 (hook), :523 (poll)	both paths present	network-visible
+C2S	132	OnPlayerSelectedMenuRow	0x100081f0	menu row chosen	prio 1, rel 8, ch 0, no ts	implemented	samp-client/src/ui/glue.rs:1284		network-visible
+C2S	136	VehicleDeath	0x1001f1e0	vehicle pool tick: health 0 or sunk, only for last driven vehicle	prio 1, rel 10, ch 0, no ts	implemented	samp-client/src/vehicles.rs:1499		network-visible
+C2S	140	OnPlayerExitedMenu	0x100081f0	menu closed with ESC/back; sent with null bitstream	prio 1, rel 8, ch 0, no ts	implemented	samp-client/src/ui/glue.rs:1288		network-visible
+C2S	154	OnPlayerExitVehicle	0x10005be0	GTA leave-car task hook (player input); remembers last driven vehicle	prio 1, rel 10, ch 0, no ts	implemented	samp-client/src/vehicles.rs:1188		network-visible
+C2S	155	OnPlayerRequestScoresAndPings	0x10008f00	scoreboard (TAB) open: on opening frame, then at most every 3000 ms	prio 1, rel 8, ch 0, no ts	implemented	samp-client/src/ui/glue.rs:1290 (timer ui/glue.rs:604)		network-visible
+C2S	168	OnPlayerCameraTarget	0x100046e0	local tick, if enabled by RPC 170: every <=100 ms ray-cast camera target (object/vehicle/player/actor), send on change	prio 1, rel 9, ch 0, no ts	codec-only	samp-proto/src/rpcs/session.rs:625 (no sender)	missing together with S2C 170	network-visible
+C2S	177	OnPlayerDamageActor	0x10006ab0	GTA damage hook: local attacker, victim is an actor	prio 1, rel 9, ch 0, no ts	implemented	samp-client/src/combatclient.rs:129		network-visible
+C2S	181	RequestDff	0x1000d7f0 (variable cell)	custom-model download request	prio 1, rel 9, ch 0, no ts	codec-only	samp-proto/src/rpcs/world.rs:1297	dormant in R4	internal
+C2S	182	RequestTxd	0x1000d7f0 (send 0x1000d8c9)	custom-model download request	prio 1, rel 9, ch 0, no ts	codec-only	samp-proto/src/rpcs/world.rs:1297	dormant in R4	internal
+C2S	184	FinishDownload	0x1000d910	custom-model download done (priority from register, not 1)	prio 1, rel 9, ch 0, no ts	codec-only	samp-proto/src/rpcs/world.rs:1297	dormant in R4	internal
+C2S	200	packet VehicleSync (driver)	0x10007070	driving: at send rate, dup-filtered	prio 1, unrel-seq(7), ch 1	implemented	samp-client/src/vehicles.rs:1307	params match sync/policy.rs	network-visible
+C2S	201	packet RconCommand	0x10068ff0 (send 0x1006909b)	/rcon <text> typed in chat	rel 8, ch 0	implemented	samp-client/src/ui/glue.rs:1267	params match sync/policy.rs	network-visible
+C2S	203	packet AimSync	0x10005200	aiming / camera mode, on change+rate	prio 1, rel 7, ch 1	implemented	samp-client/src/combatclient.rs:223,246	params match sync/policy.rs	network-visible
+C2S	204	packet WeaponsUpdate	0x10006280	weapon slots/ammo changed (throttled)	prio 1, rel 6, ch 0	implemented	samp-client/src/combatclient.rs:184	params match sync/policy.rs	network-visible
+C2S	205	packet StatsSync	0x10005cf0	money/drunk level, periodic	prio 1, rel 6, ch 0	implemented	samp-client/src/client.rs:1235	params match sync/policy.rs	network-visible
+C2S	206	packet BulletSync	0x10006bb0	each local shot that hits/misses	prio 1, rel 7, ch 0	implemented	samp-client/src/combatclient.rs:116	params match sync/policy.rs	network-visible
+C2S	207	packet OnFootSync	0x10004ef0	on foot at on-foot rate (faster with streamed players)	prio 1, rel 7, ch 1	implemented	samp-client/src/client.rs:1219	params match sync/policy.rs	network-visible
+C2S	209	packet UnoccupiedSync	0x10004d10	local near/pushing an unoccupied vehicle (or passenger-only)	prio 1, rel 7, ch 1	implemented	samp-client/src/vehicles.rs:1548	params match sync/policy.rs	network-visible
+C2S	210	packet TrailerSync	0x100053c0	driving with an attached trailer	prio 1, rel 7, ch 1	implemented	samp-client/src/vehicles.rs:1326	params match sync/policy.rs	network-visible
+C2S	211	packet PassengerSync	0x10005580	local is passenger	prio 1, rel 7, ch 1	implemented	samp-client/src/vehicles.rs:1352	params match sync/policy.rs	network-visible
+C2S	212	packet SpectatorSync	0x10006530	local is spectating	prio 1, rel 6, ch 1	implemented	samp-client/src/behaviourclient.rs:549	params match sync/policy.rs	network-visible
+C2S	24	raknet open-connection request (cookie ^ 0x6969)	RakPeer 0x10041400	every 1000 ms, max 6	unconnected	implemented	samp-client/src/netclient.rs (open phase)	cadence residuals P1-P3 per par-audit (ping/keep-alive/disconnect)	network-visible
+C2S	11	raknet connection request + password	RakPeer	on 0x19 reply	rel 8, system prio	implemented	samp-client/src/netclient.rs:535	cadence residuals P1-P3 per par-audit (ping/keep-alive/disconnect)	network-visible
+C2S	12	raknet auth key reply	0x1000a0f0	on 0x0c challenge	prio 0, rel 8, ch 0	implemented	samp-client/src/netclient.rs:572	cadence residuals P1-P3 per par-audit (ping/keep-alive/disconnect)	network-visible
+C2S	30	raknet new incoming connection (server addr)	RakPeer	on 0x22	rel 8, system prio	implemented	samp-client/src/netclient.rs:653	cadence residuals P1-P3 per par-audit (ping/keep-alive/disconnect)	network-visible
+C2S	6	raknet internal ping / pong 0x07	RakPeer	after accept and every 5000 ms	unreliable	implemented	samp-proto/src/connection.rs:450	cadence residuals P1-P3 per par-audit (ping/keep-alive/disconnect)	network-visible
+C2S	41	raknet received static data	RakPeer	after accept	rel 8	implemented	samp-client/src/netclient.rs:655	cadence residuals P1-P3 per par-audit (ping/keep-alive/disconnect)	network-visible
+C2S	23	raknet keep-alive	RakPeer	no reliable traffic for 5000 ms	rel 8, low prio	implemented	samp-proto/src/connection.rs:468	cadence residuals P1-P3 per par-audit (ping/keep-alive/disconnect)	network-visible
+C2S	32	raknet disconnection notification	RakClient Disconnect	/quit, rejection, wrong password	rel 6 (unreliable)	implemented	samp-client/src/netclient.rs:393	cadence residuals P1-P3 per par-audit (ping/keep-alive/disconnect)	network-visible
