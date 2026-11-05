@@ -350,3 +350,17 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   original audio reference after the worktree was removed). Fixed (d7f3173): m8b counts frames
   (3/3 pass), m9 reference regenerated (pass, 0 BASS differences).
 - 562 tests; clippy 0 (host + i686).
+
+## 2026-11-05 — Audit fixes merged (vehicles/radar, lifecycle/ClientCheck, patches/HUD/bounds)
+
+- Radar markers for remote players, remote driver exit task, rows 177/62 (merged 6dbbfb3).
+  Cross-client vehicle steps 44/45 (F-enter run vs walk open).
+- Lifecycle: RakNet 10 s ack timer, keep-alive 5 s / 15 s, server-full retry 3.04 s,
+  unreliable /quit, audioproxyoff after BASS init; ClientCheck answered honestly (7419386).
+- Patches: HUD aspect fix (radar round at 16:9, 45.6 → 0.0 vs original), shadows 165/184/166,
+  byte rows 225–239/223/224/170/215–217/50, row 16; SetPlayerPosFindZ implemented (DIFF-2
+  match 82 → 102); samp's jump at world bounds from its ProcessControl hook (102d456).
+  F5 missing 56 → 27.
+- Verified on main in lane main under the lock: m1–m9, goal, saa exit 0; m10 failed once on a
+  3 ms early keep-alive (4.997 s vs ≥ 5.00 s) — handed to the network-timing work.
+- 565 tests; clippy 0 (host + i686).
