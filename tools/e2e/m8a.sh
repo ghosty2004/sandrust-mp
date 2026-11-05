@@ -283,6 +283,48 @@ if [[ "${1:-}" == --inner ]]; then
     shot input
     e2e_key Escape
     sleep 0.5
+    # INPUT-1 (measured on the original): samp sends a chat line on the Enter key-up, so a
+    # dialog the server shows in reply is not answered by that Enter, even with the key held
+    # 300 ms; a dialog shown from OnDialogResponse is not answered by the Enter that closed
+    # the first one either. No RPC 62 may come within 2 s.
+    no_resp() { sleep 2; grep -qE "\[ui-fs\] dialog-response player $PID_ id $1 " "$E2E_LOG" && fail "$2"; true; }
+    enter_held() { e2e_keydown Return; sleep 0.3; e2e_keyup Return; }
+    # T + clear the line (closing the input with ESC keeps its text, as in the original) + TEXT.
+    chat_line() {
+        e2e_key t; sleep 0.5
+        DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool key --repeat 12 --delay 30 BackSpace; sleep 0.2
+        DISPLAY="$E2E_HEADLESS_DISPLAY" xdotool type --delay 60 -- "$1"; sleep 0.3
+    }
+    fs 'chatdlg|90|1|0|0'
+    chat_line "/dlg"
+    enter_held
+    e2e_wait_log "\[ui-fs\] command $PID_ '/dlg'" 5 || fail "chat command /dlg not sent"
+    wait_ui 'dialog_open=1 dialog_id=90 dialog_style=Input' 5 || fail "reply dialog 90 not open (last answer: $(grep -E "dialog-response player $PID_ id 90 " "$E2E_LOG" | tail -n 1))"
+    no_resp 90 "the Enter that sent the chat line answered the reply dialog 90"
+    wait_ui 'dialog_id=90' 1 || fail "reply dialog 90 closed by the chat Enter"
+    fs 'chatdlg|-1|0|0|0'
+    key Escape
+    resp 'id 90 response 0'
+    fs 'chatdlg|93|0|0|1'
+    chat_line "plain"
+    enter_held
+    e2e_wait_log "\[ui-fs\] text $PID_ 'plain'" 5 || fail "chat text not sent"
+    wait_ui 'dialog_open=1 dialog_id=93' 5 || fail "reply dialog 93 not open (last answer: $(grep -E "dialog-response player $PID_ id 93 " "$E2E_LOG" | tail -n 1))"
+    no_resp 93 "the Enter that sent the chat text answered the reply message box 93"
+    fs 'chatdlg|-1|0|0|0'
+    key Escape
+    resp 'id 93 response 0'
+    fs 'chaindlg|91|92|1'
+    fs 'dialog|91|1|First|First dialog:|OK|Cancel'
+    wait_ui 'dialog_id=91' 5 || fail "dialog 91 not open"
+    enter_held
+    resp 'id 91 response 1'
+    wait_ui 'dialog_open=1 dialog_id=92' 5 || fail "chained dialog 92 not open (last answer: $(grep -E "dialog-response player $PID_ id 92 " "$E2E_LOG" | tail -n 1))"
+    no_resp 92 "the Enter that answered dialog 91 also answered the chained dialog 92"
+    fs 'chaindlg|-1|0|0'
+    key Escape
+    resp 'id 92 response 0'
+    say "INPUT-1 ok (chat Enter / dialog chain do not answer the next dialog)"
     [[ -n "${M8A_HOLD:-}" ]] && sleep "$M8A_HOLD"
     kill "$BOT_PID" 2>/dev/null
     e2e_ctl quit > /dev/null

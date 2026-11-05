@@ -1128,7 +1128,64 @@ mod tests {
 
     fn typed(u: &mut UiCore, s: &[u8]) {
         for &c in s {
-            u.handle_event(Event::Char(c), false, &Game, 3);
+            if c == b'\r' {
+                enter_down(u);
+                enter_up(u);
+            } else {
+                u.handle_event(Event::Char(c), false, &Game, 3);
+            }
+        }
+    }
+
+    /// Enter as Windows delivers it: `WM_KEYDOWN`, then the `WM_CHAR` CR from TranslateMessage.
+    fn enter_down(u: &mut UiCore) {
+        u.handle_event(Event::KeyDown(samp_ui::keys::Vk::Enter), false, &Game, 3);
+        u.handle_event(Event::Char(b'\r'), false, &Game, 3);
+    }
+
+    fn enter_up(u: &mut UiCore) {
+        u.handle_event(Event::KeyUp(samp_ui::keys::Vk::Enter), false, &Game, 3);
+    }
+
+    fn show_dialog(u: &mut UiCore, id: i16, style: u8) {
+        let d = ui::ShowDialog {
+            dialog_id: id,
+            style,
+            title: b"T".to_vec(),
+            button1: b"OK".to_vec(),
+            button2: b"Cancel".to_vec(),
+            body: b"Body".to_vec(),
+        };
+        u.on_rpc(&Incoming::Ui(ui::Incoming::ShowDialog(d)), &NoExpansion);
+    }
+
+    /// INPUT-1: the Enter that sends a chat line (on its key-up, like samp's edit box) must not
+    /// answer the dialog the server shows in reply, nor may auto-repeat or a dialog chain.
+    #[test]
+    fn chat_enter_does_not_answer_the_reply_dialog() {
+        for style in [0u8, 1, 2, 3] {
+            let mut u = connected_ui(None);
+            typed(&mut u, b"t/dlg");
+            enter_down(&mut u);
+            // Key held: nothing is sent yet; auto-repeat (key-down + CR) sends nothing either.
+            assert!(u.take_outgoing().is_empty());
+            enter_down(&mut u);
+            assert!(u.take_outgoing().is_empty());
+            enter_up(&mut u);
+            assert_eq!(u.take_outgoing(), vec![Outgoing::Command(b"/dlg".to_vec())]);
+            // The reply dialog arrives after the key-up; a fast server reply racing the
+            // auto-repeat of a still-held key must not answer it either.
+            show_dialog(&mut u, 90, style);
+            enter_down(&mut u);
+            assert!(u.take_outgoing().is_empty(), "style {style}");
+            assert!(u.dialogs.is_open());
+            // The next real key-up answers it.
+            enter_up(&mut u);
+            assert!(matches!(u.take_outgoing().as_slice(), [Outgoing::DialogResponse(r)] if r.response == 1));
+            // Dialog chain: the server shows the next dialog in OnDialogResponse.
+            show_dialog(&mut u, 91, style);
+            enter_down(&mut u);
+            assert!(u.take_outgoing().is_empty() && u.dialogs.is_open(), "chain, style {style}");
         }
     }
 

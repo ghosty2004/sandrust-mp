@@ -360,7 +360,7 @@ Unless stated, keys act on **key-up** (`WM_KEYUP` → A 0x10061360).
 | ESC (key-up) | input open and IME not composing | close input |
 | ESC (`WM_KEYDOWN`) | input, scoreboard, dialog, slider panel, class selection, object edit/select or textdraw selection active | message swallowed, so GTA does not open its pause menu |
 | Enter (0x0D key-up) | dialog open | response 1 (button 1) |
-| Enter in an edit box | — | handled by the GUI edit-box event (chat send UCA "Local chat input"; dialog response 1) |
+| Enter in an edit box | — | handled by the GUI edit-box event (chat send UCA "Local chat input"; dialog response 1). samp's edit box raises that event on the Enter **key-up** (`WM_KEYUP` 0x0D, A 0x10089380) and consumes it; the typed CR (`WM_CHAR` 0x0D) and key-downs (auto-repeat included) do nothing. So the chat line is sent on the key-up and a dialog the server shows in reply, or from `OnDialogResponse`, arrives after that key-up and stays open (INPUT-1, measured) |
 | PageUp (0x21) / PageDown (0x22) | netgame and chat exist, IME not composing | scroll chat one page up / down (§7.4) |
 | Up (0x26) / Down (0x28) | input open, IME idle | history older / newer (§8) |
 | Mouse wheel | input open and chat mode ≠ 0 | scroll chat by −(notches × `SPI_GETWHEELSCROLLLINES`) lines |
@@ -625,7 +625,7 @@ interpreted by the GUI list box [U: whether the list box uses the colour-code wr
 
 ### 13.4 Input [O]
 Enter key (key-up) → response 1; button 1 click or list double-click/activate → 1; Enter in
-the edit box → 1; ESC (`WM_CHAR`) or button 2 → 0 (UCA §62). While open, ESC key-down never
+the edit box (its key-up, §6.3) → 1; a typed CR or a held/auto-repeated Enter key-down → nothing; ESC (`WM_CHAR`) or button 2 → 0 (UCA §62). While open, ESC key-down never
 reaches GTA. Opening a dialog closes the chat input.
 
 ### 13.5 Close

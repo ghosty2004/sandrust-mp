@@ -504,3 +504,20 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   after: ours 6/6 pass (3 plain, 3 with loss, identical 1382 messages / 1377 RPCs), original 2/2 pass.
 - Parity note (not fixed here): ours requests a class while the join dialog is still open; the original sends its
   class request only once the dialog is closed (joinburst server logs: class at +4 s vs. with the dialog response).
+
+## 2026-11-05 — INPUT-1 chat Enter answered the dialog the server showed in reply (branch enter-leak)
+- Symptom (user, real server): a chat command answered with ShowPlayerDialog was immediately answered by our
+  client (RPC 62 response 1) as if Enter had been pressed in the dialog; the original leaves it open.
+- Measured on the original first (trace lane, runs orig-20261105-193637 / -195939; new uifs/m8afs commands
+  `chatdlg|ID|STYLE|DELAYMS|VIA` and `chaindlg|FROM|TO|STYLE`): styles 0/1/2/3, via OnPlayerCommandText and
+  OnPlayerText, server delay 0 / 50 ms, Enter tapped or held 250 / 300 / 1200 ms, and dialog chains (input→input,
+  msgbox→input, input→msgbox): never an early RPC 62 (capture: only the six 62s of the dialogs Enter was meant
+  for). With Enter held 2.5 s the original sends the chat line only after the key-up (sent_while_held=0).
+- samp's rule (static, A): its DXUT edit box raises the "string" event on `WM_KEYUP` VK_RETURN (A 0x10089380)
+  and ignores the typed CR; the chat line is therefore sent on the key-up, and a dialog edit box / the window
+  procedure's key-up path (A 0x10061360) answer a dialog on the key-up too. Key-downs and auto-repeat do nothing.
+- Ours sent the line on the `WM_CHAR` CR, so the reply dialog arrived before the key-up, which answered it.
+  Fix (`samp_ui::keys::route`): CR characters do nothing; Enter key-up sends the chat line (input open) or
+  answers the dialog. Unit tests `chat_enter_does_not_answer_the_reply_dialog` (core) and keys routing.
+- Regression: tools/e2e/m8a.sh INPUT-1 steps (command + held Enter → input dialog 90, text → message box 93,
+  chain 91→92; no RPC 62 within 2 s). Specs: ui-rendering.md §6.3/§13.4, ui-chat-audio.md (Enter = key-up).

@@ -200,7 +200,8 @@ the same opcodes (or the functions they map to); the headless client only needs 
 - Input processor A 0x100699d0 (object A global 0x1026e9fc; registration A 0x10069110, B
   0x100690d0 — same table in both builds). Command table: up to 144 entries, names < 32 chars,
   lookup case-insensitive (A 0x10069710).
-- Behaviour on Enter:
+- Behaviour on Enter (the edit box's string event, raised on the Enter **key-up**; the typed CR and
+  key-downs do nothing — INPUT-1, see ui-rendering.md §6.3):
   1. Copy edit-box text (max 128 chars). Empty → just close the input.
   2. Push into a 10-entry history (A 0x100695d0).
   3. Not starting with `/` → default handler → send RPC 101 (above).
@@ -461,7 +462,7 @@ the same opcodes (or the functions they map to); the headless client only needs 
 - Text: styles 1/3 → edit-box contents (≤ 128 chars); styles 2/4/5 → text of the selected row's
   first column (≤ 128) with `{RRGGBB}` colour codes stripped; style 0 → empty.
 - Triggers (observed): button1 click (GUI control 20, event 0x101) or list activation (event
-  0x701) → 1; Enter in the edit box (control 19, event 0x601) → 1 unless the chat input consumed it;
+  0x701) → 1; Enter in the edit box (control 19, event 0x601, raised on the Enter key-up) → 1 unless the chat input consumed it;
   Enter key (VK 0x0D, A 0x10061399) → 1; button2 click (control 21) → 0; ESC (VK 0x1B, A
   0x100615f9 / WM_CHAR path A 0x10061899) → 0.
 - After building/sending (only if the "to server" flag is set) the dialog is always closed
