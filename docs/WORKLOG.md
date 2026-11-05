@@ -557,3 +557,9 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   docs/phase3/close-notes.md, ROADMAP decisions DIFF2-*, F5.
 - Verified (lane ui, flock ui.lock): m1–m10, goal, saa, ux1, feata exit 0; cargo test --workspace 595 passed;
   clippy host + i686 0 warnings.
+
+## 2026-11-05 — F6 proven on main
+
+- tools/diff/files.sh on main (9f47445): exit 0 — orig 240 opens (29 from samp.saa, 27 distinct), ours 240;
+  29 archive + 176 disk content hashes compared; opens-set, opens-order, archive-order, sizes, hashes,
+  ours-log all OK; IDENTICAL, PASS.
