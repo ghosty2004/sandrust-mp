@@ -413,3 +413,14 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   bundled gamemode.
 - Verified: e2e saa, goal, m1–m10 exit 0 (m9 with M9_ORIG = main's original capture); tests, clippy host +
   i686 0 warnings; soak runs in docs/phase3/soak-notes.md "Resolution of the findings".
+
+## 2026-11-05 — F2 proven on main; soak fixes merged
+
+- tools/diff/network.sh on main (ddd8700 + later docs/tools commits, no client change since):
+  `network exit=0` — `checks: 311, matching: 311, accepted decisions: 0, open differences: 0`
+  (run target/merge-netp/network-rerun.log).
+- Soak fixes merged (421913f): audio stub tracks mapped in test game copies (crash identical with
+  the original client; environment fix), samp-bot sync gaps fixed. SOAK_SECS=600 soak.sh PASS on
+  gungame, derby, simpletdm with 0 crashes (agent run); full 2 h soak pending on final code.
+- Lane locks no longer leak into gamescope/test server (ed9a7d3) after an orphaned display held
+  the trace lane for an hour.
