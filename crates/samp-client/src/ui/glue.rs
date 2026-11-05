@@ -1350,6 +1350,11 @@ pub fn on_reset() {
     with_ui(|st| st.core.on_reset());
 }
 
+/// RPC 40 reset (A 0x100A72C0): the player colour table back to the defaults.
+pub fn reset_colours() {
+    with_ui(|st| st.core.colours = super::colours::PlayerColours::new());
+}
+
 /// Lost connection: every remote player is deleted from the pool.
 pub fn forget_players() {
     with_ui(|st| st.core.forget_players());

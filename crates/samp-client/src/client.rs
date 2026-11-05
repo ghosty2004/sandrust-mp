@@ -100,6 +100,8 @@ pub struct Client {
     last_interior: u8,
     /// Phone special action active (local ped object +0x48).
     phone: bool,
+    /// Local surf state (local-player object +0x2D4..+0x2EE, surf.rs).
+    surf: crate::surf::LocalSurf,
     /// Held item / piss state of the local ped (FEAT-B, `specials.rs`).
     specials: crate::specials::PedExtras,
     /// Local head look (A 0x10002fa0): offset refreshed every 1000 ms, LookAt every 200 ms.
@@ -199,6 +201,7 @@ impl Client {
             zone_names_from: None,
             last_interior: 0,
             phone: false,
+            surf: Default::default(),
             specials: Default::default(),
             look_offset: [0.0; 3],
             look_refresh: None,
@@ -451,6 +454,7 @@ impl Client {
         }
         // The hooks' view for the next CGame::Process.
         self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors());
+        self.surf_publish();
         self.entities.sent_177 += self.combat.drain(&mut self.net);
         // Push out what this frame queued (sync packets, RPCs) right away.
         self.net.flush(now);
@@ -470,7 +474,7 @@ impl Client {
                 crate::world::apply(&self.world.weather_writes(g.weather));
                 self.zone_names = g.zone_names;
                 crate::pedhooks::set_cj_walk(g.cj_walk);
-                self.behaviour.on_init_game(g.gravity);
+                self.behaviour.on_init_game(g.gravity, g.stunt_bonus);
                 self.behaviour.hash_table();
                 crate::log!(
                     "client: InitGame: server {:?}, our id {}, {} class(es), on-foot rate {} ms",
@@ -489,6 +493,9 @@ impl Client {
                 crate::vehlabels::preload(&mut self.runner, &g.vehicle_models);
                 self.objects.set_local_id(g.player_id);
                 self.entities.set_local_id(g.player_id);
+                // Join (TRACE-1): MARK_MODEL_AS_NO_LONGER_NEEDED(596) first, only on InitGame (the
+                // death → class-selection path does not release it: DIFF-2 kill_to_class_selection).
+                self.runner.run(op::MARK_MODEL_AS_NO_LONGER_NEEDED, &[Arg::Int(596)]);
                 self.enter_class_selection(now, g.spawns_available);
             }
             Event::Rpc(r) => self.on_rpc(r),
@@ -532,6 +539,10 @@ impl Client {
         // Remote players lose their peds but stay in the pool.
         self.players.despawn_all(&mut self.runner);
         crate::log!("client: reset: remote peds removed");
+        // A 0x1009CCF0 (among the reset helpers): the 11 weapon-skill stats := 999.0, written directly.
+        for skill in 0..11 {
+            crate::combatclient::set_local_skill(skill, 999);
+        }
         // Local player: back to the not-spawned state.
         self.class_sel.leave();
         self.spawned = false;
@@ -559,14 +570,28 @@ impl Client {
                 self.runner.run(op::REQUEST_COLLISION, &[Arg::Float(p.pos[0]), Arg::Float(p.pos[1])]);
             }
             crate::log!("client: reset: interior 0");
+        }
+        // A 0x100A2100: the money back to 0 (ADD_SCORE with the negated amount).
+        crate::behaviourclient::reset_money(&mut self.runner);
+        if let Some(h) = self.ped_handle(ped) {
             self.kill_local_ped(ped, h);
             crate::log!("client: reset: local ped killed");
+            // A 0x100ABDF0(0): armour 0.
+            poke(ped + off::PED_ARMOUR, 0.0f32);
         }
+        // A 0x100A1560(0): zone names off; A 0x100A72C0: the player colour table back to the defaults.
+        self.runner.run(op::DISPLAY_ZONE_NAMES, &[Arg::Int(0)]);
+        crate::worldhooks::with_shared(|s| s.colours = Some(crate::ui::colours::PlayerColours::new()));
+        crate::ui::reset_colours();
         // GTA gravity back to the default (B 0x100a1410 → 0x863984).
         // The gravity constant lives in a read-only page; samp unprotects it first (B 0x100aa4d0).
         if let Err(e) = ProcessMemory.write(GTA_GRAVITY, &DEFAULT_GRAVITY.to_le_bytes()) {
             crate::log!("client: reset: gravity write failed: {e}");
         }
+        // A 0x100A1460(0): the HUD wanted level 0; A 0x100A14A0(0): the HUD clock off.
+        crate::behaviourclient::set_wanted(0);
+        let w = self.world.toggle_clock(false);
+        crate::world::apply(&w);
         crate::ui::print_info(lifecycle::msg::RESTARTING.as_bytes());
     }
 
@@ -684,9 +709,17 @@ impl Client {
                     self.vehicles.forget_player(id);
                 }
             }
-            Incoming::Vehicle(v) => self.vehicles.on_rpc(&mut self.runner, &mut self.players, v),
+            Incoming::Vehicle(v) => {
+                if let samp_proto::rpcs::vehicle::Incoming::StreamOutVehicle(s) = &v {
+                    self.surf.vehicle_streamed_out(s.vehicle_id);
+                }
+                self.vehicles.on_rpc(&mut self.runner, &mut self.players, v)
+            }
             Incoming::World(w) => {
                 use samp_proto::rpcs::world::Incoming as W;
+                if let W::DestroyObject(d) = &w {
+                    self.surf.object_destroyed(d.object_id);
+                }
                 match w {
                     W::CreateObject(_)
                     | W::SetObjectPosition(_)
@@ -758,9 +791,14 @@ impl Client {
                     crate::log!("client: server forces class selection on next death");
                     self.force_class_selection = true;
                 }
-                P::SetPlayerPosition(s) => self.teleport(s.pos.x, s.pos.y, s.pos.z),
+                P::SetPlayerPosition(s) => {
+                    // A 0x100193E4: surfing detached before the teleport.
+                    self.surf.detach();
+                    self.teleport(s.pos.x, s.pos.y, s.pos.z)
+                }
                 // RPC 13 (player-state.md): the ground height at (x, y, z) from 0x02CE, plus 1.5, then as RPC 12.
                 P::SetPlayerPositionFindZ(s) => {
+                    self.surf.detach();
                     if self.ped() != 0 {
                         self.runner.run(
                             op::GET_GROUND_Z_FOR_3D_COORD,
@@ -962,7 +1000,6 @@ impl Client {
 
     fn enter_class_selection(&mut self, now: Instant, count: u32) {
         crate::log!("client: entering class selection ({count} class(es))");
-        self.runner.run(op::MARK_MODEL_AS_NO_LONGER_NEEDED, &[Arg::Int(596)]);
         self.spawned = false;
         self.sender.reset();
         let ped = self.ped();
@@ -1019,6 +1056,8 @@ impl Client {
             crate::log!("client: spawn: no local ped");
             return false;
         }
+        // Surf state cleared (A 0x10003D5E).
+        self.surf.reset();
         // 2. leave class selection; its input lock ends 10 frames later (A 0x100a0750(0, 0)).
         if self.class_sel.is_active() {
             self.class_sel.leave();
@@ -1152,6 +1191,84 @@ impl Client {
         self.runner.run(op::DISPLAY_ZONE_NAMES, &[Arg::Int(0)]);
     }
 
+    /// The surf probe and state step (A 0x10003730), on foot.
+    fn surf_step(&mut self, ped: u32) {
+        use crate::surf::{Contact, ProbeAction, Target};
+        if let Some(o) = crate::surf::take_measured() {
+            self.surf.offset = o;
+        }
+        let hit = surf_probe(ped);
+        let mut contact = Contact::None;
+        if hit != 0 {
+            match self.vehicles.id_of(hit) {
+                Some(id) if id != 0 && id != 0xFFFF => {
+                    if id < 2000 {
+                        let model = self.vehicles.model_of(id).unwrap_or(0);
+                        let ok = crate::surf::player_driven(hit) || matches!(model, 569 | 570);
+                        if ok
+                            && let (Some(a), Some(b)) = (entity_pos(hit), entity_pos(ped))
+                            && dist3(a, b) < crate::surf::MAX_VEHICLE_DISTANCE
+                        {
+                            contact = Contact::Vehicle(id);
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(id) = self.objects.id_of_entity(hit)
+                        && self.objects.moving(id)
+                    {
+                        contact = Contact::Object(id);
+                    }
+                }
+            }
+        }
+        let cancel = crate::surf::cancel_tasks(ped);
+        let now_ms = tick_count();
+        let (vehicles, objects) = (&self.vehicles, &self.objects);
+        let exists = |t: Target| match t {
+            Target::Vehicle(id) => vehicles.gta_ptr(id).is_some(),
+            Target::Object(id) => objects.gta_ptr(id).is_some_and(|p| p != 0),
+        };
+        if self.surf.probe(contact, cancel, now_ms, exists) == ProbeAction::MeasureOffset {
+            if let Some(surface) = self.surf_entity(self.surf.target)
+                && let Some(o) = crate::surf::local_glue(ped, surface, self.surf.offset, false)
+            {
+                self.surf.offset = o;
+            }
+            self.surf.latch_after_measure();
+        }
+    }
+
+    fn surf_entity(&self, t: Option<crate::surf::Target>) -> Option<u32> {
+        use crate::surf::Target;
+        match t? {
+            Target::Vehicle(id) => self.vehicles.gta_ptr(id),
+            Target::Object(id) => self.objects.gta_ptr(id).filter(|&p| p != 0),
+        }
+    }
+
+    /// Hands the row-24 hook this frame's surfaces (local and remote, A 0x100A4990).
+    fn surf_publish(&self) {
+        let local = if self.spawned {
+            self.surf_entity(self.surf.target).map(|e| (e, self.surf.offset, self.surf.glue))
+        } else {
+            None
+        };
+        let mut remotes = Vec::new();
+        for p in self.players.iter() {
+            if p.ped == 0 || p.state != crate::remote::state::ON_FOOT {
+                continue;
+            }
+            let Some(f) = p.foot else { continue };
+            if let Some(t) = crate::surf::remote_target(f.surf_id, f.surf_offset)
+                && let Some(e) = self.surf_entity(Some(t))
+            {
+                remotes.push((p.ped, e, f.surf_offset));
+            }
+        }
+        crate::surf::publish(local, remotes);
+    }
+
     /// The last damaging entity against the pools (remote ped, pool vehicle with its remote driver).
     fn damager_of(&self, entity: u32) -> crate::combat::Damager {
         use crate::combat::Damager;
@@ -1200,7 +1317,7 @@ impl Client {
         }
         // On foot: the surf probe (A 0x10003730), before the head look.
         if matches!(state, PEDSTATE_IDLE | PEDSTATE_SNIPER) {
-            surf_probe(ped);
+            self.surf_step(ped);
         }
         // Head look in the on-foot, driver and passenger branches of the local tick.
         // `disableheadmove` clears samp's Game+0x59 flag, which the head look tests first
@@ -1262,6 +1379,10 @@ impl Client {
                             self.specials.item,
                         );
                         sample.animation = self.behaviour.anim.take();
+                        if let Some(o) = crate::surf::take_measured() {
+                            self.surf.offset = o;
+                        }
+                        (sample.surf_offset, sample.surf_id) = self.surf.sync_fields();
                         let f = footsync::build_foot_sync(&sample, self.sender.last_rotation());
                         if let Some(f) = self.sender.offer(now, f) {
                             self.net.send_sync(&f);

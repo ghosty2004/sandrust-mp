@@ -990,6 +990,30 @@ pub fn install_main(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32,
 }
 
 static INIT_GAME_DONE: AtomicBool = AtomicBool::new(false);
+static FRIENDLY_FIRE_DONE: AtomicBool = AtomicBool::new(false);
+
+/// CSV row 106: InitGame installs the `CVehicle::InflictDamage` jmp (A 0x100A7200, called at A 0x10010A56) only
+/// when the server enables vehicle friendly fire (InitGame's last field, settings +0x1B), independent of the
+/// lag-compensation mode. Installed once (samp rewrites the same bytes on every such InitGame).
+pub fn install_vehicle_friendly_fire(
+    patcher: &mut Patcher,
+    mem: &mut ProcessMemory,
+) -> Vec<(u32, Result<(), PatchError>)> {
+    if FRIENDLY_FIRE_DONE.swap(true, Ordering::SeqCst) {
+        return Vec::new();
+    }
+    let jmp = encode_branch(crate::patch::OP_JMP, site::INFLICT_DAMAGE, fn_addr(inflict_stub as *const () as usize));
+    vec![(
+        106,
+        patcher.write(
+            mem,
+            "CVehicle::InflictDamage hook",
+            site::INFLICT_DAMAGE,
+            &jmp,
+            Some(&site::INFLICT_DAMAGE_ORIGINAL[..5]),
+        ),
+    )]
+}
 
 /// The InitGame rows (A 0x10010909): the selector, then for lag-comp 1/2 the bullet hooks and the lock-on RETs.
 /// Installed once per process (samp never removes them either).
@@ -1047,17 +1071,6 @@ pub fn install_init_game(
         )
         .map(|_| ());
     out.push((105, r));
-    let jmp = encode_branch(crate::patch::OP_JMP, site::INFLICT_DAMAGE, fn_addr(inflict_stub as *const () as usize));
-    out.push((
-        106,
-        patcher.write(
-            mem,
-            "CVehicle::InflictDamage hook",
-            site::INFLICT_DAMAGE,
-            &jmp,
-            Some(&site::INFLICT_DAMAGE_ORIGINAL[..5]),
-        ),
-    ));
     out.push((4, patcher.write(mem, "FindWeaponLockOnTarget := ret", site::FIND_LOCK_ON, &[0xC3], Some(&[0x81]))));
     out.push((
         5,

@@ -367,6 +367,9 @@ pub extern "thiscall" fn player_ped_process_control(ped: u32) {
         }
         None => {
             CALLS_LOCAL.fetch_add(1, Ordering::Relaxed);
+            if !crate::dll::PED_FLAGS_DONE.load(Ordering::Relaxed) {
+                crate::dll::first_frame_ped_flags();
+            }
             // Local player: the heading-goal stores run, then are NOPed again
             // so remote peds never get them.
             // SAFETY: as above.

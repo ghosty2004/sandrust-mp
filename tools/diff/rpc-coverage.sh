@@ -12,7 +12,8 @@
 # RCON on) -> game via samp-launcher with --dll samp-tracer.dll --dll <client> -> join,
 # spawn -> tools/diff/drive.py fires every step of rpcfire.pwn, marking the trace per step
 # and collecting `state`, a peek snapshot (tools/diff/gtastate.py) and a screenshot.
-# Default: the original client twice (determinism check) and ours once; then
+# Default: the original client six times (calibration: what differs between original runs is not
+# judged, docs/ROADMAP.md DIFF2-CAL) and ours once; then
 # tools/diff/rpc_report.py writes target/diff/rpc-coverage.{md,json}.
 # Exit 0 only if every triggered RPC is MATCH (DIFF and NOT-IMPLEMENTED fail).
 set -uo pipefail
@@ -72,14 +73,15 @@ if [ "${1:-}" = --report ]; then
     exec python3 -I "$HERE/rpc_report.py" --out "$DIFF_OUT" "$@"
 fi
 
-ORIG_RUNS=2; OURS_RUNS=1; ONLY=""; SKIP_BUILD=0
+ORIG_RUNS=6; OURS_RUNS=1; ONLY=""; SKIP_BUILD=0; REUSE_ORIG=6
 while [ $# -gt 0 ]; do
     case "$1" in
         --orig-runs) ORIG_RUNS="$2"; shift 2 ;;
         --ours-runs) OURS_RUNS="$2"; shift 2 ;;
         --only) ONLY="$2"; shift 2 ;;
         --skip-build) SKIP_BUILD=1; shift ;;
-        *) echo "usage: $0 [--orig-runs N] [--ours-runs N] [--only REGEX] [--skip-build] | --report RUN..." >&2; exit 2 ;;
+        --reuse-orig) REUSE_ORIG="$2"; shift 2 ;;
+        *) echo "usage: $0 [--orig-runs N] [--ours-runs N] [--reuse-orig N] [--only REGEX] [--skip-build] | --report RUN..." >&2; exit 2 ;;
     esac
 done
 # Lanes diff/diff2 are shared (DIFF harnesses, COV-1): hold target/locks/diff.lock for the run.
@@ -121,6 +123,10 @@ d["rcon"]["password"] = pw
 d["max_bots"] = 2
 # Periodic RPC 60 every 30 s would land in random steps; once at connect is enough.
 d["network"]["time_sync_rate"] = 86400000
+# The same for 208 player markers: open.mp sends them from the receiving player's own update
+# (markers before streaming in onPlayerUpdate), so a marker for a just-spawned NPC races its
+# stream-in RPC 32 (coordinate blip or not, then shifted blip handles): once at connect is enough.
+d["network"]["player_marker_sync_rate"] = 86400000
 json.dump(d, open(p, "w"), indent=4)
 PY
     ( cd "$E2E_SERVER" && exec ./omp-server > "$E2E_LOG" 2>&1 ) &
@@ -172,6 +178,37 @@ for ((n = 0; n < OURS_RUNS; n++)); do
     ours_dirs+=("$RUN_DIR")
 done
 [ "${#orig_dirs[@]}" -gt 0 ] || { say "no usable original run; no report"; exit 1; }
+# Calibration data accumulates: up to REUSE_ORIG earlier complete original runs of the same scenario (started after
+# the last change of the scenario files, same samp.dll and tracer, every step fired, full step list) join the report.
+if [ -z "$ONLY" ] && [ "$REUSE_ORIG" -gt 0 ]; then
+    mapfile -t reuse < <(python3 -I - "$DIFF_OUT/runs" "$REUSE_ORIG" "${orig_dirs[@]}" \
+        "$HERE/rpcfire.pwn" "$HERE/diffbase.pwn" "$0" "$ROOT/tools/e2e/probe/e2eprobe.pwn" \
+        "$GTA_DIR/samp.dll" "$GTA_DIR/samp-tracer.dll" <<'PY'
+import glob, hashlib, json, os, sys
+runs, n, rest = sys.argv[1], int(sys.argv[2]), sys.argv[3:]
+dlls, scen = rest[-2:], rest[-6:-2]
+fresh = set(rest[:-6])
+since = max(os.path.getmtime(f) for f in scen)
+want = {hashlib.sha256(open(f, "rb").read()).hexdigest() for f in dlls}
+out = []
+for d in sorted(glob.glob(os.path.join(runs, "orig-*")), reverse=True):
+    if d in fresh or os.path.getmtime(os.path.join(d, "binaries.sha256")) < since:
+        continue
+    try:
+        sums = {l.split()[0] for l in open(os.path.join(d, "binaries.sha256"))}
+        steps = [json.loads(l) for l in open(os.path.join(d, "steps.jsonl"))]
+        listed = json.load(open(os.path.join(d, "step-list.json")))
+    except (OSError, ValueError):
+        continue
+    if want <= sums and len(steps) == len(listed) and all(s.get("fired") for s in steps):
+        out.append(d)
+    if len(out) >= n:
+        break
+print("\n".join(out))
+PY
+)
+    for d in "${reuse[@]}"; do [ -n "$d" ] && { say "calibration: reusing $d"; orig_dirs+=("$d"); }; done
+fi
 args=()
 for d in "${orig_dirs[@]}"; do args+=(--orig "$d"); done
 for d in "${ours_dirs[@]}"; do args+=(--ours "$d"); done

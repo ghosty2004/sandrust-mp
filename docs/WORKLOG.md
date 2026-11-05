@@ -458,3 +458,21 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   feata exit 0; 590 tests; clippy 0 (host + i686).
 - User crash on a public server (0x7F5A3A RwD3D9DynamicVertexBufferCreate NULL read after a device-loss stall)
   handed to CRASH-1.
+
+## 2026-11-05 — F1/F5 closing (branch parity-close)
+
+- F5: rows 179, 199, 203, 212, 245 (table), 52 (samp's `jmp [slot]` form), 106 (InflictDamage hook only with
+  vehicle friendly fire), 359 (stunt bonus from InitGame), 54 (UncompressAnimation NULL guard), 95 (weather audio
+  muted by PlayerPlaySound 1), 24 (surfing: probe, local/remote glue, 207 fields) applied; 97/348/362/364
+  (dormant custom models), 374/380–384 (dead code), 269 (samp bug) justified. `patch-coverage.sh`: 20 missing /
+  2 different → 0 / 0 (346 matching, 24 static, 14 justified), exit 0.
+- F1 code fixes: explosion radius as samp's low double half, RPC 40 reset (money, armour, zone names, colours,
+  wanted, clock, skills 999), 596 release only on InitGame, CREATE_PLAYER through locals, first-frame ped flags
+  from the local ProcessControl hook. Harness: rpc-decisions.tsv (DIFF2-D1/D2/U1), calibration with 6 + 6 reused
+  original runs, per-field numeric calibration, ensemble screenshot check, order not judged where the original
+  disagrees with itself, 208 markers once, deterministic object_move, surfing steps. DIFF-2: main MATCH 112 /
+  DIFF 19 (+10 untriggerable undecided) → last full run MATCH 130 / DIFF 1 (explosion screenshot timing, decision
+  DIFF2-D3) → `--report` over the same 12 original runs + ours: MATCH 131, exit 0. Details:
+  docs/phase3/close-notes.md, ROADMAP decisions DIFF2-*, F5.
+- Verified (lane ui, flock ui.lock): m1–m10, goal, saa, ux1, feata exit 0; cargo test --workspace 595 passed;
+  clippy host + i686 0 warnings.

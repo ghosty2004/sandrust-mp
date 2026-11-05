@@ -110,7 +110,8 @@ e2e_headless_start() {
     chmod +x "$child"
     # Own process group, so e2e_headless_stop can take down gamescope and its child.
     # 9>&-: a lane lock held on fd 9 (with-lock.sh) must not outlive the run through gamescope.
-    setsid gamescope --backend headless -W "$w" -H "$h" -w "$w" -h "$h" -- "$child" > "$E2E_ROOT/target/e2e-gamescope-$dtag.log" 2>&1 9>&- &
+    # No WAYLAND_DISPLAY: the headless backend needs no host compositor (a stale socket breaks it).
+    setsid env -u WAYLAND_DISPLAY gamescope --backend headless -W "$w" -H "$h" -w "$w" -h "$h" -- "$child" > "$E2E_ROOT/target/e2e-gamescope-$dtag.log" 2>&1 9>&- &
     E2E_GAMESCOPE_PID=$!
     local i
     for ((i = 0; i < 40; i++)); do [ -s "$E2E_HEADLESS_ENV" ] && break; sleep 0.25; done

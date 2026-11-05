@@ -74,7 +74,14 @@ impl Combat {
         self.weapon_rate = g.weapon_rate.clamp(10, 1000);
         self.local_id = Some(g.player_id);
         let selector = self.selector;
-        let report = crate::dll::with_patcher(|p, mem| hooks::install_init_game(p, mem, selector));
+        let friendly_fire = g.vehicle_friendly_fire != 0;
+        let report = crate::dll::with_patcher(|p, mem| {
+            let mut r = hooks::install_init_game(p, mem, selector);
+            if friendly_fire {
+                r.extend(hooks::install_vehicle_friendly_fire(p, mem));
+            }
+            r
+        });
         let failed: Vec<String> =
             report.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
         crate::log!(
@@ -415,7 +422,9 @@ pub fn create_explosion(runner: &mut Runner, e: &player::CreateExplosion) {
             Arg::Float(e.pos.y),
             Arg::Float(e.pos.z),
             Arg::Int(e.kind as i32),
-            Arg::Int(e.radius.to_bits() as i32),
+            // samp (A 0x1001BDB3) pushes the radius as a double, but the descriptor "fffii" reads one dword:
+            // the low half of the double (0 for every radius with few mantissa bits, e.g. 2.0).
+            Arg::Int(f64::from(e.radius).to_bits() as u32 as i32),
         ],
     );
 }

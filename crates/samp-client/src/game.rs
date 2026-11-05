@@ -67,6 +67,8 @@ pub const IDLE_GAME_PROCESS_CALL: u32 = 0x53E981;
 /// `CGame::Shutdown` (cdecl, no args), gta-reversed; CSV row 52 hooks its entry.
 pub const CGAME_SHUTDOWN: u32 = 0x53C900;
 /// First 7 bytes of `CGame::Shutdown` (`push esi; push edi; mov ecx, g_breakMan`).
+/// Padding dword in front of `CGame::Shutdown` that holds samp's handler (row 52's `jmp [slot]`).
+pub const CGAME_SHUTDOWN_SLOT: u32 = 0x53C8F1;
 pub const CGAME_SHUTDOWN_ORIGINAL: [u8; 7] = [0x56, 0x57, 0xB9, 0x40, 0x42, 0xBB, 0x00];
 
 /// `FindPlayerPed` (cdecl, int player), gta-reversed.
@@ -392,6 +394,8 @@ pub fn read_local_sample<M: Memory>(mem: &M, ped: u32) -> Result<crate::footsync
         },
         move_speed: v3(ped + off::MOVE_SPEED)?,
         animation: 0,
+        surf_offset: [0.0; 3],
+        surf_id: 0,
     })
 }
 

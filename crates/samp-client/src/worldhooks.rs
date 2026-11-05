@@ -474,6 +474,19 @@ extern "thiscall" fn escalator_update(this: u32) {
 
 /// Row 75 (A 0x100A4F10): after GTA positions an attached entity, an object attached to an object with sync
 /// rotation 0 gets its own stored rotation back (A 0x100A7E60).
+/// `CWorld::ProcessAttachedEntities()` (cdecl).
+const PROCESS_ATTACHED_ENTITIES: u32 = 0x5647F0;
+
+/// CSV row 24 (A 0x100A4990): the game's `ProcessAttachedEntities`, then the surf glues (surf.rs).
+extern "C" fn process_attached_entities() {
+    // SAFETY: GTA's own argument-less cdecl function, called from its only call site's hook.
+    unsafe {
+        let f: extern "C" fn() = std::mem::transmute(PROCESS_ATTACHED_ENTITIES as usize);
+        f();
+    }
+    crate::surf::after_process_attached_entities(rd::<u32>(g::CWORLD_PLAYERS));
+}
+
 extern "thiscall" fn position_attached_entity(this: u32) -> u32 {
     let r = thiscall0(g::POSITION_ATTACHED_ENTITY, this);
     if rd::<u32>(this + g::ENTITY_FLAGS) & ENTITY_FLAG_CLIENT_OBJECT != 0
@@ -1268,7 +1281,14 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
             .and_then(|()| patcher.swap_pointer(mem, "CCivilianPed::ProcessControl", 0x86C0D0, cpc).map(|_| ())),
     ));
     // Call sites.
-    let calls: [(u32, u32, u32, u32, &'static str); 11] = [
+    let calls: [(u32, u32, u32, u32, &'static str); 12] = [
+        (
+            24,
+            0x5689FD,
+            process_attached_entities as extern "C" fn() as usize as u32,
+            PROCESS_ATTACHED_ENTITIES,
+            "CWorld::Process ProcessAttachedEntities (surfing)",
+        ),
         (
             25,
             0x53EA03,
