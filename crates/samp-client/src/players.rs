@@ -341,12 +341,14 @@ impl Players {
         let info = game::CWORLD_PLAYERS + u32::from(slot) * PLAYER_INFO_SIZE;
         // Players[slot] lies in the former (zeroed) sector grid; like samp, it is not
         // cleared again on reuse — GTA's SetupPlayerPed / CPlayerPed ctor fill it.
-        let s = i32::from(slot);
+        // Like samp (TRACE-2): the slot goes in through local 0, CREATE_PLAYER writes the player index to
+        // local 1, GET_PLAYER_CHAR reads local 0 and writes the handle to local 1.
+        runner.set_local_i32(0, i32::from(slot));
         runner.run(
             op::CREATE_PLAYER,
-            &[Arg::Int(s), Arg::Float(pos[0]), Arg::Float(pos[1]), Arg::Float(pos[2]), Arg::Local(0)],
+            &[Arg::Local(0), Arg::Float(pos[0]), Arg::Float(pos[1]), Arg::Float(pos[2]), Arg::Local(1)],
         );
-        runner.run(op::GET_PLAYER_CHAR, &[Arg::Int(s), Arg::Local(1)]);
+        runner.run(op::GET_PLAYER_CHAR, &[Arg::Local(0), Arg::Local(1)]);
         let handle = runner.local_i32(1);
         let mem = ProcessMemory;
         let ped = mem.read_u32(info + off::PLAYER_INFO_PED).unwrap_or(0);

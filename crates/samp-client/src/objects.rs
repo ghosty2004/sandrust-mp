@@ -76,7 +76,7 @@ fn rows(ent: u32) -> Option<(Rotation, [f32; 3])> {
 }
 
 /// Matrix write: Remove, rows + position, UpdateRW, Add (samp A 0x1009FD60).
-fn write_matrix(ent: u32, r: &Rotation, pos: [f32; 3]) {
+pub(crate) fn write_matrix(ent: u32, r: &Rotation, pos: [f32; 3]) {
     let m: u32 = rd(ent + g::ENTITY_MATRIX);
     if m == 0 {
         return;
@@ -217,6 +217,24 @@ impl Objects {
     /// GTA object of pool slot `id`, if the slot exists (camera attachment, RPC 81); 0 = no GTA object.
     pub fn gta_ptr(&self, id: u16) -> Option<u32> {
         self.pool.get(&id).map(|o| o.ptr)
+    }
+
+    /// Pool id of a GTA object (samp A 0x10012A10), for the surf probe.
+    pub fn id_of_entity(&self, ptr: u32) -> Option<u16> {
+        if ptr == 0 {
+            return None;
+        }
+        self.pool.values().find(|o| o.ptr == ptr).map(|o| o.id)
+    }
+
+    /// samp's "moving" test of a pool object (A 0x100A8500): attached to an object → that object moves;
+    /// attached to a vehicle → yes; otherwise its own move (MoveObject) in progress.
+    pub fn moving(&self, id: u16) -> bool {
+        let Some(o) = self.pool.get(&id) else { return false };
+        if let Some((_, _, oid, _)) = o.attach_object {
+            return oid <= 1000 && self.pool.get(&oid).is_some_and(|p| p.ptr != 0 && p.motion.is_some());
+        }
+        o.attach_vehicle.is_some() || o.motion.is_some()
     }
 
     pub fn set_local_id(&mut self, id: u16) {

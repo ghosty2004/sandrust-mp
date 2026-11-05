@@ -274,6 +274,11 @@ mod runner {
             i32::from_le_bytes(self.thread[o..o + 4].try_into().unwrap_or_default())
         }
 
+        pub fn set_local_i32(&mut self, i: u16, v: i32) {
+            let o = layout::LOCAL_VARS + 4 * usize::from(i);
+            self.thread[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+
         pub fn local_f32(&self, i: u16) -> f32 {
             f32::from_bits(self.local_i32(i) as u32)
         }

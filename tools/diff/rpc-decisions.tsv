@@ -1,0 +1,20 @@
+# DIFF-2 (tools/diff/rpc_report.py): residual original-vs-ours differences accepted as decisions.
+# Columns (tab-separated): step glob, component (trace-missing | trace-extra | state | visual | untriggerable),
+# regex on the normalised line / state text (untriggerable: the RPC id), decision id (must appear in
+# docs/ROADMAP.md "Decisions made autonomously", else the row is ignored), note.
+*	trace-missing	^scm 0x0164 REMOVE_BLIP \[\d{8,}\]	DIFF2-D1	samp's two REMOVE_BLIP calls with uninitialised handles at spawn (decision 2026-11-04)
+*	untriggerable	^64$	DIFF2-U1	no open.mp sender; client handler reads a u16 and does nothing
+*	untriggerable	^92$	DIFF2-U1	no open.mp sender (drunk visuals, opcode 0x052C)
+*	untriggerable	^98$	DIFF2-U1	no open.mp sender (vehicle tyre status)
+*	untriggerable	^102$	DIFF2-U1	no open.mp sender (server net-stats blob)
+*	untriggerable	^125$	DIFF2-U1	no open.mp sender; no-op handler
+*	untriggerable	^130$	DIFF2-U1	connection rejected: only on a bad join (version/nickname/mod/slots), not from Pawn
+*	untriggerable	^150$	DIFF2-U1	no open.mp sender (drunk handling, opcode 0x03FD)
+*	untriggerable	^151$	DIFF2-U1	no open.mp sender; dropped-weapon pickups are never created in R4
+*	untriggerable	^161$	DIFF2-U1	no open.mp sender (old vehicle params: objective/doors)
+*	untriggerable	^169$	DIFF2-U1	no open.mp sender (object camera collision is a CreateObject flag in open.mp)
+flow_join	trace-missing	^scm 0x0249 MARK_MODEL_AS_NO_LONGER_NEEDED \[(4\d\d|5\d\d|60\d|61[01])\]$	DIFF2-D2	InitGame vehicle-model preload: samp releases only the models GTA has loaded at that moment
+flow_join	trace-extra	^scm 0x0249 MARK_MODEL_AS_NO_LONGER_NEEDED \[(4\d\d|5\d\d|60\d|61[01])\]$	DIFF2-D2	as above
+gamemode_restart	trace-missing	^scm 0x0249 MARK_MODEL_AS_NO_LONGER_NEEDED \[(4\d\d|5\d\d|60\d|61[01])\]$	DIFF2-D2	as above
+gamemode_restart	trace-extra	^scm 0x0249 MARK_MODEL_AS_NO_LONGER_NEEDED \[(4\d\d|5\d\d|60\d|61[01])\]$	DIFF2-D2	as above
+explosion	visual	.	DIFF2-D3	screenshot-only: the ped idle pose at the shot differs with the harness step timing (trace and state match)

@@ -862,6 +862,54 @@ pub const TABLE: &[Entry] = &[
         csv_row: 239,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
+    // CSV row 179 — CGameLogic::SortOutStreamingAndMemory: NOP the
+    // CStreaming::DeleteRwObjectsAfterDeath call (samp init-main, A 0x100AB291).
+    Entry {
+        addr: 0x441482,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xE8, 0x89, 0x7D, 0xFC, 0xFF],
+        csv_row: 179,
+        what: "SortOutStreamingAndMemory: keep RW objects after death",
+    },
+    // CSV row 199 — CFire::ProcessFire: `jmp +0x77` over the BMX branch (a BMX
+    // near a fire sets the local player on fire / bursts a tyre); A 0x100AB53D.
+    Entry {
+        addr: 0x53A984,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0xEB, 0x77]),
+        original: &[0x6A, 0xFF],
+        csv_row: 199,
+        what: "CFire::ProcessFire: skip the BMX branch",
+    },
+    // CSV row 203 — CMenuManager::PrintMap: NOP one CSprite2d::DrawRect (A 0x100AB5FF).
+    Entry {
+        addr: 0x575B0E,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xE8, 0x4D, 0x20, 0x1B, 0x00],
+        csv_row: 203,
+        what: "PrintMap: no DrawRect",
+    },
+    // CSV row 212 — InteriorGroup_c::Exit: NOP the Interior_c::Exit call (A 0x100AB74C).
+    Entry {
+        addr: 0x5952A6,
+        phase: Phase::Main,
+        write: Write::Nop(5),
+        original: &[0xE8, 0x85, 0xCF, 0xFF, 0xFF],
+        csv_row: 212,
+        what: "InteriorGroup_c::Exit: no Interior_c::Exit",
+    },
+    // CSV row 245 — CBirds::CreateNumberOfBirds: the line-of-sight test also
+    // checks objects (`push 0` → `push 1`, A 0x100ABA04).
+    Entry {
+        addr: 0x712025,
+        phase: Phase::Main,
+        write: Write::Bytes(&[0x01]),
+        original: &[0x00],
+        csv_row: 245,
+        what: "CreateNumberOfBirds: LOS checks objects",
+    },
 ];
 
 /// Streaming budget for `CStreaming::ms_memoryAvailable` from physical RAM in

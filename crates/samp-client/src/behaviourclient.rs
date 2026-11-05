@@ -290,6 +290,24 @@ unsafe extern "C" fn blend_animation_stub() {
     )
 }
 
+/// CSV row 54 (A 0x100A3E00): `CAnimManager::UncompressAnimation(hier)` returns at once for a NULL hierarchy,
+/// otherwise it runs the two displaced instructions and continues at 0x4D41C5.
+#[unsafe(naked)]
+unsafe extern "C" fn uncompress_animation_stub() {
+    core::arch::naked_asm!(
+        "push edi",
+        "mov edi, [esp+0x8]",
+        "test edi, edi",
+        "jz 2f",
+        "push {cont}",
+        "ret",
+        "2:",
+        "pop edi",
+        "ret",
+        cont = const 0x4D41C5u32,
+    )
+}
+
 /// CSV rows 198 (below) and 17 / 18: `jmp dword [slot]` at the entries, the handler addresses in the NOP padding before them.
 pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Result<(), PatchError>)> {
     let mut out = Vec::new();
@@ -314,6 +332,11 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
             "CAnimManager::BlendAnimation recorder",
         ),
     ];
+    let guard = uncompress_animation_stub as unsafe extern "C" fn() as usize as u32;
+    out.push((
+        54,
+        patcher.hook_jmp(mem, "CAnimManager::UncompressAnimation NULL guard", 0x4D41C0, guard, Some(&[0x57, 0x8B, 0x7C, 0x24, 0x08])),
+    ));
     for (row, site, slot, orig, handler, label) in rows {
         let r = patcher.write(mem, label, slot, &handler.to_le_bytes(), Some(&[0x90; 4])).and_then(|()| {
             let mut jmp = vec![0xFF, 0x25];
@@ -440,8 +463,10 @@ impl Behaviour {
     // ---- InitGame, world state ---------------------------------------------------------------------------------
 
     /// InitGame (B 0x100109E9 → 0x100088E0, then 0x100A1410): bounds back to ±20000, the gravity applied.
-    pub fn on_init_game(&mut self, gravity: f32) {
+    /// InitGame (A 0x100109E8 / 0x10010A24): the stunt-bonus flag (CSV row 359) and the gravity (CSV row 358).
+    pub fn on_init_game(&mut self, gravity: f32, stunt_bonus: bool) {
         self.bounds = Bounds::default();
+        set_stunt_bonus(stunt_bonus);
         set_gravity(gravity);
     }
 
@@ -1030,7 +1055,7 @@ pub(crate) fn play(runner: &mut Runner, ped: u32, name: &[u8], lib: &[u8], delta
 
 // ---- small RPCs ------------------------------------------------------------------------------------------------
 
-/// RPC 146 and InitGame (B 0x100A1410): the global gravity float.
+/// RPC 146 and InitGame (B 0x100A1410): the global gravity float (CSV row 358).
 pub fn set_gravity(g: f32) {
     let _ = ProcessMemory.write(GRAVITY, &g.to_le_bytes());
 }
@@ -1040,7 +1065,7 @@ pub fn set_wanted(level: u8) {
     let _ = ProcessMemory.write(WANTED_HUD, &[level]);
 }
 
-/// RPC 104: GTA's stunt-bonus dword.
+/// RPC 104 and InitGame (A 0x100A1580): GTA's stunt-bonus dword (CSV row 359).
 pub fn set_stunt_bonus(on: bool) {
     let _ = ProcessMemory.write(STUNT_BONUS, &u32::from(on).to_le_bytes());
 }

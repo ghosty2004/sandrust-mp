@@ -25,8 +25,13 @@ Verdicts: MATCH, DIFF, NOT-IMPLEMENTED (ours has no handler for the step's RPCs
 or shows no reaction at all where the original reacts), NOT-FIRED (scenario
 error). Per RPC: the worst verdict over the steps that cover it; RPC ids no
 step covers are UNTRIGGERABLE (listed with the reason).
-Writes OUT/rpc-coverage.md and OUT/rpc-coverage.json. Exit 0 only if ours ran
-and every covered RPC is MATCH.
+Calibration: with two or more original runs, lines/state keys/screenshots that differ between the
+original runs are not judged, and numeric fields that differ between original runs in lines of the
+same template are free (`unstable_fields`). Residual differences are accepted only through
+tools/diff/rpc-decisions.tsv rows whose decision id is written in docs/ROADMAP.md; the same file must
+hold a decision for every UNTRIGGERABLE id (else UNTRIGGERABLE-UNDECIDED).
+Writes OUT/rpc-coverage.md and OUT/rpc-coverage.json. Exit 0 only if ours ran,
+every covered RPC is MATCH and every untriggerable RPC is a logged decision.
 """
 import argparse
 import glob
@@ -76,6 +81,11 @@ GTA_STREAMING = re.compile(
     r"^CStreaming::RemoveModel .*<gta>|^CStreaming::RequestModel \{model=\d+,flags=(0|8)\}  <gta>")
 POLL_MIN_STEPS = 3
 ORDERED = re.compile(r"^scm |<client>|\[via scm ")
+# Not order-checked although attributed to the client: GTA's streamer/renderer calling the object
+# vtable slots samp (and we) redirect (CSV rows 67-69: Create/DeleteRwObject), and the per-frame
+# surf-probe line-of-sight records, whose values follow the physics frame by frame. Both are still
+# compared as sets.
+UNORDERED = re.compile(r"^CEntity::(Create|Delete)RwObject .*<client>$|^los \{")
 # Lines present in at least this share of all step segments are per-frame
 # background (polling), not a reaction.
 BACKGROUND_SHARE = 0.5
@@ -92,6 +102,43 @@ CELL_FRACTION = 0.08
 # (a textdraw, a chat line) change only a few cells, so the bound is relative.
 VISUAL_MIN_CELLS = 4
 VISUAL_SHARE = 0.4
+
+
+DECISIONS = os.path.join(HERE, "rpc-decisions.tsv")
+ROADMAP = os.path.join(ROOT, "docs", "ROADMAP.md")
+
+
+def load_decisions(path=DECISIONS, roadmap=ROADMAP):
+    """Accepted residual differences: (step glob, component, regex, decision id, note). A row only counts
+    when its decision id is written in docs/ROADMAP.md ("Decisions made autonomously")."""
+    import fnmatch  # noqa: F401  (used by match_decision)
+    out = []
+    try:
+        text = open(roadmap).read()
+    except OSError:
+        text = ""
+    try:
+        f = open(path)
+    except OSError:
+        return out
+    with f:
+        for line in f:
+            if not line.strip() or line.startswith("#"):
+                continue
+            c = line.rstrip("\n").split("\t")
+            c += [""] * (5 - len(c))
+            step, comp, pat, did, note = c[:5]
+            out.append({"step": step, "component": comp, "re": re.compile(pat), "id": did, "note": note,
+                        "logged": bool(did) and did in text})
+    return out
+
+
+def match_decision(decisions, step, comp, text):
+    import fnmatch
+    for d in decisions:
+        if d["logged"] and d["component"] == comp and fnmatch.fnmatch(step, d["step"]) and d["re"].search(text):
+            return d["id"]
+    return None
 
 
 class Opts:
@@ -158,6 +205,10 @@ def load_segments(path):
             # Keep calls the client made (directly, from its stack, or as a script
             # command) and global-state changes; drop GTA's own background work.
             client = tdiff.caller_class(rec.get("caller")) == "client" or bool(rec.get("origin"))
+            # File opens are compared on both sides whoever is on the stack: the tracer attributes the
+            # original's join-time opens to samp.dll (its init calls GTA's loaders), ours to GTA, for the
+            # same opens at the same frames (par-audit.md "Not findings"; F6 compares the files themselves).
+            client = client or fn == "CFileMgr::OpenFile"
             if fn not in ("scm", "watch") and not client and not str(rec.get("via", "")).startswith("scm"):
                 continue
             n = tdiff.normalise(rec, Opts)
@@ -183,8 +234,11 @@ class LineSet:
     numbers masked, integers equal, decimals within FLOAT_TOLERANCE. Model
     ids, handles and opcodes are integers and must match exactly."""
 
-    def __init__(self, lines=()):
+    def __init__(self, lines=(), free=None):
         self.by = {}
+        # {template: positions}: numeric fields the original itself does not reproduce between runs
+        # (calibration, `unstable_fields`); any value is accepted there.
+        self.free = free or {}
         for ln in lines:
             self.add(ln)
 
@@ -199,11 +253,47 @@ class LineSet:
 
     def __contains__(self, ln):
         t, nums = self.key(ln)
+        free = self.free.get(t, ())
         for cand in self.by.get(t, ()):
-            if all(a == b or ("." in a and "." in b and abs(float(a) - float(b)) <= FLOAT_TOLERANCE)
-                   for a, b in zip(nums, cand)):
+            if all(i in free or num_eq(a, b) for i, (a, b) in enumerate(zip(nums, cand))):
                 return True
         return False
+
+
+def num_eq(a, b):
+    return a == b or ("." in a and "." in b and abs(float(a) - float(b)) <= FLOAT_TOLERANCE)
+
+
+def unstable_fields(runs_lines):
+    """Calibration per field: {template: positions} of numbers that differ between original runs in
+    lines of the same template (vehicle headings after physics, blip handles after a 208/stream-in race,
+    garbage ids). Only templates that occur in at least two runs are calibrated."""
+    per = {}
+    for lines in runs_lines:
+        seen = {}
+        for ln in lines:
+            t, nums = LineSet.key(ln)
+            seen.setdefault(t, []).append(nums)
+        for t, v in seen.items():
+            per.setdefault(t, []).append(v)
+    free = {}
+    for t, runs in per.items():
+        if len(runs) < 2:
+            continue
+        # Compare every instance of one run with the closest instance of the others.
+        pos = set()
+        for i, a_list in enumerate(runs):
+            for j, b_list in enumerate(runs):
+                if i == j:
+                    continue
+                for a in a_list:
+                    if any(all(num_eq(x, y) for x, y in zip(a, b)) for b in b_list):
+                        continue
+                    best = min(b_list, key=lambda b: sum(not num_eq(x, y) for x, y in zip(a, b)))
+                    pos |= {k for k, (x, y) in enumerate(zip(a, best)) if not num_eq(x, y)}
+        if pos:
+            free[t] = pos
+    return free
 
 
 def unique(lines):
@@ -394,6 +484,23 @@ def compare_visual(ra, na, rb, nb):
     return ok, f"changed cells {int(ma.sum())} vs {int(mb.sum())}, differing {xor} of {union} changed"
 
 
+def visual_ensemble(masks, mu):
+    """(match, text) of ours' change mask against several original masks, or None."""
+    if mu is None or any(m is None for m in masks):
+        return None
+    union = masks[0].copy()
+    core = masks[0].copy()
+    for m in masks[1:]:
+        union |= m
+        core &= m
+    extra = int((mu & ~dilate(union)).sum())
+    missing = int((core & ~dilate(mu)).sum())
+    total = int((union | mu).sum())
+    ok = extra + missing <= max(VISUAL_MIN_CELLS, VISUAL_SHARE * total)
+    return ok, (f"changed cells {int(core.sum())}..{int(union.sum())} (original runs) vs {int(mu.sum())}, "
+                f"{extra} outside every original run, {missing} of the always-changed missing")
+
+
 def reacted_visual(run, name):
     m = change_mask(run, name)
     return m is not None and int(m.sum()) >= VISUAL_MIN_CELLS
@@ -436,7 +543,7 @@ def ordered_ok(stable, union_, ours, polls=frozenset()):
     # stable lines present in ours must be a subsequence of ours. `watch` diffs
     # and GTA-internal follow-ups (tasks) land at frame boundaries and are
     # compared as a set only.
-    want = [ln for ln in stable if ln in so and ORDERED.search(ln)]
+    want = [ln for ln in stable if ln in so and ORDERED.search(ln) and not UNORDERED.search(ln)]
     p = 0
     for o in ours:
         if p < len(want) and want[p] in LineSet([o]):
@@ -460,7 +567,8 @@ def compare_runs(orig_runs, ours):
         lines = [ro.get(name, []) for ro in reac_o]
         sets = [LineSet(x) for x in lines]
         stable = [ln for ln in lines[0] if all(ln in x for x in sets[1:])]
-        union_ = LineSet([ln for x in lines for ln in x])
+        free = unstable_fields(lines) if len(lines) > 1 else {}
+        union_ = LineSet([ln for x in lines for ln in x], free)
         det = {"trace": [], "state": [], "visual": None}
         unstable_keys = set()
         for i in range(1, len(orig_runs)):
@@ -496,9 +604,21 @@ def compare_runs(orig_runs, ours):
             continue
         ra = reac_a.get(name, [])
         missing, extra, order_bad = ordered_ok(stable, union_, ra, polls)
+        # Calibration: when the original runs disagree on the order of the stable lines (e.g. two vehicles
+        # streamed in by one server tick in either order), the order is not judged against ours.
+        if any(t.get("order") for t in det["trace"]):
+            order_bad = False
         trace_ok = not missing and not extra and not order_bad
         state_diff = compare_state(st, sa, ignore=unstable_keys, drift=True)
         vis_ok, vis_text = compare_visual(o0, name, ours, name)
+        if det["visual"] is None and len(orig_runs) > 1:
+            # Stable on the original side: judged against all original runs at once (calibration), not
+            # against the first one only. Ours may change a cell some original run changed (or a neighbour
+            # of one), and must change (or neighbour) the cells every original run changed; the remaining
+            # difference uses compare_visual's bound.
+            ens = visual_ensemble([change_mask(r, name) for r in orig_runs], change_mask(ours, name))
+            if ens is not None:
+                vis_ok, vis_text = ens
         if det["visual"] is not None:
             # Unstable on the original side (timing of chat lines, animated
             # markers …): only the cells that changed in every original run
@@ -511,9 +631,29 @@ def compare_runs(orig_runs, ours):
                 for m in masks[1:]:
                     core &= m
                 n = int(core.sum())
-                if n >= VISUAL_MIN_CELLS and int((core & mu).sum()) < n / 2:
+                # Same neighbour rule as compare_visual: a core cell counts when ours changed it or a neighbour.
+                hit = int((core & dilate(mu)).sum())
+                if n >= VISUAL_MIN_CELLS and hit < n / 2:
                     vis_ok = False
-                    vis_text += f"; ours changes {int((core & mu).sum())} of the {n} cells every original run changes"
+                    vis_text += f"; ours changes {hit} of the {n} cells every original run changes"
+        # Residual differences accepted as logged decisions (tools/diff/rpc-decisions.tsv + ROADMAP).
+        accepted = []
+        for comp, lst in (("trace-missing", missing), ("trace-extra", extra), ("state", state_diff)):
+            keep = []
+            for ln in lst:
+                d = match_decision(DECS, name, comp, ln)
+                if d:
+                    accepted.append(f"{d}: {comp} `{ln}`")
+                else:
+                    keep.append(ln)
+            lst[:] = keep
+        if vis_ok is False:
+            d = match_decision(DECS, name, "visual", vis_text)
+            if d:
+                accepted.append(f"{d}: visual `{vis_text}`")
+                vis_ok = None
+        trace_ok = not missing and not extra and not order_bad
+        row["accepted"] = accepted
         row["trace"] = {"ok": trace_ok, "missing_in_ours": missing, "extra_in_ours": extra, "order_differs": order_bad}
         row["state"] = {"ok": not state_diff, "diff": state_diff}
         row["visual"] = {"ok": vis_ok, "detail": vis_text}
@@ -573,7 +713,13 @@ def per_rpc(steps, step_list, have_ours):
         defined = [s["name"] for s in step_list if rid in s["rpcs"]]
         cov = [s for s in steps if rid in s["rpcs"]]
         if not defined and not cov:
-            out[rid] = {"verdict": "UNTRIGGERABLE", "why": UNTRIGGERABLE.get(rid, "no step"), "steps": []}
+            # Untriggerable ids must be a logged decision too (evidence: no open.mp sender).
+            d = match_decision(DECS, "*", "untriggerable", str(rid)) if rid in UNTRIGGERABLE else None
+            if d:
+                out[rid] = {"verdict": "UNTRIGGERABLE", "why": f"{UNTRIGGERABLE[rid]} [{d}]", "steps": []}
+            else:
+                out[rid] = {"verdict": "UNTRIGGERABLE-UNDECIDED", "why": UNTRIGGERABLE.get(rid, "no step"),
+                            "steps": []}
             continue
         if not cov:
             out[rid] = {"verdict": "NOT-RUN", "steps": defined}
@@ -628,7 +774,8 @@ def write_report(out_dir, orig_runs, ours, steps, rpcs):
     md.append("")
     md.append("## Summary")
     md.append("")
-    for k in ("MATCH", "DIFF", "NOT-IMPLEMENTED", "NOT-FIRED", "NOT-RUN", "ORIG-ONLY", "UNTRIGGERABLE"):
+    for k in ("MATCH", "DIFF", "NOT-IMPLEMENTED", "NOT-FIRED", "NOT-RUN", "ORIG-ONLY", "UNTRIGGERABLE",
+              "UNTRIGGERABLE-UNDECIDED"):
         if totals.get(k):
             md.append(f"* {k}: {totals[k]}")
     md.append("")
@@ -679,6 +826,8 @@ def write_report(out_dir, orig_runs, ours, steps, rpcs):
         md.append(head + (f" — **{s['verdict']}**" if "verdict" in s else ""))
         if s.get("why"):
             md.append(f"* why: {s['why']}")
+        if s.get("accepted"):
+            md.append(f"* accepted (logged decisions): {short(s['accepted'])}")
         md.append(f"* original reaction ({len(s['orig_reaction'])} lines): {short(s['orig_reaction'])}")
         if "trace" in s:
             t = s["trace"]
@@ -709,6 +858,9 @@ def write_report(out_dir, orig_runs, ours, steps, rpcs):
     return totals, det_bad
 
 
+DECS = load_decisions()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--orig", action="append", required=True)
@@ -732,7 +884,8 @@ def main():
     print(f"[diff] report: {os.path.join(a.out, 'rpc-coverage.md')}")
     if ours is None:
         return 1
-    bad = sum(v for k, v in totals.items() if k in ("DIFF", "NOT-IMPLEMENTED", "NOT-FIRED", "NOT-RUN"))
+    bad = sum(v for k, v in totals.items()
+              if k in ("DIFF", "NOT-IMPLEMENTED", "NOT-FIRED", "NOT-RUN", "UNTRIGGERABLE-UNDECIDED"))
     return 0 if bad == 0 else 1
 
 

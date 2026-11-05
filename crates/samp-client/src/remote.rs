@@ -398,6 +398,7 @@ pub struct FootData {
     pub velocity: [f32; 3],
     /// 0xFFFF when the packet carried no surf block.
     pub surf_id: u16,
+    pub surf_offset: [f32; 3],
     pub animation: u32,
 }
 
@@ -417,6 +418,7 @@ impl FootData {
             special_action: s.special_action,
             velocity: [v.x, v.y, v.z],
             surf_id: s.surf.map(|x| x.id).unwrap_or(0xFFFF),
+            surf_offset: s.surf.map(|x| [x.offset.x, x.offset.y, x.offset.z]).unwrap_or([0.0; 3]),
             // Negative values (flag bit 15 of the flags half) count as "no animation".
             animation: if (anim as i32) < 0 { 0 } else { anim },
         }

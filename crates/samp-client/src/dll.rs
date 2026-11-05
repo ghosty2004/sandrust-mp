@@ -315,19 +315,16 @@ fn init_thread() {
         // CSV row 52 — CGame::Shutdown: like samp, never run the game's own shutdown; give
         // the network ~2 s and end the process (the enlarged model-info stores are not
         // known to CModelInfo::ShutDown, which would walk 311 ped entries of a 278-entry array).
-        let mut jmp = crate::patch::encode_branch(
-            crate::patch::OP_JMP,
-            game::CGAME_SHUTDOWN,
-            game_shutdown_hook as extern "C" fn() as usize as u32,
-        )
-        .to_vec();
-        jmp.extend_from_slice(&[crate::patch::OP_NOP; 2]);
-        match patcher.write(
+        // samp's form (A 0x100A6904): `jmp dword [0x53C8F1]` + NOP, the handler stored in the
+        // padding slot 0x53C8F1 in front of the function.
+        match crate::worldhooks::jmp_indirect(
+            patcher,
             &mut mem,
             "CGame::Shutdown -> exit",
             game::CGAME_SHUTDOWN,
-            &jmp,
-            Some(&game::CGAME_SHUTDOWN_ORIGINAL),
+            game::CGAME_SHUTDOWN_SLOT,
+            game_shutdown_hook as extern "C" fn() as usize as u32,
+            &game::CGAME_SHUTDOWN_ORIGINAL,
         ) {
             Ok(()) => crate::log!("main: CGame::Shutdown at {:#x} -> exit after 2 s", game::CGAME_SHUTDOWN),
             Err(e) => crate::log!("main: CGame::Shutdown hook FAILED: {e}"),
@@ -368,6 +365,11 @@ fn init_thread() {
         let failed: Vec<String> =
             hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
         crate::log!("main: plate rows: {} installed, failed: {failed:?}", hooks.len() - failed.len());
+        // CSV row 95: weather audio muted while PlayerPlaySound(1)'s flag is set.
+        match crate::audio::install_weather_hook(patcher, &mut mem) {
+            Ok(()) => crate::log!("main: weather audio hook (row 95) installed"),
+            Err(e) => crate::log!("main: weather audio hook (row 95) FAILED: {e}"),
+        }
         // World entities (M6): byte rows and hooks.
         let hooks = crate::worldhooks::install(patcher, &mut mem);
         let failed: Vec<String> =
@@ -726,7 +728,11 @@ fn limiter_task_gate() -> bool {
     kind == crate::frametimer::LIMITER_TASK_TYPE
 }
 
-fn first_frame_ped_flags() {
+/// The first time samp needs its local-ped object (created on demand, A 0x10001010 → 0x100ABAB0, which sets
+/// these two flags) is the local `CPlayerPed::ProcessControl` hook in frame 1 (DIFF-2 flow_join order: after the
+/// scripts, before the frame's object streaming); called from there (swap.rs), with the post-`CGame::Process`
+/// call as the fallback.
+pub(crate) fn first_frame_ped_flags() {
     if !ARGS.get().is_some_and(|a| a.connect) {
         return;
     }

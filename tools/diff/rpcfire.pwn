@@ -181,7 +181,11 @@ new const g_Steps[][E_STEP] = {
     {"149", "trailer_detach", 2000, "fs"},
     {"165", "vehicle_destroy_trailer", 2500, "fs"},
     {"165", "vehicle_destroy_truck", 2500, "fs"},
+    // --- surfing (CSV row 24): the player stands on a pool object that moves ---
+    {"44,12", "surf_platform", 2500, "fs"},
+    {"99", "surf_move", 9500, "fs"},
     {"12", "pos_base_2", 2000, "fs"},
+    {"47", "surf_destroy", 1500, "fs"},
     // --- remote player (open.mp NPC) -------------------------------------------
     {"137", "npc_create", 1500, "fs"},
     {"32", "npc_spawn", 3000, "fs"},
@@ -213,6 +217,7 @@ new const g_Steps[][E_STEP] = {
 new g_Player = INVALID_PLAYER_ID;
 new g_Name[MAX_PLAYER_NAME + 1];
 new g_Obj = INVALID_OBJECT_ID;
+new g_Surf = INVALID_OBJECT_ID;
 new PlayerText:g_Td = PlayerText:INVALID_TEXT_DRAW;
 new PlayerText3D:g_Label = PlayerText3D:INVALID_3DTEXT_ID;
 new g_Zone = -1;
@@ -476,7 +481,9 @@ Fire(p, const s[])
     }
     if (!strcmp(s, "object_setpos")) return SetPlayerObjectPos(p, g_Obj, BX + 8.0, BY + 2.0, BZ);
     if (!strcmp(s, "object_setrot")) return SetPlayerObjectRot(p, g_Obj, 0.0, 0.0, 45.0);
-    if (!strcmp(s, "object_move")) return MovePlayerObject(p, g_Obj, BX + 8.0, BY + 2.0, BZ + 30.0, 1.0);
+    // 1 m at 1 m/s: arrives within the step, so the object's end position does not depend on when the
+    // driver fires object_stop (DIFF-2 camera_attach_object read the camera on a still moving object).
+    if (!strcmp(s, "object_move")) return MovePlayerObject(p, g_Obj, BX + 8.0, BY + 2.0, BZ + 1.0, 1.0);
     if (!strcmp(s, "object_stop")) return StopPlayerObject(p, g_Obj);
     if (!strcmp(s, "object_material")) return SetPlayerObjectMaterial(p, g_Obj, 0, 10101, "2notherbuildsfe", "Bow_Abpave_Gen", 0xFF00FF00);
     if (!strcmp(s, "object_material_text")) return SetPlayerObjectMaterialText(p, g_Obj, "DIFF", 0, OBJECT_MATERIAL_SIZE_256x128, "Arial", 28, true, 0xFFFFFFFF, 0xFF000000, OBJECT_MATERIAL_TEXT_ALIGN_CENTER);
@@ -485,6 +492,16 @@ Fire(p, const s[])
     if (!strcmp(s, "camera_attach_object")) return AttachCameraToPlayerObject(p, g_Obj);
     if (!strcmp(s, "object_attach_player")) return AttachPlayerObjectToPlayer(p, g_Obj, p, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0);
     if (!strcmp(s, "object_destroy")) return DestroyPlayerObject(p, g_Obj);
+    // A 10 x 10 m floor (19129, SAMP.img) 30 m up, the player put on it, then moved 8 m east at 1 m/s;
+    // pos_base_2 takes the player off before the floor goes (a 30 m fall would kill).
+    if (!strcmp(s, "surf_platform"))
+    {
+        g_Surf = CreatePlayerObject(p, 19129, BX + 30.0, BY, BZ + 30.0, 0.0, 0.0, 0.0, 200.0);
+        if (g_Surf == INVALID_OBJECT_ID) return 0;
+        return SetPlayerPos(p, BX + 30.0, BY, BZ + 31.2);
+    }
+    if (!strcmp(s, "surf_move")) return MovePlayerObject(p, g_Surf, BX + 38.0, BY, BZ + 30.0, 1.0);
+    if (!strcmp(s, "surf_destroy")) return DestroyPlayerObject(p, g_Surf);
 
     // pickups (per-player pickup, model 1240 = health)
     if (!strcmp(s, "pickup_create"))

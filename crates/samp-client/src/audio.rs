@@ -220,7 +220,7 @@ pub enum SoundCmd {
 }
 
 /// samp's game audio object: mission-audio state (u32 +0: 0 idle, 1 loading, 2 played) and the
-/// flag byte +4 set by sound id 1 (its reader B 0x100a23b0 has no caller in the paths traced).
+/// flag byte +4 set by sound id 1 (read by the weather-audio hook, CSV row 95, A 0x100A5E70).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MissionSound {
     pub state: u32,
@@ -361,6 +361,61 @@ mod win {
 
     static STREAM: Mutex<Option<Stream>> = Mutex::new(None);
     static SOUND: Mutex<MissionSound> = Mutex::new(MissionSound { state: 0, flag: false });
+
+    /// The sound-id-1 flag (samp's audio object +4), read by the weather-audio hook.
+    static WEATHER_MUTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// `CGame::currArea` and the original `CAEWeatherAudioEntity::UpdateParameters`.
+    const CURR_AREA: u32 = 0xB72914;
+    const WEATHER_UPDATE_PARAMETERS: u32 = 0x505A00;
+    /// Slot 0 of the `CAEWeatherAudioEntity` vtable (CSV row 95).
+    const WEATHER_VTABLE_SLOT: u32 = 0x872A74;
+
+    extern "C" fn weather_muted() -> u32 {
+        u32::from(WEATHER_MUTED.load(Ordering::Relaxed))
+    }
+
+    /// CSV row 95 (A 0x100A5E70): `UpdateParameters(object, param)` (thiscall) runs with `currArea` forced to 1
+    /// while the sound-id-1 flag is set (GTA treats the player as inside an interior: no weather sounds), then
+    /// `currArea` is restored.
+    #[unsafe(naked)]
+    unsafe extern "C" fn weather_update_parameters_stub() {
+        core::arch::naked_asm!(
+            "push dword ptr [{area}]",
+            "push ecx",
+            "call {muted}",
+            "pop ecx",
+            "test eax, eax",
+            "jz 2f",
+            "mov dword ptr [{area}], 1",
+            "2:",
+            "push dword ptr [esp+0xC]",
+            "push dword ptr [esp+0xC]",
+            "mov eax, {orig}",
+            "call eax",
+            "pop edx",
+            "mov dword ptr [{area}], edx",
+            "ret 8",
+            area = const CURR_AREA,
+            muted = sym weather_muted,
+            orig = const WEATHER_UPDATE_PARAMETERS,
+        )
+    }
+
+    /// Installs row 95 (init-main).
+    pub fn install_weather_hook(
+        patcher: &mut crate::patch::Patcher,
+        mem: &mut ProcessMemory,
+    ) -> Result<(), crate::patch::PatchError> {
+        let h = weather_update_parameters_stub as unsafe extern "C" fn() as usize as u32;
+        patcher.write(
+            mem,
+            "CAEWeatherAudioEntity::UpdateParameters vtable slot",
+            WEATHER_VTABLE_SLOT,
+            &h.to_le_bytes(),
+            Some(&WEATHER_UPDATE_PARAMETERS.to_le_bytes()),
+        )
+    }
 
     fn with_stream<R>(f: impl FnOnce(&mut Stream) -> R) -> R {
         let mut g = STREAM.lock().unwrap_or_else(|e| e.into_inner());
@@ -652,7 +707,12 @@ mod win {
 
     /// RPC 16 PlayerPlaySound.
     pub fn play_sound(runner: &mut Runner, id: i32, pos: [f32; 3]) {
-        let cmds = SOUND.lock().unwrap_or_else(|e| e.into_inner()).play(id, pos);
+        let cmds = {
+            let mut g = SOUND.lock().unwrap_or_else(|e| e.into_inner());
+            let c = g.play(id, pos);
+            WEATHER_MUTED.store(g.flag, Ordering::Relaxed);
+            c
+        };
         for c in cmds {
             run_sound(runner, c);
         }

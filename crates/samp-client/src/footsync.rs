@@ -196,6 +196,9 @@ pub struct LocalSample {
     pub special_action: u8,
     pub move_speed: [f32; 3],
     pub animation: u32,
+    /// Surf offset and id (A 0x100050E8; zeros when not surfing, surf.rs).
+    pub surf_offset: [f32; 3],
+    pub surf_id: u16,
 }
 
 /// Float → u8 as the client does (truncate to int, keep the low byte).
@@ -226,8 +229,8 @@ pub fn build_foot_sync(s: &LocalSample, last_rotation: Option<Quat>) -> FootSync
         weapon: WeaponByte::new(s.weapon, additional_key(&s.pad)),
         special_action: s.special_action,
         velocity: v3(s.move_speed),
-        surf_offset: Vec3::default(),
-        surf_id: 0,
+        surf_offset: v3(s.surf_offset),
+        surf_id: s.surf_id,
         animation: Animation::from_u32(s.animation),
     }
 }

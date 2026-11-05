@@ -34,6 +34,7 @@ pub mod script;
 pub mod sectors;
 pub mod specials;
 pub mod stores;
+pub mod surf;
 pub mod ui;
 pub mod vehicle;
 pub mod vehlabels;
