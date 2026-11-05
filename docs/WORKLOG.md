@@ -458,3 +458,32 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   feata exit 0; 590 tests; clippy 0 (host + i686).
 - User crash on a public server (0x7F5A3A RwD3D9DynamicVertexBufferCreate NULL read after a device-loss stall)
   handed to CRASH-1.
+
+## 2026-11-05 — CRASH-1 object-map crash (branch object-crash)
+- Symptom (user, public server): `/halloween` teleport to an object island → bursts of RPC 44/99/47 → gta_sa.exe
+  0xC0000005 about 1 s later, nothing logged. Wine: read of 0 at 0x7F5A3A (`RwD3D9DynamicVertexBufferCreate`).
+- Reproduced locally with tools/e2e/probe/objmap.pwn (400 global + 480 player objects on an island at 4010, 2118,
+  custom 18631+/19xxx models, materials / material text, MoveObject right after create, destroy/re-create churn,
+  streamer hops, two rounds): ours crashed at 0x7F5A3A every run (trace lane ours-20261105-110743, veh lane
+  objstress pre-fix: same report), the original survived (orig-20261105-110616 / -111235, 0 s without updates).
+- Root cause (measured with the new CreateVertexBuffer log in ours and a temporary tracer hook of device slot 26 for the
+  original, orig-20261105-111235: 700 creates, none of length 0; not kept, it would add records to the D3D diffs): ours asked for
+  zero-length dynamic vertex buffers (D3DERR_INVALIDCALL), the original never does. Our material pre-pass applied
+  slot colours (geometry PRELIT off, MODULATE on) from the very first draw; a geometry with a pending prelight lock
+  (lockedSinceLastInst 0x8, GTA's day/night prelight update) re-instanced with PRELIT off → empty dynamic stream →
+  failed create leaves a buffer-less record in RenderWare's dynamic list (0xC97B8C) → the next differently sized
+  create releases that NULL buffer → crash. samp gates the pre-pass (+0x118F drawn flag, +0x1D3 last RW object):
+  nothing before the first draw, record-only on the first pre-pass after the RW object changed, apply afterwards.
+  Fix: `worldents::MaterialPrePass` + worldhooks gating, exactly that state machine.
+- Device loss (coordinator lead): forced Reset (orig-20261105-113441 survives; tracer poke of TestCooperativeLevel → NOTRESET, scenario
+  TRACE_OBJMAP_DEVRESET=1; our `devreset` control command): the original releases every material-text render target
+  in its lost handler (B 0x100C3F60 → 0x10012B20 → 0x100A8EE0) and re-creates them in the object pass; ours kept
+  them (D3DPOOL_DEFAULT) so every Reset failed with D3DERR_INVALIDCALL (ours-20261105-113605: 1776 failed resets, game frozen, and RenderWare
+  left with buffer-less dynamic records = the same crash site). Fix: `mattext::on_lost` before Reset.
+- 6-minute 0 fps stall in the user's log: 10 frames in 348 s while the network thread kept receiving (rpcs 828 →
+  2065), no device Reset logged: the game window lost focus (GTA only runs a frame per window message while
+  inactive; the original freezes the same way: trace run orig-20261105-113214 with a focus change, 36 s without
+  updates). Not a hang, unrelated to the crash.
+- Crash diagnostics: crash report "Diagnostics (samp-rs)" section + lock-free breadcrumb ring (crash.rs), failed
+  CreateVertexBuffer log (ui/d3d.rs). Regression test tools/e2e/objstress.sh (objmap + forced device loss; fails on
+  a crash report, a failed CreateVertexBuffer or a failed Reset); trace lane `tools/trace/run.sh orig|ours objmap`.

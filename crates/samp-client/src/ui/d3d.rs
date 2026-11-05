@@ -28,7 +28,9 @@ pub mod dev {
     pub const SLOTS: usize = 119;
     pub const SET_CURSOR_PROPERTIES: usize = 10;
     pub const SHOW_CURSOR: usize = 12;
+    pub const TEST_COOPERATIVE_LEVEL: usize = 3;
     pub const RESET: usize = 16;
+    pub const CREATE_VERTEX_BUFFER: usize = 26;
     pub const PRESENT: usize = 17;
     pub const GET_FRONT_BUFFER_DATA: usize = 33;
     pub const CREATE_OFFSCREEN_PLAIN_SURFACE: usize = 36;
@@ -186,6 +188,8 @@ pub fn install_device_proxy(present: PresentFn, reset: ResetFn) -> Result<(), St
             (dev::SET_TRANSFORM, proxy_set_transform as *const () as usize),
             (dev::END_SCENE, proxy_end_scene as *const () as usize),
             (dev::SET_TEXTURE, proxy_set_texture as *const () as usize),
+            (dev::CREATE_VERTEX_BUFFER, proxy_create_vertex_buffer as *const () as usize),
+            (dev::TEST_COOPERATIVE_LEVEL, proxy_test_cooperative_level as *const () as usize),
         ],
     )
     .ok_or("VirtualAlloc failed")?;
@@ -219,6 +223,90 @@ extern "system" fn proxy_set_texture(_this: *mut c_void, stage: u32, tex: *mut c
     // SAFETY: the real device's SetTexture.
     let f: SetTextureFn = unsafe { vfn(dev, dev::SET_TEXTURE) };
     f(dev, stage, tex)
+}
+
+/// Test hook (control channel `devreset`): while non-zero, `TestCooperativeLevel` through the proxy reports
+/// D3DERR_DEVICENOTRESET (and counts down), so RenderWare releases its video memory and resets the device.
+pub static FORCE_LOST: AtomicU32 = AtomicU32::new(0);
+const D3DERR_DEVICENOTRESET: HResult = 0x8876_0869_u32 as HResult;
+
+/// Proxy `TestCooperativeLevel` (slot 3): the real call, unless the `devreset` test hook is armed.
+extern "system" fn proxy_test_cooperative_level(_this: *mut c_void) -> HResult {
+    if FORCE_LOST.load(Ordering::Relaxed) > 0 {
+        FORCE_LOST.fetch_sub(1, Ordering::Relaxed);
+        return D3DERR_DEVICENOTRESET;
+    }
+    let d = real_device();
+    // SAFETY: the real device's TestCooperativeLevel().
+    let f: extern "system" fn(*mut c_void) -> HResult = unsafe { vfn(d, dev::TEST_COOPERATIVE_LEVEL) };
+    let hr = f(d);
+    // Breadcrumb on every change of the device state (lost / not reset / ok).
+    if LAST_COOPERATIVE_LEVEL.swap(hr as u32, Ordering::Relaxed) != hr as u32 {
+        crate::crash::note(crate::crash::crumb::DEVICE_LOST, 0, hr as u32);
+    }
+    hr
+}
+
+static LAST_COOPERATIVE_LEVEL: AtomicU32 = AtomicU32::new(0);
+
+/// Failed `CreateVertexBuffer` calls seen through the proxy (diagnostics: RenderWare keeps a dynamic
+/// vertex buffer record without a buffer after a failed create, CRASH-1).
+pub static VB_CREATE_FAILURES: AtomicU32 = AtomicU32::new(0);
+
+type CreateVertexBufferFn = extern "system" fn(*mut c_void, u32, u32, u32, u32, *mut *mut c_void, *mut c_void) -> HResult;
+
+/// Proxy `CreateVertexBuffer` (slot 26): the real call; failures are logged (the first 20) with their size.
+extern "system" fn proxy_create_vertex_buffer(
+    _this: *mut c_void,
+    length: u32,
+    usage: u32,
+    fvf: u32,
+    pool: u32,
+    out: *mut *mut c_void,
+    shared: *mut c_void,
+) -> HResult {
+    let d = real_device();
+    // SAFETY: the real device's CreateVertexBuffer with the caller's arguments.
+    let f: CreateVertexBufferFn = unsafe { vfn(d, dev::CREATE_VERTEX_BUFFER) };
+    let hr = f(d, length, usage, fvf, pool, out, shared);
+    if hr < 0 {
+        let n = VB_CREATE_FAILURES.fetch_add(1, Ordering::Relaxed);
+        crate::crash::note(crate::crash::crumb::VB_CREATE_FAILED, 0, length);
+        if n < 20 {
+            let ent = crate::worldhooks::RENDERING.load(Ordering::Relaxed);
+            let model: u16 = if ent != 0 { crate::worldhooks::rd(ent + 0x22) } else { 0 };
+            let flags: u32 = if ent != 0 { crate::worldhooks::rd(ent + 0x1C) } else { 0 };
+            let rw: u32 = if ent != 0 { crate::worldhooks::rd(ent + 0x18) } else { 0 };
+            // Return-address candidates of gta_sa.exe on the stack (diagnostics).
+            let probe = 0u32;
+            let sp = &probe as *const u32 as u32;
+            let mut calls = Vec::new();
+            for i in 0..0x300u32 {
+                let a = sp + 4 * i;
+                if !crate::dll::readable(a, 4) {
+                    break;
+                }
+                let w: u32 = crate::worldhooks::rd(a);
+                if (0x40_1000..0x85_6000).contains(&w) && calls.len() < 24 {
+                    calls.push(format!("{w:#x}"));
+                }
+            }
+            let rd = |base: u32, off: u32| -> u32 { if base != 0 { crate::worldhooks::rd(base + off) } else { 0 } };
+            let kind = rd(rw, 0) & 0xFF;
+            let geom = if kind == 1 { rd(rw, 0x18) } else { 0 };
+            crate::log!(
+                "d3d: CreateVertexBuffer(length {length}, usage {usage:#x}, fvf {fvf:#x}, pool {pool}) failed: {hr:#x} \
+                 (rendering entity {ent:#x} model {model} flags {flags:#x} rw {rw:#x} type {kind} geometry {geom:#x} \
+                 flags {:#x} locked {:#x} verts {} morphs {}; stack {})",
+                rd(geom, 8),
+                rd(geom, 0xC) & 0xFFFF,
+                rd(geom, 0x14),
+                rd(geom, 0x18),
+                calls.join(" ")
+            );
+        }
+    }
+    hr
 }
 
 /// samp's copies of the last VIEW / PROJECTION / WORLD matrices set through the proxy

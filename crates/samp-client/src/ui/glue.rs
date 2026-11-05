@@ -732,9 +732,11 @@ extern "system" fn reset_hook(_this: *mut std::ffi::c_void, params: *mut std::ff
                 r.on_lost();
             }
             crate::plates::on_lost();
-        })
+        });
+        crate::ui::mattext::on_lost();
     }));
     let hr = d3d::call_reset(params);
+    crate::crash::note(crate::crash::crumb::DEVICE_RESET, 0, hr as u32);
     crate::log!("ui: device Reset -> {hr:#x}");
     if hr >= 0 {
         let _ = catch_unwind(AssertUnwindSafe(|| {

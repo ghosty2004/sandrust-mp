@@ -9,8 +9,9 @@
 //! While the object renders, samp's device proxy `SetTexture` (A 0x10074BB0) replaces the slot's original texture
 //! with the render target (world-entities.md RE-10 §4).
 //!
-//! Inferred (not measured): left / right alignment as DT_LEFT / DT_RIGHT with the same DT_VCENTER | DT_NOCLIP;
-//! the render targets are not re-created after a device reset.
+//! Inferred (not measured): left / right alignment as DT_LEFT / DT_RIGHT with the same DT_VCENTER | DT_NOCLIP.
+//! Device loss (CRASH-1, measured with a forced Reset on both clients): the render targets are released before
+//! `Reset` and re-created by the next object pass ([`on_lost`]).
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -100,6 +101,33 @@ fn release(old: Option<Vec<Entry>>) {
             // SAFETY: we own the render-target texture reference.
             unsafe { d3d::release(e.texture as usize as *mut c_void) };
         }
+    }
+}
+
+/// Device lost (samp's lost-device handler B 0x100C3F60 → object pool loop 0x10012B20 → 0x100A8EE0 for every
+/// object with materials): every created render target (D3DPOOL_DEFAULT) is released and marked "not created",
+/// so `Reset` can succeed and the next object pass re-creates it ([`ensure`]). Slots whose creation failed stay
+/// failed, as in samp (its "created" flag is cleared only together with a texture).
+pub fn on_lost() {
+    let old: Vec<u32> = with(|s| {
+        let mut out = Vec::new();
+        for e in s.objects.values_mut().flatten() {
+            if e.texture != 0 {
+                out.push(e.texture);
+                e.texture = 0;
+                e.tried = false;
+            }
+        }
+        s.active.clear();
+        out
+    })
+    .unwrap_or_default();
+    for t in &old {
+        // SAFETY: we own these render-target texture references.
+        unsafe { d3d::release(*t as usize as *mut c_void) };
+    }
+    if !old.is_empty() {
+        crate::log!("mattext: device lost: {} render targets released", old.len());
     }
 }
 

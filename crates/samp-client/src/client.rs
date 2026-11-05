@@ -622,6 +622,7 @@ impl Client {
     fn on_rpc(&mut self, r: Incoming) {
         use player::Incoming as P;
         let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        crate::crash::note(crate::crash::crumb::RPC, u16::from(r.id()), 0);
         crate::ui::on_rpc(&r);
         match r {
             // RPC 40 (gmx): the reset routine, state 11 until the server sends InitGame again.

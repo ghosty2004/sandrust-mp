@@ -33,3 +33,10 @@ mod wndproc;
 
 #[cfg(windows)]
 pub use glue::*;
+
+/// Test hook (control channel `devreset`): the device reports "lost, reset possible" for `checks`
+/// `TestCooperativeLevel` calls.
+#[cfg(windows)]
+pub fn force_device_lost(checks: u32) {
+    d3d::FORCE_LOST.store(checks, std::sync::atomic::Ordering::SeqCst);
+}

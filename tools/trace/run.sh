@@ -20,6 +20,8 @@
 #     The session is private: run.sh prints "session: ID"; ui.sh needs TRACE_SESSION=ID and
 #     SAMP_RS_TRACE_LOCK_HELD=1 (owner only). TRACE_GAMEMODE=tracegm / TRACE_LAGCOMP=N (TRACE-6).
 #     E2E_RES=WxH sets the headless display size; TRACE_NO_SERVER=1 starts no server (holdjoin). d3d.jsonl is copied to the output dir.
+#   tools/trace/run.sh orig|ours objmap   (CRASH-1) tools/e2e/probe/objmap.pwn object-map stress; the game must
+#     survive until "[objmap] done" (TRACE_OBJMAP_MINIMIZE=1: minimise/restore the window during the churn).
 #   tools/trace/run.sh ours [join|spawn|remote]   our samp_client.dll + samp-tracer.dll
 #   tools/trace/run.sh bare [SECONDS]      no client: stock single-player boot (baseline), default 40 s
 # SAMP_TRACER_SCRIPTS=main,… (or *) adds per-command `stock_cmd` records for those stock scripts.
@@ -90,6 +92,10 @@ elif [ "$CLIENT" != bare ] && { [ "$STEPS" = hold ] || [ "$STEPS" = holdjoin ]; 
     dumpcap -q -i lo -f "udp port $E2E_PORT" -w "$OUT/net.pcapng" > /dev/null 2>&1 &
     DUMPCAP_PID=$!
     trace_say "server on UDP $E2E_PORT (+ traceui filterscript, capture pid $DUMPCAP_PID)"
+elif [ "$CLIENT" != bare ] && [ "$STEPS" = objmap ]; then
+    # shellcheck disable=SC2086
+    trace_server_start_fs ../e2e/probe/objmap.pwn objmap ${TRACE_OBJMAP_DEFINES:-} || exit 1
+    trace_say "server on UDP $E2E_PORT (+ objmap filterscript)"
 elif [ "$CLIENT" != bare ] && [ "$STEPS" = idle ]; then
     trace_server_start_fs spoff.pwn tracespoff "IDLE_MS=$(( ${TRACE_IDLE_SECS:-300} * 1000 ))" || exit 1
     trace_say "server on UDP $E2E_PORT (+ tracespoff filterscript, idle ${TRACE_IDLE_SECS:-300} s)"

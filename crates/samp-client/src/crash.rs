@@ -54,6 +54,99 @@ pub struct ReportInput {
     pub ped_context: Option<u8>,
     /// (name, base, size, path) — only for the file.
     pub modules: Vec<(String, u32, u32, String)>,
+    /// Exception code, access kind (0 read, 1 write, 8 execute) and accessed address (file only).
+    pub exception: Option<(u32, u32, u32)>,
+    /// The last client events, oldest first (file only; [`note`]).
+    pub breadcrumbs: Vec<Crumb>,
+}
+
+/// One breadcrumb of the game thread (see [`note`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Crumb {
+    /// Milliseconds since the DLL attached.
+    pub ms: u32,
+    pub kind: u8,
+    pub a: u16,
+    pub b: u32,
+}
+
+/// Breadcrumb kinds.
+pub mod crumb {
+    /// An RPC handled on the game thread (a = RPC id).
+    pub const RPC: u8 = 1;
+    /// Object create (a = object id, b = model).
+    pub const OBJ_CREATE: u8 = 2;
+    /// Object destroy (a = object id, b = model).
+    pub const OBJ_DESTROY: u8 = 3;
+    /// MoveObject (a = object id).
+    pub const OBJ_MOVE: u8 = 4;
+    /// Object RW object created by our streaming (a = object id, b = model).
+    pub const OBJ_RW: u8 = 5;
+    /// Device Reset through the proxy (b = HRESULT).
+    pub const DEVICE_RESET: u8 = 6;
+    /// The device state changed (b = TestCooperativeLevel HRESULT; 0 = usable again).
+    pub const DEVICE_LOST: u8 = 7;
+    /// A frame tick (b = tick number), recorded every 64 ticks.
+    pub const TICK: u8 = 8;
+    /// Material texture / text applied (a = object id, b = slot).
+    pub const OBJ_MATERIAL: u8 = 9;
+    /// `CreateVertexBuffer` failed (b = length).
+    pub const VB_CREATE_FAILED: u8 = 10;
+}
+
+const CRUMBS: usize = 64;
+static CRUMB_TIME: [std::sync::atomic::AtomicU32; CRUMBS] = [const { std::sync::atomic::AtomicU32::new(0) }; CRUMBS];
+static CRUMB_DATA: [std::sync::atomic::AtomicU64; CRUMBS] = [const { std::sync::atomic::AtomicU64::new(0) }; CRUMBS];
+static CRUMB_NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Records a breadcrumb (lock-free, so the exception filter can read the ring whatever lock the crashing
+/// thread held).
+pub fn note(kind: u8, a: u16, b: u32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let ms = EPOCH.get_or_init(std::time::Instant::now).elapsed().as_millis() as u32;
+    let i = CRUMB_NEXT.fetch_add(1, Relaxed) as usize % CRUMBS;
+    CRUMB_TIME[i].store(ms, Relaxed);
+    CRUMB_DATA[i].store((u64::from(kind) << 56) | (u64::from(a) << 32) | u64::from(b), Relaxed);
+}
+
+/// The breadcrumb ring, oldest first.
+pub fn breadcrumbs() -> Vec<Crumb> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let next = CRUMB_NEXT.load(Relaxed) as usize;
+    let n = next.min(CRUMBS);
+    (next - n..next)
+        .map(|k| {
+            let i = k % CRUMBS;
+            let d = CRUMB_DATA[i].load(Relaxed);
+            Crumb { ms: CRUMB_TIME[i].load(Relaxed), kind: (d >> 56) as u8, a: (d >> 32) as u16, b: d as u32 }
+        })
+        .collect()
+}
+
+fn crumb_text(c: &Crumb) -> String {
+    let what = match c.kind {
+        crumb::RPC => format!("rpc {}", c.a),
+        crumb::OBJ_CREATE => format!("object create id={} model={}", c.a, c.b),
+        crumb::OBJ_DESTROY => format!("object destroy id={} model={}", c.a, c.b),
+        crumb::OBJ_MOVE => format!("object move id={}", c.a),
+        crumb::OBJ_RW => format!("object rw id={} model={}", c.a, c.b as i32),
+        crumb::DEVICE_RESET => format!("device reset hr={:#010x}", c.b),
+        crumb::DEVICE_LOST => format!("device state hr={:#010x}", c.b),
+        crumb::TICK => format!("frame {}", c.b),
+        crumb::OBJ_MATERIAL => format!("object material id={} slot={}", c.a, c.b),
+        crumb::VB_CREATE_FAILED => format!("CreateVertexBuffer failed, length {}", c.b),
+        k => format!("kind {k} a={} b={:#x}", c.a, c.b),
+    };
+    format!("{:>10}.{:03} {what}", c.ms / 1000, c.ms % 1000)
+}
+
+/// "module+0xOFFSET" for an address inside one of `modules`.
+pub fn locate(addr: u32, modules: &[(String, u32, u32, String)]) -> Option<String> {
+    modules
+        .iter()
+        .find(|(_, base, size, _)| addr >= *base && addr - *base < *size)
+        .map(|(name, base, _, _)| format!("{name}+{:#x}", addr - base))
 }
 
 /// The dialog text (`with_modules` = false) or the file text (true).
@@ -80,6 +173,29 @@ pub fn report(r: &ReportInput, with_modules: bool) -> String {
         s += &format!("\r\nState Information: Ped Context: {c}\r\n");
     }
     if with_modules {
+        s += "\r\nDiagnostics (samp-rs):\r\n";
+        if let Some((code, kind, addr)) = r.exception {
+            let access = match kind {
+                0 => "read",
+                1 => "write",
+                8 => "execute",
+                _ => "access",
+            };
+            s += &format!("Exception code: 0x{code:08X} ({access} of 0x{addr:08X})\r\n");
+        }
+        s += &format!("Fault at: {}\r\n", locate(g.eip, &r.modules).unwrap_or_else(|| "unknown module".into()));
+        s += "Code addresses on the stack (return address candidates):\r\n";
+        let mut shown = 0;
+        for (i, w) in r.stack.iter().enumerate() {
+            if let Some(at) = locate(*w, &r.modules).filter(|_| shown < 40) {
+                s += &format!("  esp+{:03X}: 0x{w:08X} {at}\r\n", i * 4);
+                shown += 1;
+            }
+        }
+        s += "Last client events (oldest first, seconds since attach):\r\n";
+        for c in &r.breadcrumbs {
+            s += &format!("  {}\r\n", crumb_text(c));
+        }
         s += "\r\nLoaded Modules:\r\n";
         for (name, base, size, path) in &r.modules {
             s += &format!("{name}\tB: 0x{base:08X}\tS: 0x{size:08X}\t({path})\r\n");
@@ -280,11 +396,30 @@ mod imp {
             // SAFETY: byte global of gta_sa.exe.
             ped_context: Some(unsafe { std::ptr::read_volatile(crate::game::PLAYER_IN_FOCUS as usize as *const u8) }),
             modules: modules(),
+            exception: {
+                // SAFETY: the record comes from the system's exception dispatcher.
+                let rec = unsafe { (*info).ExceptionRecord };
+                (!rec.is_null()).then(|| {
+                    // SAFETY: as above.
+                    let r = unsafe { &*rec };
+                    let (kind, addr) = if r.NumberParameters >= 2 {
+                        (r.ExceptionInformation[0] as u32, r.ExceptionInformation[1] as u32)
+                    } else {
+                        (u32::MAX, 0)
+                    };
+                    (r.ExceptionCode as u32, kind, addr)
+                })
+            },
+            breadcrumbs: breadcrumbs(),
         };
         let full = report(&input, true);
         let path = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(REPORT_FILE)));
         let saved = path.as_ref().is_some_and(|p| std::fs::write(p, full.as_bytes()).is_ok());
-        crate::log!("crash: exception at {:#x}; report {}:\n{full}", regs.eip, if saved { "saved" } else { "NOT saved" });
+        crate::log::write_unblocked(format_args!(
+            "crash: exception at {:#x}; report {}:\n{full}",
+            regs.eip,
+            if saved { "saved" } else { "NOT saved" }
+        ));
         let mut text = report(&input, false).into_bytes();
         text.push(0);
         *TEXT.lock().unwrap_or_else(|e| e.into_inner()) = text;
@@ -350,6 +485,7 @@ mod tests {
             game_version: "US 1.0",
             ped_context: Some(0),
             modules: vec![("gta_sa.exe".into(), 0x40_0000, 0x10_0000, "C:\\gta_sa.exe".into())],
+            ..ReportInput::default()
         };
         let d = report(&r, false);
         assert!(d.starts_with("samp-rs 0.1.0 (SA-MP 0.3.7-R4 compatible)\r\nException At Address: 0x0072B850\r\nBase: 0x02F80000\r\n"));
@@ -357,6 +493,38 @@ mod tests {
         assert!(d.contains("\r\nSCM Op: 0x9BA, lDbg: 0 LastRendObj: 0\r\n\r\nGame Version: US 1.0\r\n\r\nState Information: Ped Context: 0\r\n"));
         assert!(!d.contains("Loaded Modules"));
         assert!(report(&r, true).ends_with("\r\nLoaded Modules:\r\ngta_sa.exe\tB: 0x00400000\tS: 0x00100000\t(C:\\gta_sa.exe)\r\n"));
+    }
+
+    #[test]
+    fn file_report_names_the_fault_module_and_the_last_events() {
+        note(crumb::RPC, 44, 0);
+        note(crumb::OBJ_CREATE, 736, 904);
+        let crumbs = breadcrumbs();
+        assert!(crumbs.len() >= 2);
+        let last = &crumbs[crumbs.len() - 2..];
+        assert_eq!((last[0].kind, last[0].a), (crumb::RPC, 44));
+        assert_eq!((last[1].kind, last[1].a, last[1].b), (crumb::OBJ_CREATE, 736, 904));
+        let modules = vec![
+            ("gta_sa.exe".to_string(), 0x40_0000, 0x80_0000, "C:\\gta_sa.exe".to_string()),
+            ("d3d9.dll".to_string(), 0x7600_0000, 0x10_0000, "C:\\d3d9.dll".to_string()),
+        ];
+        assert_eq!(locate(0x7F_5A3A, &modules).as_deref(), Some("gta_sa.exe+0x3f5a3a"));
+        assert_eq!(locate(0x10, &modules), None);
+        let r = ReportInput {
+            regs: Regs { eip: 0x7F_5A3A, ..Regs::default() },
+            stack: vec![0, 0x75_7C76, 0x7600_1234],
+            modules,
+            exception: Some((0xC000_0005, 0, 0)),
+            breadcrumbs: last.to_vec(),
+            ..ReportInput::default()
+        };
+        let f = report(&r, true);
+        assert!(f.contains("Exception code: 0xC0000005 (read of 0x00000000)\r\n"));
+        assert!(f.contains("Fault at: gta_sa.exe+0x3f5a3a\r\n"));
+        assert!(f.contains("  esp+004: 0x00757C76 gta_sa.exe+0x357c76\r\n"));
+        assert!(f.contains("  esp+008: 0x76001234 d3d9.dll+0x1234\r\n"));
+        assert!(f.contains("rpc 44\r\n") && f.contains("object create id=736 model=904\r\n"));
+        assert!(!report(&r, false).contains("Diagnostics"));
     }
 
     #[test]
