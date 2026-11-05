@@ -169,7 +169,9 @@ if (( rc == 0 )); then
         cat "$OUT/bass-diff.txt"
         (( d == 0 )) || { say "FAIL: BASS / audio call diff against the original (target/m9/bass-diff.txt)"; rc=1; }
     else
-        say "FAIL: no original run of the scenario ($ORIG); run tools/e2e/m9-orig.sh under the trace-lane lock"
+        say "FAIL: no original BASS call log ($ORIG). Regenerate it (trace lane, ~1-2 min) with:"
+        say "    $SAMP_RS_ROOT/tools/trace/with-lock.sh $ROOT/tools/e2e/m9-orig.sh"
+        say "  (writes $ROOT/target/m9-orig/trace.jsonl; or point M9_ORIG at an existing capture)"
         rc=1
     fi
 fi

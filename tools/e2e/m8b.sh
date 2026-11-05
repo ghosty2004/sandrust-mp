@@ -88,7 +88,8 @@ if [[ "${1:-}" == --inner ]]; then
         e2e_wait_log "\[ui-fs\] $SEQ done" 10 || fail "uifs command $SEQ ($1) not run"
         grep -E "\[ui-fs\] $SEQ " "$E2E_LOG" | grep -v " done " || true
     }
-    mark() { :; }
+    # Drunk steps: the frame counter just before the RPC is issued (see drunk_check).
+    mark() { case "$1" in drunk_5000|drunk_2100) PRE_TICKS="$(drunk_sample | cut -d' ' -f2)" ;; esac; }
     shot() { e2e_shot "$ROOT/target/$SHOT-$1.png" || say "warning: screenshot $1 failed"; }
     keydown() { e2e_keydown "$1"; LAST_INPUT=$SECONDS; }
     keyup() { e2e_keyup "$1"; }
@@ -99,6 +100,43 @@ if [[ "${1:-}" == --inner ]]; then
         e2e_wait_log "\[ui-fs\] connect [0-9]+ $1" 20 || fail "bot $1 did not join"
     }
     beh() { e2e_ctl behaviour; }
+    # One control connection, `behaviour` and `state` in a single write: the client answers both in the same
+    # control poll (once per frame, at the end of the frame hook), so the drunk level and the frame counter
+    # (`state ticks=`, one per frame-hook call) come from the same frame. Prints "DRUNK TICKS".
+    drunk_sample() {
+        python3 -I - "$E2E_CTL_PORT" <<'PY'
+import re, socket, sys
+try:
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=3)
+    s.settimeout(3)
+    s.sendall(b"behaviour\nstate\n")
+    f = s.makefile()
+    b, st = f.readline(), f.readline()
+    d, t = re.search(r" drunk=(-?\d+)", b), re.search(r" ticks=(\d+)", st)
+    print(f"{d.group(1)} {t.group(1)}" if d and t else f"? ? {b.strip()} | {st.strip()}")
+except OSError as e:
+    print(f"? ? {e}")
+PY
+    }
+    # The drunk level drops by 1 per frame (local tick, B 0x100ADE00) and the frame rate varies (52-60+ fps,
+    # samp's limiter is off in some states), so the checks count frames, not seconds:
+    #  * set:   PRE_TICKS (frame before the RPC was issued) .. A: the level was set to START after PRE_TICKS, so
+    #           START - (A.ticks - PRE_TICKS) <= A.drunk < START;
+    #  * decay: A .. B (1 s apart): A.drunk - B.drunk == B.ticks - A.ticks, +-2. Both samples are normally exact
+    #           (same-frame pair); the tolerance covers a sample whose two lines arrive in separate reads and are
+    #           answered one frame apart (at most 1 frame per sample).
+    drunk_check() { # drunk_check START
+        local start="$1" a b ad at bd bt
+        a="$(drunk_sample)"; sleep 1; b="$(drunk_sample)"
+        read -r ad at _ <<< "$a"; read -r bd bt _ <<< "$b"
+        [[ "$ad$at$bd$bt${PRE_TICKS:-}" =~ ^[0-9]+$ ]] || fail "$STEP: bad samples: pre=${PRE_TICKS:-} a=($a) b=($b)"
+        local since=$(( at - PRE_TICKS )) frames=$(( bt - at )) drop=$(( ad - bd ))
+        (( ad < start && ad >= start - since - 2 )) \
+            || fail "$STEP: drunk $ad $since frames after setting $start, want $(( start - since ))..$(( start - 1 ))"
+        (( drop >= frames - 2 && drop <= frames + 2 )) \
+            || fail "$STEP: drunk fell $drop ($ad -> $bd) over $frames frames, want $frames +-2"
+        say "$STEP: $start -> $ad after $since frames; -$drop over $frames frames"
+    }
     field() { sed -nE "s/.* $1=([^ ]+).*/\1/p" <<< "$2"; }
     near() { awk -v a="$1" -v b="$2" -v t="${3:-0.05}" 'BEGIN { d = a - b; if (d < 0) d = -d; exit !(d <= t) }'; }
     xyz() { IFS=, read -r X Y Z <<< "$1"; }
@@ -128,9 +166,8 @@ if [[ "${1:-}" == --inner ]]; then
             bounds_reset) [[ "$(field bounds "$l")" == "20000,-20000,20000,-20000" ]] || fail "bounds not reset: $l" ;;
             grav_player) near "$(field gravity "$l")" 0.002 0.00001 || fail "gravity: $l" ;;
             grav_reset) near "$(field gravity "$l")" 0.008 0.00001 || fail "gravity: $l" ;;
-            drunk_5000)
-                d="$(field drunk "$l")"; (( d > 4800 && d < 5000 )) || fail "drunk level $d after 2 s, want 4800..5000: $l" ;;
-            drunk_2100) d="$(field drunk "$l")"; (( d <= 2000 && d >= 1900 )) || fail "drunk level $d after 3 s from 2100: $l" ;;
+            drunk_5000) drunk_check 5000 ;;
+            drunk_2100) drunk_check 2100 ;;
             shop) [[ "$(field shop "$l")" != 0x0 ]] || fail "shop name pointer not set: $l" ;;
             wanted3) expect wanted 3 "$l" ;;
             stunt1) expect stunt 1 "$l" ;;
