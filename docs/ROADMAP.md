@@ -14,7 +14,7 @@ differential capture against the original client, e2e script.
 |---|---|---|
 | samp-client worktree fixa (lane main) | FIX-A: patch rows, HUD aspect, shadows, weather, 207 cadence | TEST-1 |
 | samp-client worktree fixb (lane veh) | FIX-B: radar markers, vehicle exit/components/door, rows 177/62, M5 leftovers | M6-P |
-| samp-client worktree m9 (lane ui) | M9 audio + M10 client features | — |
+| lane ui | — (free after the full e2e run) | M10-P |
 | measurement (lane trace, REA) | — (free) | EFX-2 |
 | harness (lanes diff + diff2) | — (free) | fix agents from docs/phase3/par-audit.md |
 | no-game | — (free) | NET-6 ack/resend timing; rename to sandrust-mp |
@@ -23,6 +23,7 @@ differential capture against the original client, e2e script.
 
 In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1, EFX-1.
 
+1. M10-P — remaining lifecycle deviations: create audioproxyoff only after a successful BASS init (like samp); lost-connection threshold 12.0 s vs measured 12.41–12.48 s (measure RakNet's exact rule); server-full retry 3.00 vs 3.04 s (attempt time taken after Connect returns); /quit packet reliability/channel + pool teardown order; m5 hang seen once after entering a car (watch)
 1. TEST-1 — m8b drunk check counts frames, not seconds (flaky when the limiter is off in some states); ClientCheck checksum replies (types 5/0x45–0x48) — measure the derivation cleanly and compute it honestly over real memory (currently not answered, not 1:1)
 1. FIX-A (from par-audit.md) — patches: HUD aspect rows 7/16/368/369, rows 165/184/166 shadows (165 was the state-block bug), CFont rows 225–239, rows 50/223/224/170/215–217; weather screen effect; 207 sent every 76 ms after leaving a car (532 ms original)
 1. FIX-B (from par-audit.md) — vehicles: remote driver exit task instead of warp, AddVehicleComponent order, door swing after exit, rows 177/62; radar markers for remote players; 207 anim id (check after M8b merge)
@@ -103,8 +104,8 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | M4-P | UI parity from TRACE-3 batch 2 + M4 deviations: chat render-to-texture cache (2048x1024 RT like samp), per-frame HUD flag order, connect timing (Started → +3.0 s Connecting; retry every ~6.05 s with "didn't respond" line), history keeps duplicates and position across close/send, input keeps text on ESC/F6, password mask U+25CF, ctrl+A / ctrl+word moves, /fontsize recreates GUI fonts immediately, /timestamp layout, IME/clipboard | done (merged 86dfabc) | D3D call-stream diff (tools/trace/d3d_diff.py) of chat/input scenarios = no differences | measured values in trace-notes "UI (TRACE-3)" |
 | M8a | Dialogs (6 styles), textdraws (+selection), menus, scoreboard, nametags + bars + AFK icon, death window, chat bubbles | done (merged 86dfabc) | `tools/e2e/m8a.sh` + D3D call-stream diff vs the original | measured values: trace-notes "UI (TRACE-3)" |
 | M8b | Spectating, camera RPCs, world bounds, gravity, interiors, animations (+table), drunk, fighting style, SCM events, ClientCheck, misc RPCs | done (merged 3b1ffad) | `tools/e2e/m8b.sh` + DIFF-2 + effect diffs | spec: trace-notes "Remaining behaviour (TRACE-8)" |
-| M9 | Audio: streams (BASS-equivalent, 20 ms volume loop, linear falloff), PlayerPlaySound, radio interaction | in-progress (worktree m9) | `tools/e2e/m9.sh` + BASS call-log diff | spec: trace-notes "Audio (TRACE-8)" |
-| M10 | Client features: sa-mp.cfg keys, chatlog, F8 screenshots, connection lifecycle (restart, kick/ban, wrong version/password/full, reconnect) | in-progress (worktree m9) | `tools/e2e/m10.sh` | spec: TRACE-8 client-features batch |
+| M9 | Audio: streams (BASS-equivalent, 20 ms volume loop, linear falloff), PlayerPlaySound, radio interaction | done (merged 9ac9007) | `tools/e2e/m9.sh` + BASS call-log diff | spec: trace-notes "Audio (TRACE-8)" |
+| M10 | Client features: sa-mp.cfg keys, chatlog, F8 screenshots, connection lifecycle (restart, kick/ban, wrong version/password/full, reconnect) | done (merged 9ac9007) | `tools/e2e/m10.sh` | spec: TRACE-8 client-features batch |
 | M12 | Windows validation run | deferred | user on Windows | final check outside Wine |
 
 ## Decisions waiting for the user
@@ -117,6 +118,8 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | D-4 | samp.saa data overrides (10 of 23 files differ; handling/weapon identical) | **resolved (2026-11-04): option A — read ALL redirected files from the user's samp.saa at runtime, exactly like the original (user: "I want 1:1"); never redistribute; fallback to our own minimal script when SA:MP isn't installed** |
 
 ## Decisions made autonomously
+- Audio: our client loads the user's own bass.dll through a static import exactly like samp.dll (nothing redistributed; consistent with D-4 = A); BASS call stream diffed 0/16 segments vs the original.
+- Audio: two samp bugs handled safely instead of reproduced: a positional stream with no ped matrix plays at volume 0 (samp reads uninitialised stack), and a META tag without ';' keeps the whole title (samp crashes).
 - Combat: on a missed shot the original sends a bullet packet whose hitPos is an uninitialised GTA stack colpoint (values vary per session). We replicate the mechanism, not the values: our LOS hook reads the same GTA stack colpoint after the same call, so a miss sends whatever GTA's stack holds (structure identical: hit_type 0, id 0xFFFF, offset 0; weapon 34 without entity not sent). Servers cannot depend on these values.
 - UX-1/DIFF-4 (2026-11-05): number-plate textures (samp's plate painter, called from its vehicle creation: 128×32 render target with `XYZSR998`/the server plate, copied to 64×32) are not reproduced yet; `tools/diff/boot_diff.py` leaves the painter's calls out on both sides. Follow-up PLATE-1 (vehicle owner).
 - UX-1 (2026-11-05): the boot diff compares runs of identical Presents (lengths are timing), masks the loading bar's x coordinates (its denominator depends on loading speed: 110 vs 109 steps measured for one build), reduces DT_CALCRECT results to their size, drops glyph-atlas texture coordinates and GTA's own out-of-scene streaming/render-target calls, and ignores a final run cut by the end of the logged window.
