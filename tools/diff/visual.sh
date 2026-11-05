@@ -11,8 +11,9 @@
 #   tools/diff/visual.sh --diff-only     only the diff of the existing captures
 #   tools/diff/visual.sh --ours-only     only capture our side
 #   VISUAL_ONLY=a,b                      diff only these elements
-#   VISUAL_SCENARIO_FILE=PATH            another scenario file defining visual_scenario (e.g.
-#                                        tools/diff/visual-featb.sh); VISUAL_DIR=PATH its own output root
+#   VISUAL_SCENARIO_FILE=PATH            another scenario file defining visual_scenario (default
+#                                        tools/diff/visual-scenario.sh, every element); VISUAL_DIR=PATH
+#                                        its own output root
 # Output: target/visual/{orig,ours}/ (d3d-NAME.jsonl, NAME.png, boot/ timeline, logs),
 # target/visual/report.txt.
 set -uo pipefail
@@ -51,6 +52,41 @@ try:
     print(s.makefile().readline().strip())
 except OSError:
     pass
+PY
+}
+# Measurement (no effect on the game): every remote ped's position and, for a ped in a vehicle,
+# the vehicle's position (CPed +0x58C → CPlaceable matrix +0x14 → position +0x30), appended to
+# $OUT/NAME-remote.txt. The driver nametag is anchored at that vehicle position on both clients.
+remote_probe() { python3 -I - "$TPORT" >> "$OUT/$1-remote.txt" <<'PY'
+import socket, struct, sys
+port = int(sys.argv[1])
+def ask(cmd, lines=1):
+    try:
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        s.sendall((cmd + "\n").encode())
+        f = s.makefile()
+        out = [f.readline().strip()]
+        if lines is None and out[0].startswith("remote count="):
+            out += [f.readline().strip() for _ in range(int(out[0].split("=")[1]))]
+        return out
+    except OSError:
+        return []
+def peek(addr, n):
+    r = ask("peek %#x %d" % (addr, n))
+    if not r or not r[0].startswith("peek "):
+        return None
+    return bytes(int(b, 16) for b in r[0].split()[2:])
+for line in ask("remote", None):
+    print(line)
+    if not line.startswith("remote slot="):
+        continue
+    ped = int(line.split("ped=")[1].split()[0], 16)
+    veh = peek(ped + 0x58C, 4)
+    veh = struct.unpack("<I", veh)[0] if veh else 0
+    mat = peek(veh + 0x14, 4) if veh else None
+    pos = peek(struct.unpack("<I", mat)[0] + 0x30, 12) if mat else None
+    if pos:
+        print("  vehicle=%#x pos=%.3f,%.3f,%.3f" % ((veh,) + struct.unpack("<3f", pos)))
 PY
 }
 mark_log() { LOGMARK=$(wc -l < "$E2E_LOG"); }
@@ -95,13 +131,30 @@ cap_end() {
 }
 cap() { cap_start "$1" "$2" "${3:-3}"; cap_end "$1"; shot "$1"; }
 BOTS=()
+BOTNAMES=()
 bot() {
     local name="$1"; shift
     mark_log
     ( cd "$SAMP_RS_ROOT" && exec "$TB/debug/samp-bot" "127.0.0.1:$PORT" --name "$name" "$@" ) > "$OUT/bot-$name.out" 2>&1 &
     BOTS+=($!)
+    BOTNAMES+=("$name")
 }
-killbots() { local p; for p in "${BOTS[@]}"; do kill "$p" 2>/dev/null; done; BOTS=(); sleep 2; }
+# Kills the bots and waits until the server has dropped each of them (`[part] NAME has left`,
+# the bot's connection times out): the next element must not race the remote player's removal
+# on the client (state-aligned, the same on both sides).
+killbots() {
+    local p n i
+    for p in "${BOTS[@]}"; do kill "$p" 2>/dev/null; done
+    for n in "${BOTNAMES[@]}"; do
+        for ((i = 0; i < 120; i++)); do
+            grep -qE "\[part\] $n has left the server" "$E2E_LOG" && break
+            sleep 0.25
+        done
+        (( i < 120 )) || say "$SIDE: bot $n not dropped by the server within 30 s"
+    done
+    BOTS=(); BOTNAMES=()
+    sleep 2
+}
 # Boot timeline: a screenshot (with a `mark shot-N` before it) every 0.4 s until the class
 # selection is requested.
 boot_timeline() {

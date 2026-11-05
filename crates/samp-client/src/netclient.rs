@@ -121,6 +121,9 @@ pub enum NetPacket {
 pub struct Counters {
     pub datagrams_sent: u64,
     pub datagrams_received: u64,
+    /// Datagram bytes on the wire (encrypted size), both directions.
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
     pub messages_received: u64,
     pub rpcs_received: u64,
     pub syncs_sent: u64,
@@ -311,6 +314,11 @@ impl NetClient {
         self.core().counters
     }
 
+    /// The reliability layer's statistics of the current connection (RakNet's statistics block).
+    pub fn link_stats(&self) -> Option<samp_proto::connection::Stats> {
+        self.core().conn.as_ref().map(|c| c.stats())
+    }
+
     /// The `net` control-channel reply.
     pub fn status_line(&self) -> String {
         let c = self.core();
@@ -460,6 +468,7 @@ impl Core {
             match sock.recv(&mut buf) {
                 Ok(n) => {
                     self.counters.datagrams_received += 1;
+                    self.counters.bytes_received += n as u64;
                     self.on_datagram(&buf[..n], now, &mut delivered);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
@@ -521,7 +530,10 @@ impl Core {
         cipher::encrypt(plain, self.key, &mut self.wire);
         let Some(sock) = self.sock.as_ref() else { return };
         match sock.send(&self.wire) {
-            Ok(_) => self.counters.datagrams_sent += 1,
+            Ok(n) => {
+                self.counters.datagrams_sent += 1;
+                self.counters.bytes_sent += n as u64;
+            }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
             Err(e) => crate::log!("net: send error: {e}"),
         }

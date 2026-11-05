@@ -570,3 +570,27 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - F5 exit 1: row 368 frame-local toggle caught by snapshot luck; harness now watches the writes (ff689b8): 2 runs PASS, negative test FAIL as expected.
 - F1 exit 1 (130/131: gangzone_stopflash screenshot phase), F3 exit 1 (44/45: veh_enter_B short anim sampling) — handed to a deflaking agent.
 - F4 exit 1: vehtag DIFF, netstats DIFF 2 lines, dl/dloff/testdw MISSING (scenario not driven for ours) — handed to a visual agent.
+
+## 2026-11-06 — F4 visual proof closed (worktree visual, branch visual-close)
+
+- One scenario for every element: the FEAT-B steps (`/dl`, `/dl` off, `/testdw`) moved to the end of
+  `tools/diff/visual-scenario.sh` (`visual-featb.sh` removed); the chat input still held
+  "clip text 1hello" after Escape, so the residual line is sent first (both clients keep it alike).
+- vehtag (248 lines): timing. Bot1 was killed without a disconnect and the server dropped it (~14 s
+  timeout) inside the capture window: gone after frame 1 on the original, after frame 2 on ours.
+  `killbots` now waits for each bot's `[part]` line; the capture waits 8 s after state 1→2.
+  Measured with the new `remote_probe` (tracer `remote` + `peek`): remote vehicle at
+  1696.000,−2591.1,13.274 on both clients; the samp anchor (A 0x10074240: driver → the samp
+  vehicle's matrix position) matches ours.
+- netstats: the 2 lines were a glyph-batch split caused by different digits; our F5 printed 0 for
+  RWObjects, FreeIDEs, Vehicle Models Loaded, rates, bytes, acks and ShotCompMode 1 (raw InitGame
+  value). Implemented samp's values (A 0x10060d20): pool block, GTA tables, lag-comp selector,
+  byte-delta rates, RakNet statistics from `samp_proto::connection::Stats` (new). Now e.g.
+  RWObjects 406/406, FreeIDEs 3673/3673, ShotCompMode 0/0, messages sent 237/237.
+- boot: our plate painter (now implemented) showed up when a vehicle streamed in during the boot
+  window; `boot_diff.py` recognises the painter by content on both sides.
+- Residual glyph-atlas batch splits (netstats, dloff, testdw; help's 3 lines are the same split,
+  run-dependent) covered by the existing decision rows.
+- Verified: `tools/diff/visual.sh` exit 0 twice (28/28 OK); negative test on copies of the
+  captures (dialog colour, F5 label, missing driver tag, missing element) → exit 1 each;
+  workspace tests + clippy (host + i686) 0 warnings.

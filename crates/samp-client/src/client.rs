@@ -443,6 +443,8 @@ impl Client {
             crate::ui::print_debug(&line);
         }
         // Chat input and connection lines of the in-game UI (M4).
+        let (veh_count, veh_models) = self.vehicles.pool_stats();
+        crate::ui::set_pool_stats(veh_count, veh_models, self.players.streamed(), self.objects.count());
         crate::ui::net_tick(&mut self.net);
         // The vehicle pool tick follows the local player's (remote-control-vehicles §6 step 3c).
         if self.netgame.connected() {

@@ -146,6 +146,33 @@ pub struct Connection {
     ping_ms: u32,
     /// Last accepted round-trip sample.
     pub rtt: Duration,
+    stats: Stats,
+}
+
+/// Reliability-layer statistics, the counters of RakNet's statistics block (samp's F5 overlay).
+/// Bits are the reliability layer's estimate of each message's encoded size.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// Messages transmitted for the first time.
+    pub messages_sent: u64,
+    /// Message numbers acknowledged in our datagrams.
+    pub acks_sent: u64,
+    /// Reliable messages transmitted again.
+    pub messages_resent: u64,
+    pub bits_resent: u64,
+    /// Bits of every message transmitted (first sends and resends) plus ack lists.
+    pub bits_sent: u64,
+    /// Message numbers acknowledged by the peer that were awaiting an ack.
+    pub acks_received: u64,
+    /// Acknowledged numbers that were not awaiting an ack (already acked or unknown).
+    pub duplicate_acks_received: u64,
+    /// Messages received (duplicates included, before reassembly).
+    pub messages_received: u64,
+    /// Snapshot fields (not counters): messages queued and not yet transmitted, numbers waiting
+    /// to be acknowledged by us, reliable messages awaiting the peer's ack.
+    pub messages_in_send_buffer: u32,
+    pub acks_in_send_buffer: u32,
+    pub messages_waiting_for_ack: u32,
 }
 
 /// Is `a` newer than `b` in 16-bit wrapping arithmetic?
@@ -205,6 +232,7 @@ impl Connection {
             lowest_ping: None,
             ping_ms: INITIAL_PING_MS,
             rtt: Duration::from_millis(INITIAL_PING_MS.into()),
+            stats: Stats::default(),
         }
     }
 
@@ -328,6 +356,9 @@ impl Connection {
             loop {
                 if self.outgoing.get(&n).is_some_and(|p| p.sent && p.msg.reliability.is_reliable()) {
                     self.outgoing.remove(&n);
+                    self.stats.acks_received += 1;
+                } else {
+                    self.stats.duplicate_acks_received += 1;
                 }
                 // Every acked number moves the ack timer (A 0x10049390).
                 self.ack_timer = if self.awaiting_ack() > 0 { Some(now) } else { None };
@@ -339,6 +370,7 @@ impl Connection {
         }
         let mut out = Vec::new();
         for m in dg.messages {
+            self.stats.messages_received += 1;
             if m.reliability.is_reliable() {
                 self.acks_due.push(m.number); // acked even when it turns out to be a duplicate
             }
@@ -542,6 +574,8 @@ impl Connection {
                 }
             }
             bits += ack_bits(&ranges);
+            self.stats.bits_sent += ack_bits(&ranges) as u64;
+            self.stats.acks_sent += ranges.iter().map(|r| u64::from(r.max.wrapping_sub(r.min)) + 1).sum::<u64>();
             dg.acks = ranges;
         }
         let timeout = self.resend_timeout();
@@ -561,6 +595,9 @@ impl Connection {
                 break;
             }
             bits += need;
+            self.stats.messages_resent += 1;
+            self.stats.bits_resent += need as u64;
+            self.stats.bits_sent += need as u64;
             self.resend.pop_front();
             self.resend.push_back(n);
             let p = self.outgoing.get_mut(&n).unwrap();
@@ -582,6 +619,8 @@ impl Connection {
                     break;
                 }
                 bits += need;
+                self.stats.messages_sent += 1;
+                self.stats.bits_sent += need as u64;
                 self.queues[q].pop_front();
                 let reliable = p.msg.reliability.is_reliable();
                 if reliable {
@@ -601,6 +640,15 @@ impl Connection {
             }
         }
         dg
+    }
+
+    /// The statistics counters with the current queue sizes.
+    pub fn stats(&self) -> Stats {
+        let mut s = self.stats;
+        s.messages_in_send_buffer = self.outgoing.values().filter(|p| !p.sent).count() as u32;
+        s.acks_in_send_buffer = self.acks_due.len() as u32;
+        s.messages_waiting_for_ack = self.awaiting_ack() as u32;
+        s
     }
 
     /// Number of reliable messages still awaiting acknowledgement (or not sent yet).
@@ -650,6 +698,24 @@ mod tests {
         assert_eq!(a.unacked(), 1);
         pump(&mut b, &mut a, t); // b sends the ack
         assert_eq!(a.unacked(), 0);
+    }
+
+    /// The statistics block: first sends, acks both ways, the send buffer and the ack wait.
+    #[test]
+    fn stats_count_sends_and_acks() {
+        let (mut a, mut b, t) = pair();
+        a.send_bytes(&[0x0b], Reliability::Reliable, 0);
+        assert_eq!(a.stats().messages_in_send_buffer, 1);
+        pump(&mut a, &mut b, t);
+        let s = a.stats();
+        assert_eq!((s.messages_sent, s.messages_in_send_buffer, s.messages_waiting_for_ack), (1, 0, 1));
+        assert!(s.bits_sent > 8);
+        assert_eq!((b.stats().messages_received, b.stats().acks_in_send_buffer), (1, 1));
+        pump(&mut b, &mut a, t);
+        assert_eq!(b.stats().acks_sent, 1);
+        let s = a.stats();
+        assert_eq!((s.acks_received, s.duplicate_acks_received, s.messages_waiting_for_ack), (1, 0, 0));
+        assert_eq!((s.messages_resent, s.bits_resent), (0, 0));
     }
 
     /// Before any pong the resend timeout is 3 × 1000 ms; no backoff afterwards.

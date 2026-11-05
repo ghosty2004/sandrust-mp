@@ -85,6 +85,35 @@ struct State {
     netgame_object: bool,
     /// F5 counters published by the session tick (`net_tick`).
     net_stats: super::core::NetStats,
+    /// Wire byte totals (sent, received) published by the session tick.
+    net_bytes: (u64, u64),
+    /// The F5 rate sampler (samp's overlay object): totals and deltas of the last sample.
+    rates: RateSampler,
+}
+
+/// The F5 download/upload rates (A 0x10060d20): while the overlay draws, once more than 1000 ms
+/// have passed since the last sample, the byte deltas since that sample are taken; each rate is
+/// the stored delta / 1024 (KB per sample) until the next sample.
+#[derive(Default)]
+struct RateSampler {
+    last: Option<std::time::Instant>,
+    sent: u64,
+    received: u64,
+    d_sent: u64,
+    d_received: u64,
+}
+
+impl RateSampler {
+    fn sample(&mut self, now: std::time::Instant, sent: u64, received: u64) -> (f32, f32) {
+        if self.last.is_none_or(|t| now.duration_since(t).as_millis() > 1000) {
+            self.last = Some(now);
+            self.d_received = received.wrapping_sub(self.received);
+            self.received = received;
+            self.d_sent = sent.wrapping_sub(self.sent);
+            self.sent = sent;
+        }
+        (self.d_received as f32 / 1024.0, self.d_sent as f32 / 1024.0)
+    }
 }
 
 // SAFETY: the raw D3D pointers inside are only used on the game's main thread;
@@ -336,8 +365,17 @@ pub(super) fn editor_message(msg: u32, w: usize) -> bool {
     consumed
 }
 
-/// F5 values: memory from the process and GTA's streaming globals, the rest from what our
-/// client counts (the network block uses our connection's datagram/message counters).
+/// GTA 1.0 US: `CStreaming::ms_aInfoForModel` (20-byte entries, load state at +0x10).
+const STREAMING_INFO: u32 = 0x8E4CC0;
+/// `CModelInfo::ms_modelInfoPtrs` (20000 entries).
+const MODEL_INFO_PTRS: u32 = 0xA9B0C8;
+/// The RenderWare object counter F5 shows as RWObjects.
+const RW_OBJECT_COUNT: u32 = 0xB71804;
+
+/// F5 values: memory from the process, GTA's streaming / model tables (vehicle models 400…610
+/// with a non-zero load state, null model-info slots among ids 1000…19999, the RW object
+/// counter), the rest from what our client counts (pools from the session tick, the network
+/// block from our reliability layer).
 fn net_stats_values(base: &super::core::NetStats) -> super::core::NetStats {
     use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
@@ -346,6 +384,15 @@ fn net_stats_values(base: &super::core::NetStats) -> super::core::NetStats {
     // CStreaming::ms_memoryUsed / ms_memoryAvailable (1.0 US).
     s.streaming_mb = m.read_u32(0x8E4CB4).unwrap_or(0) / (1024 * 1024);
     s.streaming_total_mb = m.read_u32(0x8A5A80).unwrap_or(0) / (1024 * 1024);
+    let mut info = vec![0u8; 211 * 20];
+    if m.read(STREAMING_INFO + 400 * 20, &mut info).is_ok() {
+        s.vehicle_models_loaded = info.as_chunks::<20>().0.iter().filter(|e| e[0x10..0x14] != [0; 4]).count() as u32;
+    }
+    s.rw_objects = m.read_u32(RW_OBJECT_COUNT).unwrap_or(0);
+    let mut ptrs = vec![0u8; 19000 * 4];
+    if m.read(MODEL_INFO_PTRS + 1000 * 4, &mut ptrs).is_ok() {
+        s.free_ides = ptrs.as_chunks::<4>().0.iter().filter(|p| **p == [0; 4]).count() as u32;
+    }
     // SAFETY: plain Win32 queries into correctly sized structs.
     unsafe {
         let mut pmc: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
@@ -492,6 +539,8 @@ fn ensure(g: &mut Option<State>, debug_mode: bool) -> &mut State {
             spawn_release: false,
             netgame_object: false,
             net_stats: super::core::NetStats::default(),
+            net_bytes: (0, 0),
+            rates: RateSampler::default(),
         }
     })
 }
@@ -977,8 +1026,14 @@ fn present_pass() {
     let bubbles = if sb_open { Vec::new() } else { bubbles(st) };
     // Step 4b: the audio stream title line (B 0x10066a70), when the netgame exists.
     let audio_title = if st.core.netgame { crate::audio::title_text() } else { None };
-    let net_stats =
-        (overlay == Some(Overlay::NetStats)).then(|| super::core::net_stats_text(&net_stats_values(&st.net_stats)));
+    let net_stats = (overlay == Some(Overlay::NetStats)).then(|| {
+        let (sent, received) = st.net_bytes;
+        let (down, up) = st.rates.sample(std::time::Instant::now(), sent, received);
+        let mut base = st.net_stats.clone();
+        base.download_kbs = down;
+        base.upload_kbs = up;
+        super::core::net_stats_text(&net_stats_values(&base))
+    });
     let Some(r) = st.renderer.as_mut() else { return };
     if std::mem::take(&mut st.core.requests.rebuild_fonts) || r.needs_rebuild(fs) {
         r.rebuild_fonts(&face, weight, fs);
@@ -1342,7 +1397,8 @@ pub fn head_move_disabled() -> bool {
 pub fn on_init_game(g: &samp_proto::session::InitGame) {
     with_ui(|st| {
         st.net_stats.send_rate = g.on_foot_rate;
-        st.net_stats.shot_comp_mode = g.lag_compensation;
+        // samp's lag-comp selector (A 0x10118990: InitGame 1 → 0, 2 → 1, else 2).
+        st.net_stats.shot_comp_mode = u32::from(crate::combat::lag_comp_selector(g.lag_compensation));
         st.core.on_init_game(g)
     });
 }
@@ -1367,6 +1423,18 @@ pub fn on_rpc(r: &Incoming) {
     with_ui(|st| st.core.on_rpc(r, &GameExpander));
 }
 
+/// F5 pool block (A 0x10060d20), once per session tick: vehicles in the pool, distinct models
+/// among those with a GTA vehicle, remote ped slots in use, objects in the pool.
+pub fn set_pool_stats(vehicles: u32, vehicle_models: u32, ped_slots: u32, objects: u32) {
+    let _ = try_with_ui(|st| {
+        let s = &mut st.net_stats;
+        s.vehicles = vehicles;
+        s.vehicle_models = vehicle_models;
+        s.ped_slots_used = ped_slots;
+        s.object_slots_used = objects;
+    });
+}
+
 /// Remote players for nametags, bubbles and the scoreboard (once per session tick).
 pub fn set_remotes(remotes: Vec<super::core::RemoteUi>) {
     let _ = try_with_ui(|st| st.remotes = remotes);
@@ -1380,10 +1448,23 @@ pub fn set_class_selection(active: bool) {
 /// Once per session tick: connection lines and the UI's outgoing messages.
 pub fn net_tick(net: &mut NetClient) {
     let c = net.counters();
+    let l = net.link_stats().unwrap_or_default();
     let _ = with_ui(|st| {
+        st.net_bytes = (c.bytes_sent, c.bytes_received);
         let s = &mut st.net_stats;
-        s.messages_sent = c.datagrams_sent as u32;
-        s.messages_received = c.messages_received as u32;
+        s.messages_in_send_buffer = l.messages_in_send_buffer;
+        s.messages_sent = l.messages_sent as u32;
+        s.bytes_sent = (l.bits_sent / 8) as u32;
+        s.acks_sent = l.acks_sent as u32;
+        s.acks_in_send_buffer = l.acks_in_send_buffer;
+        s.messages_waiting_for_ack = l.messages_waiting_for_ack;
+        s.messages_resent = l.messages_resent as u32;
+        s.bytes_resent = (l.bits_resent / 8) as u32;
+        s.packet_loss = if l.bits_sent == 0 { 0.0 } else { l.bits_resent as f32 * 100.0 / l.bits_sent as f32 };
+        s.messages_received = l.messages_received as u32;
+        s.bytes_received = c.bytes_received as u32;
+        s.acks_received = l.acks_received as u32;
+        s.duplicate_acks_received = l.duplicate_acks_received as u32;
     });
     let out = with_ui(|st| st.core.take_outgoing())
     .unwrap_or_default();

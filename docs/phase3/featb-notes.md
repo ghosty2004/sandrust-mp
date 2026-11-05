@@ -20,7 +20,7 @@ lane, ours in lane ui, same scenario (`tools/e2e/featbscen.sh`), samp-tracer on 
   since per-frame commands depend on the frame rate). Decisions: `tools/e2e/featb-decisions.tsv` (empty).
 * `tools/e2e/featb-version.sh` — FEAT-10 "Version Error" on both clients (lane ui, a copy of gta_sa.exe with the
   probe byte changed, as a new top-level file of the lane's game dir, removed afterwards).
-* `tools/diff/visual-featb.sh` + `VISUAL_SCENARIO_FILE` / `VISUAL_DIR` in `tools/diff/visual.sh` and the elements
+* the end of `tools/diff/visual-scenario.sh` (formerly `tools/diff/visual-featb.sh`) and the elements
   `dl`, `dloff`, `testdw` in `tools/diff/visual_diff.py` — the D3D call-stream diff of `/dl` and `/testdw`.
 * samp-tracer: `window [click ID]` control command (top-level windows of the game process: class, title, window
   and class style, dialog controls with texts; `click` posts a button click and refuses any "Report" button).

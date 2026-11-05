@@ -138,6 +138,7 @@ def boot_frames(path, keep_plates=False):
     frames, cur = [], []
     g9 = 0
     in_plate = False
+    plate_end = None
     with open(path) as f:
         for line in f:
             try:
@@ -157,14 +158,25 @@ def boot_frames(path, keep_plates=False):
                 continue
             if not keep_plates and gs == 9 and g9 > 0:
                 # The plate render: a render-to-surface scope on a 128x32 surface, plus the
-                # painter's own calls (texture creation, copies).
-                if fn == "rts.BeginScene" and "128x32" in str((r.get("args") or {}).get("surface")):
+                # painter's own calls (texture creation, copies). Recognised by content too, so
+                # our client's painter (its own code offsets) is left out the same way: the
+                # 64x32 / 128x32 A8R8G8B8-less (format 22) textures, the copy out of the 128x32
+                # surface, and the device calls the scope's EndScene makes after its record.
+                a = r.get("args") or {}
+                if fn == "rts.BeginScene" and "128x32" in str(a.get("surface")):
                     in_plate = True
-                creation = fn.startswith("D3DXCreate") and "128" in json.dumps(r.get("args"))
-                if in_plate or (plate_call(r) and not creation):
-                    if fn == "rts.EndScene":
+                creation = fn.startswith("D3DXCreate") and "128" in json.dumps(a)
+                plate_tex = fn in ("dev.CreateTexture", "D3DXCreateTexture") and a.get("format") == 22 \
+                    and (a.get("w"), a.get("h")) in ((64, 32), (128, 32)) and a.get("pool") in (0, 2) \
+                    and not creation
+                plate_copy = fn == "dev.StretchRect" and "128x32" in str(a.get("src"))
+                after_end = plate_end is not None and str(r.get("org", "")).startswith(plate_end + " ")
+                if in_plate or plate_tex or plate_copy or after_end or (plate_call(r) and not creation):
+                    if fn == "rts.EndScene" and in_plate:
                         in_plate = False
+                        plate_end = str(r.get("by", ""))
                     continue
+                plate_end = None
             if gs == 9 and game_side(r):
                 continue
             cur.append(r)
