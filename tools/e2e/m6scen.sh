@@ -86,7 +86,9 @@ m6_scenario() {
         fs "actdel|0"; sleep 1
         mark shoot-actor
         fs "actor|101|1700|-2606|13.55|180"; fs "actinv|0|0"; sleep 1
-        fs "pos|L|1700|-2611.5|$M6_Z|0"; fs "weapon|L|22|50"; sleep 2
+        # The un-aimed shot starts at the right hand (samp's fire path, combat §3.3/§5) and runs along the facing:
+        # 0.15 m left of the actor's line, so the ray crosses the actor's body instead of grazing its neck.
+        fs "pos|L|1699.85|-2611.5|$M6_Z|0"; fs "weapon|L|22|50"; sleep 2
         fire 300; sleep 1; fire 300; sleep 1; fire 300; sleep 2
         check actor-damage
         mark shoot-actor-done

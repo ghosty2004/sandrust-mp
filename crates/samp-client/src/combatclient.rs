@@ -84,8 +84,9 @@ impl Combat {
         );
     }
 
-    /// Publishes the remote players / vehicles for the hooks (before GTA runs and before remote shots).
-    pub fn update_shared(&self, players: &Players, vehicles: &Vehicles) {
+    /// Publishes the remote players / vehicles / actors for the hooks (before GTA runs and before remote shots).
+    /// `actors` = (ped, actor id) of the world-entity code (entities.rs), for RPC 177 and 204's target actor.
+    pub fn update_shared(&self, players: &Players, vehicles: &Vehicles, actors: Vec<(u32, u16)>) {
         let remotes = players
             .iter()
             .filter(|p| p.ped != 0)
@@ -97,7 +98,6 @@ impl Combat {
                 vehicle: vehicles.remote_vehicle(p.id),
             })
             .collect();
-        let actors = hooks::SHARED.lock().ok().and_then(|g| g.as_ref().map(|s| s.actors.clone())).unwrap_or_default();
         hooks::set_shared(Shared {
             local_team: self.local_team,
             remotes,
@@ -107,8 +107,10 @@ impl Combat {
         });
     }
 
-    /// Sends what the hooks queued, in order (206 rel 7 ch 0; 115 / 177 rel 9 ch 0).
-    pub fn drain(&mut self, net: &mut NetClient) {
+    /// Sends what the hooks queued, in order (206 rel 7 ch 0; 115 / 177 rel 9 ch 0). Returns how many 177s
+    /// were sent (counted by the world-entity code).
+    pub fn drain(&mut self, net: &mut NetClient) -> u32 {
+        let mut sent_177 = 0;
         for o in hooks::take_outgoing() {
             match o {
                 Outgoing::Bullet(b) => net.send_sync(&b),
@@ -122,12 +124,16 @@ impl Combat {
                     },
                     Reliability::ReliableOrdered,
                 ),
-                Outgoing::ActorDamage { actor, damage, weapon, body_part } => net.send_rpc(
-                    &world::OnPlayerDamageActor { unknown: false, actor_id: actor, damage, weapon, body_part },
-                    Reliability::ReliableOrdered,
-                ),
+                Outgoing::ActorDamage { actor, damage, weapon, body_part } => {
+                    net.send_rpc(
+                        &world::OnPlayerDamageActor { unknown: false, actor_id: actor, damage, weapon, body_part },
+                        Reliability::ReliableOrdered,
+                    );
+                    sent_177 += 1;
+                }
             }
         }
+        sent_177
     }
 
     /// 206 from the server (A 0x10009B40 → 0x10016370): checks, target entity, weapon, then the shot.

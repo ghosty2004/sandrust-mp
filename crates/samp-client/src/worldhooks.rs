@@ -34,7 +34,6 @@ pub mod g {
     pub const OBJECT_POOL: u32 = 0xB7449C;
     pub const OBJECT_SIZE: u32 = 0x19C;
     pub const VTBL_OBJECT: u32 = 0x866F60;
-    pub const VTBL_CIVILIAN_PED: u32 = 0x86C0A8;
     pub const VTBL_PLACEABLE: u32 = 0x863C40;
     /// `RwEngineInstance` (+0x20 render-state set).
     pub const RW_ENGINE: u32 = 0xC97B24;
@@ -94,8 +93,6 @@ pub const ENTITY_FLAG_LIGHTING: u32 = 0x1000_0000;
 pub enum Event {
     /// The collision path reported pickup `id` (RPC 131, rel 9).
     PickupHit(i32),
-    /// The local ped damaged an actor (RPC 177).
-    ActorDamage { actor: u16, damage: f32, weapon: u32, part: u32 },
 }
 
 /// A material slot as the render hooks apply it (RE-10 §4: texture +0x217, colour +0x257).
@@ -160,8 +157,6 @@ pub struct Shared {
     /// GTA pickup index → samp pickup id, and the per-id collision cooldown.
     pub pickups: HashMap<u32, i32>,
     pub cooldown: HashMap<i32, u32>,
-    /// Actor peds → actor id.
-    pub actor_peds: HashMap<u32, u16>,
     pub colours: Option<crate::ui::colours::PlayerColours>,
     pub attached: Vec<Attached>,
     pub events: Vec<Event>,
@@ -213,10 +208,6 @@ pub(crate) fn wr<T: Copy>(a: u32, v: T) {
 
 fn v3(a: u32) -> [f32; 3] {
     [rd(a), rd(a + 4), rd(a + 8)]
-}
-
-fn local_ped() -> u32 {
-    rd(g::CWORLD_PLAYERS)
 }
 
 fn thiscall0(f: u32, this: u32) -> u32 {
@@ -1068,57 +1059,9 @@ unsafe extern "C" fn process_vertical_line_stub() {
     )
 }
 
-// ---- row 53: ComputeDamageResponse (actor rules) ------------------------------------------------------------
-
-/// Decision of remote-control-combat.md §6.1 for the rules M6 needs: 1 (damager ≠ local and victim is a
-/// CCivilianPed → cancel) and 7 (damager local, victim an actor → RPC 177, cancel). 1 = cancel.
-extern "C" fn damage_decision(calc: u32, victim: u32) -> u32 {
-    let local = local_ped();
-    let damager: u32 = rd(calc);
-    try_shared(|s| {
-        if !s.active {
-            return 0;
-        }
-        if damager != local && rd::<u32>(victim) == g::VTBL_CIVILIAN_PED {
-            return 1;
-        }
-        if damager == local
-            && local != 0
-            && let Some(&actor) = s.actor_peds.get(&victim)
-        {
-            s.events.push(Event::ActorDamage {
-                actor,
-                damage: rd(calc + 4),
-                weapon: rd(calc + 0xC),
-                part: rd(calc + 8),
-            });
-            return 1;
-        }
-        0
-    })
-    .unwrap_or(0)
-}
-
-#[unsafe(naked)]
-unsafe extern "C" fn compute_damage_response_stub() {
-    core::arch::naked_asm!(
-        "pushad",
-        "push dword ptr [esp+0x24]",
-        "push ecx",
-        "call {d}",
-        "add esp, 8",
-        "test eax, eax",
-        "popad",
-        "jnz 2f",
-        "mov eax, fs:[0]",
-        "push {cont}",
-        "ret",
-        "2:",
-        "ret 0xC",
-        d = sym damage_decision,
-        cont = const 0x4B5AC6u32,
-    )
-}
+// Row 53 (ComputeDamageResponse) is installed once, by combathooks.rs (H6): its rules include M6's actor rules
+// (others hitting a CCivilianPed → cancel; local hitting an actor → RPC 177, cancel), fed with the actors
+// entities.rs publishes every tick.
 
 // ---- install ------------------------------------------------------------------------------------------------------
 
@@ -1343,7 +1286,7 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
         },
     ));
     // jmp-indirect entries.
-    let ind: [IndirectRow; 5] = [
+    let ind: [IndirectRow; 4] = [
         (
             96,
             0x5674E0,
@@ -1359,14 +1302,6 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
             radar_trace_colour as extern "C" fn(u32) -> u32 as usize as u32,
             &[0x8B, 0x44, 0x24, 0x04, 0x83, 0xF8, 0x08],
             "CRadar::GetRadarTraceColour",
-        ),
-        (
-            53,
-            0x4B5AC0,
-            0x4B5ABC,
-            compute_damage_response_stub as unsafe extern "C" fn() as usize as u32,
-            &[0x64, 0xA1, 0x00, 0x00, 0x00, 0x00],
-            "ComputeDamageResponse",
         ),
         (
             65,

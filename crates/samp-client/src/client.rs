@@ -242,14 +242,14 @@ impl Client {
             self.net_started = true;
         }
         // What the combat hooks queued during this frame's CGame::Process (206 / 115), first.
-        self.combat.drain(&mut self.net);
+        self.entities.sent_177 += self.combat.drain(&mut self.net);
         if self.net_started {
-            self.combat.update_shared(&self.players, &self.vehicles);
+            self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors());
             for ev in self.net.tick(now) {
                 self.on_event(ev, now);
             }
             // Remote 206 shots fired while the packets were handled (115 taking 1).
-            self.combat.drain(&mut self.net);
+            self.entities.sent_177 += self.combat.drain(&mut self.net);
         }
         if self.debug_spawn {
             self.debug_spawn = false;
@@ -318,8 +318,8 @@ impl Client {
             self.entities.tick(&mut self.runner, &mut self.net, &self.players, &self.vehicles);
         }
         // The hooks' view for the next CGame::Process.
-        self.combat.update_shared(&self.players, &self.vehicles);
-        self.combat.drain(&mut self.net);
+        self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors());
+        self.entities.sent_177 += self.combat.drain(&mut self.net);
         // Push out what this frame queued (sync packets, RPCs) right away.
         if self.net_started {
             self.net.flush(now);
@@ -385,7 +385,7 @@ impl Client {
             }
             // Bullet sync fires its shot at once (A 0x10009B40 → 0x10016370; combat §8 P10).
             S::Bullet(b) => {
-                self.combat.update_shared(&self.players, &self.vehicles);
+                self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors());
                 self.combat.on_bullet(&mut self.runner, &mut self.players, &self.vehicles, &b);
             }
             s => self.players.on_sync(s, now),
