@@ -34,6 +34,17 @@ static TICKS: AtomicU64 = AtomicU64::new(0);
 /// Milliseconds since attach at the last tick (0 = never ticked).
 static LAST_TICK_MS: AtomicU64 = AtomicU64::new(0);
 static QUIT: AtomicBool = AtomicBool::new(false);
+/// This DLL's image base (DllMain's module handle; samp keeps its own the same way, A 0x100c5100).
+static MODULE_BASE: AtomicU32 = AtomicU32::new(0);
+
+/// This client module's image base.
+pub(crate) fn module_base() -> u32 {
+    MODULE_BASE.load(Ordering::SeqCst)
+}
+/// `since_start_ms` of the `/quit` (0 = none).
+static QUIT_AT_MS: AtomicU64 = AtomicU64::new(0);
+/// `/quit` arrived while the session was locked: Disconnect on the next frame.
+static QUIT_PENDING: AtomicBool = AtomicBool::new(false);
 static START: Mutex<Option<Instant>> = Mutex::new(None);
 /// Connection arguments from the command line (parsed at attach).
 static ARGS: std::sync::OnceLock<crate::cmdline::ConnectArgs> = std::sync::OnceLock::new();
@@ -56,6 +67,7 @@ fn since_start_ms() -> u64 {
 #[allow(non_snake_case)]
 pub extern "system" fn DllMain(hinst: HINSTANCE, reason: u32, _reserved: *mut c_void) -> i32 {
     if reason == DLL_PROCESS_ATTACH {
+        MODULE_BASE.store(hinst as usize as u32, Ordering::SeqCst);
         // SAFETY: valid module handle passed by the loader.
         unsafe { DisableThreadLibraryCalls(hinst) };
         let _ = catch_unwind(attach);
@@ -718,6 +730,7 @@ fn tick() {
     }
     // In-game UI (M4): first-frame setup, input restore, queued UI work.
     crate::ui::frame_entry(false);
+    quit_tick();
     service_control("tick");
 }
 
@@ -857,18 +870,53 @@ pub(crate) fn request_quit() {
     if QUIT.swap(true, Ordering::SeqCst) {
         return;
     }
-    crate::log!("quit requested: setting RsGlobal.quit");
-    if let Ok(mut g) = CLIENT.try_lock()
-        && let Some(c) = g.as_mut()
-    {
-        c.shutdown();
+    // samp's quit (A 0x100c3ec0): Disconnect(500) in netgame state 5, then the quit flag and its
+    // GetTickCount; the frame routine (A 0x100c5030) keeps running the game and, once more than
+    // 1000 ms passed, deletes the netgame and calls ExitProcess(0) ([`quit_tick`]).
+    QUIT_AT_MS.store(since_start_ms().max(1), Ordering::SeqCst);
+    crate::log!("quit requested");
+    match CLIENT.try_lock() {
+        Ok(mut g) => {
+            if let Some(c) = g.as_mut() {
+                c.begin_quit();
+            }
+        }
+        // Busy (control thread): the next frame does it.
+        Err(_) => QUIT_PENDING.store(true, Ordering::SeqCst),
     }
-    let _ = ProcessMemory.write(game::RS_GLOBAL_QUIT, &1u32.to_le_bytes());
-    // If the game does not shut down by itself, end the process.
+    // Without frame ticks (loading, GTA's menu) the frame routine never ends the process: let
+    // GTA shut down, then terminate.
     let _ = std::thread::Builder::new().name("samp-quit".into()).spawn(|| {
+        std::thread::sleep(Duration::from_secs(4));
+        crate::log!("no quit from the frame routine 4 s after /quit; setting RsGlobal.quit");
+        let _ = ProcessMemory.write(game::RS_GLOBAL_QUIT, &1u32.to_le_bytes());
         std::thread::sleep(Duration::from_secs(8));
-        crate::log!("game still running 8s after quit; terminating the process");
+        crate::log!("game still running after quit; terminating the process");
         // SAFETY: terminating our own process.
         unsafe { TerminateProcess(GetCurrentProcess(), 0) };
     });
+}
+
+/// The quit step of samp's frame routine (A 0x100c5030, after the pre-step): once more than
+/// 1000 ms passed since `/quit` (`< 1001` returns), the netgame is deleted and the process ends.
+fn quit_tick() {
+    let at = QUIT_AT_MS.load(Ordering::SeqCst);
+    if at == 0 {
+        return;
+    }
+    if QUIT_PENDING.swap(false, Ordering::SeqCst)
+        && let Ok(mut g) = CLIENT.lock()
+        && let Some(c) = g.as_mut()
+    {
+        c.begin_quit();
+    }
+    if since_start_ms().saturating_sub(at) < 1001 {
+        return;
+    }
+    if let Some(mut c) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        c.quit_teardown();
+    }
+    crate::log!("exit");
+    // SAFETY: ending our own process like samp.
+    unsafe { windows_sys::Win32::System::Threading::ExitProcess(0) };
 }

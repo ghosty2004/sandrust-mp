@@ -149,6 +149,23 @@ pub fn client_check_in_limits(offset: u16, count: u16) -> bool {
     offset <= 0x100 && (2..=0x100).contains(&count)
 }
 
+/// ClientCheck checksum (A 0x1000EA80): the XOR of every byte masked with 0xCC. Applied by the
+/// handler to `count` bytes of real memory: the client's own process (types 5, 0x45, 0x46, 0x47).
+pub fn client_check_sum(bytes: &[u8]) -> u8 {
+    bytes.iter().fold(0, |acc, b| acc ^ (b & 0xCC))
+}
+
+/// Type 5: the address must lie in [0x400000, 0x856E00] (A 0x10011CD8), else no reply.
+pub fn client_check_exe_range(arg: u32) -> bool {
+    (0x40_0000..=0x85_6E00).contains(&arg)
+}
+
+/// Type 0x45: the offset into the client's own module must be ≤ 800000 (A 0x10011D06), else no reply.
+pub const CLIENT_CHECK_MODULE_LIMIT: u32 = 800_000;
+
+/// Type 0x47: HAS_MODEL_LOADED is polled this many times, 1 ms apart, after the request (A 0x10011B9A).
+pub const CLIENT_CHECK_LOAD_POLLS: u32 = 1000;
+
 /// Type 0x48 reply argument (B 0x10011DC9): the QueryPerformanceCounter clock in ms (B 0x1002E7A0), low 28 bits,
 /// with 0x30000000 set.
 pub fn client_check_time_arg(ms: u64) -> u32 {
@@ -210,5 +227,10 @@ mod tests {
         assert!(!client_check_in_limits(0, 300));
         assert!(!client_check_in_limits(0, 1));
         assert_eq!(client_check_time_arg(0x1234_5678_9ABC), 0x3678_9ABC);
+        // Measured: gta_sa.exe's header "MZ\x90\0" (type 5, 0x400000/0/4) gives 0x84.
+        assert_eq!(client_check_sum(b"MZ\x90\x00"), 0x84);
+        assert_eq!(client_check_sum(&[0x33, 0x33]), 0);
+        assert!(client_check_exe_range(0x40_0000) && client_check_exe_range(0x85_6E00));
+        assert!(!client_check_exe_range(0x3F_FFFF) && !client_check_exe_range(0x85_6E01));
     }
 }

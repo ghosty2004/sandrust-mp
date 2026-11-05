@@ -32,12 +32,18 @@ use samp_proto::unconnected::{ServerReply, open_connection_request, parse_reply}
 const OPEN_RETRY: Duration = Duration::from_millis(1000);
 /// Open-connection requests per attempt (TRACE-8: 6 requests 1.0 s apart per socket).
 const OPEN_REQUESTS: u32 = 6;
-/// The attempt fails this long after its last request (TRACE-8: the next attempt's first
-/// request follows the previous attempt's 6th by 1.05 s; 6.05–6.07 s per attempt).
-const OPEN_FAIL_AFTER: Duration = Duration::from_millis(1050);
-/// Connection lost after this much silence from the server (TRACE-8: 12.0 s after the last
-/// server packet RakNet reported 0x21).
-const LOST_AFTER: Duration = Duration::from_millis(12000);
+/// The attempt fails when more than this passed since its last request (RakNet's update cycle
+/// A 0x10041656: the request time + 1000 ms is the deadline, `0x1D` once it lies in the past).
+/// Measured: the next attempt's first request follows the 6th by 1.03–1.07 s (6.05–6.07 s per
+/// attempt), the rest is samp's frame and RakClient::Connect's start-up ([`RAKNET_STOP`]).
+const OPEN_FAIL_AFTER: Duration = Duration::from_millis(1000);
+/// RakClient::Connect / Disconnect block samp's main thread while RakNet's update thread is
+/// stopped and a new one started: RakPeer::Disconnect polls the thread's exit with `Sleep(15)`
+/// (A 0x10040700), RakPeer::Initialize polls the new thread's start with `Sleep(10)` (A 0x10042934).
+/// Our network code runs on the main thread, so the same waits are made here (one poll each:
+/// the update thread sleeps 2 ms per cycle, samp's `threadSleepTimer`).
+const RAKNET_STOP: Duration = Duration::from_millis(15);
+const RAKNET_START: Duration = Duration::from_millis(10);
 /// RakNet `ID_RSA_PUBLIC_KEY_MISMATCH` (samp prints "Failed to initialize encryption.").
 const ENCRYPTION_FAILED: u8 = 0x23;
 /// How many RPC ids `net` reports.
@@ -122,8 +128,8 @@ pub struct Counters {
 pub struct NetClient {
     /// The attempt's socket; every connect opens a new one (TRACE-8: new source port).
     sock: Option<UdpSocket>,
-    /// Last datagram from the server (connection-lost timer).
-    last_recv: Option<Instant>,
+    /// RakNet's update thread would be running (between Connect and Disconnect).
+    rak_running: bool,
     /// Drop the connection after the next flush (its acks still go out).
     closing: bool,
     server: SocketAddrV4,
@@ -161,7 +167,7 @@ impl NetClient {
     pub fn new(server: SocketAddrV4, name: &str, auth: AuthTable) -> std::io::Result<Self> {
         Ok(Self {
             sock: None,
-            last_recv: None,
+            rak_running: false,
             closing: false,
             server,
             key: CipherKey::from_port(server.port()),
@@ -183,10 +189,15 @@ impl NetClient {
         &self.phase
     }
 
-    /// RakClient `Connect` (B 0x10008984): a new socket and a new attempt; the first
-    /// open-connection request goes out on the next tick.
-    pub fn connect(&mut self, now: Instant) -> std::io::Result<()> {
+    /// RakClient `Connect` (A 0x10034130, called by samp's connect tick A 0x10008940): RakNet is
+    /// shut down and started again (the waits of [`RAKNET_STOP`] / [`RAKNET_START`]), a new
+    /// socket and a new attempt; the first open-connection request goes out on the next tick.
+    /// Returns when the attempt has started; samp takes the attempt time after this returns.
+    pub fn connect(&mut self) -> std::io::Result<()> {
+        self.rak_stop();
         self.drop_connection();
+        rak_wait(RAKNET_START);
+        self.rak_running = true;
         let sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
         sock.connect(self.server)?;
         sock.set_nonblocking(true)?;
@@ -197,14 +208,21 @@ impl NetClient {
         self.open_attempts = 0;
         self.first_open = None;
         self.player_id = None;
-        self.last_recv = Some(now);
         Ok(())
+    }
+
+    /// Stops RakNet's update thread, if it runs (RakPeer::Disconnect's exit poll).
+    fn rak_stop(&mut self) {
+        if std::mem::take(&mut self.rak_running) {
+            rak_wait(RAKNET_STOP);
+        }
     }
 
     /// RakClient `Disconnect` from samp's packet handlers (no notification is sent in the
     /// measured cases): pending acks go out with the next flush, then the connection and
     /// its socket are dropped.
     pub fn disconnect_silent(&mut self) {
+        self.rak_stop();
         if self.sock.is_some() {
             self.closing = true;
         }
@@ -264,7 +282,7 @@ impl NetClient {
             if due && self.open_attempts < OPEN_REQUESTS {
                 self.send_open_request(now);
             } else if self.open_attempts >= OPEN_REQUESTS
-                && since_first.is_some_and(|d| d >= OPEN_RETRY * (OPEN_REQUESTS - 1) + OPEN_FAIL_AFTER)
+                && since_first.is_some_and(|d| d > OPEN_RETRY * (OPEN_REQUESTS - 1) + OPEN_FAIL_AFTER)
             {
                 crate::log!("net: no answer to {} open-connection requests", self.open_attempts);
                 self.end_attempt(NetPacket::AttemptFailed, &mut events);
@@ -276,7 +294,6 @@ impl NetClient {
             match sock.recv(&mut buf) {
                 Ok(n) => {
                     self.counters.datagrams_received += 1;
-                    self.last_recv = Some(now);
                     self.on_datagram(&buf[..n], now, &mut events);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
@@ -288,11 +305,11 @@ impl NetClient {
                 }
             }
         }
-        if self.conn.is_some()
-            && !self.closing
-            && self.last_recv.is_some_and(|t| now.duration_since(t) >= LOST_AFTER)
-        {
-            crate::log!("net: no packet from the server for {} ms: connection lost", LOST_AFTER.as_millis());
+        if !self.closing && self.conn.as_ref().is_some_and(|c| c.is_dead(now)) {
+            crate::log!(
+                "net: no ack for {} ms while reliable messages are pending: connection lost",
+                samp_proto::connection::TIMEOUT.as_millis()
+            );
             self.drop_connection();
             self.phase = Phase::Idle;
             events.push(Event::Packet(NetPacket::ConnectionLost));
@@ -350,7 +367,6 @@ impl NetClient {
                 Some(ServerReply::Cookie(c)) => self.cookie = c,
                 Some(ServerReply::Accepted) => {
                     crate::log!("net: open-connection accepted after {} request(s)", self.open_attempts);
-                    self.last_recv = Some(now);
                     let mut conn = Connection::new(now);
                     conn.send_bytes(&[id::CONNECTION_REQUEST], Reliability::Reliable, 0);
                     self.conn = Some(conn);
@@ -495,13 +511,34 @@ impl NetClient {
         }
     }
 
-    /// Sends a disconnection notification right away (best effort).
+    /// RakClient `Disconnect(500, 0)` of samp's `/quit` (A 0x100c3ec0): the disconnection
+    /// notification goes out UNRELIABLE on channel 0 (RakNet A 0x1003e8f0, reliability 6; measured
+    /// in every original capture, e.g. `orig-20261105-003749` net-42564: a 5-byte datagram
+    /// `rel6 0x20`), RakNet waits for the connection slot to close (one `Sleep(15)` poll) and
+    /// stops; nothing is sent afterwards.
     pub fn disconnect(&mut self, now: Instant) {
         if let Some(c) = self.conn.as_mut() {
-            c.send_bytes(&[id::DISCONNECTION_NOTIFICATION], Reliability::ReliableOrdered, 0);
+            c.send_bytes(&[id::DISCONNECTION_NOTIFICATION], Reliability::Unreliable, 0);
+            self.flush(now);
+            rak_wait(RAKNET_STOP);
         }
-        self.flush(now);
+        self.rak_stop();
+        self.drop_connection();
+        if !matches!(self.phase, Phase::Disconnected(_)) {
+            self.phase = Phase::Idle;
+        }
     }
+}
+
+/// One of RakNet's blocking polls on the calling (main) thread.
+fn rak_wait(d: Duration) {
+    #[cfg(windows)]
+    // SAFETY: plain Win32 Sleep, like RakNet's own polls.
+    unsafe {
+        windows_sys::Win32::System::Threading::Sleep(d.as_millis() as u32)
+    };
+    #[cfg(not(windows))]
+    std::thread::sleep(d);
 }
 
 /// 40 hex digits of non-cryptographic randomness for the client serial.
@@ -546,8 +583,8 @@ mod tests {
             _ => unreachable!(),
         };
         let mut c = NetClient::new(addr, "Tester", AuthTable::parse("").unwrap()).unwrap();
+        c.connect().unwrap();
         let t0 = Instant::now();
-        c.connect(t0).unwrap();
         let mut buf = [0u8; 64];
         let mut first_port = None;
         for i in 0..6u64 {
@@ -557,11 +594,14 @@ mod tests {
         }
         assert!(c.tick(t0 + Duration::from_millis(6000)).is_empty());
         assert!(server.recv_from(&mut buf).is_err(), "a 7th request");
-        let ev = c.tick(t0 + Duration::from_millis(6050));
+        let ev = c.tick(t0 + Duration::from_millis(6001));
         assert!(matches!(ev.as_slice(), [Event::Packet(NetPacket::AttemptFailed)]));
         assert_eq!(c.phase(), &Phase::Idle);
-        c.connect(t0 + Duration::from_millis(6050)).unwrap();
-        c.tick(t0 + Duration::from_millis(6050));
+        // Connect stops RakNet (15 ms) and starts it again (10 ms) before returning.
+        let before = Instant::now();
+        c.connect().unwrap();
+        assert!(before.elapsed() >= RAKNET_STOP + RAKNET_START);
+        c.tick(Instant::now());
         let (_, peer) = server.recv_from(&mut buf).unwrap();
         assert_ne!(Some(peer.port()), first_port);
     }
@@ -580,7 +620,7 @@ mod tests {
         let t0 = Instant::now();
         assert!(c.tick(t0).is_empty());
         assert_eq!(c.phase(), &Phase::Idle);
-        c.connect(t0).unwrap();
+        c.connect().unwrap();
         assert!(c.tick(t0).is_empty());
         let mut buf = [0u8; 64];
         let (n, peer) = server.recv_from(&mut buf).unwrap();

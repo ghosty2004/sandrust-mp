@@ -54,10 +54,9 @@ address in the code.
 
 ## Deviations / TODO-unknown
 
-* **ClientCheck 5 / 0x45 / 0x46 / 0x47**: the 8-bit checksum (B 0x1000EA50) is not recorded (anti-cheat, by
-  project rule): no reply is sent. Measurement request: whether answering is required for compatibility and, if so,
-  a clean-room description of the checksum. Type 0x45 also checksums samp.dll's own image, which our client does
-  not have — answering it would mean impersonating samp.dll; logged as a decision.
+* **ClientCheck 5 / 0x45 / 0x46 / 0x47**: answered since M10-P (docs/phase3/m10-notes.md "ClientCheck"): samp's
+  checksum applied honestly to this client's own memory (type 0x45 to our own module image, so its replies differ
+  from samp.dll's by design).
 * Drunk wobble: samp's `rand()` sequence is shared with all of samp's other rand users; ours is an MSVC LCG seeded 1
   used only here, so the sign pattern differs (decision).
 * Parachute helper after a remote `PARACHUTE` animation (B 0x100AD630) is not implemented (needs analysis).

@@ -602,13 +602,8 @@ impl Entities {
     }
 
     pub fn clear(&mut self, runner: &mut Runner) {
-        for (_, p) in std::mem::take(&mut self.pickups) {
-            runner.run(op::REMOVE_PICKUP, &[Arg::Int(p.handle)]);
-        }
-        let ids: Vec<u16> = self.actors.keys().copied().collect();
-        for id in ids {
-            self.delete_actor(runner, id);
-        }
+        self.clear_pickups(runner);
+        self.clear_actors(runner);
         for (_, h) in std::mem::take(&mut self.icons) {
             runner.run(sop::REMOVE_BLIP, &[Arg::Int(h)]);
         }
@@ -622,6 +617,21 @@ impl Entities {
         });
         if let Ok(mut g) = LABEL_DRAWS.lock() {
             g.clear();
+        }
+    }
+
+    /// The pickup pool's deletion (A 0x10013410: `REMOVE_PICKUP` for every slot in id order).
+    pub fn clear_pickups(&mut self, runner: &mut Runner) {
+        for (_, p) in std::mem::take(&mut self.pickups) {
+            runner.run(op::REMOVE_PICKUP, &[Arg::Int(p.handle)]);
+        }
+    }
+
+    /// The actor pool's deletion (A 0x100018e0: every actor in id order).
+    pub fn clear_actors(&mut self, runner: &mut Runner) {
+        let ids: Vec<u16> = self.actors.keys().copied().collect();
+        for id in ids {
+            self.delete_actor(runner, id);
         }
     }
 

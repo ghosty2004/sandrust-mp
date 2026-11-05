@@ -335,7 +335,8 @@ impl UiCore {
             if let Ok(bytes) = std::fs::read(dir.join(config::FILE_NAME)) {
                 cfg = SampCfg::parse(&bytes);
             }
-            // UR §9 / U-CFG-STARTUP: fpslimit and audioproxyoff are created if missing.
+            // UR §9 / U-CFG-STARTUP: fpslimit and multicore are created if missing (audioproxyoff
+            // only after BASS started, `audio_proxy_key`).
             cfg_dirty = cfg.apply_startup_defaults();
         }
         let settings = UiSettings::from_cfg(&cfg);
@@ -398,6 +399,15 @@ impl UiCore {
 
     pub fn cfg_path(&self) -> Option<PathBuf> {
         self.user_dir.as_ref().map(|d| d.join(config::FILE_NAME))
+    }
+
+    /// After a successful `BASS_Init` (A 0x10066480): `audioproxyoff` is created with 0 when
+    /// missing (the file is rewritten), then read.
+    pub fn audio_proxy_key(&mut self) -> bool {
+        if self.user_dir.is_some() && self.cfg.ensure_audio_proxy_key() {
+            self.write_config();
+        }
+        self.cfg.get_int(config::keys::AUDIOPROXYOFF).unwrap_or(0) != 0
     }
 
     fn write_config(&mut self) {

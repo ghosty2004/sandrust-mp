@@ -267,6 +267,31 @@ impl Client {
         self.net.disconnect(Instant::now());
     }
 
+    /// `/quit` (A 0x100c3ec0): RakClient Disconnect(500) when the netgame is in state 5 (the
+    /// notification goes out); the game keeps running until [`Self::quit_teardown`].
+    pub fn begin_quit(&mut self) {
+        crate::log!("client: /quit in netgame state {}", self.netgame.state);
+        if self.netgame.connected() {
+            self.net.disconnect(Instant::now());
+        }
+    }
+
+    /// The netgame's destruction before samp's `ExitProcess` (A 0x10009880): RakClient
+    /// Disconnect(0) (no notification), then the pools in samp's order: players (remote peds),
+    /// vehicles (occupants warped out first), actors, textdraws, gang zones, 3D labels, pickups,
+    /// objects, menus. Textdraws, zones, labels and menus have no game-side objects.
+    pub fn quit_teardown(&mut self) {
+        self.net.disconnect_silent();
+        self.players.clear(&mut self.runner);
+        crate::log!("client: teardown: players");
+        self.vehicles.clear(&mut self.runner);
+        crate::log!("client: teardown: vehicles");
+        self.entities.clear_actors(&mut self.runner);
+        self.entities.clear_pickups(&mut self.runner);
+        self.objects.clear(&mut self.runner);
+        crate::log!("client: teardown: actors, pickups, objects");
+    }
+
     fn ped(&self) -> u32 {
         ProcessMemory.read_u32(game::CWORLD_PLAYERS + game::off::PLAYER_INFO_PED).unwrap_or(0)
     }
@@ -357,16 +382,20 @@ impl Client {
                 self.connecting_tick();
             }
         }
-        // The connect tick (B 0x10008930), in state 1 only.
-        let now_ms = now.duration_since(self.clock).as_millis() as u64;
+        // The connect tick (A 0x10008940), in state 1 only; GetTickCount at this point (the
+        // packet handler may have blocked in RakNet's Disconnect).
+        let now_ms = Instant::now().duration_since(self.clock).as_millis() as u64;
         if self.netgame.connect_due(now_ms) {
             let (host, port) = self.connect_target.clone();
             crate::ui::print_debug(&lifecycle::msg::connecting(&host, port));
-            if let Err(e) = self.net.connect(now) {
+            if let Err(e) = self.net.connect() {
                 crate::log!("client: connect failed: {e}");
             }
-            for ev in self.net.tick(now) {
-                self.on_event(ev, now);
+            // samp reads GetTickCount again after RakClient::Connect returned (A 0x10008985).
+            let after = Instant::now();
+            self.netgame.attempt_started(after.duration_since(self.clock).as_millis() as u64);
+            for ev in self.net.tick(after) {
+                self.on_event(ev, after);
             }
         }
         // Remote peds whose ProcessControl faulted (swap.rs fault containment).
@@ -638,7 +667,7 @@ impl Client {
                 }
             }
             Incoming::Session(samp_proto::rpcs::session::Incoming::ClientCheckRequest(c)) => {
-                self.behaviour.client_check(&mut self.net, &c)
+                self.behaviour.client_check(&mut self.net, &mut self.runner, &c)
             }
             Incoming::Session(samp_proto::rpcs::session::Incoming::SetVehicleTyreStatus(t)) => {
                 self.vehicles.on_tyres(t.vehicle_id, t.tyres)

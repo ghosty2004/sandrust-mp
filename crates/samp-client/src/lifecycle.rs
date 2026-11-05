@@ -7,7 +7,7 @@
 //!
 //! Main loop per frame: the packet handler first; while the state is not 5 the "not connected"
 //! scene; in state 1 the connect tick (more than 3000 ms since the last attempt → print
-//! `Connecting to H:P...`, connect, remember the time, state 2).
+//! `Connecting to H:P...`, connect, remember the time once Connect has returned, state 2).
 
 /// samp's netgame states (NetGame +0x3cd).
 pub mod state {
@@ -90,14 +90,17 @@ impl NetGame {
         self.state == state::CONNECTED
     }
 
-    /// The connect tick: true when the host must print `Connecting to …` and connect now.
+    /// The connect tick: true when the host must print `Connecting to …` and connect now; the
+    /// host then reports the time after RakClient::Connect returned ([`Self::attempt_started`]).
     pub fn connect_due(&mut self, now_ms: u64) -> bool {
-        if self.state != state::WAIT_CONNECT || now_ms.saturating_sub(self.last_attempt_ms) <= CONNECT_INTERVAL_MS {
-            return false;
-        }
+        self.state == state::WAIT_CONNECT && now_ms.saturating_sub(self.last_attempt_ms) > CONNECT_INTERVAL_MS
+    }
+
+    /// After Connect returned (A 0x10008985: GetTickCount is read again after the call): the
+    /// attempt time and state 2.
+    pub fn attempt_started(&mut self, now_ms: u64) {
         self.last_attempt_ms = now_ms;
         self.state = state::CONNECTING;
-        true
     }
 
     /// RPC 139 InitGame.
@@ -179,15 +182,19 @@ mod tests {
         let mut n = NetGame::new(1000);
         assert!(!n.connect_due(4000), "exactly 3000 ms is not enough (jbe)");
         assert!(n.connect_due(4001));
+        // Connect took 25 ms: the attempt time is taken after it.
+        n.attempt_started(4026);
         assert_eq!(n.state, state::CONNECTING);
         assert!(!n.connect_due(20000), "only in state 1");
         // No answer after ~6.05 s: the next attempt starts in the same frame.
         assert_eq!(n.on_packet(P::AttemptFailed), vec![Action::Debug(msg::DIDNT_RESPOND)]);
         assert!(n.connect_due(10051));
-        // Full: answered at once, so the next attempt waits the rest of the 3 s.
+        n.attempt_started(10076);
+        // Full: answered at once, so the next attempt waits the rest of the 3 s from the end of
+        // the previous Connect.
         assert_eq!(n.on_packet(P::ServerFull), vec![Action::Debug(msg::FULL)]);
-        assert!(!n.connect_due(10100));
-        assert!(n.connect_due(13052));
+        assert!(!n.connect_due(13076));
+        assert!(n.connect_due(13077));
     }
 
     #[test]
@@ -203,11 +210,13 @@ mod tests {
         // Wrong password: no retry.
         let mut n = NetGame::new(0);
         assert!(n.connect_due(5000));
+        n.attempt_started(5000);
         assert_eq!(n.on_packet(P::InvalidPassword), vec![Action::Debug(msg::WRONG_PASSWORD), Action::Disconnect(0)]);
         assert!(!n.connect_due(1_000_000));
         // Lost: reset + reconnect at once (last attempt long ago).
         let mut n = NetGame::new(0);
         assert!(n.connect_due(5000));
+        n.attempt_started(5000);
         n.on_init_game();
         let a = n.on_packet(P::ConnectionLost);
         assert_eq!(a[0], Action::Disconnect(0));
@@ -226,6 +235,7 @@ mod tests {
         // Nick rejected: 4 type-4 lines, Disconnect(500), no retry.
         let mut n = NetGame::new(0);
         assert!(n.connect_due(5000));
+        n.attempt_started(5000);
         let a = n.on_rejected(2);
         assert_eq!(a.len(), 5);
         assert_eq!(a[4], Action::Disconnect(500));

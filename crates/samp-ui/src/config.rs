@@ -234,12 +234,13 @@ impl SampCfg {
         self.entries.iter().map(|(k, _)| k.as_str())
     }
 
-    /// Keys the client creates at start-up, in this order (first frame A 0x100c4e4c,
-    /// then the audio set-up A 0x100664f2; confirmed by a file the original wrote:
-    /// `fpslimit=48`, `multicore=1`, `audioproxyoff=0`):
+    /// Keys the client creates at start-up (first frame A 0x100c4e4c; confirmed by a file the
+    /// original wrote: `fpslimit=48`, `multicore=1`, then `audioproxyoff=0` from the audio set-up):
     /// - `fpslimit` = 48 when its integer value is 0 or the key is missing (UR §9);
-    /// - `multicore` = 1 when the key is missing;
-    /// - `audioproxyoff` = 0 when the key is missing (UCA §41).
+    /// - `multicore` = 1 when the key is missing.
+    ///
+    /// `audioproxyoff` is not created here: samp adds it only after a successful `BASS_Init`
+    /// ([`Self::ensure_audio_proxy_key`], A 0x100664f2).
     ///
     /// Returns true if the file must be rewritten.
     pub fn apply_startup_defaults(&mut self) -> bool {
@@ -248,13 +249,21 @@ impl SampCfg {
             self.set_int(keys::FPSLIMIT, DEFAULT_FPS_LIMIT);
             changed = true;
         }
-        for (key, v) in [(keys::MULTICORE, 1), (keys::AUDIOPROXYOFF, 0)] {
-            if !self.contains(key) {
-                self.set_int(key, v);
-                changed = true;
-            }
+        if !self.contains(keys::MULTICORE) {
+            self.set_int(keys::MULTICORE, 1);
+            changed = true;
         }
         changed
+    }
+
+    /// The audio set-up after a successful `BASS_Init` (A 0x10066480): `audioproxyoff` = 0 when the
+    /// key is missing (UCA §41). Returns true if the file must be rewritten.
+    pub fn ensure_audio_proxy_key(&mut self) -> bool {
+        if self.contains(keys::AUDIOPROXYOFF) {
+            return false;
+        }
+        self.set_int(keys::AUDIOPROXYOFF, 0);
+        true
     }
 }
 
@@ -394,9 +403,13 @@ mod tests {
         let mut c = SampCfg::parse(b"pagesize=12\n");
         assert!(c.apply_startup_defaults());
         assert_eq!(c.get_int("fpslimit"), Some(48));
+        // Not before BASS started (A 0x10066480).
+        assert!(!c.contains("audioproxyoff"));
+        assert!(c.ensure_audio_proxy_key());
         assert_eq!(c.get_int("audioproxyoff"), Some(0));
         assert_eq!(c.to_bytes(), b"pagesize=12\r\nfpslimit=48\r\nmulticore=1\r\naudioproxyoff=0\r\n");
         assert!(!c.apply_startup_defaults());
+        assert!(!c.ensure_audio_proxy_key());
         let mut c = SampCfg::parse(b"fpslimit=60\n");
         c.apply_startup_defaults();
         assert_eq!(c.get_int("fpslimit"), Some(60));
