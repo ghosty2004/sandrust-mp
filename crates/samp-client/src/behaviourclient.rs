@@ -525,7 +525,7 @@ impl Behaviour {
         }
     }
 
-    /// One spectator tick (B 0x10006530): 212 at the on-foot interval, HUD off, the ped parked 20 m above the camera
+    /// One spectator tick (B 0x10006530): 212 at the on-foot interval (then `after_212`, the 203 attempt), HUD off, the ped parked 20 m above the camera
     /// with 100 health, then the view (once per target).
     #[allow(clippy::too_many_arguments)]
     pub fn spectator_tick(
@@ -536,6 +536,7 @@ impl Behaviour {
         vehicles: &crate::vehicles::Vehicles,
         interval: Duration,
         now: Instant,
+        after_212: impl FnOnce(&mut NetClient),
     ) {
         let ped = local_ped();
         if ped == 0 {
@@ -552,6 +553,8 @@ impl Behaviour {
                     keys,
                     position: Vec3 { x: cam[0], y: cam[1], z: cam[2] },
                 });
+                // The spectator 203 is tried only right after a 212 (A 0x10006620).
+                after_212(net);
             }
         }
         crate::client::set_hud(false);

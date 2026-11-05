@@ -81,6 +81,69 @@ pub fn make_serial(seed_hex: &str) -> String {
     if s.is_empty() { "0".into() } else { s.into() }
 }
 
+/// SHA-1 (FIPS 180-1) of `data`.
+pub fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
+    for block in msg.as_chunks::<64>().0 {
+        let mut w = [0u32; 80];
+        for (i, c) in block.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*c);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = h;
+        for (i, wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(*wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = t;
+        }
+        for (x, y) in h.iter_mut().zip([a, b, c, d, e]) {
+            *x = x.wrapping_add(y);
+        }
+    }
+    let mut out = [0u8; 20];
+    for (i, x) in h.iter().enumerate() {
+        out[4 * i..4 * i + 4].copy_from_slice(&x.to_be_bytes());
+    }
+    out
+}
+
+/// samp's client serial (handshake.md §5, A 0x1005ffa0): SHA-1 of `input` (the string at game address
+/// 0x00C9236C, without its NUL), the five state words taken in memory order (little-endian), each byte's
+/// nibbles rewritten so that the larger 2-bit half is high, 40 uppercase hex digits, × 1001 in base 16.
+/// Verified against the original's RPC 25 (`orig-20261105-064601`: input
+/// `sers\<user>\Documents\GTA San Andreas User Files`).
+pub fn samp_serial(input: &[u8]) -> String {
+    let d = sha1(input);
+    let nib = |n: u8| {
+        let (lo, hi) = (n & 3, n >> 2);
+        if hi < lo { lo << 2 | hi } else { hi << 2 | lo }
+    };
+    let mut hex = String::with_capacity(40);
+    for w in d.as_chunks::<4>().0 {
+        for &b in w.iter().rev() {
+            hex.push_str(&format!("{:02X}", nib(b >> 4) << 4 | nib(b & 0xF)));
+        }
+    }
+    make_serial(&hex)
+}
+
 /// RPC 139 InitGame, fields in wire order (handshake.md §5).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InitGame {
@@ -246,6 +309,15 @@ mod tests {
     fn serial_is_multiple_of_1001() {
         // 0x10 * 1001 = 16016 = 0x3E90
         assert_eq!(make_serial("10"), "3E90");
+        assert_eq!(
+            sha1(b"abc").iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        assert_eq!(sha1(&[b'a'; 1000])[..4], [0x29, 0x1e, 0x9a, 0x6c]);
+        assert_eq!(
+            samp_serial(b"sers\\ghosty2004\\Documents\\GTA San Andreas User Files"),
+            "254FF869D9D149C6D5959CFC9B642CB7152F4F9BA87"
+        );
         let s = make_serial("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF");
         // verify divisibility by long division in base 16
         let rem = s.chars().fold(0u64, |acc, c| (acc * 16 + c.to_digit(16).unwrap() as u64) % 1001);

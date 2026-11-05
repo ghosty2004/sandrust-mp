@@ -258,8 +258,10 @@ Consequences (Inferred):
 
 ### 3.2 Unoccupied sync (Observed; send rules also in remote-players-sync §209)
 * **Who sends** (pool tick → A 0x10006E00): a car with no seated driver, not a rail model, not a towed trailer, within 90
-  units, moving. If any passenger seat is occupied, only the first occupied passenger sends, and only if that is the local
-  ped (seat = index + 1). Otherwise the local player sends with seat 0 only if it is the closest streamed player. At most 3
+  units, not stopped (stopped = in the moving list with zero move speed). If a passenger seat holds a player ped (ped type
+  0), only the first such passenger sends, and only if that is the local ped (seat = index + 1). Otherwise the local player
+  sends with seat 0 only if it is the closest player whose ped is in the world (ties go to the lower id); details in
+  remote-players-sync §209. At most 3
   sends per tick, ≥ 100 ms apart per vehicle, and only on the "not sunk" branch (§1.4).
 * **Who applies**: the 209 packet handler (A 0x10009A40) calls A 0x100158D0 on the sending remote player's object
   **immediately** (inside the network receive at the start of samp's tick, not in the per-frame update). It records the

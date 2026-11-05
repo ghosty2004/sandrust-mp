@@ -123,9 +123,9 @@ Per-tick decisions (only when spawned and not in class selection; ped state from
 | passenger | 211 | when elapsed > inCarInterval |
 | passenger | 203 | every 1000 ms, or every 100 ms while drive-by is active |
 | on foot (ped state 1 or 12) | 207 | when keys/lr/ud differ from the last sent foot struct, or elapsed > onFootInterval |
-| on foot | 203 | if keys & (FIRE\|AIM): every 100 ms (lag-comp selector == 2: every weaponRate ms); else every 1000 ms |
+| on foot | 203 | if keys & (FIRE\|AIM): every 100 ms (lag-comp selector == 2: every weaponRate ms); else every 1000 ms (attempt; there is no forced resend: an unchanged 203 passes the duplicate gate only when the shared timestamp is ≥ 501 ms old, i.e. on a frame between the last 207 send + 501 ms and the next 207 attempt. Measured idle on the original at ~19 ms frames: one 203 every 10.08 s, sent 512–516 ms after the last 207 — NET-6 notes §4) |
 | spectating (+0x108) | 212 | when elapsed > onFootInterval (timestamp +0x113) |
-| spectating | 203 | when elapsed > 2 × onFootInterval |
+| spectating | 203 | only in a tick that just sent a 212, when elapsed > 2 × onFootInterval since the last 203 attempt (the shared timestamp +0x117); then the duplicate gate: ~532 ms apart while nothing changes (A 0x10006540) |
 | always (alive) | 205 | every > 1000 ms (timestamp +0x11b) |
 | always (alive) | 204 | evaluated every tick, see §204 |
 | on death while driving | 200 | one forced send |
@@ -422,7 +422,7 @@ Offset: when an entity was hit, lag-comp selector 0 → hit point transformed in
 
 After sending, the vehicle pool records the local player as last unoccupied-syncer of that vehicle and sets a per-vehicle flag.
 
-When (vehicle-pool tick A 0x1001f3c0 → A 0x10006e00): for each existing, streamed vehicle, at most **3 sends per tick** and **> 100 ms per vehicle**; vehicle not a train/tram (models 537, 538, 569, 570, 449) and not towed by a driven vehicle; additional gate `(boat || distance ≥ 200 || model not in set A 0x100ed574)` (meaning of that set unknown). In A 0x10006e00: no seated driver, distance from local player ≤ 90, vehicle **moving** (non-zero velocity), not towed. If any passenger seat is occupied: send only if the first occupied passenger is the local ped (seat = index+1). Otherwise send with seat 0 only if the local player is the closest of all streamed players (distance ≤ 90).
+When (vehicle-pool tick A 0x1001f3c0 → A 0x10006e00): for each existing, streamed vehicle, at most **3 sends per tick** and **> 100 ms per vehicle**; vehicle not a train/tram (models 537, 538, 569, 570, 449) and not towed by a driven vehicle; additional gate `(boat || distance ≥ 200 || model not in set A 0x100ed574)` (meaning of that set unknown). In A 0x10006e00: no seated driver, distance from local player ≤ 90, vehicle **not stopped** (A 0x1009fe40: stopped = in GTA's moving list (+0xB4) with a zero move speed), not towed. Passenger seats: the first seat holding a player ped (`m_nPedType` +0x598 == 0; AI peds are skipped) decides — send only if it is the local ped (seat = index+1). Otherwise send with seat 0 only if the local player is the closest player: ids 0 ..= max(highest id, local id) in order, each counted only while its ped is in the world (A 0x1009f430: in the moving list); id 0 seeds the minimum, later ids replace it only when strictly closer; the local id must hold it at ≤ 90. The 209s around a passenger entry/exit come from GTA's own physics (the door/seat push wakes the car; on exit the car gets a move speed of exactly (0.001, 0.001, 0.001) for a frame): their number depends on the frame timing (NET-6 notes §4).
 
 **S→C** (recv A 0x10009a40): `u8 id, u16 playerId, raw[67]`. Apply (A 0x100158d0): vehicleId 1..1999, vehicle exists, no driver, not towed; validation: roll and direction components in [−1, 1], position x,y in (−20000, 20000) and z in (−10000, 100000), velocity and turn velocity components in (−100, 100) — otherwise ignored. Build matrix with right = roll, forward = direction (third axis kept), then:
 - if |Δx|, |Δy|, |Δz| all ≤ 0.1 → do nothing;

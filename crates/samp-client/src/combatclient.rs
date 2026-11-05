@@ -213,6 +213,34 @@ impl Combat {
         if !self.aim_timer.due(now, interval) {
             return;
         }
+        self.send_aim_gated(net, foot, ped, now);
+    }
+
+    /// 203 while spectating, right after a 212 (A 0x10006620): more than 2 × the on-foot interval since the last
+    /// attempt (the aim timer shared with the on-foot 203); the duplicate gate shares the 207 timestamp.
+    pub fn aim_spectating(
+        &mut self,
+        net: &mut NetClient,
+        foot: &mut crate::footsync::FootSender,
+        on_foot_interval: std::time::Duration,
+        now: Instant,
+    ) {
+        let ped = hooks::local_ped();
+        if ped == 0 {
+            return;
+        }
+        let ms = u32::try_from(on_foot_interval.as_millis()).unwrap_or(u32::MAX);
+        let interval =
+            combat::aim_interval(AimContext::Spectating { on_foot_interval_ms: ms }, self.selector, self.weapon_rate);
+        if !self.aim_timer.due(now, interval) {
+            return;
+        }
+        self.send_aim_gated(net, foot, ped, now);
+    }
+
+    /// The 203 builder and its duplicate gate (A 0x10005210): identical to the last 203 within 501 ms of the shared
+    /// foot / aim timestamp → not sent.
+    fn send_aim_gated(&mut self, net: &mut NetClient, foot: &mut crate::footsync::FootSender, ped: u32, now: Instant) {
         let a = combat::build_aim(&Self::aim_sample(ped));
         let bytes = a.to_bits().as_bytes().to_vec();
         if foot.recent_send(now) && bytes == self.aim_last {

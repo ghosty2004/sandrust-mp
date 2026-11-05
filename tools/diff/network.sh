@@ -15,6 +15,8 @@
 # packing, resends, pings, keep-alives) with explicit tolerances; residuals listed in
 # tools/diff/net-decisions.tsv (each naming a ROADMAP decision) are accepted.
 # Exit 0 = every check matches or is an accepted decision.
+# NET_SCEN=FILE plays another scenario script (same helpers and env as netscen.sh) instead, for
+# focused measurements; the report then covers that script's windows.
 #
 # Lanes: original = trace lane (tools/trace/run.sh orig holdjoin with TRACE_NO_SERVER=1, under
 # tools/trace/with-lock.sh; UDP 7790); ours = lane "ui" (prefix-ui, gta-sa-ui, UDP 7800,
@@ -122,7 +124,7 @@ if [ "${INNER:-}" = orig ]; then
     export E2E_HEADLESS_DISPLAY
     rc=0
     NET_CLIENT=orig NET_NAME=TraceOrig NET_SRV="$SRV" NET_OUT="$OUT" NET_PORT="$E2E_PORT" NET_CTL_PORT="$E2E_CTL_PORT" \
-        bash "$HERE/netscen.sh" || rc=$?
+        bash "${NET_SCEN:-$HERE/netscen.sh}" || rc=$?
     touch "$TOUT/stop"
     wait "$RUN_PID" 2>/dev/null
     cp -f "$SRV/e2e-server.log" "$OUT/server.log" 2>/dev/null
@@ -146,7 +148,7 @@ if [ "${INNER:-}" = ours ]; then
     RUN_PID=$!
     rc=0
     NET_CLIENT=ours NET_NAME=TraceOurs NET_SRV="$SRV" NET_OUT="$OUT" NET_PORT="$E2E_PORT" NET_CTL_PORT="$E2E_CTL_PORT" \
-        bash "$HERE/netscen.sh" || rc=$?
+        bash "${NET_SCEN:-$HERE/netscen.sh}" || rc=$?
     for ((i = 0; i < 20; i++)); do kill -0 "$RUN_PID" 2>/dev/null || break; sleep 0.5; done
     kill "$RUN_PID" 2>/dev/null; wait "$RUN_PID" 2>/dev/null
     cp -f "$GTA_DIR/samp-rs.log" "$OUT/samp-rs.log" 2>/dev/null

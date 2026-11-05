@@ -374,6 +374,7 @@ impl Client {
                 &self.vehicles,
                 interval,
                 now,
+                |net| self.combat.aim_spectating(net, &mut self.sender, interval, now),
             );
         } else if self.class_sel.is_active() {
             self.class_selection_tick(now);
@@ -1149,6 +1150,7 @@ impl Client {
                 &self.vehicles,
                 interval,
                 now,
+                |net| self.combat.aim_spectating(net, &mut self.sender, interval, now),
             );
             self.stats_tick(now);
             return;

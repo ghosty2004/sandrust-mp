@@ -523,16 +523,18 @@ pub fn build_passenger_sync(
     }
 }
 
-/// Who sends 209 for one vehicle (remote-control-vehicles §3.2): `Some(seat)` to send.
-/// `first_passenger_local`: `None` = no passenger seat occupied, `Some((true, idx))` = the first occupied seat
-/// (index idx) holds the local ped, `Some((false, _))` = someone else.
+/// Who sends 209 for one vehicle (A 0x10006E00, remote-control-vehicles §3.2): `Some(seat)` to send.
+/// `moving`: not "stopped", where stopped = in GTA's moving list with a zero move speed (A 0x1009FE40).
+/// `first_passenger`: the first passenger seat holding a player ped (`m_nPedType` +0x598 == 0, local or remote; AI
+/// peds do not count): `None` = none, `Some((true, idx))` = the local ped in seat idx, `Some((false, _))`
+/// = another ped. `local_closest`: [`local_is_closest`].
 pub fn unoccupied_seat(
     has_seated_driver: bool,
     towed: bool,
     moving: bool,
     local_dist: f32,
     first_passenger: Option<(bool, u8)>,
-    closest_remote_dist: Option<f32>,
+    local_closest: bool,
 ) -> Option<u8> {
     if has_seated_driver || towed || !moving || local_dist > UNOCC_SEND_RANGE {
         return None;
@@ -540,14 +542,26 @@ pub fn unoccupied_seat(
     match first_passenger {
         Some((true, idx)) => Some(idx + 1),
         Some((false, _)) => None,
-        None => {
-            if closest_remote_dist.is_none_or(|d| local_dist <= d) {
-                Some(0)
-            } else {
-                None
-            }
+        None => local_closest.then_some(0),
+    }
+}
+
+/// The closest-player test of an empty car (A 0x10006E00): players in id order (ids 0 ..= max(highest id, local id)),
+/// each with its distance to the car while its ped is in the world (`None` otherwise, A 0x1009F430). Id 0 seeds the
+/// minimum unconditionally; later ids replace it only when strictly closer; the initial minimum is id 0 at 100000.
+/// The local id must hold the minimum, at most 90 units away.
+pub fn local_is_closest(local_id: u16, players: impl IntoIterator<Item = (u16, Option<f32>)>) -> bool {
+    let (mut best_id, mut best) = (0u16, 100_000.0f32);
+    for (id, d) in players {
+        let Some(d) = d else { continue };
+        if id == 0 {
+            best = d;
+        } else if d < best {
+            best = d;
+            best_id = id;
         }
     }
+    best_id == local_id && best <= UNOCC_SEND_RANGE
 }
 
 /// Builds the 209 struct from the vehicle matrix and physics.
@@ -784,18 +798,35 @@ mod tests {
     #[test]
     fn unoccupied_send_rules() {
         // Nobody inside, local closest → seat 0.
-        assert_eq!(unoccupied_seat(false, false, true, 10.0, None, Some(20.0)), Some(0));
-        assert_eq!(unoccupied_seat(false, false, true, 10.0, None, None), Some(0));
-        // A remote player is closer → no send.
-        assert_eq!(unoccupied_seat(false, false, true, 10.0, None, Some(5.0)), None);
+        assert_eq!(unoccupied_seat(false, false, true, 10.0, None, true), Some(0));
+        // Someone else is closest → no send.
+        assert_eq!(unoccupied_seat(false, false, true, 10.0, None, false), None);
         // Not moving / out of range / driver / towed.
-        assert_eq!(unoccupied_seat(false, false, false, 10.0, None, None), None);
-        assert_eq!(unoccupied_seat(false, false, true, 95.0, None, None), None);
-        assert_eq!(unoccupied_seat(true, false, true, 1.0, None, None), None);
-        assert_eq!(unoccupied_seat(false, true, true, 1.0, None, None), None);
+        assert_eq!(unoccupied_seat(false, false, false, 10.0, None, true), None);
+        assert_eq!(unoccupied_seat(false, false, true, 95.0, None, true), None);
+        assert_eq!(unoccupied_seat(true, false, true, 1.0, None, true), None);
+        assert_eq!(unoccupied_seat(false, true, true, 1.0, None, true), None);
         // First occupied passenger seat decides.
-        assert_eq!(unoccupied_seat(false, false, true, 1.0, Some((true, 2)), Some(0.5)), Some(3));
-        assert_eq!(unoccupied_seat(false, false, true, 1.0, Some((false, 0)), None), None);
+        assert_eq!(unoccupied_seat(false, false, true, 1.0, Some((true, 2)), false), Some(3));
+        assert_eq!(unoccupied_seat(false, false, true, 1.0, Some((false, 0)), true), None);
+    }
+
+    #[test]
+    fn unoccupied_closest_player() {
+        assert!(local_is_closest(3, [(3, Some(10.0))]));
+        assert!(local_is_closest(3, [(1, Some(20.0)), (3, Some(10.0))]));
+        assert!(!local_is_closest(3, [(1, Some(5.0)), (3, Some(10.0))]));
+        // Ties go to the lower id; a ped outside the world does not count.
+        assert!(!local_is_closest(3, [(1, Some(10.0)), (3, Some(10.0))]));
+        assert!(local_is_closest(3, [(1, None), (3, Some(10.0))]));
+        // Beyond 90 units, or the local ped itself not in the world.
+        assert!(!local_is_closest(3, [(3, Some(90.5))]));
+        assert!(local_is_closest(3, [(3, Some(90.0))]));
+        assert!(!local_is_closest(3, [(3, None)]));
+        // Id 0 seeds the minimum even when farther than the start value would allow others.
+        assert!(local_is_closest(0, [(0, Some(50.0)), (4, Some(60.0))]));
+        assert!(!local_is_closest(0, [(0, None), (4, Some(60.0))]));
+        assert!(!local_is_closest(0, [(0, None)]));
     }
 
     #[test]

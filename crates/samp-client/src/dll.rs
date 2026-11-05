@@ -638,7 +638,10 @@ fn frame_timer_step() {
         unsafe { std::ptr::write_volatile(ft::PAD_COUNTER as usize as *mut u8, c) };
     }
     if s.sleep_ms > 0 {
-        std::thread::sleep(Duration::from_millis(u64::from(s.sleep_ms)));
+        // samp calls kernel32 `Sleep` (std's sleep may use a high-resolution waitable timer instead, which wakes
+        // later under Wine: ~19.2 ms frames instead of the original's 19.0 at the same limit).
+        // SAFETY: plain Win32 call.
+        unsafe { windows_sys::Win32::System::Threading::Sleep(s.sleep_ms) };
     }
     t.finish(since_start_ms());
 }

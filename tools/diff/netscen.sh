@@ -117,10 +117,9 @@ sleep 1.5
 ev object_esc; key Escape
 sleep 2
 end
-# Our client does not swallow Escape while editing an object yet (GTA's pause menu opens and
-# the frame stops; ROADMAP decision NET6-D3): when the client's frame counter (control channel
-# `state`, ticks=N) stands still, Escape once more resumes the game. The original keeps running,
-# so nothing happens there.
+# Both clients swallow the Escape key-down while editing (no GTA pause menu; NET6-P4). Safety net
+# for a regression: if the client's frame counter (control channel `state`, ticks=N) stands still,
+# Escape once more resumes the game so the rest of the session still runs (logged as pause_resume).
 ticks() {
     python3 -I -c '
 import re, socket, sys

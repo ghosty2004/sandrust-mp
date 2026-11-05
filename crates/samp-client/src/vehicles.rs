@@ -1407,7 +1407,7 @@ impl Vehicles {
             self.last_driven = Some(id);
         }
         let local_pos = if local != 0 { pos_of(local) } else { None };
-        let remote_peds: Vec<u32> = players.iter().filter(|p| p.ped != 0).map(|p| p.ped).collect();
+        let remote_peds: Vec<(u16, u32)> = players.iter().filter(|p| p.ped != 0).map(|p| (p.id, p.ped)).collect();
         // The original runs this pool tick on every 4th frame only (TRACE-4 trace: the proofs/tyres pair,
         // IS_CAR_IN_WATER and the blip calls of every car are exactly 4 frames apart, 1123 of 1124 gaps; a car
         // created by RPC 164 is first processed on the next such frame).
@@ -1510,7 +1510,7 @@ impl Vehicles {
         ptr: u32,
         pos: [f32; 3],
         local_dist: f32,
-        remote_peds: &[u32],
+        remote_peds: &[(u16, u32)],
         now: Instant,
     ) -> bool {
         let Some(v) = self.pool.get(&id) else { return false };
@@ -1522,13 +1522,28 @@ impl Vehicles {
         let driver: u32 = rd(ptr + g::VEH_DRIVER);
         let local = local_ped();
         let speed = v3(ptr + off::MOVE_SPEED);
-        let moving = speed != [0.0; 3];
+        // Not "stopped" (A 0x1009FE40): stopped = in the moving list with a zero move speed.
+        let moving = rd::<u32>(ptr + g::MOVING_LIST) == 0 || speed != [0.0; 3];
+        // Only player peds (`m_nPedType` +0x598 == 0, local or remote) count as passengers; AI peds do not.
         let first = (0..8u32).find_map(|i| {
             let p: u32 = rd(ptr + g::VEH_PASSENGERS + 4 * i);
-            (p != 0).then_some((p == local, i as u8))
+            (p != 0 && rd::<u32>(p + g::PED_TYPE) == 0).then_some((p == local, i as u8))
         });
-        let closest = remote_peds.iter().filter_map(|&p| pos_of(p)).map(|p| vm::dist3d(p, pos)).min_by(f32::total_cmp);
         let has_driver = driver != 0 && in_vehicle(driver);
+        let closest = first.is_none() && {
+            // Peds count while in the world (A 0x1009F430: not a deleted placeable, in the moving list).
+            let dist_of = |ped: u32| {
+                (ped != 0 && rd::<u32>(ped) != g::VTBL_CPLACEABLE && rd::<u32>(ped + g::MOVING_LIST) != 0)
+                    .then(|| pos_of(ped).map(|p| vm::dist3d(p, pos)))
+                    .flatten()
+            };
+            let local_id = self.local_id.unwrap_or(0);
+            let mut all: Vec<(u16, Option<f32>)> =
+                remote_peds.iter().filter(|(pid, _)| *pid != local_id).map(|&(pid, ped)| (pid, dist_of(ped))).collect();
+            all.push((local_id, dist_of(local)));
+            all.sort_by_key(|e| e.0);
+            vm::local_is_closest(local_id, all)
+        };
         let Some(seat) = vm::unoccupied_seat(has_driver, towed, moving, local_dist, first, closest) else {
             return false;
         };
