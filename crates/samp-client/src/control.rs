@@ -58,6 +58,8 @@ pub enum Command {
     /// `ui`: dialog / scoreboard / textdraw / menu / death window state.
     Ui,
     Say(String),
+    /// `audio`: audio stream / PlayerPlaySound state (M9).
+    Audio,
     Peek { addr: u32, len: usize },
     Unknown(String),
 }
@@ -106,6 +108,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "chat" => Command::Chat(20),
         "input" => Command::Input,
         "ui" => Command::Ui,
+        "audio" => Command::Audio,
         "quit" | "exit" => Command::Quit,
         _ => Command::Unknown(t.to_string()),
     })

@@ -4,6 +4,7 @@
 //! workspace tests and lints run everywhere; the Windows entry point, the
 //! patch application and the per-frame hook live in `dll` (cfg(windows)).
 
+pub mod audio;
 pub mod cdstream;
 pub mod classsel;
 pub mod combat;
@@ -12,6 +13,7 @@ pub mod control;
 pub mod footsync;
 pub mod frametimer;
 pub mod game;
+pub mod lifecycle;
 pub mod log;
 pub mod netclient;
 pub mod patch;

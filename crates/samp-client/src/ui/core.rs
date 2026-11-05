@@ -55,13 +55,6 @@ pub mod msg {
 
 /// Chat scroll position set by Enter in the input (A 0x10067390).
 const SUBMIT_SCROLL_POS: u32 = 90;
-/// "Connecting to" follows "Started" by 3.0 s; with no answer the connect tick prints
-/// "The server didn't respond. Retrying.." and a new "Connecting to" every ~6.05 s
-/// (TRACE-3 U-CONNECT-TIMING).
-pub const CONNECT_DELAY_MS: u64 = 3000;
-pub const CONNECT_RETRY_MS: u64 = 6050;
-/// A 0x100e59b4 (TRACE-3: printed before each retry).
-pub const RETRY_LINE: &str = "The server didn't respond. Retrying..";
 /// `INVALID_PLAYER_ID`.
 const INVALID_PLAYER: u16 = 0xFFFF;
 
@@ -263,9 +256,6 @@ pub struct UiCore {
     pub name_tag_distance: f32,
     pub name_tag_los: bool,
     pub server_name: Vec<u8>,
-    /// Connect-line timing: ms since the netgame started, next connect tick.
-    connect_started: Option<std::time::Instant>,
-    next_connect_ms: Option<u64>,
     pub responses_sent: u32,
     /// Screen rects for click routing (set by the renderer side).
     pub input_rect: samp_ui::Rect,
@@ -390,8 +380,6 @@ impl UiCore {
             name_tag_distance: 70.0,
             name_tag_los: true,
             server_name: Vec::new(),
-            connect_started: None,
-            next_connect_ms: None,
             responses_sent: 0,
             input_rect: samp_ui::Rect::default(),
             scoreboard_rect: samp_ui::Rect::default(),
@@ -490,49 +478,18 @@ impl UiCore {
 
     // ---- session -----------------------------------------------------------------
 
-    /// The netgame object is created: "Started"; the connect tick prints
-    /// "Connecting to" 3.0 s later ([`Self::connect_tick`]).
+    /// The netgame object is created: "Started" (the connect lines come from
+    /// `lifecycle.rs` through the client).
     pub fn on_netgame_start(&mut self, host: &str, port: u16, name: &[u8]) {
         self.netgame = true;
         self.local_name = name.to_vec();
         self.connect_host = format!("{host}:{port}");
         self.print_debug(msg::STARTED.as_bytes());
-        self.connect_started = Some(std::time::Instant::now());
-        self.next_connect_ms = Some(CONNECT_DELAY_MS);
-    }
-
-    /// Connect tick (A 0x1000896d): "Connecting to" at +3.0 s, then, while no answer
-    /// came, "The server didn't respond. Retrying.." + "Connecting to" every 6.05 s.
-    /// Returns true when the session should (re)start connecting now.
-    pub fn connect_tick(&mut self, answered: bool) -> bool {
-        let (Some(t0), Some(due)) = (self.connect_started, self.next_connect_ms) else { return false };
-        let now = t0.elapsed().as_millis() as u64;
-        if now < due {
-            return false;
-        }
-        let first = due == CONNECT_DELAY_MS;
-        if !first {
-            if answered {
-                self.next_connect_ms = None;
-                return false;
-            }
-            self.print_debug(RETRY_LINE.as_bytes());
-        }
-        let line = format!("Connecting to {}...", self.connect_host);
-        self.print_debug(line.as_bytes());
-        self.next_connect_ms = Some(due + CONNECT_RETRY_MS);
-        true
-    }
-
-    /// `0x22` accepted: PlayerConnect is being sent.
-    pub fn on_joining(&mut self) {
-        self.print_debug(msg::JOINING.as_bytes());
     }
 
     /// RPC 139 InitGame: netgame state 5.
     pub fn on_init_game(&mut self, g: &samp_proto::session::InitGame) {
         self.connected = true;
-        self.next_connect_ms = None;
         self.local_id = Some(g.player_id);
         self.show_name_tags = g.show_name_tags;
         self.name_tag_distance = g.name_tag_distance;
@@ -557,17 +514,23 @@ impl UiCore {
         self.names.keys().copied()
     }
 
-    /// The session ended.
-    pub fn on_closed(&mut self) {
-        if self.connected {
-            self.print_debug(msg::SERVER_CLOSED.as_bytes());
-        }
+    /// RPC 40 reset (B 0x1000a530): the netgame leaves state 5, the textdraw and menu pools
+    /// are recreated, the name-tag settings go back to samp's defaults (+0x1f shown = 1,
+    /// distance 60.0, LOS on). Dialogs, scoreboard and chat are untouched.
+    pub fn on_reset(&mut self) {
         self.connected = false;
-        self.names.clear();
-        self.dialogs.close();
-        self.scoreboard.close();
         self.textdraws.clear();
         self.menus.clear();
+        self.show_name_tags = true;
+        self.name_tag_distance = 60.0;
+        self.name_tag_los = true;
+    }
+
+    /// Lost connection: the remote players are deleted from the pool.
+    pub fn forget_players(&mut self) {
+        self.names.clear();
+        self.scores.clear();
+        self.hidden_tags.clear();
     }
 
     // ---- RPCs --------------------------------------------------------------------
@@ -965,10 +928,15 @@ impl UiCore {
             Effect::Quit { disconnect } => self.requests.quit = Some(disconnect),
             Effect::SendRcon(t) => self.outgoing.push(Outgoing::Rcon(t)),
             Effect::AppendFile { file, line, ok, ok_kind, failed } => {
-                let written = self
-                    .user_dir
-                    .as_ref()
-                    .map(|d| d.join(file.file_name()))
+                // TRACE-8: `/rs` in a car writes `rawvehicles.txt` relative to the game's current
+                // directory (B string `rawvehicles.txt`, no user-files prefix); the other files go
+                // to the user files directory.
+                let path = if file == samp_ui::commands::SaveFile::RawVehicles {
+                    Some(PathBuf::from(file.file_name()))
+                } else {
+                    self.user_dir.as_ref().map(|d| d.join(file.file_name()))
+                };
+                let written = path
                     .and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok())
                     .is_some_and(|mut f| f.write_all(&text_mode(&line)).is_ok());
                 if written {
@@ -1099,9 +1067,7 @@ mod tests {
     fn connected_ui(dir: Option<PathBuf>) -> UiCore {
         let mut u = UiCore::new(dir, false);
         u.on_netgame_start("127.0.0.1", 7777, b"RustClient");
-        // The connect tick fires 3 s later; force it.
-        u.connect_started = std::time::Instant::now().checked_sub(std::time::Duration::from_millis(3100));
-        assert!(u.connect_tick(false));
+        u.print_debug(b"Connecting to 127.0.0.1:7777...");
         let g = samp_proto::session::InitGame { server_name: "srv".into(), player_id: 0, ..Default::default() };
         u.on_init_game(&g);
         u

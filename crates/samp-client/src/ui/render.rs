@@ -324,6 +324,8 @@ pub struct Frame<'a> {
     /// Netgame exists and the server's show-nametags setting is on (A 0x10074270 /
     /// 0x10075390 guards): both nametag passes run, even with nobody to draw.
     pub name_tag_passes: bool,
+    /// Audio stream title line (step 4b), when the netgame exists and a title is known.
+    pub audio_title: Option<&'a [u8]>,
 }
 
 /// The renderer: D3DX objects created on the first Present.
@@ -339,6 +341,8 @@ pub struct Renderer {
     cursor: *mut c_void,
     rt: Option<RenderTarget>,
     rt_valid: bool,
+    /// `directmode`: the chat render target is never created.
+    direct_mode: bool,
     rt_scroll: u32,
     built_for: (i32, i32),
     /// Size of the chat GUI dialog: the video mode, then `(w + 100) × (bottom + 50)`
@@ -435,7 +439,7 @@ impl Renderer {
     /// sprites; object-editor SAMPAUX3 fonts; plate render target; two more sprites (object
     /// editing/selection); `sampgui.png` and the GUI fonts; the `mouse.png` cursor; cursor
     /// hidden again.
-    pub fn new(face: &[u8], weight: u32, font_size: i32) -> Result<Self, String> {
+    pub fn new(face: &[u8], weight: u32, font_size: i32, direct_mode: bool) -> Result<Self, String> {
         let d3dx = D3dx::load()?;
         let w = video_width();
         d3d::show_cursor(false);
@@ -463,11 +467,16 @@ impl Renderer {
         let chat = Sprite::create(&d3dx)?;
         let blit = Sprite::create(&d3dx)?;
         let (rw, rh) = if w <= 1024 { (1024, 512) } else { (2048, 1024) };
-        let rt = match RenderTarget::create(&d3dx, rw, rh, 21) {
-            Ok(rt) => Some(rt),
-            Err(e) => {
-                crate::log!("ui: chat render target unavailable ({e}); direct drawing");
-                None
+        // `directmode` (B 0x10068210): no render target, the chat draws directly.
+        let rt = if direct_mode {
+            None
+        } else {
+            match RenderTarget::create(&d3dx, rw, rh, 21) {
+                Ok(rt) => Some(rt),
+                Err(e) => {
+                    crate::log!("ui: chat render target unavailable ({e}); direct drawing");
+                    None
+                }
             }
         };
         let _ = main.measure_z(b"Y", dt::SINGLELINE);
@@ -548,6 +557,7 @@ impl Renderer {
             cursor,
             rt,
             rt_valid: false,
+            direct_mode,
             rt_scroll: 0,
             built_for: (w, font_size),
             host_size: (w, video_height()),
@@ -556,8 +566,11 @@ impl Renderer {
     }
 
     /// Chat render target: 1024×512 at an adapter width ≤ 1024, else 2048×1024
-    /// (UR §7.6); `directmode` is not supported (TODO-unknown: config read).
+    /// (UR §7.6); none with `directmode` (B 0x10068210).
     fn create_rt(&mut self) {
+        if self.direct_mode {
+            return;
+        }
         let (w, h) = if video_width() <= 1024 { (1024, 512) } else { (2048, 1024) };
         match RenderTarget::create(&self.d3dx, w, h, 21) {
             Ok(rt) => self.rt = Some(rt),
@@ -676,6 +689,25 @@ impl Renderer {
         let glyphs: Vec<u32> = colour::glyph_colours(text, colour).iter().map(|g| g.colour).collect();
         let mut r = rect;
         d3d::draw_glyph_coloured(font, sprite, &stripped, &mut r, flags | dt::NOCLIP, colour, glyphs);
+    }
+
+    /// Font renderer small-font draw without the outline passes (B 0x1006b4a0 with outline 0):
+    /// its own Begin/End.
+    fn small_text_plain(&self, text: &[u8], rect: Rect, flags: u32, colour: u32) {
+        let s = &self.sprites.text;
+        s.begin(d3d::sprite::ALPHABLEND);
+        let stripped = colour::strip_codes(text);
+        let glyphs: Vec<u32> = colour::glyph_colours(text, colour).iter().map(|g| g.colour).collect();
+        let mut r = rect;
+        d3d::draw_glyph_coloured(&self.fonts.small, s, &stripped, &mut r, flags | dt::NOCLIP, colour, glyphs);
+        s.end();
+    }
+
+    /// Audio stream title (B 0x10066a70, UR §18): small font at (15, H − 20)–(W, H + 10).
+    fn audio_title(&self, text: &[u8]) {
+        let (w, h) = (video_width(), video_height());
+        let rect = Rect { left: 15, top: h - 20, right: w, bottom: h + 10 };
+        self.small_text_plain(text, rect, crate::audio::TITLE_FLAGS, crate::audio::TITLE_COLOUR);
     }
 
     /// Font renderer small-font draw with outline (A 0x1006b4e0): its own Begin/End.
@@ -1191,6 +1223,9 @@ impl Renderer {
         if f.name_tag_passes {
             self.tag_bars(f.tags);
             self.tag_names(f.tags, f.nametag_status);
+        }
+        if let Some(t) = f.audio_title {
+            self.audio_title(t);
         }
         if let Some(sb) = &f.scoreboard {
             self.scoreboard(sb, f.cursor);

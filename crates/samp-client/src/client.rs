@@ -21,7 +21,8 @@ use samp_proto::sync::policy;
 use crate::classsel::{self, ClassSelection};
 use crate::footsync::{self, FootSender};
 use crate::game::{self, off};
-use crate::netclient::{Event, NetClient, Phase};
+use crate::lifecycle::{self, Action, NetGame};
+use crate::netclient::{Event, NetClient};
 use crate::patch::{Memory, ProcessMemory};
 use crate::script::{Arg, Runner, op};
 
@@ -47,6 +48,25 @@ const PRELOAD_MODELS: [i32; 9] = [3131, 1485, 1486, 1543, 1546, 343, 342, 344, 3
 const ZONE_NAMES_DELAY: Duration = Duration::from_millis(1000);
 /// `CControllerState::ButtonTriangle` in `CPad::Pads[0].NewState` (samp's pad +0x1E).
 const PAD_TRIANGLE: u32 = 0x1E;
+
+/// Script commands of the RPC 40 reset (B 0x100ad350 / 0x100affe0).
+const OP_SELECT_INTERIOR: u16 = 0x04BB;
+const OP_LINK_CHAR_TO_INTERIOR: u16 = 0x0860;
+const OP_EXPLODE_CHAR_HEAD: u16 = 0x0321;
+/// `CPed::m_pFire`, `CVehicle::m_pFire`, `CPed` flags dword with the in-vehicle bit 0x100
+/// (B 0x100ad100 / 0x100affff).
+const PED_FIRE: u32 = 0x730;
+const VEHICLE_FIRE: u32 = 0x490;
+/// `CPed::m_pVehicle`.
+const PED_VEHICLE: u32 = 0x58C;
+const PED_FLAGS_IN_VEHICLE: u32 = 0x46C;
+/// `CFire::Extinguish` (thiscall).
+const GTA_FIRE_EXTINGUISH: u32 = 0x5393F0;
+/// `CWorld::PlayerInFocus` (B 0x10113978 → 0xB7CD74).
+const GTA_PLAYER_IN_FOCUS: u32 = 0xB7CD74;
+/// GTA gravity and samp's default (+0x3d5 +0x16 = 0x3c03126f = 0.008).
+const GTA_GRAVITY: u32 = 0x863984;
+const DEFAULT_GRAVITY: f32 = 0.008;
 
 const VK_SHIFT: i32 = 0x10;
 const VK_LEFT: i32 = 0x25;
@@ -86,14 +106,18 @@ pub struct Client {
     players: crate::players::Players,
     /// Vehicles (M5, vehicles.rs).
     vehicles: crate::vehicles::Vehicles,
-    /// The connect tick has fired (networking runs from then on).
-    net_started: bool,
     /// Combat (M7, combatclient.rs).
     combat: crate::combatclient::Combat,
     /// Local player "dead" flag (local player +0xF4): set with RPC 53, cleared by the respawn.
     dead: bool,
     /// InitGame class count (class selection after a forced reselection).
     class_count: u32,
+    /// samp's netgame state and connect timer (lifecycle.rs, M10).
+    netgame: NetGame,
+    /// Start of the netgame clock (GetTickCount stand-in).
+    clock: Instant,
+    /// `host`, `port` for the `Connecting to` line.
+    connect_target: (String, u16),
     /// Objects (M6, objects.rs).
     objects: crate::objects::Objects,
     /// Pickups, actors, checkpoints, gang zones, map icons, 3D labels (M6, entities.rs).
@@ -131,9 +155,9 @@ impl Client {
         let server = crate::netclient::resolve(&host, port).map_err(|e| format!("resolve {host}:{port}: {e}"))?;
         crate::log!("client: connecting to {server} as {name:?} (auth table {path}, {} entries)", auth.len());
         let net = NetClient::new(server, &name, auth).map_err(|e| format!("udp socket: {e}"))?;
-        // "Started"; the UI's connect tick starts the session 3.0 s later (A 0x10008940:
-        // 3000 ms after the netgame constructor; TRACE-3 U-CONNECT-TIMING; parity run: join
-        // in frame 251 in both clients).
+        // "Started"; the connect tick starts the session 3.0 s later (lifecycle.rs: more than
+        // 3000 ms after the netgame constructor; TRACE-3 U-CONNECT-TIMING; parity run: join in
+        // frame 251 in both clients).
         crate::ui::on_netgame_start(&host, port, &name);
         let now = Instant::now();
         Ok(Self {
@@ -161,10 +185,12 @@ impl Client {
             look_last: None,
             players: crate::players::Players::default(),
             vehicles: crate::vehicles::Vehicles::default(),
-            net_started: false,
             combat: crate::combatclient::Combat::new(),
             dead: false,
             class_count: 0,
+            netgame: NetGame::new(0),
+            clock: now,
+            connect_target: (host.clone(), port),
             objects: crate::objects::Objects::default(),
             entities: crate::entities::Entities::default(),
         })
@@ -206,7 +232,7 @@ impl Client {
 
     /// CGame::Process pre-step (dll.rs): the per-frame object process (world-entities.md RE-10 §3).
     pub fn pre_process(&mut self) {
-        if matches!(self.net.phase(), Phase::Connected) {
+        if self.netgame.connected() {
             self.objects.process(&mut self.runner, &self.vehicles, &self.players);
         }
     }
@@ -235,22 +261,15 @@ impl Client {
     /// One frame (main thread).
     pub fn tick(&mut self) {
         let now = Instant::now();
-        // The connect tick starts connecting 3.0 s after "Started" (TRACE-3
-        // U-CONNECT-TIMING); the UI prints the connect / retry lines.
-        let answered = !matches!(self.net.phase(), Phase::Opening);
-        if crate::ui::connect_tick(answered) {
-            self.net_started = true;
-        }
         // What the combat hooks queued during this frame's CGame::Process (206 / 115), first.
         self.entities.sent_177 += self.combat.drain(&mut self.net);
-        if self.net_started {
-            self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors());
-            for ev in self.net.tick(now) {
-                self.on_event(ev, now);
-            }
-            // Remote 206 shots fired while the packets were handled (115 taking 1).
-            self.entities.sent_177 += self.combat.drain(&mut self.net);
+        self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors());
+        // samp's main loop (B 0x1000b5a0): the packet handler first.
+        for ev in self.net.tick(now) {
+            self.on_event(ev, now);
         }
+        // Remote 206 shots fired while the packets were handled (115 taking 1).
+        self.entities.sent_177 += self.combat.drain(&mut self.net);
         if self.debug_spawn {
             self.debug_spawn = false;
             crate::log!("client: debug spawn requested over the control channel");
@@ -301,8 +320,20 @@ impl Client {
             } else if self.spawned {
                 self.local_frame(now);
                 self.sync_tick(now);
-            } else if !matches!(self.net.phase(), Phase::Connected) {
+            } else if !self.netgame.connected() {
                 self.connecting_tick();
+            }
+        }
+        // The connect tick (B 0x10008930), in state 1 only.
+        let now_ms = now.duration_since(self.clock).as_millis() as u64;
+        if self.netgame.connect_due(now_ms) {
+            let (host, port) = self.connect_target.clone();
+            crate::ui::print_debug(&lifecycle::msg::connecting(&host, port));
+            if let Err(e) = self.net.connect(now) {
+                crate::log!("client: connect failed: {e}");
+            }
+            for ev in self.net.tick(now) {
+                self.on_event(ev, now);
             }
         }
         // Remote peds whose ProcessControl faulted (swap.rs fault containment).
@@ -310,7 +341,7 @@ impl Client {
         // Chat input and connection lines of the in-game UI (M4).
         crate::ui::net_tick(&mut self.net);
         // The vehicle pool tick follows the local player's (remote-control-vehicles §6 step 3c).
-        if matches!(self.net.phase(), Phase::Connected) {
+        if self.netgame.connected() {
             self.vehicles.pool_tick(&mut self.runner, &mut self.net, &self.players, now);
             // World entities (M6): hook events (RPC 131 / 177), checkpoints, pickup poll, labels.
             self.entities.hook_events(&mut self.net);
@@ -321,9 +352,7 @@ impl Client {
         self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors());
         self.entities.sent_177 += self.combat.drain(&mut self.net);
         // Push out what this frame queued (sync packets, RPCs) right away.
-        if self.net_started {
-            self.net.flush(now);
-        }
+        self.net.flush(now);
         if self.last_net_log.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(5)) {
             self.last_net_log = Some(now);
             crate::log!("client: {}", self.status_line());
@@ -351,6 +380,7 @@ impl Client {
                 self.combat.on_init_game(&g);
                 self.class_count = g.spawns_available;
                 crate::ui::on_init_game(&g);
+                self.netgame.on_init_game();
                 self.vehicles.set_init_game(&g);
                 self.objects.set_local_id(g.player_id);
                 self.entities.set_local_id(g.player_id);
@@ -358,17 +388,108 @@ impl Client {
             }
             Event::Rpc(r) => self.on_rpc(r),
             Event::Sync(s) => self.on_sync(s, now),
-            Event::Closed(reason) => {
-                crate::ui::on_closed();
-                self.objects.clear(&mut self.runner);
-                self.entities.clear(&mut self.runner);
-                self.vehicles.clear(&mut self.runner);
-                self.players.clear(&mut self.runner);
-                crate::log!("client: session closed: {reason}");
-                self.class_sel.leave();
-                self.spawned = false;
+            Event::Packet(p) => {
+                crate::log!("client: packet {p:?} in netgame state {}", self.netgame.state);
+                let actions = self.netgame.on_packet(p);
+                self.apply_actions(actions);
+            }
+            Event::Rejected(reason) => {
+                let actions = self.netgame.on_rejected(reason);
+                self.apply_actions(actions);
             }
         }
+    }
+
+    /// Lifecycle actions (lifecycle.rs), in order.
+    fn apply_actions(&mut self, actions: Vec<Action>) {
+        for a in actions {
+            match a {
+                Action::Debug(t) => crate::ui::print_debug(t),
+                Action::Info(t) => crate::ui::print_info(t.as_bytes()),
+                Action::Disconnect(_) => self.net.disconnect_silent(),
+                Action::Reset => self.reset_routine(),
+                Action::DeletePlayers => {
+                    self.players.clear(&mut self.runner);
+                    crate::ui::forget_players();
+                }
+                Action::StopAudio { wait } => {
+                    crate::audio::stop(wait);
+                }
+            }
+        }
+    }
+
+    /// RPC 40 reset (B 0x1000a530; session-misc.md §40). Measured effects (TRACE-8 gmx):
+    /// `0x04BB(0)`, `0x0860(char, 0)`, `0x04E4` at the ped, `0x0321(char)` in that frame, then
+    /// the not-connected scene every frame until InitGame.
+    fn reset_routine(&mut self) {
+        crate::log!("client: reset routine (server restart / lost connection)");
+        // Remote players lose their peds but stay in the pool.
+        self.players.despawn_all(&mut self.runner);
+        crate::log!("client: reset: remote peds removed");
+        // Local player: back to the not-spawned state.
+        self.class_sel.leave();
+        self.spawned = false;
+        self.dead = false;
+        // The entity pools are deleted and recreated.
+        self.objects.clear(&mut self.runner);
+        self.entities.clear(&mut self.runner);
+        self.vehicles.clear(&mut self.runner);
+        crate::log!("client: reset: pools cleared");
+        crate::ui::on_reset();
+        // Server-settings defaults (+0x3d5): hour 12:00, weather 1, zone names off, CJ walk off.
+        self.world.hour = 12;
+        self.world.minute = 0;
+        self.world.weather = 1;
+        self.zone_names = false;
+        self.zone_names_from = None;
+        crate::pedhooks::set_cj_walk(false);
+        // Game side: interior 0 (B 0x100ad350(0, 1)), then the local ped is killed (B 0x100affe0).
+        let ped = self.ped();
+        crate::log!("client: reset: settings restored, local ped {ped:#x}");
+        if let Some(h) = self.ped_handle(ped) {
+            self.runner.run(OP_SELECT_INTERIOR, &[Arg::Int(0)]);
+            self.runner.run(OP_LINK_CHAR_TO_INTERIOR, &[Arg::Int(h), Arg::Int(0)]);
+            if let Some(p) = game::snapshot(&ProcessMemory).ok().and_then(|s| s.player) {
+                self.runner.run(op::REQUEST_COLLISION, &[Arg::Float(p.pos[0]), Arg::Float(p.pos[1])]);
+            }
+            crate::log!("client: reset: interior 0");
+            self.kill_local_ped(ped, h);
+            crate::log!("client: reset: local ped killed");
+        }
+        // GTA gravity back to the default (B 0x100a1410 → 0x863984).
+        // The gravity constant lives in a read-only page; samp unprotects it first (B 0x100aa4d0).
+        if let Err(e) = ProcessMemory.write(GTA_GRAVITY, &DEFAULT_GRAVITY.to_le_bytes()) {
+            crate::log!("client: reset: gravity write failed: {e}");
+        }
+        crate::ui::print_info(lifecycle::msg::RESTARTING.as_bytes());
+    }
+
+    /// B 0x100affe0: fires out, teleport to its own position, health 0, `EXPLODE_CHAR_HEAD`
+    /// with `CWorld::PlayerInFocus` set to the ped's player number around it.
+    fn kill_local_ped(&mut self, ped: u32, handle: i32) {
+        let m = ProcessMemory;
+        let extinguish = |fire: u32| {
+            if fire != 0 {
+                // SAFETY: CFire::Extinguish (thiscall) on the game's fire object.
+                let f: extern "thiscall" fn(u32) = unsafe { std::mem::transmute(GTA_FIRE_EXTINGUISH as usize) };
+                f(fire);
+            }
+        };
+        extinguish(m.read_u32(ped + PED_FIRE).unwrap_or(0));
+        if m.read_u32(ped + PED_FLAGS_IN_VEHICLE).unwrap_or(0) & 0x100 != 0 {
+            let veh = m.read_u32(ped + PED_VEHICLE).unwrap_or(0);
+            if veh != 0 {
+                extinguish(m.read_u32(veh + VEHICLE_FIRE).unwrap_or(0));
+            }
+        }
+        if let Some(p) = game::snapshot(&m).ok().and_then(|s| s.player) {
+            self.teleport(p.pos[0], p.pos[1], p.pos[2]);
+        }
+        poke(ped + off::PED_HEALTH, 0.0f32);
+        poke(GTA_PLAYER_IN_FOCUS, 0u8);
+        self.runner.run(OP_EXPLODE_CHAR_HEAD, &[Arg::Int(handle)]);
+        poke(GTA_PLAYER_IN_FOCUS, 0u8);
     }
 
     /// Sync packets: 207/203 go to the player pool; 200/211 are stored and 209/210 applied by the vehicle pool.
@@ -397,10 +518,20 @@ impl Client {
         let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
         crate::ui::on_rpc(&r);
         match r {
+            // RPC 40 (gmx): the reset routine, state 11 until the server sends InitGame again.
+            Incoming::Session(samp_proto::rpcs::session::Incoming::PlayerClose(_)) => {
+                let actions = self.netgame.on_server_restart();
+                self.apply_actions(actions);
+            }
             Incoming::Ui(ui::Incoming::SendClientMessage(m)) => {
                 crate::log!("[chat {:08x}] {}", m.colour, text(&m.message));
             }
             Incoming::Ui(ui::Incoming::SendGameText(g)) => crate::log!("[gametext] {}", text(&g.text)),
+            // M9 audio (audio.rs): RPC 41 / 42.
+            Incoming::Ui(ui::Incoming::PlayAudioStreamForPlayer(a)) => crate::audio::on_play_rpc(&a),
+            Incoming::Ui(ui::Incoming::StopAudioStreamForPlayer(_)) => {
+                crate::audio::stop(false);
+            }
             Incoming::Remote(r) => {
                 use samp_proto::rpcs::remote::Incoming as R;
                 if let R::PlayerJoin(j) = &r {
@@ -591,6 +722,9 @@ impl Client {
                         self.clear_weapons(ped);
                     }
                 }
+                P::PlayerPlaySound(s) => {
+                    crate::audio::play_sound(&mut self.runner, s.sound_id as i32, [s.pos.x, s.pos.y, s.pos.z])
+                }
                 _ => {}
             },
             _ => {}
@@ -775,7 +909,7 @@ impl Client {
         // Cuffs off (A 0x100ACF40(0)); the jetpack does not exist here.
         self.combat.cuffs.cuffed = false;
         self.combat.publish_masks();
-        let connected = matches!(self.net.phase(), Phase::Connected);
+        let connected = self.netgame.connected();
         if self.spawn_info.is_some() && !self.force_class_selection && connected {
             if health > 0.0 {
                 self.dead = false;
@@ -857,7 +991,9 @@ impl Client {
             surf_probe(ped);
         }
         // Head look in the on-foot, driver and passenger branches of the local tick.
-        if matches!(state, PEDSTATE_IDLE | PEDSTATE_SNIPER | PEDSTATE_DRIVING) {
+        // `disableheadmove` clears samp's Game+0x59 flag, which the head look tests first
+        // (B 0x10002fbd; set at boot B 0x100c4ef7 and by `/headmove`).
+        if matches!(state, PEDSTATE_IDLE | PEDSTATE_SNIPER | PEDSTATE_DRIVING) && !crate::ui::head_move_disabled() {
             self.head_look(ped, now);
         }
         // 205 (> 1000 ms) and 204 (every tick) come before the per-state packets (A 0x100078A8 / 0x100078C9).
@@ -946,8 +1082,7 @@ impl Client {
         }
     }
 
-    /// The local head follows the camera (A 0x10002fa0; "disableheadmove" in sa-mp.cfg is not
-    /// read yet, so it is always on, samp's default): every 1000 ms the offset := 20 × camera
+    /// The local head follows the camera (A 0x10002fa0, unless `disableheadmove`): every 1000 ms the offset := 20 × camera
     /// front, every 200 ms `LookAt` at position + offset for 2000 ms.
     fn head_look(&mut self, ped: u32, now: Instant) {
         let m = ProcessMemory;

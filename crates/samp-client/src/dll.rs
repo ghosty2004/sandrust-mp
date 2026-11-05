@@ -671,6 +671,11 @@ fn tick() {
         }
     }
     client_tick();
+    // samp's per-frame step after the netgame tick: radio calls while a stream plays, the
+    // mission-audio poll (audio.rs, B 0x100c4ff0).
+    if ARGS.get().is_some_and(|a| a.connect) {
+        crate::audio::frame_tick();
+    }
     // In-game UI (M4): first-frame setup, input restore, queued UI work.
     crate::ui::frame_entry(false);
     service_control("tick");
@@ -765,6 +770,7 @@ fn service_control(_from: &str) {
         Command::Input => crate::ui::control_input(),
         Command::Ui => crate::ui::control_ui(),
         Command::Say(t) => crate::ui::control_say(t),
+        Command::Audio => crate::audio::status(),
         Command::Quit => "bye".into(),
         Command::Unknown(c) => format!("error unknown command {c:?}"),
     });

@@ -3,8 +3,8 @@
 //!
 //! The writer (A 0x10066080) rewrites the whole file with one line per key, using the
 //! format strings `"%s=%d\n"` (int), `"%s=\"%s\"\n"` (string) and `"%s=%f\n"` (float)
-//! (string table next to the writer, A ≈ 0x100e9b88). The reader and start-up handling
-//! belong to RE-6; the parsing rules here are assumptions (notes U-CFG-READ).
+//! (string table next to the writer, A ≈ 0x100e9b88). Reader: loader B 0x10066230,
+//! classifier B 0x10065f20 (static) and TRACE-8 "sa-mp.cfg" (measured).
 
 use crate::chat::PAGE_SIZE_SETTER_RANGE;
 use crate::text::atoi;
@@ -63,45 +63,120 @@ pub struct SampCfg {
     entries: Vec<(String, CfgValue)>,
 }
 
-fn trim(s: &[u8]) -> &[u8] {
-    let a = s.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(s.len());
-    let b = s.iter().rposition(|b| !b.is_ascii_whitespace()).map_or(a, |i| i + 1);
-    &s[a..b.max(a)]
+/// C `atof` on the leading numeric part (`strtod` subset: sign, digits, one `.`, exponent).
+fn atof(v: &[u8]) -> f32 {
+    let mut i = 0;
+    while i < v.len() && matches!(v[i], b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
+        i += 1;
+    }
+    let start = i;
+    if i < v.len() && matches!(v[i], b'+' | b'-') {
+        i += 1;
+    }
+    while i < v.len() && v[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i < v.len() && v[i] == b'.' {
+        i += 1;
+        while i < v.len() && v[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+    if i < v.len() && matches!(v[i], b'e' | b'E') {
+        let mut j = i + 1;
+        if j < v.len() && matches!(v[j], b'+' | b'-') {
+            j += 1;
+        }
+        if j < v.len() && v[j].is_ascii_digit() {
+            while j < v.len() && v[j].is_ascii_digit() {
+                j += 1;
+            }
+            i = j;
+        }
+    }
+    std::str::from_utf8(&v[start..i]).ok().and_then(|t| t.parse::<f64>().ok()).unwrap_or(0.0) as f32
 }
 
+/// Value type (classifier B 0x10065f20): first and last character `"` → string (without the
+/// quotes), else a `.` anywhere → float (`atof`), else integer (`atol`). So an unquoted
+/// `fontface=Courier New` is the integer 0 (measured: the client later wrote `fontface=0`).
 fn parse_value(v: &[u8]) -> CfgValue {
-    if let Some(rest) = v.strip_prefix(b"\"") {
-        let end = rest.iter().rposition(|&b| b == b'"').unwrap_or(rest.len());
-        return CfgValue::Str(rest[..end].to_vec());
+    if v.len() >= 2 && v[0] == b'"' && v[v.len() - 1] == b'"' {
+        return CfgValue::Str(v[1..v.len() - 1].to_vec());
     }
-    let numeric = !v.is_empty()
-        && v.iter().enumerate().all(|(i, &b)| b.is_ascii_digit() || b == b'.' || (i == 0 && (b == b'-' || b == b'+')));
-    if numeric
-        && v.contains(&b'.')
-        && let Some(f) = std::str::from_utf8(v).ok().and_then(|s| s.parse::<f32>().ok())
-    {
-        return CfgValue::Float(f);
+    if v == b"\"" {
+        // samp: the one-character string `"` (first = last quote) is stored as empty.
+        return CfgValue::Str(Vec::new());
     }
-    if numeric {
-        return CfgValue::Int(atoi(v));
+    if v.contains(&b'.') {
+        return CfgValue::Float(atof(v));
     }
-    CfgValue::Str(v.to_vec())
+    CfgValue::Int(atoi(v))
 }
+
+/// samp's line buffer (`fgets(buf, 256, f)`): longer lines are read as several lines.
+const LINE_BUF: usize = 255;
 
 impl SampCfg {
-    /// Parses `key=value` lines. Blank lines and lines without `=` are skipped; keys
-    /// and values are trimmed; a later duplicate key wins.
+    /// Parses the file like the loader B 0x10066230: per line (at most 255 bytes), leading
+    /// spaces/tabs skipped; lines starting with `;`, `[`, or empty are ignored; the key runs up
+    /// to a space, tab, `=`, `;` or the line end and is lower-cased; then optional blanks, a
+    /// required `=`, optional blanks, the value up to the line end with trailing spaces, tabs
+    /// and CRs removed; empty keys or values are ignored. A later duplicate key wins.
     pub fn parse(bytes: &[u8]) -> Self {
         let mut cfg = Self::default();
-        for line in bytes.split(|&b| b == b'\n') {
-            let line = trim(line);
-            let Some(eq) = line.iter().position(|&b| b == b'=') else { continue };
-            let key = trim(&line[..eq]);
-            if key.is_empty() {
+        let mut lines = Vec::new();
+        for raw in bytes.split_inclusive(|&b| b == b'\n') {
+            for chunk in raw.chunks(LINE_BUF) {
+                lines.push(chunk);
+            }
+        }
+        for line in lines {
+            let line = &line[..line.iter().position(|&b| b == 0).unwrap_or(line.len())];
+            let mut i = 0;
+            while i < line.len() && matches!(line[i], b' ' | b'\t') {
+                i += 1;
+            }
+            if i >= line.len() || matches!(line[i], b';' | b'\n' | b'[') {
                 continue;
             }
-            let key = String::from_utf8_lossy(key).into_owned();
-            cfg.set(&key, parse_value(trim(&line[eq + 1..])));
+            let ks = i;
+            while i < line.len() && !matches!(line[i], b' ' | b'=' | b'\n' | b'\t' | b';') {
+                i += 1;
+            }
+            if i == ks {
+                continue;
+            }
+            let key = String::from_utf8_lossy(&line[ks..i]).to_ascii_lowercase();
+            while i < line.len() && matches!(line[i], b' ' | b'\t') {
+                i += 1;
+            }
+            if i >= line.len() || line[i] != b'=' {
+                continue;
+            }
+            i += 1;
+            while i < line.len() && matches!(line[i], b' ' | b'\t') {
+                i += 1;
+            }
+            let vs = i;
+            while i < line.len() && line[i] != b'\n' {
+                i += 1;
+            }
+            if i == vs {
+                continue;
+            }
+            let mut v = &line[vs..i];
+            while let Some((&last, rest)) = v.split_last() {
+                if matches!(last, b' ' | b'\t' | b'\r') {
+                    v = rest;
+                } else {
+                    break;
+                }
+            }
+            if v.is_empty() {
+                continue;
+            }
+            cfg.set(&key, parse_value(v));
         }
         cfg
     }
@@ -126,9 +201,10 @@ impl SampCfg {
         out
     }
 
-    /// Key lookup (case-sensitive, notes U-CFG-READ).
+    /// Key lookup; keys are compared lower-cased (lookup B 0x10065c50 lower-cases the name).
     pub fn get(&self, key: &str) -> Option<&CfgValue> {
-        self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+        let key = key.to_ascii_lowercase();
+        self.entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
     }
     pub fn get_int(&self, key: &str) -> Option<i32> {
         self.get(key).map(CfgValue::as_int)
@@ -292,6 +368,25 @@ mod tests {
         let mut c2 = c.clone();
         c2.set_int("pagesize", 20);
         assert_eq!(c2.keys().next(), Some("pagesize"));
+    }
+
+    /// TRACE-8 "sa-mp.cfg": an unquoted string is the integer 0 and is rewritten as such;
+    /// quoted strings, floats, case-insensitive keys, comments and blanks (loader B 0x10066230).
+    #[test]
+    fn trace8_cfg_value_types_and_rewrite() {
+        let mut c = SampCfg::parse(b"fontface=Courier New\r\n");
+        assert_eq!(c.get("fontface"), Some(&CfgValue::Int(0)));
+        c.set_int("pagesize", 15);
+        assert_eq!(c.to_bytes(), b"fontface=0\r\npagesize=15\r\n");
+        let c = SampCfg::parse(
+            b"  FontFace = \"Courier New\"  \r\n; comment=1\n[section]\nx=\n=5\nratio=1.5\nFPSLIMIT\t=\t30 \nbad 7\n",
+        );
+        assert_eq!(c.get_str("fontface"), Some(&b"Courier New"[..]));
+        assert_eq!(c.get("ratio"), Some(&CfgValue::Float(1.5)));
+        assert_eq!(c.get_int("fpslimit"), Some(30));
+        assert_eq!(c.get_int("FpsLimit"), Some(30));
+        assert!(!c.contains("comment") && !c.contains("x") && !c.contains("bad"));
+        assert_eq!(c.keys().collect::<Vec<_>>(), vec!["fontface", "ratio", "fpslimit"]);
     }
 
     #[test]
