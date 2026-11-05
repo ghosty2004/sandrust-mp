@@ -393,3 +393,23 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   4.997 s on main); m10 window 4.999–5.010 / 14.999–15.010 s from 33 original gaps; m10 now 5.002 s.
 - App-level residuals queued: NET6-P1..P4 (idle 203, spectator 203, 209 after passenger exit,
   Escape in the object editor).
+
+## 2026-11-05 — Soak findings fixed (worktree soakfix, branch soak-fixes)
+
+- Derby crash (gta_sa 0x4F1464, stream thread "start position modulo track length"): the Steam 3.0 audio
+  data has 122 zero-sample stub tracks the 1.0 exe cannot start. New `tools/audio-stub-tracks.py`
+  (check / patch / restore) aliases them in the game copy's TrakLkup.dat (new inode, shared original kept as
+  `.steam`); `tools/wine-env.sh` applies it per game copy. No samp.dll patch touches that path; the original
+  crashed there before (TRACE-7). Derby in lane main after the fix: 0 crashes (runs B–D).
+- Exploded unoccupied car: our RPC 136 rule = samp's (last driven vehicle only); measured on the original in
+  the trace lane (uifs, explosions). No client change.
+- 209 for a pushed parked car: same rule as the netp lane's NET6-P3; left to it.
+- Remote player without updates: reproduced with a capture; the server relays no 207 because samp-bot's
+  standing shooter never re-sends an identical 207 (shared duplicate-suppression timestamp with its
+  always-different 203). samp-bot: aim sway turns the ped; no sync between RPC 40 and InitGame (a bot that
+  synced in the gmx gap got stuck in class selection). Client diagnostics: `foot_rx`/`foot_late`/`last_ts`
+  in `remote`, `syncs_bad` in `net`.
+- soak_mon: one-sample grace for a local seat change in flight. tools/trace/lib.sh: TRACE_GAMEMODE may name a
+  bundled gamemode.
+- Verified: e2e saa, goal, m1–m10 exit 0 (m9 with M9_ORIG = main's original capture); tests, clippy host +
+  i686 0 warnings; soak runs in docs/phase3/soak-notes.md "Resolution of the findings".

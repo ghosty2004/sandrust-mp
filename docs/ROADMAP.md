@@ -35,7 +35,7 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 8. NET6-P2 — 203 while spectating (after death in gungame): the original every ~532 ms (2 × on-foot interval + 501 ms duplicate suppression, remote-players-sync §0.4); `behaviourclient.rs` spectator_tick sends none
 8. NET6-P3 — 209 unoccupied sync for the car the local player just left as passenger (original: two, 0.9–1.1 s after RPC 154); ours none (`vehicles.rs`)
 8. NET6-P4 — object editor: swallow Escape while editing (ours opens GTA's pause menu; RPC 117 itself matches) — part of M6-P
-9. SOAK — stability (needs M7)
+9. SOAK — stability: 10-minute trials pass on all three gamemodes (branch soak-fixes); 2 h soak next
 10. RENAME — samp-rs → sandrust-mp (crates sandrust-*), when no worktrees are open
 
 ## Phase 0 — Reverse engineering (specs in `docs/re/`)
@@ -124,7 +124,7 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 - NET6-D5: F2 accepts the missing 203 while spectating until NET6-P2.
 - NET6-D6: F2 accepts the missing 209 after leaving a car as passenger until NET6-P3.
 - ClientCheck (RPC 103): answered with samp's checksum algorithm computed honestly over OUR process memory (type 0x45 reads our own DLL image). Nothing is stored or replayed; values differ from the original exactly where memory really differs. Spoofing the original's values would bypass a server integrity check and is out of scope.
-- m5 occasional failure: GTA's radio thread divides by zero (0x4F1464) and Wine's debugger freezes the process; the original client shows the same crash (TRACE-7), so it is not a client difference.
+- m5 / soak derby occasional failure: GTA's radio stream thread divides by zero (0x4F1464) on the 122 zero-sample stub tracks of the Steam 3.0 audio data (1.0 exe + Steam data); the original client shows the same crash (TRACE-7) and samp.dll patches nothing there. Fixed in the test environment: `tools/audio-stub-tracks.py` aliases the stubs in each game copy's TrakLkup.dat (applied by tools/wine-env.sh; docs/phase3/soak-notes.md).
 - Object editor (M6-P): the glyph-size probe (`DrawTextA("C", DT_CALCRECT)`) gets a zeroed RECT; samp passes an uninitialised stack RECT and keeps only the size, so the D3D stream differs only in that rect (`tools/diff/editor_d3d_diff.py` drops it).
 - Audio: our client loads the user's own bass.dll through a static import exactly like samp.dll (nothing redistributed; consistent with D-4 = A); BASS call stream diffed 0/16 segments vs the original.
 - Audio: two samp bugs handled safely instead of reproduced: a positional stream with no ped matrix plays at volume 0 (samp reads uninitialised stack), and a META tag without ';' keeps the whole title (samp crashes).

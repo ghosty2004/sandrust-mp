@@ -135,6 +135,7 @@ class Soak:
         self.stuck = 0
         self.prev_ticks = None
         self.frozen = 0
+        self.seat_transition = False   # the previous sample was a local seat transition (see compare)
         self.persist = {}              # (category, entity) -> consecutive bad samples
         self.persistent = []
         self.server_crashes = 0
@@ -619,9 +620,17 @@ class Soak:
             if v is not None and p["st"] in (2, 3):
                 p["speed"] = max(p["speed"], v["speed"])
         st = sp["st"]
+        # Local seat transition in flight: the client sits as driver while the server still has the player on foot
+        # (or the reverse), e.g. derby's OnPlayerSpawn → PutPlayerInVehicle, applied by the client at once and by
+        # the server only with the client's next driver sync. The local position / driver of that one sample are
+        # compared against the old seat; skipped once, judged again from the next sample on (a real mismatch persists).
+        client_drives = any(re.search(r"\bdriver=local\b", l) for l in (vehicles or [])[1:])
+        transition = spawned and st in (1, 2) and client_drives != (st == 2)
+        skip_local = transition and not self.seat_transition
+        self.seat_transition = transition
         # local player
         m = re.search(r"pos=(-?[\d.]+),(-?[\d.]+),(-?[\d.]+) heading=\S+ health=(-?[\d.]+)", state or "")
-        if m and spawned and st in (1, 2, 3):
+        if m and spawned and st in (1, 2, 3) and not skip_local:
             cpos = [float(m.group(i)) for i in (1, 2, 3)]
             chp = float(m.group(4))
             tol = (TOL_FOOT_M if st == 1 else TOL_VEH_M) + sp["speed"] * LAG_S
@@ -694,6 +703,8 @@ class Soak:
                 pass
             dp = drivers.get(vid)
             want = "-" if dp is None else ("local" if dp["id"] == local_id else str(dp["id"]))
+            if skip_local and (dp is None or dp["id"] == local_id or c.get("driver") == "local"):
+                continue
             if dp is None or dp["id"] == local_id or dp["streamed"] == 1:
                 comps.append(("veh_driver", "veh%d" % vid, c.get("driver") == want, "client driver=%s server=%s" % (c.get("driver"), want)))
         return comps

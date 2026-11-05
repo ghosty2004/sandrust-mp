@@ -59,6 +59,8 @@ const ENTER_TIMEOUT: Duration = Duration::from_millis(6000);
 const WASTED: Duration = Duration::from_millis(4000);
 /// Weapon raise time before the first shot.
 const AIM_RAISE: Duration = Duration::from_millis(300);
+/// Heading sway of an aiming bot (rad), in step with the camera sway of its aim sync.
+const AIM_SWAY_YAW: f32 = 0.004;
 /// Class selection: Shift (spawn request) only works this long after it began.
 const CLASS_SELECTION_MIN: Duration = Duration::from_millis(2000);
 /// Special action while an enter-vehicle task runs.
@@ -343,6 +345,15 @@ impl Bot {
         let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
         match rpc {
             Incoming::InitGame(g) => self.init_game(&g, now, out),
+            // RPC 40 (gmx): like the client's reset routine, no sync until the server's next InitGame. A sync sent
+            // in that gap reaches the restarted gamemode before the class request, the server then takes the
+            // player as on foot and ignores its class request (soak, derby: stuck in class selection for good).
+            Incoming::Session(samp_proto::rpcs::session::Incoming::PlayerClose(_)) => {
+                println!("[game] server restarting; no sync until InitGame");
+                self.phase = Phase::Joining;
+                self.activity = Activity::OnFoot;
+                self.spectating = false;
+            }
             Incoming::ConnectionRejected { reason } => {
                 return Err(format!("connection rejected: {}", session::rejection_reason(reason)).into());
             }
@@ -908,8 +919,13 @@ impl Bot {
             self.note_once("[shoot] waiting for the server to give the weapon");
             return;
         };
-        self.heading = geom::heading_of(sub(tpos, self.pos));
         let since = *self.aim_since.get_or_insert(now);
+        // The ped turns with the aiming camera, sway included (aim_sync): an aiming player's on-foot struct
+        // changes with its aim. With a fixed heading the struct stays byte-identical while the swaying aim sync
+        // keeps refreshing the shared duplicate-suppression timestamp, so 207 would never be re-sent and the
+        // server (and every other client) would keep a stale on-foot state for this bot.
+        let t = now.duration_since(since).as_secs_f32();
+        self.heading = geom::heading_of(sub(tpos, self.pos)) + AIM_SWAY_YAW * (t * 3.7).sin();
         self.keys = keys::AIM;
         // FIRE only counts while the weapon has ammo.
         if self.inv.ammo(weapon) > 0 && now.duration_since(since) >= AIM_RAISE {
@@ -1449,6 +1465,11 @@ mod tests {
             rec.syncs(ids::FOOT_SYNC).iter().map(|f| FootSync::read_body(&mut BitReader::new(&f.1)).unwrap()).collect();
         assert!(feet.iter().all(|f| f.keys & keys::AIM != 0 && f.weapon.weapon() == 24));
         assert!(feet.iter().any(|f| f.keys & keys::FIRE != 0));
+        // Standing still while aiming at a still target, the on-foot struct still changes with the aim sway,
+        // so 207 keeps going out (soak: a fixed heading starved it behind the always-changing 203).
+        let late =
+            rec.syncs(ids::FOOT_SYNC).iter().filter(|f| f.0.duration_since(t0) >= Duration::from_millis(1000)).count();
+        assert!(late >= 20, "on-foot syncs after the first second: {late}");
     }
 
     #[test]

@@ -53,6 +53,14 @@ samp_rs_isolate_userfiles() {
     fi
 }
 samp_rs_isolate_userfiles
+# Steam 3.0 audio data under the 1.0 US exe: the stub tracks of the removed songs (zero samples)
+# make the stream thread divide by zero when a radio station starts on one ("Unhandled division by
+# zero at 004F1464", original samp.dll and ours alike). Alias them in this game copy's track table
+# (a new file; the shared hard-linked original stays as TrakLkup.dat.steam). docs/phase3/soak-notes.md.
+if [ "${SAMP_RS_KEEP_AUDIO_STUBS:-0}" != 1 ] && [ -f "$GTA_DIR/audio/CONFIG/TrakLkup.dat" ] \
+    && [ ! -e "$GTA_DIR/audio/CONFIG/TrakLkup.dat.steam" ] && [ -f "$ROOT/tools/audio-stub-tracks.py" ]; then
+    python3 -I "$ROOT/tools/audio-stub-tracks.py" patch "$GTA_DIR" > /dev/null 2>&1 || true
+fi
 # Headless test runs use 1280x720 (GTA video mode 32) so every lane renders alike.
 if [ "${E2E_HEADLESS:-0}" = 1 ] && [ -f "$ROOT/tools/trace/setmode.py" ]; then
     _samp_rs_set="$WINEPREFIX/drive_c/users/$USER/Documents/GTA San Andreas User Files/gta_sa.set"

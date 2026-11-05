@@ -455,6 +455,9 @@ pub struct RemotePlayer {
     pub armour: f32,
     /// Position corrections applied as a teleport (diagnostics).
     pub teleports: u32,
+    /// 207 packets seen for this player / dropped as late (diagnostics).
+    pub foot_rx: u32,
+    pub foot_late: u32,
     /// |move speed| written by the last one-shot apply (diagnostics).
     pub last_speed: f32,
     /// Head look (onfoot §5.2): offset refreshed every 1000 ms, LookAt every 200 ms.
@@ -490,6 +493,8 @@ impl RemotePlayer {
             health: 0.0,
             armour: 0.0,
             teleports: 0,
+            foot_rx: 0,
+            foot_late: 0,
             last_speed: 0.0,
             look_offset: [0.0; 3],
             look_refresh: None,
@@ -503,7 +508,9 @@ impl RemotePlayer {
 
     /// Store rule for 207 (A 0x10017260). Returns false for a late packet.
     pub fn store_foot(&mut self, ts: Option<u32>, s: &RemoteFootSync, now: Instant) -> bool {
+        self.foot_rx = self.foot_rx.wrapping_add(1);
         if !accept_timestamp(self.last_ts, ts) {
+            self.foot_late = self.foot_late.wrapping_add(1);
             return false;
         }
         if ts.is_some() {
@@ -543,8 +550,20 @@ pub fn format_remote(
     let ped_health = ped_health.map(|h| format!("{h:.0}")).unwrap_or_else(|| "-".into());
     format!(
         "remote id={} name={} slot={slot} ped={:#x} pos={pos} heading={heading} health={:.0} ped_health={ped_health} \
-         state={} sync_age_ms={age} sync_pos={sync_pos} teleports={} speed={:.4} marker_blip={} ped_blip={}",
-        p.id, p.name, p.ped, p.health, p.state, p.teleports, p.last_speed, p.marker_blip, p.ped_blip
+         state={} sync_age_ms={age} sync_pos={sync_pos} teleports={} speed={:.4} marker_blip={} ped_blip={} \
+         foot_rx={} foot_late={} last_ts={}",
+        p.id,
+        p.name,
+        p.ped,
+        p.health,
+        p.state,
+        p.teleports,
+        p.last_speed,
+        p.marker_blip,
+        p.ped_blip,
+        p.foot_rx,
+        p.foot_late,
+        p.last_ts.map(|t| t.to_string()).unwrap_or_else(|| "-".into())
     )
 }
 
