@@ -398,8 +398,10 @@ mod win {
         Some(out)
     }
 
-    /// Boot (B 0x10066440), main thread; returns whether BASS is ready.
-    pub fn init(proxy_off: bool) -> bool {
+    /// Boot (A 0x10066480), main thread; returns whether BASS is ready. `proxy_key` runs only after
+    /// a successful `BASS_Init`: it creates `audioproxyoff` (0) in sa-mp.cfg when missing and returns
+    /// its value, like samp's set-up.
+    pub fn init(proxy_key: impl FnOnce() -> bool) -> bool {
         HANDLE.store(0, Ordering::SeqCst);
         // SAFETY: plain BASS calls with the documented signatures and constant arguments.
         unsafe {
@@ -412,7 +414,7 @@ mod win {
             BASS_SetConfig(config::GVOL_STREAM, ftol(f64::from(radio_volume()) * f64::from(GLOBAL_SCALE)) as u32);
             BASS_SetConfig(config::NET_PLAYLIST, 1);
             BASS_SetConfig(config::NET_TIMEOUT, NET_TIMEOUT_MS);
-            if proxy_off {
+            if proxy_key() {
                 BASS_SetConfigPtr(config::NET_PROXY, std::ptr::null());
             }
             BASS_SetEAXParameters(-1, 0.0, -1.0, -1.0);

@@ -7,7 +7,16 @@
 //! queues application messages with [`Connection::send`].
 //!
 //! Spec: docs/re/handshake.md §3. Resend/ack timing was not recovered from the
-//! original client; the policy here is our own (see constants).
+//! original client; the policy here is our own (see constants). Two rules are samp's
+//! RakNet's (A addresses, docs/phase3/m10-notes.md "M10-P"):
+//! * keep-alive: a reliable `0x17` when more than 5000 ms passed since the last reliable send
+//!   the application queued; after a keep-alive the next one is due 10000 ms (the timeout)
+//!   later still, i.e. 15 s apart while idle (update cycle A 0x10041853, send A 0x1003cbf9);
+//! * dead connection ([`Connection::is_dead`]): the "ack timer" starts when a reliable message
+//!   is first transmitted while none is awaiting an ack, is moved to the receive time of every
+//!   ack that leaves messages pending and is cleared when none are; the connection is dead when
+//!   messages are pending and the timer is more than 10000 ms old (A 0x10049b8b, 0x10045b70,
+//!   0x10049390).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -17,7 +26,11 @@ use crate::raknet::{AckRange, Datagram, Message, Ordering, Reliability, Split, a
 
 /// Usable bytes per datagram: MTU 576 − 28 (IP+UDP) − 1 (cipher checksum) − small slack.
 const MAX_DATAGRAM_BYTES: usize = 540;
+/// Keep-alive after more than this since the last reliable send (A 0x10041853 `5000 <`).
 const KEEP_ALIVE_AFTER: Duration = Duration::from_millis(5000);
+/// RakNet's timeout (default of the reliability layer, A 0x10048e10; samp never changes it): the
+/// dead-connection limit, and the extra delay of the keep-alive after a keep-alive.
+pub const TIMEOUT: Duration = Duration::from_millis(10000);
 const PING_INTERVAL: Duration = Duration::from_millis(5000);
 const MIN_RESEND: Duration = Duration::from_millis(100);
 const MAX_RESEND: Duration = Duration::from_millis(1000);
@@ -52,7 +65,11 @@ pub struct Connection {
     ordered_buffer: [HashMap<u16, Delivered>; CHANNELS],
     sequenced_last: [Option<u16>; CHANNELS],
     splits: HashMap<u16, Vec<Option<Delivered>>>,
+    /// Last reliable message queued by the application (keep-alive base; may lie in the
+    /// future after a keep-alive).
     last_reliable_send: Instant,
+    /// The ack timer of [`Self::is_dead`] (`None` = cleared).
+    ack_timer: Option<Instant>,
     last_ping: Option<Instant>,
     /// Smoothed round-trip time from internal pings.
     pub rtt: Duration,
@@ -79,6 +96,7 @@ impl Connection {
             sequenced_last: [None; CHANNELS],
             splits: HashMap::new(),
             last_reliable_send: now,
+            ack_timer: None,
             last_ping: None,
             rtt: Duration::from_millis(300),
         }
@@ -131,7 +149,11 @@ impl Connection {
         for AckRange { min, max } in dg.acks {
             let mut n = min;
             loop {
-                self.outgoing.remove(&n);
+                if self.outgoing.get(&n).is_some_and(|p| p.last_sent.is_some()) {
+                    self.outgoing.remove(&n);
+                }
+                // Every acked number moves the ack timer (A 0x10049390).
+                self.ack_timer = if self.awaiting_ack() > 0 { Some(now) } else { None };
                 if n == max {
                     break;
                 }
@@ -253,8 +275,13 @@ impl Connection {
         if self.last_ping.is_some_and(|t| now.duration_since(t) >= PING_INTERVAL) {
             self.ping(now);
         }
-        if now.duration_since(self.last_reliable_send) >= KEEP_ALIVE_AFTER {
+        // Reliable messages queued since the last poll (this frame) count as sent now.
+        if self.outgoing.values().any(|p| p.last_sent.is_none() && p.msg.reliability.is_reliable()) {
+            self.last_reliable_send = now;
+        }
+        if now > self.last_reliable_send && now - self.last_reliable_send > KEEP_ALIVE_AFTER {
             self.send_bytes(&[id::KEEP_ALIVE], Reliability::Reliable, 0);
+            self.last_reliable_send = now + TIMEOUT;
         }
 
         let resend_after = self.resend_after();
@@ -270,7 +297,14 @@ impl Connection {
         let mut current = Datagram { acks: std::mem::take(&mut acks), messages: Vec::new() };
         let mut size = current.encode().len();
         for n in due {
+            let awaiting_ack = self.awaiting_ack();
             let p = self.outgoing.get_mut(&n).unwrap();
+            if p.last_sent.is_none()
+                && p.msg.reliability.is_reliable()
+                && (awaiting_ack == 0 || self.ack_timer.is_none())
+            {
+                self.ack_timer = Some(now);
+            }
             let msg_size = p.msg.data.len() + 12;
             if size + msg_size > MAX_DATAGRAM_BYTES && !current.messages.is_empty() {
                 datagrams.push(std::mem::take(&mut current).encode());
@@ -279,9 +313,6 @@ impl Connection {
             size += msg_size;
             current.messages.push(p.msg.clone());
             p.last_sent = Some(now);
-            if p.msg.reliability.is_reliable() {
-                self.last_reliable_send = now;
-            }
         }
         // Unreliable messages are sent once.
         self.outgoing.retain(|_, p| p.msg.reliability.is_reliable() || p.last_sent.is_none());
@@ -294,6 +325,17 @@ impl Connection {
     /// Number of reliable messages still awaiting acknowledgement.
     pub fn unacked(&self) -> usize {
         self.outgoing.values().filter(|p| p.msg.reliability.is_reliable()).count()
+    }
+
+    /// Reliable messages transmitted and not yet acknowledged (RakNet's resend list).
+    fn awaiting_ack(&self) -> usize {
+        self.outgoing.values().filter(|p| p.last_sent.is_some() && p.msg.reliability.is_reliable()).count()
+    }
+
+    /// RakNet's dead-connection test (A 0x10049b8b): messages await an ack and the ack timer is
+    /// more than [`TIMEOUT`] old. The caller reports the connection lost (`0x21`).
+    pub fn is_dead(&self, now: Instant) -> bool {
+        self.awaiting_ack() > 0 && self.ack_timer.is_some_and(|t| now > t && now - t > TIMEOUT)
     }
 }
 
@@ -385,6 +427,59 @@ mod tests {
             Datagram { acks: vec![], messages: vec![piece(2, 2, &[5, 6]), piece(0, 0, &[1, 2]), piece(1, 1, &[3, 4])] };
         let got = b.handle_datagram(&d.encode(), t).unwrap();
         assert_eq!(got, vec![Delivered { data: vec![1, 2, 3, 4, 5, 6], bit_len: 48 }]);
+    }
+
+    /// Keep-alive after > 5 s without a reliable send, then 15 s apart while idle (A 0x10041853).
+    /// (Unacked messages are resent, so new messages are counted by their numbers.)
+    #[test]
+    fn keep_alive_cadence() {
+        let (mut a, _, t) = pair();
+        let ms = |n| t + Duration::from_millis(n);
+        let at = |a: &mut Connection, n| {
+            let before = a.next_number;
+            a.poll(ms(n));
+            a.next_number.wrapping_sub(before)
+        };
+        a.send_bytes(&[1], Reliability::Reliable, 0);
+        assert_eq!(at(&mut a, 0), 0);
+        assert_eq!(at(&mut a, 5000), 0, "exactly 5000 ms is not enough");
+        assert_eq!(at(&mut a, 5001), 1);
+        assert_eq!(at(&mut a, 20_001), 0);
+        assert_eq!(at(&mut a, 20_002), 1, "the next keep-alive 15 s after the previous");
+        // An application send resets the base to now.
+        a.send_bytes(&[2], Reliability::ReliableOrdered, 0);
+        assert_eq!(at(&mut a, 21_000), 0);
+        assert_eq!(at(&mut a, 26_000), 0);
+        assert_eq!(at(&mut a, 26_001), 1);
+    }
+
+    /// Dead connection: an unacked reliable message and an ack timer older than 10 s.
+    #[test]
+    fn dead_connection_rule() {
+        let (mut a, mut b, t) = pair();
+        let ms = |n| t + Duration::from_millis(n);
+        // Nothing pending: never dead.
+        assert!(!a.is_dead(ms(60_000)));
+        a.send_bytes(&[1], Reliability::Reliable, 0);
+        let dgs = a.poll(ms(1000));
+        assert!(!a.is_dead(ms(11_000)), "exactly 10 s is not more than the timeout");
+        assert!(a.is_dead(ms(11_001)));
+        // An ack that leaves another message pending moves the timer to its receive time.
+        a.send_bytes(&[2], Reliability::Reliable, 0);
+        a.poll(ms(1500));
+        for d in dgs {
+            b.handle_datagram(&d, ms(1600)).unwrap();
+        }
+        for d in b.poll(ms(1600)).into_iter().filter(|d| !Datagram::decode(d).unwrap().acks.is_empty()) {
+            a.handle_datagram(&d, ms(9000)).unwrap();
+        }
+        assert!(!a.is_dead(ms(19_000)));
+        assert!(a.is_dead(ms(19_001)));
+        // Unreliable traffic does not start the timer.
+        let (mut c, _, t) = pair();
+        c.send_bytes(&[3], Reliability::UnreliableSequenced, 1);
+        c.poll(t);
+        assert!(!c.is_dead(t + Duration::from_secs(60)));
     }
 
     #[test]

@@ -145,7 +145,9 @@ pool, +8 pickup pool, +0xc object pool, +0x1c textdraw pool.
 - Rust client: on 40, drop all world entities and remote players, reset settings to the
   defaults above, go to a "waiting for InitGame" state without disconnecting.
 
-### 103 ClientCheck (S→C request, C→S reply) — anti-cheat, layout only
+### 103 ClientCheck (S→C request, C→S reply)
+- Reply computation (types 5 / 0x45 / 0x46 / 0x47, our own words) and the decision to answer it honestly
+  over the client's own memory: `docs/phase3/m10-notes.md` "ClientCheck (item 5)".
 - Request handler A 0x10011a60 / B 0x10011a40; reply sender A 0x10011990 / B 0x10011970
   (ID cell A 0x100e5e90 = 103), reliability 9.
 - Request (S→C):

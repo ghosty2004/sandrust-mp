@@ -9,10 +9,14 @@
 #           the rewritten cfg; /rs on foot and in a car (rawvehicles.txt in the game directory);
 #           F8 screenshot; chatlog.txt; gmx (RPC 40: restart line, reset script commands, a
 #           second InitGame); kick (server closed: line, ack, no reconnect, world kept)
-#  lost     server stopped (SIGSTOP) → lost after 12 s, reset, reconnect attempts with a new
-#           socket each; server resumed → the old player still exists → nick rejected, no retry
-#  full     max_players 1 taken by samp-bot → "The server is full. Retrying..." every ~3.04 s,
-#           join once the bot left
+#  lost     server stopped (SIGSTOP) → lost 10 s after the first unacked reliable send (RakNet's
+#           ack timer; keep-alives > 5 s after a reliable send, then 15 s apart), reset, reconnect
+#           attempts with a new socket each; server resumed → the old player still exists → nick
+#           rejected, no retry. sa-mp.cfg without audioproxyoff → created (0) after BASS started
+#  full     max_players 1 taken by samp-bot → "The server is full. Retrying..." every ~3.04 s
+#           (attempt time taken after Connect returns), join once the bot left; then in a car
+#           `/quit`: one UNRELIABLE 0x20, nothing after it, the pools deleted (car occupant
+#           warped out, car deleted) > 1000 ms later in the exit frame
 #  nosrv    no server: "Connecting to" at +3 s, then every ~6.05 s with 6 requests 1 s apart on
 #           a new socket; then a server with a password → "Wrong server password.", no retry
 # Each session's loopback traffic is captured and decoded (samp-dump) and checked.
@@ -294,6 +298,48 @@ PY
         launch
         join_and_spawn 90
         texts > "$OUT/chat-end.txt"
+        # ClientCheck (RPC 103): the request set of the original's run orig-20261105-035923.
+        while read -r t a o c; do
+            fs "check|L|$t|$a|$o|$c"
+            sleep 1.5
+        done <<'R'
+2 0 0 4
+5 400000 0 4
+5 400000 0 256
+5 401000 16 256
+5 53E981 0 8
+5 856E00 0 4
+5 3FFFFF 0 4
+5 856E01 0 4
+45 0 0 4
+45 1000 0 64
+46 19B 0 4
+46 190 0 256
+46 0 0 16
+46 4E21 0 4
+47 19B 0 4
+47 190 16 64
+47 539 0 32
+48 0 0 4
+5 400000 257 4
+5 400000 0 1
+R
+        sleep 2
+        grep -E "\[ui-fs\] check-response" "$E2E_LOG" | sed -E 's/.*check-response [0-9]+ //' > "$OUT/checks.txt"
+        # /quit in a car (original: orig-20261105-003749, static A 0x100c3ec0 / 0x100c5030 / 0x10009880).
+        fs 'pos|L|1700.0|-2600.0|13.5|90.0'
+        sleep 2
+        fs 'veh|560|1705.0|-2600.0|13.5|90.0|3|6'
+        VEH=$(grep -E "\[ui-fs\] $SEQ veh-created" "$E2E_LOG" | sed -E 's/.*veh-created ([0-9]+).*/\1/' | tail -n 1)
+        sleep 1
+        fs "putin|L|$VEH|0"
+        sleep 3
+        mark quit
+        say_cmd '/quit'
+        for ((i = 0; i < 20; i++)); do [[ -n "$(gta_pid)" ]] || break; sleep 0.5; done
+        [[ -z "$(gta_pid)" ]] || fail "the game still runs 10 s after /quit"
+        say "/quit: the game ended"
+        exit 0
         ;;
     nosrv)
         launch
@@ -305,6 +351,7 @@ PY
         texts > "$OUT/chat-end.txt"
         ;;
     esac
+    cp -f "$CFG" "$OUT/sa-mp.cfg.end" 2>/dev/null
     e2e_ctl quit > /dev/null
     sleep 4
     exit 0
@@ -358,17 +405,25 @@ run_session() {
     cp -f "$GTA_DIR/trace.jsonl" "$OUT/trace.jsonl" 2>/dev/null
     sockets "$OUT/net.pcapng" > "$OUT/udp.txt"
     "$TB/debug/samp-dump" "$OUT/net.pcapng" --port "$E2E_PORT" > "$OUT/net.dump" 2>&1 || true
+    # Per client socket: samp-dump --raw (times relative to the socket's first packet).
+    for cp in $(tshark -r "$OUT/net.pcapng" -T fields -e udp.srcport -Y "udp.dstport==$E2E_PORT" 2>/dev/null | sort -u); do
+        tshark -r "$OUT/net.pcapng" -Y "udp.port==$cp" -w "$OUT/net-$cp.pcapng" 2>/dev/null
+        "$TB/debug/samp-dump" "$OUT/net-$cp.pcapng" --port "$E2E_PORT" --raw > "$OUT/net-$cp.raw" 2>/dev/null || true
+    done
     python3 -I "$ROOT/tools/e2e/m10_net.py" "$s" "$OUT" "$E2E_PORT" || r=1
     (( r == 0 )) && say "session $s: PASS" || { say "session $s: FAIL (logs $OUT)"; tail -n 15 "$OUT/samp-rs.log" | sed 's/^/    /'; }
     return "$r"
 }
 
+# Without audioproxyoff: samp creates the key only after a successful BASS_Init.
+NOPROXYCFG="$OUTROOT/noproxy-sa-mp.cfg"
+printf 'pagesize=10\r\nfpslimit=48\r\nmulticore=1\r\n' > "$NOPROXYCFG"
 TESTCFG="$OUTROOT/test-sa-mp.cfg"
 printf 'fpslimit=30\r\nmulticore=0\r\naudioproxyoff=1\r\ndisableheadmove=1\r\nnonametagstatus=1\r\ntimestamp=1\r\naudiomsgoff=1\r\nlogurls=1\r\nnohudscalefix=1\r\npagesize=15\r\nfontsize=1\r\nfontweight=1\r\ndirectmode=1\r\n' > "$TESTCFG"
 for s in ${M10_SESSIONS:-cfg lost full nosrv}; do
     case "$s" in
         cfg) run_session cfg "$TESTCFG" || rc=1 ;;
-        lost) run_session lost || rc=1 ;;
+        lost) run_session lost "$NOPROXYCFG" || rc=1 ;;
         full) run_session full "" yes "" 1 || rc=1 ;;
         nosrv) run_session nosrv "" no || rc=1 ;;
     esac

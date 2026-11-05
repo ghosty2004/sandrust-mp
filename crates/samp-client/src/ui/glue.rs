@@ -343,7 +343,8 @@ fn boot_settings(st: &mut State) {
         let ok = unsafe { SetProcessAffinityMask(GetCurrentProcess(), 1) };
         crate::log!("ui: multicore=0 -> SetProcessAffinityMask(1) = {ok}");
     }
-    crate::audio::init(st.core.settings.audio_proxy_off);
+    let core = &mut st.core;
+    crate::audio::init(|| core.audio_proxy_key());
 }
 
 /// Before `Render2dStuff` (samp's pre-step A 0x100c4fb0, after the netgame tick).

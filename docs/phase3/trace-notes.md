@@ -1906,7 +1906,9 @@ lost connection), `orig-20261105-011721` (no-server start, full, kick; own serve
   `The server didn't respond. Retrying..` and state 1 → the next `Connecting to …` immediately (6 s since the last
   attempt > 3 s). Cadence measured: 6.05–6.07 s per attempt (8 attempts).
 * **Lost connection** (server process stopped with SIGSTOP 60 s): the client kept resending (~90 ms) on the old
-  socket; 12.0 s after the last server packet RakNet reported connection lost (0x21) → in one frame:
+  socket; 12.0 s after the last server packet RakNet reported connection lost (0x21) — M10-P: really 10.05 s
+  after the first reliable client message left unacked (here the keep-alive 2.4 s after the stop; RakNet's ack
+  timer, m10-notes.md) → in one frame:
   RakClient Disconnect(0), `Lost connection to the server. Reconnecting..`, the RPC 40 reset routine (B 0x1000A530:
   prints `The server is restarting..` too), deletion of all remote players, audio stream stop (wait), state 1 →
   `Connecting to …` in the same second, then the 6-s retry cadence above. When the server resumed, the pending
@@ -1941,9 +1943,9 @@ lost connection), `orig-20261105-011721` (no-server start, full, kick; own serve
   `session-misc.md` RPC 130).
 * Attempts with no server running at all (fresh start, run 011721): `Connecting to …` 3.0 s after `Started`, then
   `The server didn't respond. Retrying..` + `Connecting to …` every 6 s.
-* **/quit**: the client sends the RakNet disconnection notification (0x20, rel 6) — the server logged reason 1
-  (quit) — and tears down its pools first (vehicles deleted, `0x0362` remove char from car, ped teleport), then
-  the game exits.
+* **/quit**: the client sends the RakNet disconnection notification (0x20, rel 6 = UNRELIABLE) — the server
+  logged reason 1 (quit) — at once; ≥ 1001 ms later it deletes its pools (vehicles deleted, `0x0362` remove char
+  from car, ped teleport) and the game exits (M10-P, m10-notes.md: static A 0x100c3ec0 / 0x100c5030).
 
 ## Open problems / notes
 

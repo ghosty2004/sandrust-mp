@@ -54,9 +54,7 @@ play) / 0 all identical. The title line was checked by screenshot (`target/m9/ti
   on uninitialised stack memory (B 0x1009eb40 null path); we use volume 0.
 * A META tag without any `;` after `StreamTitle='`: samp writes before a null pointer (crash); we keep the
   whole rest as the title.
-* `audioproxyoff` is created (with 0) at UI construction together with `fpslimit`/`multicore` (UiCore),
-  samp creates it only after a successful `BASS_Init`. The file content is identical whenever BASS
-  starts (every measured case).
+* `audioproxyoff` is created only after a successful `BASS_Init`, like samp (M10-P; m10-notes.md).
 
 ## Open (TODO-unknown, measurement requests)
 
