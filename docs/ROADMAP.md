@@ -14,7 +14,7 @@ differential capture against the original client, e2e script.
 |---|---|---|
 | samp-client worktree netp (lane veh) | NET6-P: 203 idle/spectate cadence, 209 after passenger exit, editor Esc, /quit flush, RPC 25 bit count | — |
 | samp-client worktree soakfix (lane main) | SOAK-FIX: derby crash (original first), exploded car respawn, pushed car sync, remote stall after gmx | 2-hour soak |
-| audit (no-game + lane trace, REA) | FEAT-SWEEP: completeness audit of samp.dll (functions, samp.dll coverage, strings/commands, RPC handlers/senders) | FEAT-* fixes |
+| samp-client worktree feata (lane veh) | FEAT-A network-visible features | FEAT-B (lane ui) |
 | lane ui | — (free) | F1/F5 closing (remaining DIFF-2 rows, 27 CSV rows) |
 | no-game | — (free) | rename to sandrust-mp |
 
@@ -22,6 +22,8 @@ differential capture against the original client, e2e script.
 
 In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1, EFX-1.
 
+1. FEAT-A — network-visible features from docs/phase3/feature-sweep.md: FEAT-1 SCMEvent sender (mod shop / respray), FEAT-2 camera target 170/168 + /ctd, FEAT-3 F4 class reselection, FEAT-4 scoreboard click (23) + map click (119), FEAT-6 Car Jacked, FEAT-9 crime report audio / time resync / virtual world
+1. FEAT-B — player-visible features: FEAT-5 held-item special actions 20–23/68, FEAT-7 remote parachute, FEAT-8 /dl + /testdw, FEAT-10 window title/class + message boxes, FEAT-11 debug lines to chat + guarded opcodes, FEAT-12 crash handler (local report + dialog, no upload), FEAT-14 -d debug mode, FEAT-13 IME; plus FEAT-COV/INV/DOC
 1. WATCH — goal.sh failed once (bot did not walk, run took 48 s), passed twice on rerun; m5 hang once (M9 run)
 1. M6-P — world leftovers: object editor gizmo + drag (117 response 2 every 250–287 ms), selection picking, wire TODO(input-lock) sites to ui::set_input_mode, CSV row 81 camera test for objects/vehicles; PLATE-1 number plates; M8A-PREVIEW model-preview textdraws
 1. EFX-2 — step-mode capture for OUR client too (build samp_client.dll with a symbol map so `efx arm` can single-step our handler by name) — needed to settle effect diffs like the local skin handler's extra 0247/0248 and the +0x55c write
@@ -113,6 +115,7 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | D-4 | samp.saa data overrides (10 of 23 files differ; handling/weapon identical) | **resolved (2026-11-04): option A — read ALL redirected files from the user's samp.saa at runtime, exactly like the original (user: "I want 1:1"); never redistribute; fallback to our own minimal script when SA:MP isn't installed** |
 
 ## Decisions made autonomously
+- Crash handler (FEAT-12): reproduce samp's local crash report file and dialog, but never upload a report anywhere (the original's reporting endpoint is gone and sending user data to a third party is out of scope).
 - NET6-D1: RakNet's bandwidth bucket (A 0x10049ae0, floor 144.4 kbit/s, 1 s burst) is not reproduced: the client's traffic (≈ 30 datagrams/s, ≤ 150 bytes) never reaches it, so it never limits a send; every other reliability-layer rule is (docs/phase3/net6-notes.md).
 - NET6-D2: F2 tolerances (tools/diff/net_report.py): event messages exact (count, bits, order); periodic counts max(2, 35 %) per window and 20 % per session; cadence: median gap within max(15 ms, 25 %), or the gap deciles within that in the median (bimodal event-driven sends); trigger latency 250 ms; no cadence when one side has < 4 and the other ≤ 4 messages, and "sent by one client only" needs ≥ 3 on the other side (rare race/physics-gated sends — an unchanged 203 passing the 501 ms gate, the 209 after a passenger exit — flip between 0/1 or 3/4 between two runs of the original itself: orig-20261105-064601 / -073143 / -074831); ack latency p50 4 ms / p90 10 ms; standalone-ack share 0.15; resend delay 30 ms. Frame rate and Wine timer jitter are below these.
 - ClientCheck (RPC 103): answered with samp's checksum algorithm computed honestly over OUR process memory (type 0x45 reads our own DLL image). Nothing is stored or replayed; values differ from the original exactly where memory really differs. Spoofing the original's values would bypass a server integrity check and is out of scope.
