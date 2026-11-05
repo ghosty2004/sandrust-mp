@@ -33,7 +33,7 @@ PY
 
 e2e_server_start() {
     e2e_server_prepare
-    ( cd "$E2E_SERVER" && exec ./omp-server > "$E2E_LOG" 2>&1 ) &
+    ( cd "$E2E_SERVER" && exec ./omp-server > "$E2E_LOG" 2>&1 9>&- ) &
     E2E_SERVER_PID=$!
     e2e_wait_log 'Legacy Network started' 20 || { echo "e2e: server did not start" >&2; return 1; }
 }
@@ -109,7 +109,8 @@ e2e_headless_start() {
     } > "$child"
     chmod +x "$child"
     # Own process group, so e2e_headless_stop can take down gamescope and its child.
-    setsid gamescope --backend headless -W "$w" -H "$h" -w "$w" -h "$h" -- "$child" > "$E2E_ROOT/target/e2e-gamescope-$dtag.log" 2>&1 &
+    # 9>&-: a lane lock held on fd 9 (with-lock.sh) must not outlive the run through gamescope.
+    setsid gamescope --backend headless -W "$w" -H "$h" -w "$w" -h "$h" -- "$child" > "$E2E_ROOT/target/e2e-gamescope-$dtag.log" 2>&1 9>&- &
     E2E_GAMESCOPE_PID=$!
     local i
     for ((i = 0; i < 40; i++)); do [ -s "$E2E_HEADLESS_ENV" ] && break; sleep 0.25; done
