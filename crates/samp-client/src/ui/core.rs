@@ -59,7 +59,7 @@ const SUBMIT_SCROLL_POS: u32 = 90;
 const INVALID_PLAYER: u16 = 0xFFFF;
 
 /// A message the UI wants sent (drained by the network session every frame).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Outgoing {
     /// RPC 101 PlayerRequestChatMessage.
     Chat(Vec<u8>),
@@ -77,6 +77,10 @@ pub enum Outgoing {
     MenuExit,
     /// RPC 155 OnPlayerRequestScoresAndPings (reliability 8, empty).
     ScoresRequest,
+    /// RPC 23 OnPlayerClickPlayer from the scoreboard (reliability 9).
+    ClickPlayer(u16),
+    /// RPC 119 OnPlayerClickMap (reliability 8).
+    ClickMap([f32; 3]),
 }
 
 /// A remote player as the UI needs it (published by the player pool every tick).
@@ -989,6 +993,19 @@ impl UiCore {
             // Stored in `settings`; their game effects belong to later milestones.
             other => crate::log!("ui: effect {other:?} stored only (not applied in M4)"),
         }
+    }
+
+    /// Scoreboard row activated (B 0x1006EBD0): RPC 23 with the row's id text (atol), then the scoreboard
+    /// closes with cursor mode 0 and the delayed input restore (`0x100A0720(0, 0)`).
+    pub fn scoreboard_activate(&mut self) {
+        if !self.scoreboard.is_open() {
+            return;
+        }
+        if let Some(row) = self.scoreboard.selected().and_then(|i| self.scoreboard.rows().get(i)) {
+            self.outgoing.push(Outgoing::ClickPlayer(row.id));
+        }
+        self.scoreboard.close();
+        self.requests.cursor.push(CursorRequest::Mode0 { immediate: false });
     }
 
     pub fn push_outgoing(&mut self, o: Outgoing) {

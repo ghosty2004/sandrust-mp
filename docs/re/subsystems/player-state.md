@@ -183,6 +183,13 @@ variables are my best identification; anything not certain is marked "(inferred)
   8. Set "spawned" (+0xf0 = 1), clear "dead" (+0xf4 = 0) and the pending request (+0x302 = 0).
   9. **Send RPC 52**, then set a timestamp at LocalPlayer+0x30a = now + 1000 ms (inferred: a grace period after spawn).
 
+### F4 (no RPC; same flag as 74)
+- B 0x100074B0, at the end of the local tick (also while dead / in class selection; not while spectating unspawned):
+  if LocalPlayer+0x2fa is 0 and `GetAsyncKeyState(VK_F4)` is non-zero (either bit), the flag is set and the type-4
+  client line "Returning to class selection after next death" is printed. A second press while the flag is set is
+  not read, so its "pressed since the last call" bit re-arms the flag once the death consumed it (measured on the
+  original: two presses → one line, then a second line after the class selection).
+
 ### 74 ForcePlayerClassSelection (S→C)
 - A 0x100180d0 (tiny function, no bitstream), B 0x10018080. **No payload.**
 - Client behaviour: only sets LocalPlayer+0x2fa = 1. Nothing visible happens right away. The next time the player dies, the post-death logic sees the flag and enters class selection (0x10004080: clears "class info received", resets the ped, sets health to 100.0, makes the player uncontrollable, restarts the class-selection timers) instead of respawning. The flag is cleared at that point.
@@ -653,6 +660,16 @@ attached to (0 = none).
     - the player pool (radius 20.0, tolerance 0.75);
     - the actor pool (radius 20.0, tolerance 0.75).
   - The RPC is sent only when one of the four IDs differs from the last sent set.
+  - Details (build B 0x10004420, FEAT-2, verified against the original — docs/phase3/feata-notes.md): the ray runs
+    from camera source + front (one unit ahead) to source + 70·front (front 0xB6F32C, source 0xB6F338). Before each
+    category the end is replaced by the hit point of `CWorld::ProcessLineOfSight` from the start with these flags:
+    objects — buildings only; vehicles — buildings and objects; players (and then actors, same end) — buildings,
+    vehicles and objects. Objects use the pool ray test of selection mode (B 0x10012E40) with 40 as its start
+    distance; vehicles and peds need a live entity (not a deleted placeable, in the moving list) closer to the
+    camera position (0xB6F9CC) than 40 (vehicles) / 20 (peds), not the vehicle the local ped sits in, and a hit of
+    the bounding-sphere line test (B 0x100B65E0 with the frustum check; radius scale 1.0 / 1.5); the hit nearest to
+    the ray start wins. The "tolerance" arguments (1.0 / 0.75) are copied into the line's unused fourth components.
+  - Called only in the spawned branch of the local tick, after the interior check (RPC 118).
 
 ---
 
@@ -685,12 +702,15 @@ attached to (0 = none).
   - the right mouse button was just pressed (GetAsyncKeyState(VK_RBUTTON) & 1);
   - 0xBA8298 is 0.
 
-  The client then scans 175 GTA radar-blip entries starting at 0xBA873D for the entry tagged 0x1203 (inferred: the user waypoint). It takes x and y from that entry and sets z = GTA ground height at (x, y) (GTA 0x569660, through a pointer at 0x10102bf4) + 2.0. If no waypoint entry is found, x/y are uninitialised stack values (a client quirk; a Rust client should simply not send).
+  The client then scans 175 GTA radar-blip entries starting at 0xBA873D (= entries 1..175 of the radar trace array 0xBA86F0, stride 0x28, field +0x25) for the entry tagged 0x1203 (the user waypoint; the last match wins). It takes x and y from that entry and sets z = GTA ground height at (x, y) (GTA 0x569660, through a pointer at 0x10102bf4) + 2.0. If no waypoint entry is found, x/y are uninitialised stack values (a client quirk; a Rust client should simply not send).
 
 ### 23 OnPlayerClickPlayer (C→S)
 - Send site A 0x1006ec10, B 0x1006ebd0. Reliability 9.
 - Fields (match open.mp): `playerId` u16, `source` u8 (always 0 = scoreboard).
 - Client behaviour: a scoreboard method. When a row is chosen, the client takes the ID from that row's ID column (text converted with atol), sends the RPC, and then closes the scoreboard (restores input/cursor state).
+- "Chosen" = DXUT list-box event 0x701 in the scoreboard's GUI callback (B 0x100C5590): a double click on a row. The
+  list never has keyboard focus (measured: Down/Enter do nothing). The close passes (0, 0) to the cursor-mode
+  setter: cursor hidden, input restored after the 10-frame countdown.
 
 ### 96 SCMEvent (S→C)
 - A handler 0x1000f280, B 0x1000f250.

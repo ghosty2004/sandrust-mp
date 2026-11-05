@@ -1136,6 +1136,39 @@ impl Renderer {
         s.end();
     }
 
+    /// `/ctd` (B 0x10004830): one sprite begin; per camera target the editor's axis cross on the entity matrix
+    /// (B 0x10071D50, length 1) and its label at the matrix position (B 0x1006BC50, outline on, no LOS test);
+    /// one sprite end.
+    pub fn camera_target_labels(&self, items: &[([f32; 16], Vec<u8>)]) {
+        let s = &self.sprites.text3d;
+        s.begin(d3d::sprite::ALPHABLEND);
+        for (m, label) in items {
+            if let Some(line) = &self.unused.editor_line {
+                line.set_antialias(true);
+                for axis in 0..3 {
+                    let Some((a, b)) = self.axis_ends(m, axis, objedit::SELECT_CROSS) else { break };
+                    line.segment([a[0], a[1]], [b[0], b[1]], objedit::SELECT_LINE_COLOUR);
+                }
+            }
+            let p = self.project([m[12], m[13], m[14]]);
+            if p[2] <= 1.0 {
+                let (x, y) = (p[0] as i32, p[1] as i32);
+                let rect = Rect { left: x, top: y, right: x + 1, bottom: y + 1 };
+                Self::outlined(
+                    s,
+                    &self.fonts.small,
+                    &self.fonts.small_outline,
+                    label,
+                    rect,
+                    dt::CENTER,
+                    crate::camtarget::LABEL_COLOUR,
+                    &fonts::OUTLINE_4,
+                );
+            }
+        }
+        s.end();
+    }
+
     // ---- scoreboard --------------------------------------------------------------------
 
     /// Scoreboard (UR §15): DXUT dialog with the list box, then the texts.

@@ -20,7 +20,9 @@
 #
 # Lanes: original = trace lane (tools/trace/run.sh orig holdjoin with TRACE_NO_SERVER=1, under
 # tools/trace/with-lock.sh; UDP 7790); ours = lane "ui" (prefix-ui, gta-sa-ui, UDP 7800,
-# control 47710; under target/locks/ui.lock unless SAMP_RS_UI_LOCK_HELD=1).
+# control 47710; under target/locks/ui.lock unless SAMP_RS_UI_LOCK_HELD=1). NET_OURS_LANE=veh: lane veh instead
+# (prefix-shot, gta-sa-shot, UDP 7820, control 47720, target/locks/veh.lock). NET_GAMEMODE=tracegm: that gamemode
+# (tools/trace/NAME.pwn) instead of the server's default on both sides.
 # Output: target/netdiff/{orig,ours}-<stamp>/ (net.pcapng, marks.tsv, logs), target/netdiff/
 # report.md, and target/netdiff/{orig,ours}-latest.
 set -uo pipefail
@@ -59,7 +61,11 @@ net_server_start() {
         -iqawno/include -ofilterscripts/e2eprobe.amx -d0 > /dev/null &&
       LD_LIBRARY_PATH=qawno ./qawno/pawncc "$ROOT/tools/trace/uifs.pwn" \
         -iqawno/include -ofilterscripts/traceui.amx -d0 > /dev/null ) || return 1
-    python3 -I - "$dir/config.json" "$port" <<'PY'
+    if [ -n "${NET_GAMEMODE:-}" ]; then
+        ( cd "$dir" && LD_LIBRARY_PATH=qawno ./qawno/pawncc "$ROOT/tools/trace/$NET_GAMEMODE.pwn" \
+            -iqawno/include -ogamemodes/"$NET_GAMEMODE".amx -d0 > /dev/null ) || return 1
+    fi
+    python3 -I - "$dir/config.json" "$port" "${NET_GAMEMODE:-}" <<'PY'
 import json, sys
 p, port = sys.argv[1], int(sys.argv[2])
 d = json.load(open(p))
@@ -67,6 +73,8 @@ d["announce"] = False
 d["network"]["port"] = port
 d["network"]["bind"] = "127.0.0.2"
 d["pawn"]["side_scripts"] = ["filterscripts/e2eprobe", "filterscripts/traceui"]
+if sys.argv[3]:
+    d["pawn"]["main_scripts"] = [sys.argv[3] + " 1"]
 json.dump(d, open(p, "w"), indent=4)
 PY
     mkdir -p "$dir/scriptfiles"; : > "$dir/scriptfiles/uicmd.txt"
@@ -176,18 +184,23 @@ run_orig() {
 
 run_ours() {
     OURS_DIR="$NETOUT/ours-$stamp"; mkdir -p "$OURS_DIR"
-    say "ours (lane ui) → $OURS_DIR"
+    say "ours (lane ${NET_OURS_LANE:-ui}) → $OURS_DIR"
     local r=0
     (
-        export WINEPREFIX="$SAMP_RS_ROOT/wine/prefix-ui" GTA_DIR="$SAMP_RS_ROOT/wine/gta-sa-ui"
-        export E2E_TAG=ui E2E_PORT=7800 E2E_CTL_PORT=47710 SAMP_RS_CTL_PORT=47710
+        if [ "${NET_OURS_LANE:-ui}" = veh ]; then
+            export WINEPREFIX="$SAMP_RS_ROOT/wine/prefix-shot" GTA_DIR="$SAMP_RS_ROOT/wine/gta-sa-shot"
+            export E2E_TAG=veh E2E_PORT=7820 E2E_CTL_PORT=47720 SAMP_RS_CTL_PORT=47720
+        else
+            export WINEPREFIX="$SAMP_RS_ROOT/wine/prefix-ui" GTA_DIR="$SAMP_RS_ROOT/wine/gta-sa-ui"
+            export E2E_TAG=ui E2E_PORT=7800 E2E_CTL_PORT=47710 SAMP_RS_CTL_PORT=47710
+        fi
         source "$ROOT/tools/wine-env.sh"
         source "$ROOT/tools/e2e/lib.sh"
         if [ "${SAMP_RS_UI_LOCK_HELD:-0}" = 1 ]; then
             e2e_headless_run bash "$HERE/network.sh" --inner-ours "$OURS_DIR"
         else
             mkdir -p "$SAMP_RS_ROOT/target/locks"
-            SAMP_RS_UI_LOCK_HELD=1 flock "$SAMP_RS_ROOT/target/locks/ui.lock" \
+            SAMP_RS_UI_LOCK_HELD=1 flock "$SAMP_RS_ROOT/target/locks/${NET_OURS_LANE:-ui}.lock" \
                 bash -c 'source "$1/tools/wine-env.sh"; source "$1/tools/e2e/lib.sh"; e2e_headless_run bash "$2" --inner-ours "$3"' \
                 _ "$ROOT" "$HERE/network.sh" "$OURS_DIR"
         fi

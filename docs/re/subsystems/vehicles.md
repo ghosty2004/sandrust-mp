@@ -425,7 +425,7 @@ Stub 0x10002090 collects four script parameters (GTA 0x464080) and calls the sen
 SA-MP's modified game script in mod/paint shops. The handle is mapped to a SA-MP ID; if none, nothing
 is sent. Local side effects: type 3 also applies the colours locally; type 4 sets/clears the
 "in mod shop" flag (on exit it re-caches the current GTA colours so they persist).
-The other stub (0x10001C30) answers a script condition "local ped is the driver of its vehicle"
+The other stub (0x10001C30) answers a script condition: false while the local ped drives a vehicle that is not a train carriage (569/570) or has the in-vehicle flag without a vehicle, true otherwise (B 0x100ABE80 / 0x100ABFD0; verified by the mod-shop garage, feata-notes.md)
 (sets the script compare flag via GTA 0x4859D0); no network traffic.
 
 ### 123 SetVehiclePlate (S→C)

@@ -13,17 +13,15 @@ differential capture against the original client, e2e script.
 | Slot | Running | Next |
 |---|---|---|
 | samp-client worktree netp (lane veh) | NET6-P: 203 idle/spectate cadence, 209 after passenger exit, editor Esc, /quit flush, RPC 25 bit count | — |
-| lane main | — (free) | 2-hour soak on final code (after FEAT-A/B) |
-| samp-client worktree feata (lane veh) | FEAT-A network-visible features | FEAT-B (lane ui) |
-| samp-client worktree featb (lane ui) | FEAT-B player-visible features (special actions, /dl, /testdw, window title, message boxes, debug lines, crash handler, parachute, -d, IME) | F1/F5 closing |
+| samp-client worktree crash1 (lane veh) | CRASH-1: user's crash at 0x7F5A3A (RwD3D9DynamicVertexBufferCreate, NULL read) after a device-loss stall + object-heavy teleport | — |
+| lane main | reserved for the user's manual play | 2-hour soak on final code |
+| lane ui | — (free) | F1/F5 closing (remaining DIFF-2 rows, 27 CSV rows) |
 | no-game | — (free) | rename to sandrust-mp |
 
 ## Next up (ordered queue — the scheduler takes from the top)
 
 In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1, EFX-1.
 
-1. FEAT-A — network-visible features from docs/phase3/feature-sweep.md: FEAT-1 SCMEvent sender (mod shop / respray), FEAT-2 camera target 170/168 + /ctd, FEAT-3 F4 class reselection, FEAT-4 scoreboard click (23) + map click (119), FEAT-6 Car Jacked, FEAT-9 crime report audio / time resync / virtual world
-1. FEAT-B — player-visible features: FEAT-5 held-item special actions 20–23/68, FEAT-7 remote parachute, FEAT-8 /dl + /testdw, FEAT-10 window title/class + message boxes, FEAT-11 debug lines to chat + guarded opcodes, FEAT-12 crash handler (local report + dialog, no upload), FEAT-14 -d debug mode, FEAT-13 IME; plus FEAT-COV/INV/DOC — **branch player-features: FEAT-5/7/8/10/11/12 done with empty parity diffs (`tools/e2e/featb.sh`, docs/phase3/featb-notes.md); FEAT-13 untestable under Wine, FEAT-14 deferred (decisions)**
 1. WATCH — goal.sh failed once (bot did not walk, run took 48 s), passed twice on rerun; m5 hang once (M9 run)
 1. M6-P — world leftovers: object editor gizmo + drag (117 response 2 every 250–287 ms), selection picking, wire TODO(input-lock) sites to ui::set_input_mode, CSV row 81 camera test for objects/vehicles; PLATE-1 number plates; M8A-PREVIEW model-preview textdraws
 1. EFX-2 — step-mode capture for OUR client too (build samp_client.dll with a symbol map so `efx arm` can single-step our handler by name) — needed to settle effect diffs like the local skin handler's extra 0247/0248 and the +0x55c write
@@ -125,6 +123,9 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 - NET6-D2: F2 tolerances (tools/diff/net_report.py): event messages exact (count, bits, order); periodic counts max(2, 35 %) per window and 20 % per session; cadence: median gap within max(15 ms, 25 %), or the gap deciles within that in the median (bimodal event-driven sends); trigger latency 250 ms; no cadence when one side has < 4 and the other ≤ 4 messages, and "sent by one client only" needs ≥ 3 on the other side (rare race/physics-gated sends — an unchanged 203 passing the 501 ms gate, the 209 after a passenger exit — flip between 0/1 or 3/4 between two runs of the original itself: orig-20261105-064601 / -073143 / -074831); ack latency p50 4 ms / p90 10 ms; standalone-ack share 0.15; resend delay 30 ms. Frame rate and Wine timer jitter are below these.
 - ClientCheck (RPC 103): answered with samp's checksum algorithm computed honestly over OUR process memory (type 0x45 reads our own DLL image). Nothing is stored or replayed; values differ from the original exactly where memory really differs. Spoofing the original's values would bypass a server integrity check and is out of scope.
 - m5 / soak derby occasional failure: GTA's radio stream thread divides by zero (0x4F1464) on the 122 zero-sample stub tracks of the Steam 3.0 audio data (1.0 exe + Steam data); the original client shows the same crash (TRACE-7) and samp.dll patches nothing there. Fixed in the test environment: `tools/audio-stub-tracks.py` aliases the stubs in each game copy's TrakLkup.dat (applied by tools/wine-env.sh; docs/phase3/soak-notes.md).
+- FEAT-D1: RPC 119 without a user waypoint: samp sends the click with uninitialised stack x/y (B 0x10075BC5 scan finds nothing); we send nothing. A real right click places the waypoint before samp's check in the same frame (measured), so this only matters for a click that removes a waypoint.
+- FEAT-D2: PlayCrimeReport's temporary vehicle (B 0x100A17A0 → vehicle constructor / destructor): created, recoloured, removed and deleted exactly like the original (tracer diff empty); the destructor's conditional `CStreaming::SetModelIsDeletable` (only when the model is not used elsewhere and samp's streaming budget check passes) is not reproduced, like the stream-out model release (MR-5.9).
+- FEAT-D3: SetPlayerVirtualWorld (48) has no effect in R4 (the custom-model manager that would store it is never created) and open.mp does not send it to 0.3.7 clients; we only log it.
 - Object editor (M6-P): the glyph-size probe (`DrawTextA("C", DT_CALCRECT)`) gets a zeroed RECT; samp passes an uninitialised stack RECT and keeps only the size, so the D3D stream differs only in that rect (`tools/diff/editor_d3d_diff.py` drops it).
 - Audio: our client loads the user's own bass.dll through a static import exactly like samp.dll (nothing redistributed; consistent with D-4 = A); BASS call stream diffed 0/16 segments vs the original.
 - Audio: two samp bugs handled safely instead of reproduced: a positional stream with no ped matrix plays at volume 0 (samp reads uninitialised stack), and a META tag without ';' keeps the whole title (samp crashes).

@@ -8,6 +8,7 @@ pub mod anims;
 pub mod animtable;
 pub mod behaviour;
 pub mod audio;
+pub mod camtarget;
 pub mod cdstream;
 pub mod classsel;
 pub mod combat;

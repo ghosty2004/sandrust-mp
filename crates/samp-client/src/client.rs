@@ -128,6 +128,8 @@ pub struct Client {
     entities: crate::entities::Entities,
     /// Camera, spectating, bounds, drunk, animations, ClientCheck (M8b, behaviourclient.rs).
     behaviour: crate::behaviourclient::Behaviour,
+    /// Camera target reporting (RPC 170 → 168, camtarget.rs).
+    cam_target: crate::camtarget::CamTarget,
 }
 
 /// Raw write into game data (heap objects, .data/.bss); no protection change.
@@ -137,6 +139,17 @@ fn poke<T: Copy>(addr: u32, v: T) {
     }
     // SAFETY: callers pass addresses of live game objects / game globals.
     unsafe { std::ptr::write_unaligned(addr as usize as *mut T, v) };
+}
+
+/// F4 (B 0x100074B0 `GetAsyncKeyState(0x73)`) and its client line (B string 0x100E5910, type-4 helper 0x10068030).
+const VK_F4: i32 = 0x73;
+pub const F4_LINE: &str = "Returning to class selection after next death";
+
+/// `GetAsyncKeyState(vk) != 0` (either bit), like samp's F4 test.
+fn async_key_any(vk: i32) -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    // SAFETY: plain Win32 query.
+    (unsafe { GetAsyncKeyState(vk) }) != 0
 }
 
 fn async_key_down(vk: i32) -> bool {
@@ -201,6 +214,7 @@ impl Client {
             objects: crate::objects::Objects::default(),
             entities: crate::entities::Entities::default(),
             behaviour: crate::behaviourclient::Behaviour::new(),
+            cam_target: crate::camtarget::CamTarget::default(),
         })
     }
 
@@ -393,6 +407,13 @@ impl Client {
             } else if !self.netgame.connected() {
                 self.connecting_tick();
             }
+        }
+        // F4 at the end of the local tick (B 0x100074B0), except while spectating unspawned: once per pending
+        // flag, "class selection after the next death" (the flag RPC 74 sets) and its client line.
+        if !(self.behaviour.spectate.on && !self.spawned) && !self.force_class_selection && async_key_any(VK_F4) {
+            self.force_class_selection = true;
+            crate::log!("client: F4 -> class selection after the next death");
+            crate::ui::print_info(F4_LINE.as_bytes());
         }
         // The connect tick (A 0x10008940), in state 1 only; GetTickCount at this point (the
         // packet handler may have blocked in RakNet's Disconnect).
@@ -722,6 +743,17 @@ impl Client {
                         self.spawn();
                     }
                 }
+                P::SetPlayerCameraTargeting(t) => self.cam_target.enabled = t.enabled,
+                // RPC 60 (B 0x1000FF10 → 0x100A1760): with the HUD clock off, GTA's millisecond timer := time & 0x3FFFFFFF.
+                P::SendGameTimeUpdate(t) => {
+                    if !self.world.clock_enabled {
+                        poke(crate::world::TIMER_MS, (t.time as u32) & 0x3FFF_FFFF);
+                    }
+                }
+                // RPC 48 (B 0x1001DC70): stored in the custom-model manager, which R4 never creates (session-misc.md
+                // "179"), so nothing happens; the value is only logged.
+                P::SetPlayerVirtualWorld(w) => crate::log!("client: RPC 48 virtual world {} (no effect in R4)", w.world_id),
+                P::PlayCrimeReport(c) => self.crime_report(&c),
                 P::ForcePlayerClassSelection(_) => {
                     crate::log!("client: server forces class selection on next death");
                     self.force_class_selection = true;
@@ -1261,6 +1293,10 @@ impl Client {
         if ped == 0 {
             return;
         }
+        // `/ctd` labels (B 0x10004830, early in the spawned branch of the local tick).
+        if crate::ui::camera_target_labels_on() {
+            self.draw_camera_target_labels();
+        }
         // Hands up + Triangle (enter/exit key) → control on again, which re-sets the ped
         // to its own position and so ends the task (A 0x100074c0 → 0x100ac7d0(1)).
         let triangle = ProcessMemory.read_u16(game::PAD0 + PAD_TRIANGLE).unwrap_or(0);
@@ -1285,6 +1321,113 @@ impl Client {
             crate::log!("client: interior {area} -> RPC 118");
             self.net.send_rpc(&player::OnPlayerInteriorChange { interior: area }, Reliability::Reliable);
         }
+        // Camera target (B 0x100046E0, right after the interior check).
+        self.camera_target_tick();
+    }
+
+    /// RPC 112 (B 0x10019000 → 0x100A17A0): the police scanner's stand-in ped (CSV row 55) is cleared, the
+    /// on-foot description in `CAEPoliceScannerAudioEntity::AddAudioEvent` is NOPed (CSV row 361), a reported
+    /// vehicle becomes a temporary vehicle the stand-in sits in, then the local player's scanner gets
+    /// `AddAudioEvent(0xA4, crime, pos)`; the temporary vehicle is deleted afterwards. `suspect_id` is unused.
+    fn crime_report(&mut self, c: &player::PlayCrimeReport) {
+        let dummy = crate::dll::scanner_dummy_ped();
+        if dummy != 0 {
+            // SAFETY: our own leaked 0x7A0-byte buffer.
+            unsafe { std::ptr::write_bytes(dummy as usize as *mut u8, 0, game::SCANNER_DUMMY_PED_BYTES) };
+        }
+        let mut mem = ProcessMemory;
+        if let Err(e) = crate::patch::Memory::write(&mut mem, CRIME_NOP_ADDR, &[0x90; CRIME_NOP_LEN]) {
+            crate::log!("client: RPC 112 NOP at {CRIME_NOP_ADDR:#x} failed: {e}");
+        }
+        let ped = self.ped();
+        let mut temp = None;
+        if c.in_vehicle != 0 && (400..612).contains(&c.vehicle_model) {
+            temp = crate::vehicles::create_detached(&mut self.runner, c.vehicle_model as u16, c.vehicle_colour as u8);
+            if let Some((_, ptr)) = temp
+                && dummy != 0
+            {
+                poke(dummy + 0x58C, ptr);
+                poke(dummy + off::PED_FLAGS, ProcessMemory.read_u32(dummy + off::PED_FLAGS).unwrap_or(0) | 0x100);
+            }
+        }
+        if ped != 0 {
+            let player_data = ProcessMemory.read_u32(ped + 0x480).unwrap_or(0);
+            let wanted = if player_data != 0 { ProcessMemory.read_u32(player_data).unwrap_or(0) } else { 0 };
+            if wanted != 0 {
+                let pos = [c.pos.x, c.pos.y, c.pos.z];
+                // SAFETY: CAEPoliceScannerAudioEntity::AddAudioEvent (thiscall) on the local player's CWanted scanner.
+                unsafe {
+                    let f: extern "thiscall" fn(u32, u32, u32, *const [f32; 3]) =
+                        std::mem::transmute(SCANNER_ADD_AUDIO_EVENT as usize);
+                    f(wanted + 0x21C, 0xA4, c.crime_id, &pos);
+                }
+            }
+        }
+        if let Some((handle, _)) = temp {
+            self.runner.run(op::DELETE_CAR, &[Arg::Int(handle)]);
+        }
+        crate::log!(
+            "client: RPC 112 crime {} in_vehicle {} model {} colour {}",
+            c.crime_id,
+            c.in_vehicle,
+            c.vehicle_model,
+            c.vehicle_colour
+        );
+    }
+
+    /// RPC 119 (reliability 8), flushed at once (called from the Present pass while the pause menu is up).
+    pub fn send_click_map(&mut self, pos: [f32; 3]) {
+        crate::log!("client: RPC 119 {pos:?}");
+        let p = samp_proto::rpcs::session::OnPlayerClickMap {
+            pos: samp_proto::types::Vec3 { x: pos[0], y: pos[1], z: pos[2] },
+        };
+        self.net.send_rpc(&p, Reliability::Reliable);
+        self.net.flush(Instant::now());
+    }
+
+    /// RPC 168 sender (camtarget.rs).
+    fn camera_target_tick(&mut self) {
+        let now_ms = tick_count();
+        let send = if self.cam_target.enabled {
+            let objects = self.objects.pick_list();
+            let vehicles = self.vehicles.hook_vehicles();
+            let peds: Vec<(u32, u16)> = self.players.iter().filter(|p| p.ped != 0).map(|p| (p.ped, p.id)).collect();
+            let actors = self.entities.hook_actors();
+            self.cam_target.tick(now_ms, || camera_targets(&objects, &vehicles, &peds, &actors))
+        } else {
+            self.cam_target.tick(now_ms, || [crate::camtarget::NONE; 4])
+        };
+        if let Some([object_id, vehicle_id, player_id, actor_id]) = send {
+            crate::log!("client: RPC 168 object {object_id} vehicle {vehicle_id} player {player_id} actor {actor_id}");
+            self.net.send_rpc(
+                &samp_proto::rpcs::session::OnPlayerCameraTarget { object_id, vehicle_id, player_id, actor_id },
+                Reliability::ReliableOrdered,
+            );
+        }
+    }
+
+    /// `/ctd`: the cached targets whose entities exist, with their matrices.
+    fn draw_camera_target_labels(&self) {
+        let [o, v, p, a] = self.cam_target.cached;
+        let none = crate::camtarget::NONE;
+        let objects = self.objects.pick_list();
+        let actors = self.entities.hook_actors();
+        let ents = [
+            (o != none).then(|| objects.iter().find(|x| x.0 == o).map(|x| x.1)).flatten(),
+            (v != none).then(|| self.vehicles.ptr_of(v)).flatten(),
+            (p != none).then(|| self.players.get(p).map(|r| r.ped).filter(|&e| e != 0)).flatten(),
+            (a != none).then(|| actors.iter().find(|x| x.1 == a).map(|x| x.0)).flatten(),
+        ];
+        let items: Vec<([f32; 16], Vec<u8>)> = ents
+            .iter()
+            .zip(self.cam_target.cached)
+            .enumerate()
+            .filter_map(|(k, (e, id))| {
+                let m = entity_matrix((*e)?)?;
+                Some((m, crate::camtarget::label(k, id).into_bytes()))
+            })
+            .collect();
+        crate::ui::draw_camera_target_labels(&items);
     }
 
     /// The local head follows the camera (A 0x10002fa0, unless `disableheadmove`): every 1000 ms the offset := 20 × camera
@@ -1597,4 +1740,85 @@ pub(crate) fn set_ped_skin(runner: &mut Runner, ped: u32, skin: u32) {
         let h: extern "thiscall" fn(u32, u32) = std::mem::transmute(game::PED_SPEECH_INITIALISE as usize);
         h(ped + off::PED_SPEECH, ped);
     }
+}
+
+/// `GetTickCount` (samp's clock for the camera-target rate).
+fn tick_count() -> u32 {
+    // SAFETY: plain Win32 call.
+    unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount() }
+}
+
+/// An entity's matrix as 16 floats (CMatrix rows right / forward / up / position, padded).
+fn entity_matrix(ent: u32) -> Option<[f32; 16]> {
+    let m = ProcessMemory;
+    let mat = m.read_u32(ent + off::PLACEABLE_MATRIX).unwrap_or(0);
+    (mat != 0).then(|| std::array::from_fn(|i| m.read_f32(mat + 4 * i as u32).unwrap_or(0.0)))
+}
+
+fn entity_pos(ent: u32) -> Option<[f32; 3]> {
+    entity_matrix(ent).map(|m| [m[12], m[13], m[14]])
+}
+
+fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// CSV row 361: 39 bytes NOPed by RPC 112.
+const CRIME_NOP_ADDR: u32 = 0x4E7529;
+const CRIME_NOP_LEN: usize = 39;
+/// `CAEPoliceScannerAudioEntity::AddAudioEvent(eAudioEvents, eCrimeType, const CVector&)`.
+const SCANNER_ADD_AUDIO_EVENT: u32 = 0x4E71E0;
+
+/// `TheCamera` matrix position (samp's camera distance, B 0x1009F1C0).
+const CAMERA_POS: u32 = 0xB6F9CC;
+
+/// The camera-target search (B 0x10004420; camtarget.rs): object, vehicle, player, actor.
+fn camera_targets(objects: &[(u16, u32, i32)], vehicles: &[(u32, u16)], peds: &[(u32, u16)], actors: &[(u32, u16)]) -> [u16; 4] {
+    use crate::camtarget as ct;
+    let m = ProcessMemory;
+    let v3 = |a: u32| [m.read_f32(a).unwrap_or(0.0), m.read_f32(a + 4).unwrap_or(0.0), m.read_f32(a + 8).unwrap_or(0.0)];
+    let (start, end) = ct::ray(v3(CAMERA_FRONT), v3(CAMERA_FRONT + 0xC));
+    let cam = v3(CAMERA_POS);
+    // CWorld::ProcessLineOfSight(start, end, …, buildings, vehicles, peds, objects, 0, 0, 0, 0): the hit point, if any.
+    let los = |vehicles: u8, objects: u8| -> [f32; 3] {
+        type Los = extern "C" fn(*const f32, *const f32, *mut f32, *mut u32, u8, u8, u8, u8, u8, u8, u8, u8) -> u8;
+        let mut colpoint = [0f32; 16];
+        let mut entity = 0u32;
+        // SAFETY: GTA's cdecl line-of-sight query with valid in/out buffers, main thread.
+        unsafe {
+            let f: Los = std::mem::transmute(0x56BA00usize);
+            f(start.as_ptr(), end.as_ptr(), colpoint.as_mut_ptr(), &mut entity, 1, vehicles, 0, objects, 0, 0, 0, 0);
+        }
+        if entity != 0 { [colpoint[0], colpoint[1], colpoint[2]] } else { end }
+    };
+    let mut out = [ct::NONE; 4];
+    let e = los(0, 0);
+    if let Some((id, _, _)) = crate::objects::pick_within(start, e, objects, ct::OBJECT_RADIUS) {
+        out[0] = id;
+    }
+    // The local ped's own vehicle is skipped (B 0x100B7430).
+    let ped = m.read_u32(game::CWORLD_PLAYERS + off::PLAYER_INFO_PED).unwrap_or(0);
+    let own = if ped != 0 && m.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & 0x100 != 0 {
+        m.read_u32(ped + 0x58C).unwrap_or(0)
+    } else {
+        0
+    };
+    let search = |list: &[(u32, u16)], radius: f32, scale: f32, e: [f32; 3], skip: u32| -> u16 {
+        ct::nearest(
+            start,
+            list.iter().filter_map(|&(ent, id)| {
+                if !ped_in_world(ent) || ent == skip {
+                    return None;
+                }
+                let p = entity_pos(ent)?;
+                (dist3(p, cam) < radius && crate::objects::bound_sphere_hit(start, e, ent, scale)).then_some((id, p))
+            }),
+        )
+    };
+    let e = los(0, 1);
+    out[1] = search(vehicles, ct::VEHICLE_RADIUS, ct::VEHICLE_SCALE, e, own);
+    let e = los(1, 1);
+    out[2] = search(peds, ct::PED_RADIUS, ct::PED_SCALE, e, 0);
+    out[3] = search(actors, ct::PED_RADIUS, ct::PED_SCALE, e, 0);
+    out
 }

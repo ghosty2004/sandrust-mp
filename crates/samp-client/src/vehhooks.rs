@@ -135,6 +135,9 @@ pub enum HookEvent {
     Enter { vehicle_id: u16, parachute: bool },
     /// Player-input exit: `driver` = the local ped was the driver; `rc` = no RPC 154; `train` = warp beside it.
     Exit { vehicle_id: u16, driver: bool, rc: bool, train: bool },
+    /// samp's script opcode 0x09C6 with a network event type 1–4 (`scmops.rs`): RPC 96 for the vehicle with
+    /// script handle `handle` (B 0x10001CE0).
+    Scm { handle: i32, arg1: i32, arg2: i32, kind: i32 },
 }
 
 /// One streamed vehicle as the hooks see it.

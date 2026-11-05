@@ -431,7 +431,7 @@ impl Objects {
                 .map(|s| objedit::EditFrame { object: s.ptr, ped: local, bone: s.data.bone }),
             _ => None,
         };
-        let pickable = self.pool.values().filter(|o| o.ptr != 0).map(|o| (o.id, o.ptr, o.model)).collect();
+        let pickable = self.pick_list();
         objedit::with(|sh| {
             sh.frame = frame;
             sh.pickable = pickable;
@@ -761,6 +761,11 @@ impl Objects {
     }
 
     /// Control-channel lines.
+    /// Created objects as the pool ray test takes them: (id, entity, model).
+    pub fn pick_list(&self) -> Vec<(u16, u32, i32)> {
+        self.pool.values().filter(|o| o.ptr != 0).map(|o| (o.id, o.ptr, o.model)).collect()
+    }
+
     pub fn status_lines(&self, out: &mut Vec<String>) {
         for o in self.pool.values() {
             let (pos, rot) = match rows(o.ptr).filter(|_| o.ptr != 0) {
@@ -1093,14 +1098,18 @@ fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
-/// The pool ray test of selection mode (B 0x10012E40): of the objects closer to `start` than the best so far
-/// (initially 150), the ones the segment hits — a sphere cast (radius 0.25 spheres) against the collision model
-/// when the entity uses collision and has collision data, else a frustum-checked line-vs-bounding-sphere test
-/// (B 0x100B65E0) — and the nearest of those wins.
-pub fn pick(start: [f32; 3], end: [f32; 3], list: &[(u16, u32, i32)]) -> Option<(u16, u32, i32)> {
-    let mut best_d = objedit::PICK_DISTANCE;
+/// The object pool ray test (B 0x10012E40), used by selection mode (`max` 150) and the camera target (`max` 40):
+/// of the created objects other than model 19300 that are closer to `start` than the best so far (initially
+/// `max`), the ones the segment hits — a sphere cast (radius 0.25 spheres) against the collision model when the
+/// entity uses collision and has collision data, else [`bound_sphere_hit`] — and the nearest of those wins.
+pub fn pick_within(start: [f32; 3], end: [f32; 3], list: &[(u16, u32, i32)], max: f32) -> Option<(u16, u32, i32)> {
+    let mut best_d = max;
     let mut best = None;
     for &(id, ptr, model) in list {
+        // B 0x100A7DE0: an entity with an RW object; B 0x1009F060: not the removed-building model.
+        if rd::<u32>(ptr + 0x18) == 0 || model == crate::worldents::REMOVED_BUILDING_MODEL {
+            continue;
+        }
         let Some((_, p)) = rows(ptr) else { continue };
         let d = dist3(p, start);
         if d >= best_d {
@@ -1127,33 +1136,7 @@ pub fn pick(start: [f32; 3], end: [f32; 3], list: &[(u16, u32, i32)]) -> Option<
                 h
             }
         } else {
-            let mut c = [0.0f32; 3];
-            // SAFETY: CEntity::GetBoundCentre(CVector&) on a live object.
-            unsafe {
-                let f: extern "thiscall" fn(u32, *mut [f32; 3]) = std::mem::transmute(GET_BOUND_CENTRE as usize);
-                f(ptr, &mut c);
-            }
-            let col_r: f32 = rd(col + 0x24);
-            let sphere: [f32; 4] = [c[0], c[1], c[2], col_r];
-            let cam: u32 = rd(g::SCENE_CAMERA);
-            // SAFETY: RwCameraFrustumTestSphere(camera, RwSphere*) (cdecl).
-            let visible = cam != 0
-                && unsafe {
-                    let f: extern "C" fn(u32, *const [f32; 4]) -> i32 =
-                        std::mem::transmute(g::RW_CAMERA_FRUSTUM_TEST_SPHERE as usize);
-                    f(cam, &sphere) != 0
-                };
-            visible && {
-                let line: [f32; 8] =
-                    [start[0] - c[0], start[1] - c[1], start[2] - c[2], 0.0, end[0] - c[0], end[1] - c[1], end[2] - c[2], 0.0];
-                let sph: [f32; 5] = [0.0, 0.0, 0.0, objedit::pick_radius(col_r), 0.0];
-                // SAFETY: CCollision::TestLineSphere(const CColLine&, const CColSphere&) (cdecl).
-                unsafe {
-                    let f: extern "C" fn(*const [f32; 8], *const [f32; 5]) -> u8 =
-                        std::mem::transmute(TEST_LINE_SPHERE as usize);
-                    f(&line, &sph) & 1 != 0
-                }
-            }
+            bound_sphere_hit(start, end, ptr, 1.0)
         };
         if hit {
             best_d = d;
@@ -1161,6 +1144,49 @@ pub fn pick(start: [f32; 3], end: [f32; 3], list: &[(u16, u32, i32)]) -> Option<
         }
     }
     best
+}
+
+/// [`pick_within`] with selection mode's 150 m.
+pub fn pick(start: [f32; 3], end: [f32; 3], list: &[(u16, u32, i32)]) -> Option<(u16, u32, i32)> {
+    pick_within(start, end, list, objedit::PICK_DISTANCE)
+}
+
+/// samp's bounding-sphere line test (B 0x100B65E0 with its frustum check on): the entity's model needs a collision
+/// model; the bounding sphere (GetBoundCentre, collision-model radius) must not be outside the camera frustum; then
+/// the segment is tested against a sphere of [`objedit::pick_radius`] × `scale` around the centre.
+pub fn bound_sphere_hit(start: [f32; 3], end: [f32; 3], ptr: u32, scale: f32) -> bool {
+    let model = i32::from(rd::<i16>(ptr + 0x22));
+    let mi = wh::model_info(model);
+    let col: u32 = if mi != 0 { rd(mi + g::MI_COL_MODEL) } else { 0 };
+    if col == 0 {
+        return false;
+    }
+    let mut c = [0.0f32; 3];
+    // SAFETY: CEntity::GetBoundCentre(CVector&) on a live entity.
+    unsafe {
+        let f: extern "thiscall" fn(u32, *mut [f32; 3]) = std::mem::transmute(GET_BOUND_CENTRE as usize);
+        f(ptr, &mut c);
+    }
+    let col_r: f32 = rd(col + 0x24);
+    let sphere: [f32; 4] = [c[0], c[1], c[2], col_r];
+    let cam: u32 = rd(g::SCENE_CAMERA);
+    // SAFETY: RwCameraFrustumTestSphere(camera, RwSphere*) (cdecl).
+    let visible = cam != 0
+        && unsafe {
+            let f: extern "C" fn(u32, *const [f32; 4]) -> i32 =
+                std::mem::transmute(g::RW_CAMERA_FRUSTUM_TEST_SPHERE as usize);
+            f(cam, &sphere) != 0
+        };
+    visible && {
+        let line: [f32; 8] =
+            [start[0] - c[0], start[1] - c[1], start[2] - c[2], 0.0, end[0] - c[0], end[1] - c[1], end[2] - c[2], 0.0];
+        let sph: [f32; 5] = [0.0, 0.0, 0.0, objedit::pick_radius(col_r) * scale, 0.0];
+        // SAFETY: CCollision::TestLineSphere(const CColLine&, const CColSphere&) (cdecl).
+        unsafe {
+            let f: extern "C" fn(*const [f32; 8], *const [f32; 5]) -> u8 = std::mem::transmute(TEST_LINE_SPHERE as usize);
+            f(&line, &sph) & 1 != 0
+        }
+    }
 }
 
 /// `GetTickCount` (samp's clock for the 117 rate).

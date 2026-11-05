@@ -75,6 +75,8 @@ struct State {
     class_buttons: Option<[samp_ui::Rect; 3]>,
     /// Last click on a dialog list row (double-click detection).
     last_list_click: Option<(usize, std::time::Instant)>,
+    /// Last scoreboard row click (double-click detection).
+    last_scoreboard_click: Option<(usize, std::time::Instant)>,
     /// The spawn ends class selection: its mode-0 request restores input only after
     /// 10 frames (A 0x10003c20 → 0x100a0750(0, 0); measured: 0x541DF5 restored 10
     /// frames after the spawn frame, docs/phase3/parity-notes.md).
@@ -485,6 +487,7 @@ fn ensure(g: &mut Option<State>, debug_mode: bool) -> &mut State {
             menu_handle: None,
             menu_pad: (false, false),
             last_list_click: None,
+            last_scoreboard_click: None,
             class_buttons: None,
             spawn_release: false,
             netgame_object: false,
@@ -878,6 +881,45 @@ fn bubbles(st: &State) -> Vec<BubbleDraw> {
     out
 }
 
+/// Pause-menu map right-click (B 0x10075B7B, session-misc.md "119"): with the map page shown (0xBA6774), the
+/// right button's "pressed since the last call" bit set and 0xBA8298 clear, the radar-trace entries 1..=175
+/// (0xBA86F0, stride 0x28) are scanned for the u16 0x1203 at +0x25 (the waypoint; the last match wins) and its x/y
+/// go out with z = `CWorld::FindGroundZForCoord(x, y)` + 2. samp sends uninitialised x/y without a waypoint;
+/// we send nothing then (ROADMAP decision, feata-notes.md).
+fn map_click() -> Option<[f32; 3]> {
+    use crate::worldhooks::rd;
+    if rd::<u32>(MENU_MAP_PAGE) == 0 {
+        return None;
+    }
+    // SAFETY: plain Win32 query.
+    let pressed = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x02) } & 1 != 0;
+    if !pressed || rd::<u8>(MENU_MAP_BLOCK) != 0 {
+        return None;
+    }
+    let mut found = None;
+    for i in 1..=RADAR_TRACE_SCAN as u32 {
+        let e = RADAR_TRACE + i * RADAR_TRACE_STRIDE;
+        if rd::<u16>(e + 0x25) == WAYPOINT_TAG {
+            found = Some((rd::<f32>(e + 8), rd::<f32>(e + 0xC)));
+        }
+    }
+    let (x, y) = found?;
+    // SAFETY: CWorld::FindGroundZForCoord(float, float) (cdecl, returns float), main thread.
+    let z = unsafe {
+        let f: extern "C" fn(f32, f32) -> f32 = std::mem::transmute(FIND_GROUND_Z_FOR_COORD as usize);
+        f(x, y)
+    };
+    Some([x, y, z + 2.0])
+}
+
+const MENU_MAP_PAGE: u32 = 0xBA6774;
+const MENU_MAP_BLOCK: u32 = 0xBA8298;
+const RADAR_TRACE: u32 = 0xBA86F0;
+const RADAR_TRACE_STRIDE: u32 = 0x28;
+const RADAR_TRACE_SCAN: usize = 175;
+const WAYPOINT_TAG: u16 = 0x1203;
+const FIND_GROUND_Z_FOR_COORD: u32 = 0x569660;
+
 /// UR §2.3: menu check, HUD flags, then the drawing steps.
 fn present_pass() {
     let Ok(mut g) = UI.try_lock() else { return };
@@ -888,8 +930,17 @@ fn present_pass() {
         let ok = d3d::screenshot(path.to_string_lossy().as_bytes(), render::hwnd());
         st.core.screenshot_done(ok.then_some(index));
     }
-    // Step 3: GTA pause menu → no samp UI.
+    // Step 3: GTA pause menu → no samp UI; only the map right-click (B 0x10075B7B).
     if gta_menu_active() {
+        if st.core.netgame
+            && let Some(p) = map_click()
+        {
+            // samp sends from this pass and RakNet's own thread transmits it; our session tick does not run
+            // while the menu is up, so send and flush here (queued for the next tick if the session is busy).
+            if !crate::dll::send_click_map(p) {
+                st.core.push_outgoing(Outgoing::ClickMap(p));
+            }
+        }
         return;
     }
     let face = st.core.settings.font_face.clone().unwrap_or_else(|| samp_ui::fonts::DEFAULT_FACE.into()).into_bytes();
@@ -1111,6 +1162,9 @@ fn mouse_up(st: &mut State, x: i32, y: i32) -> bool {
         st.core.push_outgoing(Outgoing::SelectTextDraw(id));
         return true;
     }
+    if st.core.scoreboard.is_open() {
+        return scoreboard_click(st, x, y);
+    }
     if let Some(b) = st.class_buttons
         && let Some(i) = b.iter().position(|r| r.contains(x, y))
     {
@@ -1153,6 +1207,41 @@ fn mouse_up(st: &mut State, x: i32, y: i32) -> bool {
         return list.contains(x, y);
     }
     l.rect.contains(x, y)
+}
+
+/// A click on the scoreboard's list box (DXUT list box: a click selects the row, a double click on it activates
+/// it → the scoreboard's GUI callback, B 0x100C5590 on event 0x701, sends RPC 23 and closes; B 0x1006EBD0).
+/// Clicks outside the scoreboard fall through (they close it, keys.rs).
+fn scoreboard_click(st: &mut State, x: i32, y: i32) -> bool {
+    let r = st.core.scoreboard_rect;
+    if !r.contains(x, y) {
+        return false;
+    }
+    let row_h = st.renderer.as_ref().map(|r| r.fonts.gui1_height).unwrap_or(0);
+    let list = samp_ui::Rect::new(r.left, r.top + 60, r.right, r.bottom);
+    let sel = samp_ui::dialog::list_selection_rect(&list);
+    let text = samp_ui::dialog::list_text_rect(&list);
+    if row_h <= 0 || x < sel.left || x >= sel.right || y < text.top || y >= sel.bottom {
+        return true;
+    }
+    let row = st.core.scoreboard.scroll() + ((y - text.top) / row_h) as usize;
+    if row >= st.core.scoreboard.rows().len() {
+        return true;
+    }
+    let now = std::time::Instant::now();
+    // SAFETY: plain Win32 query.
+    let dbl = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() };
+    let double = st
+        .last_scoreboard_click
+        .is_some_and(|(r, t)| r == row && now.duration_since(t).as_millis() <= u128::from(dbl));
+    st.core.scoreboard.set_selected(Some(row));
+    if double {
+        st.last_scoreboard_click = None;
+        st.core.scoreboard_activate();
+    } else {
+        st.last_scoreboard_click = Some((row, now));
+    }
+    true
 }
 
 /// A click on the class-selection panel: 1 = `<<`, 2 = `>>`, 3 = `Spawn` (0 = none).
@@ -1212,6 +1301,22 @@ fn flush_pending_debug(st: &mut State) {
 }
 
 /// A type-4 (info colour) chat line.
+/// `/ctd` is on (B flag 0x101189A8).
+pub fn camera_target_labels_on() -> bool {
+    try_with_ui(|st| st.core.settings.camera_target_labels).unwrap_or(false)
+}
+
+/// `/ctd` labels, drawn from the local tick inside GTA's scene like samp's (B 0x10004830).
+pub fn draw_camera_target_labels(items: &[([f32; 16], Vec<u8>)]) {
+    let _ = try_with_ui(|st| {
+        if st.core.settings.camera_target_labels
+            && let Some(r) = st.renderer.as_ref()
+        {
+            r.camera_target_labels(items);
+        }
+    });
+}
+
 pub fn print_info(text: &[u8]) {
     with_ui(|st| st.core.print_info(text));
 }
@@ -1309,6 +1414,21 @@ pub fn net_tick(net: &mut NetClient) {
                 net.send_rpc(&OnPlayerExitedMenu, Reliability::Reliable);
             }
             Outgoing::ScoresRequest => net.send_rpc(&OnPlayerRequestScoresAndPings, Reliability::Reliable),
+            Outgoing::ClickPlayer(player_id) => {
+                crate::log!("ui: RPC 23 player {player_id}");
+                let p = samp_proto::rpcs::session::OnPlayerClickPlayer {
+                    player_id,
+                    source: samp_proto::rpcs::session::OnPlayerClickPlayer::SOURCE_SCOREBOARD,
+                };
+                net.send_rpc(&p, Reliability::ReliableOrdered);
+            }
+            Outgoing::ClickMap(pos) => {
+                crate::log!("ui: RPC 119 {pos:?}");
+                let p = samp_proto::rpcs::session::OnPlayerClickMap {
+                    pos: samp_proto::types::Vec3 { x: pos[0], y: pos[1], z: pos[2] },
+                };
+                net.send_rpc(&p, Reliability::Reliable);
+            }
         }
     }
 }

@@ -435,3 +435,16 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   `tools/e2e/featb_report.py` 25/25 assertions, per-step script-command parity diff empty; visual diff `dl`, `dloff`,
   `testdw` OK (glyph-atlas split covered); `featb-version.sh` box on both clients. Tooling: tracer `window`
   command, bot `--anim-seq`, uifs `pstate`, visual.sh scenario override. Notes: docs/phase3/featb-notes.md.
+
+## 2026-11-05 — FEAT-A: network-visible features of the completeness audit (worktree feata, branch network-features)
+
+- Measured on the original first (lane veh exploration orig-20261105-094437; trace-lane parity run
+  target/trace/orig-20261105-103210), then implemented: SCM event sender 96 (+ type 3/4 local effects) and a fixed
+  0x09D3 (it was inverted, so mod garages never closed in our client), camera target 170/168 + `/ctd` labels, F4
+  class reselection, scoreboard double click 23, pause-map right click 119 (sent from the Present pass), Car Jacked,
+  PlayCrimeReport (stand-in ped, 0x4E7529 NOP, temporary vehicle, scanner event), SendGameTimeUpdate timer resync,
+  RPC 48 logged (no effect in R4). Details and evidence: docs/phase3/feata-notes.md.
+- Diffs: C→S RPC sequence of the parity runs identical incl. payloads (23 RPCs); server callbacks identical; tracer
+  windows (crime report, Car Jacked) identical; `/ctd` D3D sprite/font stream identical but for the caller module;
+  `tools/diff/network.sh` (+5 windows, lane veh, tracegm): 403 checks, 403 match.
+- New: tools/e2e/feata.sh (PASS), featscen.sh, featparity.sh; uifs.pwn callbacks/camtgt; netscen windows.

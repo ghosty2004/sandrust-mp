@@ -28,6 +28,8 @@ pub const CLOCK_UPDATE_OFF: u8 = 0xC3;
 pub const HUD_CLOCK_FORMAT: u32 = 0x859A6C;
 pub const HUD_CLOCK_FORMAT_ON: [u8; 12] = *b"%02d:%02d\0\0\0";
 /// `CClock::ms_nGameClockMinutes` / `ms_nGameClockHours` (u8).
+/// `CTimer::m_snTimeInMilliseconds` (RPC 60 writes it while the HUD clock is off, B 0x100A1760).
+pub const TIMER_MS: u32 = 0xB7CB84;
 pub const CLOCK_MINUTES: u32 = 0xB70152;
 pub const CLOCK_HOURS: u32 = 0xB70153;
 /// `CWeather::ForcedWeatherType`, `NewWeatherType`, `OldWeatherType` (i16; samp writes a dword

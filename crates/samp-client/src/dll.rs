@@ -571,6 +571,20 @@ extern "C" fn game_shutdown_hook() {
 /// Zeroed stand-in ped for the police scanner (CSV row 55).
 static SCANNER_DUMMY_PED: AtomicU32 = AtomicU32::new(0);
 
+/// RPC 119 straight from the Present pass (pause-menu map click): sent and flushed now; false if the session is
+/// busy or absent.
+pub(crate) fn send_click_map(pos: [f32; 3]) -> bool {
+    let Ok(mut g) = CLIENT.try_lock() else { return false };
+    let Some(c) = g.as_mut() else { return false };
+    c.send_click_map(pos);
+    true
+}
+
+/// The stand-in ped's address (0 before the patches ran).
+pub(crate) fn scanner_dummy_ped() -> u32 {
+    SCANNER_DUMMY_PED.load(Ordering::Relaxed)
+}
+
 /// Replaces `FindPlayerPed(player)` in `CAEPoliceScannerAudioEntity::AddAudioEvent` (cdecl).
 extern "C" fn scanner_find_player_ped(_player: i32) -> u32 {
     SCANNER_DUMMY_PED.load(Ordering::Relaxed)
