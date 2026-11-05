@@ -748,7 +748,8 @@ impl UiCore {
             scoreboard_open: self.scoreboard.is_open(),
             scoreboard_rect: self.scoreboard_rect,
             class_selection_visible: false,
-            other_modal: false,
+            // Object edit / selection (UR §6.3): an ESC key-down is swallowed so GTA does not open its pause menu.
+            other_modal: crate::objedit::with(|sh| sh.editor.active || sh.selection.active),
             gta_menu,
             ime_composing: false,
             netgame: self.netgame,

@@ -20,6 +20,9 @@
 //!     0 < elapsed < 11; on → sleep to the `fpslimit` (sleep `1000/limit −
 //!     elapsed − 1` when 0 < elapsed < 1000/limit);
 //!   * the end time is taken after the sleep.
+//!
+//! The sleep is kernel32 `Sleep` as in samp (NET-6 §4: with std's sleep our frames were ~19.2 ms
+//! instead of the original's 19.0, which changed GTA's physics around vehicles and samp's send races).
 
 /// `CTimer::ms_fTimeStep` and `ms_fTimeStepNonClipped`.
 pub const TIME_STEP: u32 = 0xB7CB5C;

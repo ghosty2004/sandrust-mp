@@ -91,3 +91,41 @@ Before NET-6 (m10 `full` capture of the previous client): only 42 % of the ack d
 ack-only (acks rode on the frame's sends), a ping every 5 s, resends after 3 × smoothed RTT
 clamped to 100–1000 ms.
 
+
+## 4. Application-level follow-ups (branch sync-fixes: NET6-P1..P4)
+
+Measured with `tools/diff/network.sh` and focused scenarios (`NET_SCEN=`: 8 × enter a parked ambulance
+as passenger with G, exit with F, then 90 s idle). Captures `target/netdiff/orig-20261105-065833`
+(original) and `ours-20261105-071849` (ours, final build).
+
+* **P1 idle 203** (A 0x100074c0 → A 0x10005210). There is no forced resend. The on-foot 203 is attempted
+  every > 1000 ms (frame-start tick). Its duplicate gate shares the 501 ms timestamp with the 207. While
+  standing still the 207 goes out every ~532 ms (28 frames at 19.0 ms, an attempt every second frame), so
+  an unchanged 203 passes only when its attempt falls on the single odd frame between 501 ms after
+  the last 207 and the next 207 attempt. With 53 frames per 203 attempt, that is every 10th attempt.
+  The original sent 203s 19.155 s after the last moving one, then every 10.076–10.089 s, each 512–516 ms
+  after the last 207. Our rule was already the same, but our frames were ~19.2 ms (std's `sleep` in the
+  frame limiter wakes later under Wine than kernel32 `Sleep`), so the rhythm broke up (10.1/20.3/31.3 s).
+  With `Sleep` (`dll.rs`) our frames are 19.03 ms and we send at 19.154 s, then every 10.074–10.086 s,
+  512–517 ms after the last 207.
+* **P2 spectator 203** (A 0x10006540). It is tried only in a tick that just sent a 212, when more than
+  2 × onFootInterval have passed since the last attempt (aim timer +0x117), then the same duplicate gate.
+  Ours: `CombatClient::aim_spectating` is called from `spectator_tick` right after its 212. Death window:
+  64 vs 63, gaps ~532 ms in both.
+* **P3 209 after a passenger exit** (A 0x1001f3c0 / A 0x10006e00). The gating now follows the original:
+  "not stopped" = not (in the moving list and zero speed). Only player peds (ped type 0) count as
+  passengers. The closest-player test walks ids in order, counts only peds in the world and lets the
+  lower id win ties. The 209s themselves come from GTA physics: the door push on entry, the car settling
+  as the passenger sits, and exactly (0.001, 0.001, 0.001) for a frame on exit, caught by the
+  4-frame pool tick. The exit 209: original 4/8 exits, ours 3/8, 0.82–0.84 s after RPC 154 in both,
+  seat 1. Residual difference: after the first entry 209 the original's car keeps settling (follow-up
+  209s ~150 ms apart, z −0.12 m, more 211s) in 7/8 entries. Ours does this in 1 of 12, with
+  ProcessControl running every frame (our hook counters). The cause is not found yet. The main
+  scenario's passenger window matches (1 vs 1).
+* **P4 Escape in the object editor.** The original's window procedure swallows the Escape key-down
+  while the editor or selection is active (UR §6.3), so GTA never opens its pause menu, and the
+  `WM_CHAR` Escape cancels with 117 response 0. Ours: `UiCore::key_state` sets `other_modal` from the
+  editor and selection state.
+* **RPC 25 bits** (join): the serial was random in ours (592–608 bits). Ours now uses samp's derivation
+  (`session::samp_serial`, verified against the original's serial `254FF869…BA87`), so the RPC is
+  identical.

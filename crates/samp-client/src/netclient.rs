@@ -261,7 +261,8 @@ impl NetClient {
         let spawned = std::thread::Builder::new().name("raknet-update".into()).spawn(move || {
             while !flag.load(AtomicOrdering::Relaxed) {
                 lock(&core).update(Instant::now());
-                std::thread::sleep(UPDATE_SLEEP);
+                // RakNet's `Sleep(threadSleepTimer)` (kernel32, as rak_wait; std's sleep wakes later under Wine).
+                rak_wait(UPDATE_SLEEP);
             }
         });
         match spawned {
@@ -392,6 +393,7 @@ impl NetClient {
             if let Some(conn) = c.conn.as_mut() {
                 conn.send_with(&[id::DISCONNECTION_NOTIFICATION], 8, Reliability::Unreliable, 0, priority::SYSTEM);
                 c.flush_now(now);
+                crate::log!("net: disconnection notification sent");
                 true
             } else {
                 false
@@ -661,7 +663,7 @@ impl Core {
     fn send_player_connect(&mut self) {
         let Some(challenge) = self.accepted_challenge.take() else { return };
         let Some(conn) = self.conn.as_mut() else { return };
-        let serial = session::make_serial(&pseudo_random_hex40());
+        let serial = client_serial();
         let payload = session::build_player_connect(&session::R4, &self.name, challenge, &serial);
         conn.send_bits(&rpc::encode(rpc::ids::PLAYER_CONNECT, &payload), Reliability::Reliable, 0);
         self.phase = Phase::Joining;
@@ -678,6 +680,25 @@ fn rak_wait(d: Duration) {
     };
     #[cfg(not(windows))]
     std::thread::sleep(d);
+}
+
+/// The game string samp's serial hashes (A 0x1005ffa0 is called with 0x00C9236C: GTA's user-files path from its
+/// fifth character on, e.g. `sers\<user>\Documents\GTA San Andreas User Files`).
+#[cfg(windows)]
+const SERIAL_INPUT: u32 = 0x00C9_236C;
+
+/// samp's client serial (`session::samp_serial` of the game string); outside the game a random one.
+fn client_serial() -> String {
+    #[cfg(windows)]
+    {
+        use crate::patch::Memory;
+        let mut buf = [0u8; 256];
+        if crate::patch::ProcessMemory.read(SERIAL_INPUT, &mut buf).is_ok() {
+            let n = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            return session::samp_serial(&buf[..n]);
+        }
+    }
+    session::make_serial(&pseudo_random_hex40())
 }
 
 /// 40 hex digits of non-cryptographic randomness for the client serial.

@@ -113,8 +113,13 @@ def quit_checks(out, sock, socks, bad):
         bad.append("quit: log lines missing (quit %s, exit %s)" % (q, ex))
         return
     print("[m10-net] quit: 0x20 %+.1f ms after /quit, exit %.3f s after /quit" % ((notif[0][0] - q[0]) * 1000, ex[0] - q[0]))
-    if not 0 <= notif[0][0] - q[0] <= 0.05:
-        bad.append("quit: 0x20 not sent with the /quit")
+    # The "/quit" line is written before the send and "notification sent" right after it, on the same
+    # thread; Wine's system clock (log) and the capture clock differ by up to a few tenths of a ms
+    # (seen: the 0x20 0.2 ms "before" the /quit line), so the order is checked with 2 ms of slack.
+    sent = log_times(out, r"net: disconnection notification sent")
+    if not -0.002 <= notif[0][0] - q[0] <= 0.05 or not sent or notif[0][0] > sent[0] + 0.002:
+        bad.append("quit: 0x20 not sent with the /quit (%+.1f ms; notification-sent line %s)"
+                   % ((notif[0][0] - q[0]) * 1000, sent))
     if not 1.0 <= ex[0] - q[0] <= 1.2:
         bad.append("quit: exit %.3f s after /quit (want > 1.0)" % (ex[0] - q[0]))
     # Exit frame (tracer): the car's occupant out (0x0362), then the car deleted (0x00a6).
