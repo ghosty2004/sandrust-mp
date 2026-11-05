@@ -12,8 +12,8 @@ differential capture against the original client, e2e script.
 
 | Slot | Running | Next |
 |---|---|---|
-| samp-client worktree m7 (lane main) | M7 combat (parity loop) | M5-P / M6-P leftovers |
-| samp-client worktree m8b (lane veh) | M8b remaining behaviour (camera, spectate, bounds, interiors, animations, drunk, SCM events, ClientCheck) | M9 audio |
+| samp-client (lane main) | — (free) | FIX-A |
+| samp-client (lane veh) | — (free) | FIX-B |
 | samp-client worktree m9 (lane ui) | M9 audio + M10 client features | — |
 | measurement (lane trace, REA) | — (free) | EFX-2 |
 | harness (lanes diff + diff2) | — (free) | fix agents from docs/phase3/par-audit.md |
@@ -23,6 +23,7 @@ differential capture against the original client, e2e script.
 
 In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1, EFX-1.
 
+1. TEST-1 — m8b drunk check counts frames, not seconds (flaky when the limiter is off in some states); ClientCheck checksum replies (types 5/0x45–0x48) — measure the derivation cleanly and compute it honestly over real memory (currently not answered, not 1:1)
 1. FIX-A (from par-audit.md) — patches: HUD aspect rows 7/16/368/369, rows 165/184/166 shadows (165 was the state-block bug), CFont rows 225–239, rows 50/223/224/170/215–217; weather screen effect; 207 sent every 76 ms after leaving a car (532 ms original)
 1. FIX-B (from par-audit.md) — vehicles: remote driver exit task instead of warp, AddVehicleComponent order, door swing after exit, rows 177/62; radar markers for remote players; 207 anim id (check after M8b merge)
 1. M6-P — world leftovers: object editor gizmo + drag (117 response 2 every 250–287 ms), selection picking, wire TODO(input-lock) sites to ui::set_input_mode, CSV row 81 camera test for objects/vehicles; PLATE-1 number plates; M8A-PREVIEW model-preview textdraws
@@ -98,10 +99,10 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | M4 | Chat window + input, local commands, game text, connect lines, cursor | done (merged a45f3d4) | main session: `tools/e2e/m4.sh` exit 0 in lane ui (chat round trip, colours, /pagesize saved, server command); agent: 3×; 432 tests, clippy 0; 1280x720 screenshot matches TRACE-3 numbers to the pixel; RPC 101/50 bytes identical to the original | deviations → M4-P |
 | M5 | Vehicles: streaming, driving, passengers, unoccupied, trailers, remote drivers | done (merged f4d480b) | main session: `tools/e2e/m5.sh` exit 0 (remote driver seated + tracking; local enter F → driver, W → 142 m server-side, exit); all e2e green after merge (saa, m1–m5, goal), 485 tests, clippy 0; tracer diff vs original matches stream-in/blips/warps/ProcessControl context/correction timing | `docs/phase3/m5-notes.md`; open: train exit, remote passenger weapons/drive-by, trailer receive, heli/plane remote z, 15 s wreck delete (unobservable vs open.mp), plates (needs D3D proxy), radar colours |
 | M6 | World entities: objects, pickups, actors, checkpoints, 3D labels, gang zones, map icons | done (merged bafc841) | e2e | needs SA:MP assets decision |
-| M7 | Combat: aim/bullet/weapons sync, damage, death | in-progress | e2e + differential | |
+| M7 | Combat: aim/bullet/weapons sync, damage, death | done (merged bf9a588) | e2e + differential | |
 | M4-P | UI parity from TRACE-3 batch 2 + M4 deviations: chat render-to-texture cache (2048x1024 RT like samp), per-frame HUD flag order, connect timing (Started → +3.0 s Connecting; retry every ~6.05 s with "didn't respond" line), history keeps duplicates and position across close/send, input keeps text on ESC/F6, password mask U+25CF, ctrl+A / ctrl+word moves, /fontsize recreates GUI fonts immediately, /timestamp layout, IME/clipboard | done (merged 86dfabc) | D3D call-stream diff (tools/trace/d3d_diff.py) of chat/input scenarios = no differences | measured values in trace-notes "UI (TRACE-3)" |
 | M8a | Dialogs (6 styles), textdraws (+selection), menus, scoreboard, nametags + bars + AFK icon, death window, chat bubbles | done (merged 86dfabc) | `tools/e2e/m8a.sh` + D3D call-stream diff vs the original | measured values: trace-notes "UI (TRACE-3)" |
-| M8b | Spectating, camera RPCs, world bounds, gravity, interiors, animations (+table), drunk, fighting style, SCM events, ClientCheck, misc RPCs | in-progress | `tools/e2e/m8b.sh` + DIFF-2 + effect diffs | spec: trace-notes "Remaining behaviour (TRACE-8)" |
+| M8b | Spectating, camera RPCs, world bounds, gravity, interiors, animations (+table), drunk, fighting style, SCM events, ClientCheck, misc RPCs | done (merged 3b1ffad) | `tools/e2e/m8b.sh` + DIFF-2 + effect diffs | spec: trace-notes "Remaining behaviour (TRACE-8)" |
 | M9 | Audio: streams (BASS-equivalent, 20 ms volume loop, linear falloff), PlayerPlaySound, radio interaction | in-progress (worktree m9) | `tools/e2e/m9.sh` + BASS call-log diff | spec: trace-notes "Audio (TRACE-8)" |
 | M10 | Client features: sa-mp.cfg keys, chatlog, F8 screenshots, connection lifecycle (restart, kick/ban, wrong version/password/full, reconnect) | in-progress (worktree m9) | `tools/e2e/m10.sh` | spec: TRACE-8 client-features batch |
 | M12 | Windows validation run | deferred | user on Windows | final check outside Wine |

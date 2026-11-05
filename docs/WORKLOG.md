@@ -325,3 +325,18 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   m1, saa, m2, m3, goal, m4, m5, m6, m8a exit 0; 528 tests; clippy 0 (host + i686).
   Parity vs the original on the same scenario: checkpoints and icons identical, objects /
   labels / zones differ only in repeat counts (fps), the rest is server ordering.
+
+## 2026-11-05 — Combat and remaining behaviour merged
+
+- Parity audit of main (docs/phase3/par-audit.md): F5 292 applied / 88 missing / 3 justified;
+  DIFF-2 64 match / 37 diff / 30 not implemented / 10 untriggerable; DIFF-3 24/24; row 165 safe
+  (the black world was the D3D state-block bug); interior entry gap = RPC 156 missing (now in).
+- Combat merged (bf9a588) after merging main into it: aim, weapons, bullets per lag-comp mode,
+  damage, death/respawn, drive-by, projectiles. Integration fix: the damage hook was installed
+  twice (combat + world entities); one hook now, fed with the world-entity actor list.
+- Remaining behaviour merged (3b1ffad): camera RPCs, widescreen, spectating, world bounds,
+  gravity, interiors, animations + table, drunk, fighting style, SCM events, ClientCheck,
+  misc RPCs. Conflicts resolved (stats packet keeps combat's position with the drunk level).
+- Verified on main in lane main under the lock: m1, saa, m2, m3, goal, m4, m5, m6, m7, m8a exit 0;
+  m8b failed once on the frame-rate-sensitive drunk check, exit 0 on rerun (test to be fixed);
+  555 tests; clippy 0 (host + i686).
