@@ -1,0 +1,10 @@
+# scenario	check	key	decision id (must appear in docs/ROADMAP.md)	note
+object	count	sync 20[57] *	NET6-D3	our client opens GTA's pause menu on Escape while editing an object (frames stop): fewer 205/207 in the window
+object	cadence	sync 205 *	NET6-D3	same cause
+death	count	sync 203 *	NET6-D5	the original sends 203 every ~532 ms while spectating after death; ours none
+death	cadence	sync 203 *	NET6-D5	same cause
+session	total	sync 203 *	NET6-D4	idle on-foot 203 every ~10 s (NET6-D4) + spectator 203 (NET6-D5) missing in ours
+session	total	sync 209 *	NET6-D6	two 209 for the car after leaving it as passenger; ours none
+passenger	count	sync 209 *	NET6-D6	same cause
+object	cadence	sync 207 *	NET6-D3	same cause (fewer 207 in the window)
+*	count	sync 203 *	NET6-D4	idle on-foot 203 (~every 10 s in the original) missing in ours

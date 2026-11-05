@@ -126,7 +126,8 @@ start under Wine without an audio device (tried: no Pulse server, no ALSA config
   after the server's last packet) from the first unacked reliable message to the reconnect; keep-alive gaps
   5.002 / 15.002 s.
 * Ours (`samp-proto` `Connection::is_dead` / keep-alive in `poll`, `NetClient::tick`): 10.030 s; keep-alive
-  5.013 s. `m10_net.py lost` checks 10.0–10.12 s and the keep-alive gaps (5.00–5.08 / 15.00–15.08).
+  5.013 s. `m10_net.py lost` checks 10.0–10.12 s and the keep-alive gaps (4.999–5.010 / 14.999–15.010 since NET-6: the original's
+  33 measured gaps are 5.0004–5.0030 / 15.0002–15.0024; docs/phase3/net6-notes.md "Keep-alive clock").
 
 ### Connect timing (item 3)
 RakClient::Connect (A 0x10034130) first shuts RakNet down (RakPeer::Disconnect(100): one `Sleep(15)` poll for

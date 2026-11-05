@@ -375,3 +375,21 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - Diffs: `tools/diff/editor_d3d_diff.py` MATCH for the editor (154 calls), hover, drag, rotate mode and selection
   (179); plate painter MATCH (58); 117 drag cadence/values and 116/27 equal; DIFF-3 45/45 MATCH incl. veh_enter_B.
 - 569 tests; clippy 0 (host + i686).
+
+## 2026-11-05 — NET-6: RakNet timing parity and the F2 network diff (branch net-timing)
+
+- Static (A): samp's RakNet runs an update thread every 2 ms (threadSleepTimer 2); acks every
+  cycle, priority queues, packing by RakNet's header estimate in (576 − 28) × 8 bits, resend
+  timeout 3 × max(ping, 30 ms) without backoff, update-cycle ping only until a pong, keep-alive
+  only with an empty resend list, splits, MTU never changed. Details: docs/phase3/net6-notes.md.
+- `samp-proto::connection` rewritten to those rules; `samp-client::netclient` runs RakNet's part on
+  a 2 ms update thread (PlayerConnect from the game thread's tick).
+- F2: `tools/diff/network.sh` (+ netscen.sh, net_report.py, netcap.py, lossproxy.py,
+  net-decisions.tsv): original in the trace lane, ours in lane ui, 17 scenario windows, loss via a
+  userspace proxy. Final result: 303 checks, 296 match, 7 accepted (NET6-D3..D5), exit 0. Measured on
+  the original and matched: ack p50/p90 1.1/2.0 ms, ack-only datagrams, 2 pings, resend 90 ms
+  ×3 without backoff.
+- Keep-alive base on RakNet's whole-ms clock at the update that takes the send (m10 had seen
+  4.997 s on main); m10 window 4.999–5.010 / 14.999–15.010 s from 33 original gaps; m10 now 5.002 s.
+- App-level residuals queued: NET6-P1..P4 (idle 203, spectator 203, 209 after passenger exit,
+  Escape in the object editor).
