@@ -26,7 +26,7 @@ use super::d3d::{self, HResult, Rect};
 use super::inputlock::{InputLock, Op};
 use super::render::{self, BubbleDraw, CursorReq, Frame, Renderer, ScoreboardDraw, TagDraw};
 use crate::game::{self, off};
-use crate::netclient::{NetClient, Phase};
+use crate::netclient::NetClient;
 use crate::patch::{Memory, ProcessMemory};
 use crate::script::{Arg, Runner};
 
@@ -56,7 +56,6 @@ struct State {
     runner: Runner,
     /// samp's 512-byte static game-text buffer (UCA §73).
     game_text: Box<[u8; 512]>,
-    joining_seen: bool,
     say_queue: Vec<Vec<u8>>,
     device_proxy: bool,
     wndproc: bool,
@@ -291,7 +290,6 @@ fn ensure(g: &mut Option<State>, debug_mode: bool) -> &mut State {
             lock: InputLock::new(),
             runner: Runner::new(),
             game_text: Box::new([0u8; 512]),
-            joining_seen: false,
             say_queue: Vec::new(),
             device_proxy: false,
             wndproc: false,
@@ -332,6 +330,22 @@ pub fn preload() {
     d3d::add_font_resources();
 }
 
+/// B 0x100e9d64, type 8 (B 0x100680b0).
+const DIRECT_MODE_LINE: &str = "ChatWindow: Using direct drawing mode.";
+
+/// The rest of samp's first-frame boot routine after the UI objects (B 0x100c4e2c..0x100c4efa):
+/// `multicore` = 0 → process affinity mask 1; the audio object and BASS start-up
+/// (`audioproxyoff`). `fpslimit` and `disableheadmove` are read from the settings directly.
+fn boot_settings(st: &mut State) {
+    if !st.core.settings.multicore {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessAffinityMask};
+        // SAFETY: plain Win32 calls on our own process.
+        let ok = unsafe { SetProcessAffinityMask(GetCurrentProcess(), 1) };
+        crate::log!("ui: multicore=0 -> SetProcessAffinityMask(1) = {ok}");
+    }
+    crate::audio::init(st.core.settings.audio_proxy_off);
+}
+
 /// Before `Render2dStuff` (samp's pre-step A 0x100c4fb0, after the netgame tick).
 pub fn frame_entry(debug_mode: bool) {
     let _ = catch_unwind(AssertUnwindSafe(|| frame_entry_inner(debug_mode)));
@@ -369,8 +383,17 @@ fn frame_entry_inner(debug_mode: bool) {
         let face =
             st.core.settings.font_face.clone().unwrap_or_else(|| samp_ui::fonts::DEFAULT_FACE.into()).into_bytes();
         let weight = samp_ui::fonts::weight(st.core.settings.font_weight);
-        match Renderer::new(&face, weight, st.core.settings.font_size) {
-            Ok(r) => st.renderer = Some(r),
+        let direct = st.core.settings.direct_mode;
+        match Renderer::new(&face, weight, st.core.settings.font_size, direct) {
+            Ok(r) => {
+                // Chat construction (B 0x10068190): `directmode` prints its line instead of
+                // creating the render target, before the netgame's "Started".
+                if direct {
+                    st.core.print_debug(DIRECT_MODE_LINE.as_bytes());
+                }
+                st.renderer = Some(r);
+                boot_settings(st);
+            }
             Err(e) => {
                 crate::log!("ui: renderer unavailable: {e}");
                 st.renderer_failed = true;
@@ -528,6 +551,10 @@ extern "system" fn reset_hook(_this: *mut std::ffi::c_void, params: *mut std::ff
             try_with_ui(|st| {
                 if let Some(r) = st.renderer.as_mut() {
                     r.on_reset();
+                    // The chat render target is re-created through the same routine (B 0x10068190).
+                    if st.core.settings.direct_mode {
+                        st.core.print_debug(DIRECT_MODE_LINE.as_bytes());
+                    }
                 }
             })
         }));
@@ -707,6 +734,8 @@ fn present_pass() {
     let sb_open = sb_open || overlay.is_some();
     let tags = nametags(st);
     let bubbles = if sb_open { Vec::new() } else { bubbles(st) };
+    // Step 4b: the audio stream title line (B 0x10066a70), when the netgame exists.
+    let audio_title = if st.core.netgame { crate::audio::title_text() } else { None };
     let net_stats =
         (overlay == Some(Overlay::NetStats)).then(|| super::core::net_stats_text(&net_stats_values(&st.net_stats)));
     let Some(r) = st.renderer.as_mut() else { return };
@@ -771,6 +800,7 @@ fn present_pass() {
         net_stats: net_stats.as_deref(),
         netgame_object: st.core.netgame && st.netgame_object,
         name_tag_passes: st.core.netgame && st.netgame_object && st.core.show_name_tags,
+        audio_title: audio_title.as_deref(),
     };
     let lock = &mut st.lock;
     r.frame(&frame, &mut |req| match req {
@@ -974,6 +1004,21 @@ pub fn print_debug(text: &str) {
     with_ui(|st| st.core.print_debug(text.as_bytes()));
 }
 
+/// A type-4 (info colour) chat line.
+pub fn print_info(text: &[u8]) {
+    with_ui(|st| st.core.print_info(text));
+}
+
+/// `audiomsgoff` (sa-mp.cfg / `/audiomsg`).
+pub fn audio_messages_off() -> bool {
+    with_ui(|st| st.core.settings.audio_messages_off).unwrap_or(false)
+}
+
+/// `disableheadmove` (sa-mp.cfg / `/headmove`): samp's Game+0x59 head-tracking flag is off.
+pub fn head_move_disabled() -> bool {
+    try_with_ui(|st| st.core.settings.head_move_disabled).unwrap_or(false)
+}
+
 /// RPC 139 InitGame.
 pub fn on_init_game(g: &samp_proto::session::InitGame) {
     with_ui(|st| {
@@ -983,9 +1028,14 @@ pub fn on_init_game(g: &samp_proto::session::InitGame) {
     });
 }
 
-/// The session closed.
-pub fn on_closed() {
-    with_ui(|st| st.core.on_closed());
+/// RPC 40 / lost connection reset (B 0x1000a530): pools and server settings.
+pub fn on_reset() {
+    with_ui(|st| st.core.on_reset());
+}
+
+/// Lost connection: every remote player is deleted from the pool.
+pub fn forget_players() {
+    with_ui(|st| st.core.forget_players());
 }
 
 /// Every S→C RPC, before the game handlers.
@@ -1003,12 +1053,6 @@ pub fn set_class_selection(active: bool) {
     let _ = try_with_ui(|st| st.core.class_selection = active);
 }
 
-/// The connect tick: "Connecting to" lines (TRACE-3 U-CONNECT-TIMING). Returns true
-/// when the session may start (or restart) connecting.
-pub fn connect_tick(answered: bool) -> bool {
-    with_ui(|st| st.core.connect_tick(answered)).unwrap_or(true)
-}
-
 /// Once per session tick: connection lines and the UI's outgoing messages.
 pub fn net_tick(net: &mut NetClient) {
     let c = net.counters();
@@ -1017,13 +1061,7 @@ pub fn net_tick(net: &mut NetClient) {
         s.messages_sent = c.datagrams_sent as u32;
         s.messages_received = c.messages_received as u32;
     });
-    let out = with_ui(|st| {
-        if *net.phase() == Phase::Joining && !st.joining_seen {
-            st.joining_seen = true;
-            st.core.on_joining();
-        }
-        st.core.take_outgoing()
-    })
+    let out = with_ui(|st| st.core.take_outgoing())
     .unwrap_or_default();
     for o in out {
         match o {

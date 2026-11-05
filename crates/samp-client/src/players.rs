@@ -227,6 +227,15 @@ impl Players {
     }
 
     /// Session ended: every remote ped goes.
+    /// RPC 40 reset (B 0x1000a540 loop): every remote player's ped is torn down, the players
+    /// stay in the pool (names, colours) until the server streams them in again.
+    pub fn despawn_all(&mut self, runner: &mut Runner) {
+        let ids: Vec<u16> = self.players.keys().copied().collect();
+        for id in ids {
+            self.destroy_ped(runner, id);
+        }
+    }
+
     pub fn clear(&mut self, runner: &mut Runner) {
         let ids: Vec<u16> = self.players.keys().copied().collect();
         for id in ids {

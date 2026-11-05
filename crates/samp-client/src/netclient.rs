@@ -30,11 +30,24 @@ use samp_proto::unconnected::{ServerReply, open_connection_request, parse_reply}
 
 /// Interval between open-connection requests while the server is silent.
 const OPEN_RETRY: Duration = Duration::from_millis(1000);
+/// Open-connection requests per attempt (TRACE-8: 6 requests 1.0 s apart per socket).
+const OPEN_REQUESTS: u32 = 6;
+/// The attempt fails this long after its last request (TRACE-8: the next attempt's first
+/// request follows the previous attempt's 6th by 1.05 s; 6.05–6.07 s per attempt).
+const OPEN_FAIL_AFTER: Duration = Duration::from_millis(1050);
+/// Connection lost after this much silence from the server (TRACE-8: 12.0 s after the last
+/// server packet RakNet reported 0x21).
+const LOST_AFTER: Duration = Duration::from_millis(12000);
+/// RakNet `ID_RSA_PUBLIC_KEY_MISMATCH` (samp prints "Failed to initialize encryption.").
+const ENCRYPTION_FAILED: u8 = 0x23;
 /// How many RPC ids `net` reports.
 const LAST_RPCS: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Phase {
+    /// No connection attempt running (before the first connect, after a failed attempt, a
+    /// lost connection or a disconnect): no socket, no traffic.
+    Idle,
     /// Sending open-connection requests (cookie exchange).
     Opening,
     /// RakNet connection requested; waiting for auth / `0x22`.
@@ -50,6 +63,7 @@ pub enum Phase {
 impl Phase {
     pub fn name(&self) -> &str {
         match self {
+            Phase::Idle => "idle",
             Phase::Opening => "opening",
             Phase::Connecting => "connecting",
             Phase::Joining => "joining",
@@ -68,8 +82,31 @@ pub enum Event {
     Rpc(Incoming),
     /// A decoded S→C sync packet (207, 203, …; remote-players-sync.md §2).
     Sync(samp_proto::sync::IncomingSync),
-    /// The session ended.
-    Closed(String),
+    /// A RakNet packet the netgame's packet handler (B 0x1000b250) reacts to.
+    Packet(NetPacket),
+    /// RPC 130 ConnectionRejected with its reason.
+    Rejected(u8),
+}
+
+/// RakNet-level outcomes (packet ids as seen by samp's packet handler).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetPacket {
+    /// 0x1D: no answer to the open-connection requests.
+    AttemptFailed,
+    /// 0x1F: the server has no free slot.
+    ServerFull,
+    /// 0x20: the server closed the connection (kick, ban, server shutdown).
+    ServerClosed,
+    /// 0x21: no packet from the server for 12 s.
+    ConnectionLost,
+    /// 0x22: connection accepted (PlayerConnect is being sent).
+    Accepted,
+    /// 0x23.
+    EncryptionFailed,
+    /// 0x24.
+    Banned,
+    /// 0x25.
+    InvalidPassword,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -83,7 +120,12 @@ pub struct Counters {
 }
 
 pub struct NetClient {
-    sock: UdpSocket,
+    /// The attempt's socket; every connect opens a new one (TRACE-8: new source port).
+    sock: Option<UdpSocket>,
+    /// Last datagram from the server (connection-lost timer).
+    last_recv: Option<Instant>,
+    /// Drop the connection after the next flush (its acks still go out).
+    closing: bool,
     server: SocketAddrV4,
     key: CipherKey,
     name: String,
@@ -91,7 +133,8 @@ pub struct NetClient {
     phase: Phase,
     cookie: u16,
     open_attempts: u32,
-    last_open: Option<Instant>,
+    /// When the attempt's first request went out (requests are due at whole seconds from it).
+    first_open: Option<Instant>,
     conn: Option<Connection>,
     player_id: Option<u16>,
     last_rpcs: VecDeque<u8>,
@@ -114,20 +157,20 @@ pub fn resolve(host: &str, port: u16) -> std::io::Result<SocketAddrV4> {
 }
 
 impl NetClient {
+    /// A session for `server`; nothing is sent before [`Self::connect`].
     pub fn new(server: SocketAddrV4, name: &str, auth: AuthTable) -> std::io::Result<Self> {
-        let sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
-        sock.connect(server)?;
-        sock.set_nonblocking(true)?;
         Ok(Self {
-            sock,
+            sock: None,
+            last_recv: None,
+            closing: false,
             server,
             key: CipherKey::from_port(server.port()),
             name: name.to_string(),
             auth,
-            phase: Phase::Opening,
+            phase: Phase::Idle,
             cookie: 0,
             open_attempts: 0,
-            last_open: None,
+            first_open: None,
             conn: None,
             player_id: None,
             last_rpcs: VecDeque::new(),
@@ -138,6 +181,42 @@ impl NetClient {
 
     pub fn phase(&self) -> &Phase {
         &self.phase
+    }
+
+    /// RakClient `Connect` (B 0x10008984): a new socket and a new attempt; the first
+    /// open-connection request goes out on the next tick.
+    pub fn connect(&mut self, now: Instant) -> std::io::Result<()> {
+        self.drop_connection();
+        let sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+        sock.connect(self.server)?;
+        sock.set_nonblocking(true)?;
+        crate::log!("net: connect to {} from {:?}", self.server, sock.local_addr().ok());
+        self.sock = Some(sock);
+        self.phase = Phase::Opening;
+        self.cookie = 0;
+        self.open_attempts = 0;
+        self.first_open = None;
+        self.player_id = None;
+        self.last_recv = Some(now);
+        Ok(())
+    }
+
+    /// RakClient `Disconnect` from samp's packet handlers (no notification is sent in the
+    /// measured cases): pending acks go out with the next flush, then the connection and
+    /// its socket are dropped.
+    pub fn disconnect_silent(&mut self) {
+        if self.sock.is_some() {
+            self.closing = true;
+        }
+        if !matches!(self.phase, Phase::Disconnected(_)) {
+            self.phase = Phase::Idle;
+        }
+    }
+
+    fn drop_connection(&mut self) {
+        self.conn = None;
+        self.sock = None;
+        self.closing = false;
     }
 
     pub fn player_id(&self) -> Option<u16> {
@@ -174,14 +253,30 @@ impl NetClient {
     /// Drains the socket, runs timers and flushes outgoing datagrams.
     pub fn tick(&mut self, now: Instant) -> Vec<Event> {
         let mut events = Vec::new();
-        if self.phase == Phase::Opening && self.last_open.is_none_or(|t| now.duration_since(t) >= OPEN_RETRY) {
-            self.send_open_request(now);
+        if self.sock.is_none() {
+            return events;
+        }
+        if self.phase == Phase::Opening {
+            // Requests at whole seconds from the first one (RakNet's own timer: measured 0, 1.001,
+            // 2.003, … s), so frame granularity does not add up.
+            let since_first = self.first_open.map(|t| now.duration_since(t));
+            let due = since_first.is_none_or(|d| d >= OPEN_RETRY * self.open_attempts);
+            if due && self.open_attempts < OPEN_REQUESTS {
+                self.send_open_request(now);
+            } else if self.open_attempts >= OPEN_REQUESTS
+                && since_first.is_some_and(|d| d >= OPEN_RETRY * (OPEN_REQUESTS - 1) + OPEN_FAIL_AFTER)
+            {
+                crate::log!("net: no answer to {} open-connection requests", self.open_attempts);
+                self.end_attempt(NetPacket::AttemptFailed, &mut events);
+                return events;
+            }
         }
         let mut buf = [0u8; 2048];
-        loop {
-            match self.sock.recv(&mut buf) {
+        while let Some(sock) = self.sock.as_ref() {
+            match sock.recv(&mut buf) {
                 Ok(n) => {
                     self.counters.datagrams_received += 1;
+                    self.last_recv = Some(now);
                     self.on_datagram(&buf[..n], now, &mut events);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
@@ -193,13 +288,30 @@ impl NetClient {
                 }
             }
         }
+        if self.conn.is_some()
+            && !self.closing
+            && self.last_recv.is_some_and(|t| now.duration_since(t) >= LOST_AFTER)
+        {
+            crate::log!("net: no packet from the server for {} ms: connection lost", LOST_AFTER.as_millis());
+            self.drop_connection();
+            self.phase = Phase::Idle;
+            events.push(Event::Packet(NetPacket::ConnectionLost));
+            return events;
+        }
         self.flush(now);
         events
     }
 
+    /// The attempt ended before a connection existed (no answer, full, banned).
+    fn end_attempt(&mut self, p: NetPacket, events: &mut Vec<Event>) {
+        self.drop_connection();
+        self.phase = Phase::Idle;
+        events.push(Event::Packet(p));
+    }
+
     fn send_open_request(&mut self, now: Instant) {
         self.open_attempts += 1;
-        self.last_open = Some(now);
+        self.first_open.get_or_insert(now);
         if self.open_attempts == 1 || self.open_attempts.is_multiple_of(10) {
             crate::log!("net: open-connection request #{} to {}", self.open_attempts, self.server);
         }
@@ -209,7 +321,8 @@ impl NetClient {
 
     fn send_plain(&mut self, plain: &[u8]) {
         cipher::encrypt(plain, self.key, &mut self.wire);
-        match self.sock.send(&self.wire) {
+        let Some(sock) = self.sock.as_ref() else { return };
+        match sock.send(&self.wire) {
             Ok(_) => self.counters.datagrams_sent += 1,
             Err(e) if e.kind() == ErrorKind::WouldBlock => {}
             Err(e) => crate::log!("net: send error: {e}"),
@@ -218,9 +331,13 @@ impl NetClient {
 
     /// Sends everything queued in the connection.
     pub fn flush(&mut self, now: Instant) {
-        let Some(conn) = self.conn.as_mut() else { return };
-        for dg in conn.poll(now) {
-            self.send_plain(&dg);
+        if let Some(conn) = self.conn.as_mut() {
+            for dg in conn.poll(now) {
+                self.send_plain(&dg);
+            }
+        }
+        if self.closing {
+            self.drop_connection();
         }
     }
 
@@ -233,12 +350,15 @@ impl NetClient {
                 Some(ServerReply::Cookie(c)) => self.cookie = c,
                 Some(ServerReply::Accepted) => {
                     crate::log!("net: open-connection accepted after {} request(s)", self.open_attempts);
+                    self.last_recv = Some(now);
                     let mut conn = Connection::new(now);
                     conn.send_bytes(&[id::CONNECTION_REQUEST], Reliability::Reliable, 0);
                     self.conn = Some(conn);
                     self.phase = Phase::Connecting;
                 }
-                Some(other) => self.close(format!("server refused: {other:?}"), events),
+                Some(ServerReply::ServerFull) => self.end_attempt(NetPacket::ServerFull, events),
+                Some(ServerReply::Banned) => self.end_attempt(NetPacket::Banned, events),
+                Some(ServerReply::Failed) => self.end_attempt(NetPacket::AttemptFailed, events),
                 None => {}
             }
             return;
@@ -251,10 +371,11 @@ impl NetClient {
         }
     }
 
-    fn close(&mut self, reason: String, events: &mut Vec<Event>) {
+    /// The connection ends (acks of this datagram still go out with the next flush).
+    fn close(&mut self, reason: String) {
         crate::log!("net: session closed: {reason}");
-        self.phase = Phase::Disconnected(reason.clone());
-        events.push(Event::Closed(reason));
+        self.phase = Phase::Disconnected(reason);
+        self.closing = true;
     }
 
     fn on_message(&mut self, msg: &Delivered, now: Instant, events: &mut Vec<Event>) {
@@ -274,10 +395,16 @@ impl NetClient {
                         }
                         crate::log!("net: auth challenge {challenge} answered");
                     }
-                    None => self.close(format!("auth challenge {challenge} not in table"), events),
+                    None => {
+                        crate::log!("net: auth challenge {challenge} not in table");
+                        self.close("auth challenge not in table".into());
+                    }
                 }
             }
-            id::CONNECTION_REQUEST_ACCEPTED => self.on_accepted(body, now),
+            id::CONNECTION_REQUEST_ACCEPTED => {
+                self.on_accepted(body, now);
+                events.push(Event::Packet(NetPacket::Accepted));
+            }
             id::RPC => {
                 let Some(r) = rpc::decode(&msg.data, msg.bit_len) else { return };
                 self.counters.rpcs_received += 1;
@@ -292,7 +419,8 @@ impl NetClient {
                         events.push(Event::InitGame(g));
                     }
                     Some(Incoming::ConnectionRejected { reason }) => {
-                        self.close(format!("connection rejected: {}", session::rejection_reason(reason)), events)
+                        crate::log!("net: connection rejected: {}", session::rejection_reason(reason));
+                        events.push(Event::Rejected(reason))
                     }
                     Some(other) => events.push(Event::Rpc(other)),
                     None => {}
@@ -304,10 +432,25 @@ impl NetClient {
                     events.push(Event::Sync(s));
                 }
             }
-            id::DISCONNECTION_NOTIFICATION => self.close("server closed the connection".into(), events),
-            id::CONNECTION_LOST => self.close("connection lost".into(), events),
-            id::CONNECTION_BANNED => self.close("banned from this server".into(), events),
-            id::INVALID_PASSWORD => self.close("wrong server password".into(), events),
+            // RakNet ends the connection itself on these; samp's handlers only add their own
+            // lines / Disconnect calls (B 0x1000b250).
+            id::DISCONNECTION_NOTIFICATION => {
+                self.close("server closed the connection".into());
+                events.push(Event::Packet(NetPacket::ServerClosed));
+            }
+            id::CONNECTION_BANNED => {
+                self.close("banned from this server".into());
+                events.push(Event::Packet(NetPacket::Banned));
+            }
+            id::INVALID_PASSWORD => {
+                self.close("wrong server password".into());
+                events.push(Event::Packet(NetPacket::InvalidPassword));
+            }
+            samp_proto::unconnected::id::NO_FREE_INCOMING_CONNECTIONS => {
+                self.close("server full".into());
+                events.push(Event::Packet(NetPacket::ServerFull));
+            }
+            ENCRYPTION_FAILED => events.push(Event::Packet(NetPacket::EncryptionFailed)),
             _ => {}
         }
     }
@@ -392,6 +535,37 @@ mod tests {
         assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
+    /// TRACE-8: 6 open-connection requests 1 s apart on a new socket, then 0x1D 1.05 s after
+    /// the last; the next connect uses another source port.
+    #[test]
+    fn attempt_fails_after_six_requests_and_reconnect_uses_a_new_socket() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let addr = match server.local_addr().unwrap() {
+            std::net::SocketAddr::V4(a) => a,
+            _ => unreachable!(),
+        };
+        let mut c = NetClient::new(addr, "Tester", AuthTable::parse("").unwrap()).unwrap();
+        let t0 = Instant::now();
+        c.connect(t0).unwrap();
+        let mut buf = [0u8; 64];
+        let mut first_port = None;
+        for i in 0..6u64 {
+            assert!(c.tick(t0 + Duration::from_millis(1000 * i)).is_empty());
+            let (_, peer) = server.recv_from(&mut buf).unwrap();
+            first_port.get_or_insert(peer.port());
+        }
+        assert!(c.tick(t0 + Duration::from_millis(6000)).is_empty());
+        assert!(server.recv_from(&mut buf).is_err(), "a 7th request");
+        let ev = c.tick(t0 + Duration::from_millis(6050));
+        assert!(matches!(ev.as_slice(), [Event::Packet(NetPacket::AttemptFailed)]));
+        assert_eq!(c.phase(), &Phase::Idle);
+        c.connect(t0 + Duration::from_millis(6050)).unwrap();
+        c.tick(t0 + Duration::from_millis(6050));
+        let (_, peer) = server.recv_from(&mut buf).unwrap();
+        assert_ne!(Some(peer.port()), first_port);
+    }
+
     /// Opening phase: a cookie reply makes the client repeat the request with
     /// the cookie; an accept starts the RakNet connection.
     #[test]
@@ -404,6 +578,9 @@ mod tests {
         };
         let mut c = NetClient::new(addr, "Tester", AuthTable::parse("").unwrap()).unwrap();
         let t0 = Instant::now();
+        assert!(c.tick(t0).is_empty());
+        assert_eq!(c.phase(), &Phase::Idle);
+        c.connect(t0).unwrap();
         assert!(c.tick(t0).is_empty());
         let mut buf = [0u8; 64];
         let (n, peer) = server.recv_from(&mut buf).unwrap();

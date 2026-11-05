@@ -7,6 +7,7 @@
 pub mod anims;
 pub mod animtable;
 pub mod behaviour;
+pub mod audio;
 pub mod cdstream;
 pub mod classsel;
 pub mod combat;
@@ -15,6 +16,7 @@ pub mod control;
 pub mod footsync;
 pub mod frametimer;
 pub mod game;
+pub mod lifecycle;
 pub mod log;
 pub mod netclient;
 pub mod patch;
