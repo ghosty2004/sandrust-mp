@@ -1076,6 +1076,14 @@ struct Win {
     next_id: u32,
     out: Vec<Val>,
     client: (u32, u32),
+    /// `CTimer::m_FrameCounter` when the window opened: `efx_write.game_frame` is relative to it, so
+    /// the per-frame write pattern does not depend on the tracer's own frame hook.
+    frame0: u32,
+}
+
+/// Frame index of the game relative to `frame0` (`CTimer::m_FrameCounter`).
+fn game_frame(frame0: u32) -> u32 {
+    ProcMem.u32(gta::FRAME_COUNTER).unwrap_or(frame0).wrapping_sub(frame0)
 }
 
 struct WPend {
@@ -1146,6 +1154,7 @@ fn watch(path: &str, opts: WatchOpts) -> String {
         }
     }
     let mut pages: Vec<(u32, u32)> = Vec::new();
+    let mut skipped: Vec<Val> = Vec::new();
     for m in &mems {
         for page in [m.addr & !0xFFF, (m.addr + m.size - 1) & !0xFFF] {
             let code = page >= GTA_CODE.0 && page < GTA_CODE.1;
@@ -1159,8 +1168,13 @@ fn watch(path: &str, opts: WatchOpts) -> String {
                     Some(p) if q.Protect & PAGE_GUARD != 0 => p,
                     _ => q.Protect,
                 };
-                if prot & PAGE_GUARD == 0 && prot & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE) != 0 {
+                // An image page made writable with PAGE_EXECUTE_READWRITE reads back as
+                // PAGE_EXECUTE_WRITECOPY until its first write (samp's .rdata ranges).
+                let writable = PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+                if prot & PAGE_GUARD == 0 && prot & writable != 0 {
                     pages.push((page, prot));
+                } else if !skipped.iter().any(|v| matches!(v, Val::Str(s) if s.starts_with(&format!("{page:#x} ")))) {
+                    skipped.push(Val::Str(format!("{page:#x} protect={prot:#x}")));
                 }
             }
         }
@@ -1181,6 +1195,7 @@ fn watch(path: &str, opts: WatchOpts) -> String {
         next_id: 0,
         out: Vec::new(),
         client,
+        frame0: ProcMem.u32(gta::FRAME_COUNTER).unwrap_or(0),
     };
     let objs: Vec<Val> = w.world.named.iter().map(|(nm, b, _)| Val::Str(format!("{nm}={b:#x}"))).collect();
     w.out.push(
@@ -1188,8 +1203,14 @@ fn watch(path: &str, opts: WatchOpts) -> String {
             .with("mode", "window")
             .with("spec", path)
             .with("mems", w.mems.len() as u32)
+            .with(
+                "mem_addrs",
+                Val::List(w.mems.iter().map(|m| Val::Str(format!("{:#x}:{}", m.addr, m.size))).collect()),
+            )
+            .with("frame0", w.frame0)
             .with("unresolved", unresolved)
             .with("pages", Val::List(pages.iter().map(|p| Val::Hex(p.0)).collect()))
+            .with("skipped_pages", Val::List(skipped))
             .with("fns", Val::List(w.fns.iter().map(|f| Val::Str(format!("{:#x} {}", f.addr, f.name))).collect()))
             .with("objects", Val::List(objs))
             .with("world", w.world.note.as_str()),
@@ -1282,6 +1303,7 @@ fn close_window(why: &str) {
             .with("mode", "window")
             .with("reason", why)
             .with("frames", w.frames)
+            .with("game_frames", game_frame(w.frame0))
             .with("ms", w.t0.elapsed().as_millis() as u32)
             .with("faults", w.faults)
             .with("writes", w.writes)
@@ -1429,7 +1451,8 @@ fn on_window_step(c: &mut CONTEXT) -> Option<i32> {
             .with("addr", Val::Hex(x.addr))
             .with("size", x.size)
             .with("old", hexs(&x.old))
-            .with("new", hexs(&new));
+            .with("new", hexs(&new))
+            .with("game_frame", game_frame(w.frame0));
         if let Some(v) = &p.via {
             r.put("via", v.as_str());
         }

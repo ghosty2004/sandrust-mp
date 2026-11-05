@@ -25,6 +25,18 @@ samp-client (`csv_row` entries in patches.rs/sectors.rs/stores.rs, "CSV row N"
 comments elsewhere): referenced -> applied (static only), otherwise missing.
 Owning milestone of missing rows: the "CSV rows Mx must apply" tables of
 docs/phase3/re10-gaps.md.
+
+Frame-local rows (patchrows.FRAME_LOCAL_ROWS: samp writes the data right before a
+hooked GTA call and restores it right after) are judged from the writes themselves,
+not from snapshots: DIR/{A,B}-efx.jsonl hold one samp-tracer `efx watch` window per
+side (guard pages on the rows' pages for >= 60 game frames; every write with its
+value and game frame), DIR/frame-watch-{A,B}.json the window's start/close. Per
+region: the original wrote, ours did not -> missing; ours wrote, the original did
+not -> different; both wrote -> match only if the written values ((address, bytes)
+set), the per-frame pattern (set of writes in a writing frame, most common one),
+the share of frames with writes (within 0.25) and the end-of-frame restore are the
+same; neither wrote -> the snapshot rule below. A side whose window failed, stopped
+on its fault budget or did not guard the region's page -> unverified (FAIL).
 Exit 0 only when nothing is missing or different.
 """
 import argparse
@@ -162,6 +174,112 @@ def load_dump(path):
     return d, out
 
 
+def load_watch(run, side):
+    """The side's frame-local write watch; None when the run has none (older runs)."""
+    mp = os.path.join(run, f"frame-watch-{side}.json")
+    if not os.path.exists(mp):
+        return None
+    meta = json.load(open(mp))
+    w = {"error": meta.get("error"), "window": meta.get("window"), "pages": set(), "writes": [], "frames": 0}
+    begin = end = stop = None
+    ep = os.path.join(run, f"{side}-efx.jsonl")
+    if not w["error"] and not os.path.exists(ep):
+        w["error"] = f"{side}-efx.jsonl missing"
+    if not w["error"]:
+        for ln in open(ep):
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            if r.get("cap") != w["window"]:
+                continue
+            f = r.get("fn")
+            if f == "efx_begin":
+                begin = r
+            elif f == "efx_end":
+                end = r
+            elif f == "efx_stop":
+                stop = r
+            elif f == "efx_write":
+                w["writes"].append(r)
+        if begin is None or end is None:
+            w["error"] = "window records missing"
+        elif stop is not None:
+            w["error"] = f"window stopped ({stop.get('why')})"
+        else:
+            w["pages"] = {int(str(p), 0) if not isinstance(p, int) else p for p in begin.get("pages", [])}
+            w["frames"] = int(end.get("game_frames") or 0)
+            w["faults"] = end.get("faults")
+    return w
+
+
+def watch_summary(w, reg, e):
+    """Writes of one watch window that touch region reg (e = unmodified bytes)."""
+    a0, n = reg
+    ws = [x for x in w["writes"] if int(str(x["addr"]), 0) < a0 + n and a0 < int(str(x["addr"]), 0) + int(x["size"])]
+    per = {}
+    for x in ws:
+        per.setdefault(int(x.get("game_frame", 0)), []).append(x)
+    values = {(int(str(x["addr"]), 0), x.get("new")) for x in ws}
+    pats = {}
+    restored = 0
+    for fr, xs in per.items():
+        key = tuple(sorted({(int(str(x["addr"]), 0), x.get("new")) for x in xs}))
+        pats[key] = pats.get(key, 0) + 1
+        last = {}
+        for x in xs:
+            last[int(str(x["addr"]), 0)] = x
+        ok = True
+        for ad, x in last.items():
+            off = ad - a0
+            want = e[off:off + int(x["size"])] if 0 <= off < n else None
+            if want is None or x.get("new") != want.hex():
+                ok = False
+        restored += ok
+    top = max(pats.items(), key=lambda kv: kv[1])[0] if pats else ()
+    frames = max(w["frames"], 1)
+    return {"writes": len(ws), "frames_with_writes": len(per), "frames": w["frames"],
+            "share": len(per) / frames, "values": sorted(values, key=str), "pattern": list(top),
+            "restored_frames": restored, "per_frame": round(len(ws) / max(len(per), 1), 2),
+            "by": sorted({str(x.get("by")) for x in ws}), "at": sorted({str(x.get("at")) for x in ws})[:4]}
+
+
+def classify_watch(reg, wo, wu, e):
+    """(status, info) from the write watch, or None when it has no say (no watch / no writes)."""
+    if wo is None and wu is None:
+        return None
+    for name, w in (("orig", wo), ("ours", wu)):
+        if w is None or w["error"]:
+            return "unverified", {"why": f"{name}: {w['error'] if w else 'no watch'}"}
+        pages = {reg[0] & ~0xFFF, (reg[0] + reg[1] - 1) & ~0xFFF}
+        if not pages <= w["pages"]:
+            return "unverified", {"why": f"{name}: page {min(pages - w['pages']):#x} not guarded"}
+    so, su = watch_summary(wo, reg, e), watch_summary(wu, reg, e)
+    info = {"orig": so, "ours": su}
+    if so["writes"] == 0 and su["writes"] == 0:
+        return None
+    if su["writes"] == 0:
+        return "missing", info
+    if so["writes"] == 0:
+        return "different", info
+    same = (so["values"] == su["values"] and so["pattern"] == su["pattern"]
+            and abs(so["share"] - su["share"]) <= 0.25
+            and (so["restored_frames"] == so["frames_with_writes"]) == (su["restored_frames"] == su["frames_with_writes"]))
+    return ("match-watched" if same else "different"), info
+
+
+def watch_note(addr, info):
+    if "why" in info:
+        return f"{addr}: write watch unverified ({info['why']})"
+    o, u = info["orig"], info["ours"]
+
+    def side(x):
+        vals = "/".join(f"{a:#x}={v}" for a, v in x["values"])[:90]
+        return (f"{x['writes']} writes in {x['frames_with_writes']}/{x['frames']} frames, {x['per_frame']}/frame, "
+                f"restored {x['restored_frames']}, values {vals or '-'}")
+    return f"{addr}: write watch (orig {side(o)}; ours {side(u)})"
+
+
 def outside(v):
     return not patchrows.IMAGE_LO <= v < patchrows.IMAGE_HI
 
@@ -237,6 +355,7 @@ def main():
     owners = milestones()
     just = justifications(a.justify)
     tsites = tracer_sites()
+    wo, wu = load_watch(a.run, "A"), load_watch(a.run, "B")
 
     results = []
     for row in patchrows.rows():
@@ -244,18 +363,26 @@ def main():
         for reg in row.regions:
             os_, us_, e = dump_o.get(reg, [None]), dump_u.get(reg, [None]), exe.read(*reg)
             st = classify_region(row, reg, os_, us_, e)
+            watch = None
+            if row.row in patchrows.FRAME_LOCAL_ROWS and e is not None:
+                cw = classify_watch(reg, wo, wu, e)
+                if cw is not None:
+                    st, watch = cw
             o, u = os_[0], us_[0]
             overl = sorted({w for lo, hi, w in tsites if lo < reg[0] + reg[1] and reg[0] < hi})
             regs.append({"addr": f"{reg[0]:#x}", "len": reg[1], "status": st, "orig": o.hex() if o else None,
                          "ours": u.hex() if u else None, "exe": e.hex() if e else None, "tracer_overlap": overl,
-                         "orig_variants": [x.hex() for x in os_ if x], "ours_variants": [x.hex() for x in us_ if x]})
+                         "orig_variants": [x.hex() for x in os_ if x], "ours_variants": [x.hex() for x in us_ if x],
+                         "watch": watch})
         sts = {r["status"] for r in regs}
         live = None
-        if "different" in sts:
+        if "unverified" in sts:
+            live = "unverified"
+        elif "different" in sts:
             live = "different"
         elif "missing" in sts:
             live = "missing"
-        elif sts & {"match", "match-equivalent", "match-toggling"}:
+        elif sts & {"match", "match-equivalent", "match-toggling", "match-watched"}:
             live = "match"
         elif sts == {"inactive"}:
             live = "inactive"
@@ -267,6 +394,8 @@ def main():
             live = (live or "") + "+not-live-checkable" if live else "not-live-checkable"
         if row.row in just:
             cat = "justified"
+        elif live == "unverified":
+            cat = "unverified"
         elif live == "different":
             cat = "applied/different"
         elif live == "missing":
@@ -287,9 +416,9 @@ def main():
                         "milestones": owners.get(row.row, []), "justification": just.get(row.row),
                         "regions": regs})
 
-    cats = ["applied/matching", "applied (static only)", "applied/different", "missing", "justified"]
+    cats = ["applied/matching", "applied (static only)", "applied/different", "missing", "unverified", "justified"]
     totals = {c: sum(r["category"] == c for r in results) for c in cats}
-    ok = totals["missing"] == 0 and totals["applied/different"] == 0
+    ok = totals["missing"] == 0 and totals["applied/different"] == 0 and totals["unverified"] == 0
     os.makedirs(a.out, exist_ok=True)
     summary = {"run": os.path.relpath(a.run, ROOT), "rows": len(results), "totals": totals, "pass": ok,
                "results": results}
@@ -304,7 +433,16 @@ def main():
           f"{len(results)} CSV rows (row = CSV line number).", "",
           "| category | rows |", "|---|---|"]
     md += [f"| {c} | {totals[c]} |" for c in cats]
-    md += ["", f"**{'PASS' if ok else 'FAIL'}**: {totals['missing']} missing, {totals['applied/different']} different.", ""]
+    md += ["", f"**{'PASS' if ok else 'FAIL'}**: {totals['missing']} missing, {totals['applied/different']} different, "
+           f"{totals['unverified']} unverified.", ""]
+    wl = []
+    for r in results:
+        for g in r["regions"]:
+            if r["row"] in patchrows.FRAME_LOCAL_ROWS:
+                wl.append(f"* row {r['row']} {watch_note(g['addr'], g['watch']) if g['watch'] else g['addr'] + ': no writes on either client in the watch window (snapshot rule)'}"
+                          f" -> {g['status']}")
+    if wo is not None or wu is not None:
+        md += ["Frame-local rows (write watch, both clients):", ""] + wl + [""]
     by_ms = {}
     for r in results:
         if r["category"] == "missing":
@@ -313,13 +451,15 @@ def main():
     md += [f"* {k}: {v}" for k, v in sorted(by_ms.items(), key=lambda x: -x[1])]
     md += ["", "Live status of rows that the original had NOT applied at the snapshot (`inactive`: runtime, "
            "temporary, conditional or dead rows) is judged by the static table only.", ""]
-    for c in ["applied/different", "missing", "applied (static only)", "justified", "applied/matching"]:
+    for c in ["applied/different", "missing", "unverified", "applied (static only)", "justified", "applied/matching"]:
         sel = [r for r in results if r["category"] == c]
         md += [f"## {c} ({len(sel)})", "", "| row | address | kind | function | live | owner | notes |", "|---|---|---|---|---|---|---|"]
         for r in sel:
             notes = []
             for g in r["regions"]:
-                if g["status"] in ("different", "missing"):
+                if g["watch"]:
+                    notes.append(watch_note(g["addr"], g["watch"]))
+                elif g["status"] in ("different", "missing"):
                     notes.append(f"{g['addr']}: orig {(g['orig'] or '?')[:24]} ours {(g['ours'] or '?')[:24]} exe {(g['exe'] or '?')[:24]}")
                 if len(g["orig_variants"]) > 1 or len(g["ours_variants"]) > 1:
                     notes.append(f"{g['addr']}: toggles (orig {'/'.join(v[:12] for v in g['orig_variants'])}; "
@@ -334,7 +474,8 @@ def main():
                       f"{r['live']} | {owner(r) if c in ('missing', 'applied/different') else ''} | {'; '.join(notes)} |")
         md.append("")
     open(os.path.join(a.out, "patch-coverage.md"), "w").write("\n".join(md))
-    print("\n".join(md[:14]))
+    head = md.index("Missing rows by owning milestone (re10-gaps.md):") if "Missing rows by owning milestone (re10-gaps.md):" in md else 14
+    print("\n".join(md[:head]))
     return 0 if ok else 1
 
 

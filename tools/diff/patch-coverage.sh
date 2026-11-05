@@ -11,7 +11,12 @@
 # Output: target/diff/patch-coverage.{md,json}. Categories: applied/matching, applied (static only:
 # the original had not applied the row at the snapshot, ours lists it in its tables),
 # applied/different, missing (with owning milestone from docs/phase3/re10-gaps.md), justified.
-# Exit 0 only when no row is missing or different.
+# Frame-local rows (tools/diff/patchrows.py FRAME_LOCAL_ROWS, e.g. 368/369: written before a hooked
+# draw and restored after it) are judged from a samp-tracer `efx watch` of the writes themselves on
+# both clients (60 frames each), not from snapshots; a failed watch is "unverified" (FAIL).
+# Negative test: XC_B_SAMP_CFG=<sa-mp.cfg with nohudscalefix=1> gives our client a config
+# without the HUD scale fix -> rows 368/369 must be reported missing.
+# Exit 0 only when no row is missing, different or unverified.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"

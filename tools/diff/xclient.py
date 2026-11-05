@@ -595,6 +595,53 @@ class Driver:
             say(f"patch bytes {k} ({s.kind}): {sum(v is not None for v in out.values())}/{len(out)} regions read, "
                 f"{tog} changed between {snapshots} snapshots")
 
+    def watch_frame_local(self, frames=60, ms=2000):
+        """Write watch on the frame-local rows (patchrows.FRAME_LOCAL_ROWS): one samp-tracer
+        `efx watch` window per side (guard pages on the rows' data pages; every write with
+        its value, writer and game frame goes to the side's efx.jsonl, copied to the run dir
+        as {A,B}-efx.jsonl). Side A: the tracer of the original; side B: a tracer loaded next
+        to our client in watch-only mode (SAMP_TRACER_MODE=watch, no game byte changed)."""
+        regs = patchrows.frame_local_regions()
+        spec = os.path.join(self.a.out, "frame-local.spec")
+        with open(spec, "w") as f:
+            for addr, n in regs:
+                f.write(f"mem gta:{addr:#x} {n}\n")
+        winpath = "Z:" + os.path.abspath(spec).replace("/", "\\")
+
+        def one(k, s):
+            port = getattr(self.a, f"{k.lower()}_tracer_port") or (s.port if s.kind == "orig" else 0)
+            res = {"side": k, "kind": s.kind, "port": port, "frames": frames, "ms": ms,
+                   "regions": [f"{a:#x}:{n}" for a, n in regs]}
+            if not port:
+                res["error"] = "no tracer on this side"
+                return res
+            if port == s.port:
+                s.close()  # the tracer serves one connection at a time
+            res["reply"] = drive.ctl(port, f"efx watch {winpath} frames={frames} ms={ms} faults=5000000", timeout=15)
+            m = re.match(r"ok window (\d+)", res["reply"])
+            if not m:
+                res["error"] = "watch not started"
+                return res
+            end = time.time() + 300
+            while time.time() < end:
+                st = drive.ctl(port, "efx status", timeout=5)
+                res["status"] = st
+                d = re.match(r"idle done=(\d+)", st)
+                if d and int(d.group(1)) >= int(m.group(1)):
+                    res["window"] = int(m.group(1))
+                    return res
+                time.sleep(0.5)
+            res["error"] = "window did not close"
+            return res
+
+        futs = {k: self.pool.submit(one, k, s) for k, s in self.sides.items()}
+        for k, fu in futs.items():
+            res = fu.result()
+            with open(os.path.join(self.a.out, f"frame-watch-{k}.json"), "w") as f:
+                json.dump(res, f, indent=1)
+            say(f"frame-local watch {k} ({res['kind']}): {res.get('reply', '')} -> "
+                f"{res.get('error') or res.get('status')}")
+
     def main(self):
         a = self.a
         for k, s in self.sides.items():
@@ -623,6 +670,7 @@ class Driver:
         self.do_event("tp", None, "both")
         time.sleep(5)
         self.dump_patches()
+        self.watch_frame_local()
         if a.patches_only:
             return 0
         for st in STEPS:
@@ -893,6 +941,9 @@ def main():
         d.add_argument(f"--{s}-kind", choices=["orig", "ours"], required=True)
         d.add_argument(f"--{s}-gamescope", default="", help="gamescope wayland socket (screenshots)")
     d.add_argument("--patches-only", action="store_true")
+    for s in ("a", "b"):
+        d.add_argument(f"--{s}-tracer-port", type=int, default=0,
+                       help="samp-tracer control port of the side (default: --X-port for an original client)")
     r = sub.add_parser("report")
     r.add_argument("--run", required=True)
     r.add_argument("--out", default=os.path.join(patchrows.ROOT, "target", "diff"))

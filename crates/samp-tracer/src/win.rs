@@ -1110,6 +1110,10 @@ fn attach() {
         flush();
         return;
     }
+    if std::env::var("SAMP_TRACER_MODE").is_ok_and(|m| m == "watch") {
+        attach_watch_only(&dir, port);
+        return;
+    }
     capture::init();
     fileio::init();
     remote::init();
@@ -1145,6 +1149,41 @@ fn attach() {
     flush();
     let _ = std::thread::Builder::new().name("tracer-ctl".into()).spawn(move || control_thread(port));
     let _ = std::thread::Builder::new().name("tracer-flush".into()).spawn(flusher_thread);
+}
+
+/// `SAMP_TRACER_MODE=watch`: only the control channel (`peek`, `efx watch|status|disarm`) and the
+/// vectored handler of the effect tracer. No game code byte is changed (no inline hook, no thunk
+/// table, no D3D/audio wrapper, no coverage int3s), so a client loaded next to it keeps exactly the
+/// bytes it wrote itself (F5 runs the tracer this way next to our client). Without the frame hook,
+/// a thread closes `efx watch` windows on `CTimer::m_FrameCounter` changes.
+fn attach_watch_only(dir: &std::path::Path, port: u16) {
+    efx::init(dir);
+    tlog("watch-only mode: no hooks installed");
+    emit(record(
+        "tracer_start",
+        None,
+        None,
+        None,
+        Val::obj()
+            .with("version", env!("CARGO_PKG_VERSION"))
+            .with("mode", "watch")
+            .with("hooks", 0u32)
+            .with("port", u32::from(port)),
+    ));
+    flush();
+    let _ = std::thread::Builder::new().name("tracer-ctl".into()).spawn(move || control_thread(port));
+    let _ = std::thread::Builder::new().name("tracer-flush".into()).spawn(flusher_thread);
+    let _ = std::thread::Builder::new().name("tracer-frames".into()).spawn(|| {
+        let mut last = ProcMem.u32(gta::FRAME_COUNTER).unwrap_or(0);
+        loop {
+            std::thread::sleep(Duration::from_millis(1));
+            let now = ProcMem.u32(gta::FRAME_COUNTER).unwrap_or(last);
+            if now != last {
+                last = now;
+                let _ = catch_unwind(efx::frame);
+            }
+        }
+    });
 }
 
 // ------------------------------------------------- optional file-content capture ------------

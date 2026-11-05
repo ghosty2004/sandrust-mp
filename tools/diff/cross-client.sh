@@ -9,6 +9,8 @@
 # Lanes (never touches main/ui/veh/trace):
 #   A: original samp.dll + samp-tracer   WINEPREFIX=wine/prefix-diff  GTA_DIR=wine/gta-sa-diff   ctl 47706
 #   B: our samp_client.dll               WINEPREFIX=wine/prefix-diff2 GTA_DIR=wine/gta-sa-diff2  ctl 47705
+#      + samp-tracer in watch-only mode (SAMP_TRACER_MODE=watch: control channel + `efx watch`, no
+#        game byte changed), tracer ctl 47707: F5 observes frame-local writes on both clients
 #      (--calibrate: a second ORIGINAL client + tracer in lane B, ctl 47705 = its tracer, to
 #       measure the original-vs-original noise floor the tolerances are set from)
 #   one server: E2E_TAG=diff, UDP 7795 (target/e2e-server-diff), diffbase gamemode +
@@ -31,7 +33,9 @@ export WINEPREFIX="$A_PREFIX" GTA_DIR="$A_GTA"
 export E2E_TAG=diff E2E_PORT=7795 E2E_CTL_PORT=47705
 DIFF_OUT="$ROOT/target/diff"
 DIFF_BIN="${DIFF_CARGO_TARGET:-$ROOT/target/diff-cargo}/i686-pc-windows-gnu/release"
+B_TPORT=47707
 A_NAME=XcOrig; B_NAME=XcOurs
+# Diagnostics: XC_B_SAMP_CFG = sa-mp.cfg for lane B only (e.g. nohudscalefix=1 for the F5 negative test).
 source "$ROOT/tools/wine-env.sh"
 source "$ROOT/tools/e2e/lib.sh"
 
@@ -73,14 +77,14 @@ for f in samp_tracer.dll samp-launcher.exe samp_client.dll; do
     [ -f "$DIFF_BIN/$f" ] || { say "missing $DIFF_BIN/$f"; exit 1; }
 done
 [ -f "$ROOT/data/auth_table.txt" ] || say "warning: data/auth_table.txt missing; our client cannot join"
-for p in "$A_PORT" "$B_PORT"; do
+for p in "$A_PORT" "$B_PORT" "$B_TPORT"; do
     if [ "$(E2E_CTL_PORT=$p e2e_ctl ping)" = pong ]; then say "port $p already answers; refusing"; exit 1; fi
 done
 for g in "$A_GTA" "$B_GTA"; do
     put "$DIFF_BIN/samp_tracer.dll" "$g" samp-tracer.dll
     put "$DIFF_BIN/samp-launcher.exe" "$g" samp-rs-launcher.exe
     put "$DIFF_BIN/samp_client.dll" "$g" samp_client.dll
-    rm -f "$g/trace.jsonl" "$g/samp-tracer.log" "$g/samp-rs.log"
+    rm -f "$g/trace.jsonl" "$g/efx.jsonl" "$g/samp-tracer.log" "$g/samp-rs.log"
 done
 
 OUT="$DIFF_OUT/runs/xclient-$(date +%Y%m%d-%H%M%S)"
@@ -88,6 +92,7 @@ OUT="$DIFF_OUT/runs/xclient-$(date +%Y%m%d-%H%M%S)"
 [ "$PATCHES_ONLY" = 1 ] && OUT="$DIFF_OUT/runs/xpatch-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
 sha256sum "$A_GTA/samp-tracer.dll" "$A_GTA/samp.dll" "$B_GTA/samp_client.dll" > "$OUT/binaries.sha256"
+[ -n "${XC_B_SAMP_CFG:-}" ] && { say "lane B sa-mp.cfg: $XC_B_SAMP_CFG"; echo "XC_B_SAMP_CFG=$XC_B_SAMP_CFG" > "$OUT/diagnostics.txt"; }
 RCON_PASS="xc$RANDOM$RANDOM"
 
 xc_server_start() {
@@ -118,11 +123,14 @@ launch_game() {
     (
         export WINEPREFIX="$prefix" GTA_DIR="$gta" E2E_HEADLESS=1 DISPLAY="$disp"
         unset WAYLAND_DISPLAY
+        if [ "$client" = ours ] && [ -n "${XC_B_SAMP_CFG:-}" ]; then export SAMP_RS_SAMP_CFG="$XC_B_SAMP_CFG"; fi
         # Per lane: private Documents (gta_sa.set, sa-mp.cfg, chatlog) and the headless video mode.
         source "$ROOT/tools/wine-env.sh"
         dlls=()
         if [ "$client" = ours ]; then
-            export SAMP_RS_CTL_PORT="$port"
+            # Watch-only tracer first (F5 frame-local write watch); it changes no game byte.
+            export SAMP_RS_CTL_PORT="$port" SAMP_TRACER_MODE=watch SAMP_TRACER_PORT="$B_TPORT"
+            dlls+=(--dll "$(winepath -w "$gta/samp-tracer.dll")")
             SAMP_RS_AUTH_TABLE="$(winepath -w "$ROOT/data/auth_table.txt")"; export SAMP_RS_AUTH_TABLE
             dlls+=(--dll "$(winepath -w "$gta/samp_client.dll")")
         else
@@ -166,11 +174,12 @@ launch_game "$B_PREFIX" "$B_GTA" "$DISP_B" "$B_KIND" "$B_NAME" "$B_PORT" "$OUT/l
 args=(drive --out "$OUT" --log "$E2E_LOG" --port "$E2E_PORT" --rcon-pass "$RCON_PASS"
       --a-port "$A_PORT" --a-display "$DISP_A" --a-name "$A_NAME" --a-kind orig --a-gamescope "$WL_A"
       --b-port "$B_PORT" --b-display "$DISP_B" --b-name "$B_NAME" --b-kind "$B_KIND" --b-gamescope "$WL_B")
+[ "$B_KIND" = ours ] && args+=(--b-tracer-port "$B_TPORT")
 [ "$PATCHES_ONLY" = 1 ] && args+=(--patches-only)
 python3 -I "$HERE/xclient.py" "${args[@]}"
 rc=$?
 cleanup
-for f in trace.jsonl samp-tracer.log samp-rs.log samp-rs-launcher.log; do
+for f in trace.jsonl efx.jsonl samp-tracer.log samp-rs.log samp-rs-launcher.log; do
     [ -f "$A_GTA/$f" ] && cp "$A_GTA/$f" "$OUT/A-$f"
     [ -f "$B_GTA/$f" ] && cp "$B_GTA/$f" "$OUT/B-$f"
 done

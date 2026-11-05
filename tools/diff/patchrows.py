@@ -67,6 +67,24 @@ def regions():
     return sorted({r for row in rows() for r in row.regions})
 
 
+# Rows whose data write lives only inside one frame: samp writes the constant right before a
+# hooked GTA call and restores it right after (CSV "restored after the hooked call" / "temporary"),
+# so a `peek` snapshot sees the applied value only by luck. F5 checks them by observing the
+# writes themselves (samp-tracer `efx watch` guard pages on both clients, tools/diff/xclient.py).
+# Code rows with the same nop/restore semantics (366, 367, 372-374) cannot be watched this way
+# (guarding a code page faults on every instruction fetch) and keep the snapshot rule.
+FRAME_LOCAL_ROWS = {
+    368: "screen-scale floats 1/640, 1/448 around CHud::DrawRadar (aspect-ratio update A 0x100A2440)",
+    369: "HUD floats 76/94 -> 82/96 in the same aspect-ratio update, restored after the draw",
+    370: "0.95 -> 2.0 around one CTaskSimpleUseGun::SetPedPosition call (dead code in samp R4)",
+    371: "20.0/23.0 -> 40.0/50.0 around one CEscalator::Update call",
+}
+
+
+def frame_local_regions():
+    return sorted({r for row in rows() if row.row in FRAME_LOCAL_ROWS for r in row.regions})
+
+
 class Exe:
     def __init__(self, path=EXE):
         self.data = open(path, "rb").read()
