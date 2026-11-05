@@ -49,6 +49,8 @@ pub enum Command {
     Files,
     Vehicles,
     World,
+    /// `behaviour`: camera / spectating / bounds / drunk / animation state (M8b).
+    Behaviour,
     Spawn,
     Quit,
     Chat(usize),
@@ -99,6 +101,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "files" => Command::Files,
         "vehicles" => Command::Vehicles,
         "world" => Command::World,
+        "behaviour" => Command::Behaviour,
         "spawn" => Command::Spawn,
         "chat" => Command::Chat(20),
         "input" => Command::Input,
@@ -215,6 +218,7 @@ mod tests {
         assert_eq!(parse("remote"), Some(Command::Remote));
         assert_eq!(parse("FILES"), Some(Command::Files));
         assert_eq!(parse("world"), Some(Command::World));
+        assert_eq!(parse("behaviour"), Some(Command::Behaviour));
         assert_eq!(parse("Spawn\n"), Some(Command::Spawn));
         assert_eq!(parse(""), None);
         assert_eq!(parse("chat"), Some(Command::Chat(20)));

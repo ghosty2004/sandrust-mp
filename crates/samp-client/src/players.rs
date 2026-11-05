@@ -370,6 +370,8 @@ impl Players {
                         apply_weapon(runner, ped, slot, f.weapon);
                     }
                     sniper_state(runner, ped, f.keys);
+                    // The synced animation (onfoot §4.1, B 0x100167E4; M8b).
+                    crate::behaviourclient::remote_anim(runner, p.id, ped, f.animation);
                 }
                 if let Some(v) = v3(&mem, ped + off::MOVE_SPEED) {
                     p.last_speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();

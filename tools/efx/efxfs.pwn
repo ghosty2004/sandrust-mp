@@ -8,12 +8,19 @@
 //   putin|veh|seat       PutPlayerInVehicle      (RPC 70)
 //   veh|model|x|y|z|a    CreateVehicle (setup; prints "[efx-fs] SEQ veh ID")
 //   where                prints position, health, skin, vehicle
+// M8b (remaining behaviour):
+//   campos|x|y|z  camlook|x|y|z|cut  camera   SetPlayerCameraPos / LookAt / SetCameraBehindPlayer (157/158/162)
+//   wide|0/1                              TogglePlayerWidescreen (111)
+//   gravity|g                             SetPlayerGravity (146)
+//   specon  specoff                       TogglePlayerSpectating (124)
+//   specpl|mode                           PlayerSpectatePlayer on the other connected player (126)
 #define FILTERSCRIPT
 #pragma dynamic 16384
 #include <open.mp>
 
 new gLast = 0;
 new gLocal = INVALID_PLAYER_ID;
+new gOther = INVALID_PLAYER_ID;
 
 public OnFilterScriptInit()
 {
@@ -27,12 +34,14 @@ public OnFilterScriptInit()
 public OnPlayerConnect(playerid)
 {
     if (gLocal == INVALID_PLAYER_ID) gLocal = playerid;
+    else if (gOther == INVALID_PLAYER_ID) gOther = playerid;
     return 1;
 }
 
 public OnPlayerDisconnect(playerid, reason)
 {
     if (playerid == gLocal) gLocal = INVALID_PLAYER_ID;
+    if (playerid == gOther) gOther = INVALID_PLAYER_ID;
     return 1;
 }
 
@@ -92,6 +101,14 @@ Run(seq, const line[])
         new v = CreateVehicle(in(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), 1, 1, -1);
         printf("[efx-fs] %d veh %d", seq, v);
     }
+    else if (!strcmp(cmd, "campos")) SetPlayerCameraPos(p, fl(line, 1), fl(line, 2), fl(line, 3));
+    else if (!strcmp(cmd, "camlook")) SetPlayerCameraLookAt(p, fl(line, 1), fl(line, 2), fl(line, 3), CAM_MOVE:in(line, 4));
+    else if (!strcmp(cmd, "camera")) SetCameraBehindPlayer(p);
+    else if (!strcmp(cmd, "wide")) TogglePlayerWidescreen(p, bool:in(line, 1));
+    else if (!strcmp(cmd, "gravity")) SetPlayerGravity(p, fl(line, 1));
+    else if (!strcmp(cmd, "specon")) TogglePlayerSpectating(p, true);
+    else if (!strcmp(cmd, "specoff")) TogglePlayerSpectating(p, false);
+    else if (!strcmp(cmd, "specpl")) PlayerSpectatePlayer(p, gOther, SPECTATE_MODE:in(line, 1));
     else if (!strcmp(cmd, "where"))
     {
         new Float:x, Float:y, Float:z, Float:hp;

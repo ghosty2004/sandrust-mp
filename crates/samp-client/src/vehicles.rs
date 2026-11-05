@@ -299,6 +299,11 @@ impl Vehicles {
         self.get(id).map(|v| vehicle_at(v.handle)).filter(|&p| p != 0)
     }
 
+    /// SA:MP id of a GTA vehicle of the pool (world bounds for the driver, M8b).
+    pub fn id_of(&self, ptr: u32) -> Option<u16> {
+        self.id_of_ptr(ptr)
+    }
+
     fn id_of_ptr(&self, ptr: u32) -> Option<u16> {
         if ptr == 0 {
             return None;
@@ -1504,8 +1509,8 @@ impl Vehicles {
                 runner.run(op::REMOVE_BLIP, &[Arg::Int(b)]);
             }
             if v.objective_blip.is_none() {
-                runner.run(op::ADD_BLIP_FOR_CAR_OLD, &[Arg::Int(h), Arg::Int(1), Arg::Int(3), Arg::Local(2)]);
-                let b = runner.local_i32(2);
+                runner.run(op::ADD_BLIP_FOR_CAR_OLD, &[Arg::Int(h), Arg::Int(1), Arg::Int(3), Arg::Local(0)]);
+                let b = runner.local_i32(0);
                 runner.run(op::CHANGE_BLIP_COLOUR, &[Arg::Int(b), Arg::Int(vm::BLIP_COLOUR_OBJECTIVE)]);
                 runner.run(op::CHANGE_BLIP_SCALE, &[Arg::Int(b), Arg::Int(3)]);
                 v.objective_blip = Some(b);
@@ -1518,8 +1523,8 @@ impl Vehicles {
         let want = !occupied && dist <= vm::NEAR_RANGE;
         match (want, v.blip) {
             (true, None) => {
-                runner.run(op::ADD_BLIP_FOR_CAR_OLD, &[Arg::Int(h), Arg::Int(1), Arg::Int(2), Arg::Local(2)]);
-                let b = runner.local_i32(2);
+                runner.run(op::ADD_BLIP_FOR_CAR_OLD, &[Arg::Int(h), Arg::Int(1), Arg::Int(2), Arg::Local(0)]);
+                let b = runner.local_i32(0);
                 runner.run(op::CHANGE_BLIP_COLOUR, &[Arg::Int(b), Arg::Int(vm::BLIP_COLOUR_UNOCCUPIED)]);
                 v.blip = Some(b);
             }
@@ -1743,19 +1748,23 @@ fn busy_load(runner: &mut Runner, model: i32) {
     }
 }
 
-/// Add-component (vehicles.md 96 type 2): request and wait up to ~20 ms, else the mod is dropped.
+/// Add-component (vehicle method B 0x100B7FD0, used by RPC 65 and SCM event 2): not loaded → `REQUEST_MODEL`,
+/// `LOAD_ALL_MODELS_NOW`, `REQUEST_VEHICLE_MOD`, then up to 20 polls with `Sleep(1)`; if loaded, `ADD_VEHICLE_MOD`.
 fn add_component(runner: &mut Runner, handle: i32, component: i32) {
     if !runner.run(op::HAS_VEHICLE_MOD_LOADED, &[Arg::Int(component)]) {
+        runner.run(op::REQUEST_MODEL, &[Arg::Int(component)]);
+        runner.run(op::LOAD_ALL_MODELS_NOW, &[]);
         runner.run(op::REQUEST_VEHICLE_MOD, &[Arg::Int(component)]);
-        let t0 = Instant::now();
-        while !runner.run(op::HAS_VEHICLE_MOD_LOADED, &[Arg::Int(component)]) {
-            if t0.elapsed() > Duration::from_millis(20) {
-                return;
+        for _ in 0..20 {
+            if runner.run(op::HAS_VEHICLE_MOD_LOADED, &[Arg::Int(component)]) {
+                break;
             }
             std::thread::sleep(Duration::from_millis(1));
         }
     }
-    runner.run(op::ADD_VEHICLE_MOD, &[Arg::Int(handle), Arg::Int(component), Arg::Local(3)]);
+    if runner.run(op::HAS_VEHICLE_MOD_LOADED, &[Arg::Int(component)]) {
+        runner.run(op::ADD_VEHICLE_MOD, &[Arg::Int(handle), Arg::Int(component), Arg::Local(0)]);
+    }
 }
 
 /// `CPool::GetRef` for a vehicle pointer (A 0x100B3C40 → GTA 0x424160).
