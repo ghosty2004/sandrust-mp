@@ -31,8 +31,13 @@ pub const TRAIN_SYNC_MODELS: [u32; 3] = [537, 538, 449];
 pub const RC_MODELS: [u32; 6] = [441, 464, 465, 501, 564, 594];
 /// Hydra: `extra` carries the thrust nozzle angle.
 pub const MODEL_HYDRA: u32 = 520;
-/// Freight carriage: cannot be entered as driver.
+/// Passenger carriage of the Brown Streak (570): cannot be entered as driver; the local passenger enter warps
+/// (A 0x100AC450).
 pub const MODEL_FREIGHT_CARRIAGE: u32 = 570;
+/// Freight flat carriage (569): like 570 in samp's "is a passenger" test (A 0x100AC000).
+pub const MODEL_FLAT_CARRIAGE: u32 = 569;
+/// Highest player id RPC 96 type 4 accepts (A 0x10001B1F: `id ≤ 0x3EC`).
+pub const MAX_REMOTE_PLAYER_ID: u16 = 0x3EC;
 /// Parachute weapon id (dropped before entering a car).
 pub const WEAPON_PARACHUTE: u8 = 46;
 
@@ -134,6 +139,47 @@ pub fn is_rc(model: u32) -> bool {
 /// Infernus is tagged at its head, 0.3 m above the car's matrix position.
 pub fn tag_at_vehicle(remote_state: u8, vehicle_model: Option<u32>) -> bool {
     remote_state == state::DRIVER && vehicle_model.is_some_and(is_rc)
+}
+
+/// The driver-enter gate's rules on the vehicle and the local ped (A 0x100A3700, before the driver checks): the samp
+/// locked flag, model 570, and the local ped object cuffed (special action 24) or carrying (25).
+pub fn driver_enter_refused(locked: bool, model: u32, cuffed: bool, carrying: bool) -> bool {
+    locked || model == MODEL_FREIGHT_CARRIAGE || cuffed || carrying
+}
+
+/// How the local passenger-enter poll (A 0x10006FE0 → A 0x100AC450(handle, 1)) seats the local ped: model 570
+/// warps it at once with WARP_CHAR_INTO_CAR_AS_PASSENGER and seat −1 (GTA's first free passenger seat), every other
+/// model gets TASK_ENTER_CAR_AS_PASSENGER (3000 ms, seat −1).
+pub fn passenger_enter_warps(model: u32) -> bool {
+    model == MODEL_FREIGHT_CARRIAGE
+}
+
+/// A ped's seat as samp's ped helpers see it: the GTA vehicle (`m_pVehicle`), whether the ped is its driver, and
+/// its model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Seat {
+    pub vehicle: u32,
+    pub is_driver: bool,
+    pub model: u32,
+}
+
+/// samp's "is a passenger" test (A 0x100AC000): in a vehicle, and either not its driver or in a carriage (569/570).
+pub fn counts_as_passenger(s: Option<Seat>) -> bool {
+    s.is_some_and(|s| !s.is_driver || matches!(s.model, MODEL_FLAT_CARRIAGE | MODEL_FREIGHT_CARRIAGE))
+}
+
+/// RPC 96 type 4 (A 0x10001A60 case 4): it acts only when the remote player is seated and not a passenger, the
+/// local player is seated as a passenger, and both are in the same vehicle (`None` = not in a vehicle).
+pub fn mod_shop_follow_applies(remote: Option<Seat>, local: Option<Seat>) -> bool {
+    let (Some(r), Some(l)) = (remote, local) else { return false };
+    !counts_as_passenger(remote) && counts_as_passenger(local) && r.vehicle == l.vehicle
+}
+
+/// RPC 96 type 4 effect: entering (arg1 ≠ 0) → interior `arg2` and the local player frozen (not controllable);
+/// leaving → interior 0 and controllable again. Returns (vehicle interior, ped interior, controllable): the
+/// vehicle takes the full value (A 0x100B70D0), the ped its low byte (A 0x100AD380).
+pub fn mod_shop_follow(arg1: u32, arg2: u32) -> (i32, u8, bool) {
+    if arg1 != 0 { (arg2 as i32, arg2 as u8, false) } else { (0, 0, true) }
 }
 
 /// Towable trailer models (A 0x100B7DB0 list; remote-players-sync §210).
@@ -693,6 +739,34 @@ pub fn heading_deg(forward: [f32; 3]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn driver_enter_gate() {
+        assert!(!driver_enter_refused(false, 411, false, false));
+        assert!(driver_enter_refused(true, 411, false, false));
+        assert!(driver_enter_refused(false, 570, false, false));
+        assert!(driver_enter_refused(false, 411, true, false));
+        assert!(driver_enter_refused(false, 411, false, true));
+    }
+
+    #[test]
+    fn passenger_enter_and_mod_shop_follow() {
+        assert!(passenger_enter_warps(570));
+        assert!(!passenger_enter_warps(569) && !passenger_enter_warps(411));
+        let car = Seat { vehicle: 0x1000, is_driver: true, model: 411 };
+        let back = Seat { is_driver: false, ..car };
+        assert!(!counts_as_passenger(None) && !counts_as_passenger(Some(car)) && counts_as_passenger(Some(back)));
+        assert!(counts_as_passenger(Some(Seat { model: 570, ..car })) && counts_as_passenger(Some(Seat { model: 569, ..car })));
+        // Remote drives, local rides along in the same car: applies.
+        assert!(mod_shop_follow_applies(Some(car), Some(back)));
+        // Different car, local on foot, remote also a passenger, local the driver: ignored.
+        assert!(!mod_shop_follow_applies(Some(car), Some(Seat { vehicle: 0x2000, ..back })));
+        assert!(!mod_shop_follow_applies(Some(car), None));
+        assert!(!mod_shop_follow_applies(Some(back), Some(back)));
+        assert!(!mod_shop_follow_applies(Some(car), Some(car)));
+        assert_eq!(mod_shop_follow(1, 0x0102), (0x0102, 2, false));
+        assert_eq!(mod_shop_follow(0, 5), (0, 0, true));
+    }
     use crate::remote::rows_from_quat;
 
     #[test]

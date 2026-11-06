@@ -92,8 +92,17 @@ impl Combat {
     }
 
     /// Publishes the remote players / vehicles / actors for the hooks (before GTA runs and before remote shots).
-    /// `actors` = (ped, actor id) of the world-entity code (entities.rs), for RPC 177 and 204's target actor.
-    pub fn update_shared(&self, players: &Players, vehicles: &Vehicles, actors: Vec<(u32, u16)>) {
+    /// `actors` = (ped, actor id) of the world-entity code (entities.rs), for RPC 177 and 204's target actor;
+    /// `objects` = pool objects (GTA pointer, id) for the 206 hit type; `surface` = the GTA entity of the local
+    /// surf state's surface (the damage decision's surf rows).
+    pub fn update_shared(
+        &self,
+        players: &Players,
+        vehicles: &Vehicles,
+        actors: Vec<(u32, u16)>,
+        objects: Vec<(u32, u16)>,
+        surface: Option<u32>,
+    ) {
         let remotes = players
             .iter()
             .filter(|p| p.ped != 0)
@@ -110,7 +119,8 @@ impl Combat {
             remotes,
             vehicles: vehicles.hook_vehicles(),
             actors,
-            surf_vehicle: 0,
+            objects,
+            surface,
         });
     }
 

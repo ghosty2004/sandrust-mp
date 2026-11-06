@@ -31,6 +31,7 @@ usage: samp-bot [HOST:PORT] [options]
   --siren              siren on
   --drive-by           passenger drive-by (211 bit 6)
   --exit-after S       leave the vehicle (RPC 154) S seconds after sitting down
+  --modshop A,S,I      driver: RPC 96 type 4 \"entered mod shop\" (interior I) A s after sitting down, \"left\" S s later
  shoot:
   --target ID|NAME     player to shoot at
   --weapon W           weapon to use (must be given by the server; default: armed)
@@ -80,6 +81,16 @@ fn parse_args() -> std::result::Result<Args, String> {
             "--trailer" => c.trailer = Some(num("--trailer", it.next())?),
             "--siren" => c.siren = true,
             "--drive-by" => c.drive_by = true,
+            "--modshop" => {
+                let v = it.next().ok_or("--modshop needs AFTER,STAY,INTERIOR")?;
+                let f: Vec<&str> = v.split(',').collect();
+                let [after, stay, interior] = f.as_slice() else { return Err("--modshop needs AFTER,STAY,INTERIOR".into()) };
+                c.modshop = Some((
+                    Duration::from_secs_f32(num("--modshop", Some(after.to_string()))?),
+                    Duration::from_secs_f32(num("--modshop", Some(stay.to_string()))?),
+                    num("--modshop", Some(interior.to_string()))?,
+                ));
+            }
             "--exit-after" => c.exit_after = Some(Duration::from_secs_f32(num("--exit-after", it.next())?)),
             "--target" => {
                 let t = it.next().ok_or("--target needs an id or a name")?;

@@ -55,9 +55,9 @@ sent).
 
 * Hook state lives on the stack / in atomics instead of samp's fixed globals (spec P1).
 * The remote shot's camera context is restored to the saved values (samp restores through its own copies).
-* Local surfing does not exist yet: the two surf cases of the damage table are wired but never active (TODO, M5-P).
-* Hit type 3 (objects) is not produced: the object pool is M6's. A hit object is reported as "other entity" (hit type 0,
-  world offset) until M6 provides the id lookup (`HitTarget::Object`).
+* (Resolved 2026-11-06) The surf rows 3/4 of the damage table now read the local surf state (surface entity of a pool
+  vehicle or object); hit type 3 is produced with samp's object lookup (ids from 1, A 0x10012A10). See "Object hits and
+  surf rows" below.
 * RPC 177: the decision and the send are implemented; `combathooks::Shared::actors` must be filled by the M6 actor pool
   (empty now, so actors count as "other victim").
 * Remote cuffs (bit 7 of 211, action 24): no visible effect implemented — TODO-unknown (measurement request 2).
@@ -127,3 +127,16 @@ sent).
   damage from the key-simulated shots; SetPlayerHealth(0) → OnPlayerDeath(65535, 255) → respawn.
 * Regression: m1, m2, m3, m4, m5, m8a, goal, saa all rc=0 after the last change.
 * `cargo build --workspace`, `cargo test --workspace` (11 new combat tests), clippy host + i686: 0 warnings.
+
+## Object hits and surf rows (2026-11-06)
+* **206 hit type 3** (A 0x10006BC0): after the player and vehicle lookups the hit entity is looked up in the object pool
+  (A 0x10012A10: ids 1..=highest in use, wrapper +0x40 = GTA entity; object id 0 is never found). The offset is the
+  record's own (entity frame for selector 0, hitPos − position otherwise), as for vehicles. Ours: `combat::object_of_entity`
+  over `combathooks::Shared::objects` (pool objects with a GTA entity). Measured (`tools/diff/combatveh.sh`, container
+  2932 as object 1, two un-aimed Deagle shots, server default lag-comp): OnPlayerWeaponShot hittype 3 hitid 1 for every
+  shot on both clients in three runs, offsets (−1.555, −0.14…, 0.78…) within 0.003 of each other. `tools/e2e/m7.sh`
+  checks the same per mode (2 shots, hit type 3 in modes 1/2, no 206 in mode 0).
+* **Damage surf rows** (A 0x100A3BF0 rows 3/4): +0x2DA is the samp wrapper of the surfed pool vehicle **or object**; the
+  damager is compared with its GTA entity (+0x40). Ours: `Shared::surface` (`client.rs` `update_combat_shared`, the
+  surf state's target as a GTA entity) → `combat::surf_inputs`. Static only (no scenario makes the surfed entity damage
+  the player reproducibly); unit test `damage_table`.

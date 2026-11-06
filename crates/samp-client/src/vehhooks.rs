@@ -160,6 +160,10 @@ pub struct Shared {
     pub disable_collisions: bool,
     /// samp is detaching a trailer itself (BreakTowLink lets it through).
     pub detaching: bool,
+    /// The local ped is cuffed / carrying (special actions 24 / 25: local ped object +0x2DE / +0x2E2): the
+    /// driver-enter gate refuses.
+    pub local_cuffed: bool,
+    pub local_carrying: bool,
     pub events: Vec<HookEvent>,
 }
 
@@ -502,11 +506,18 @@ extern "C" fn enter_filter(ret: u32, task: u32, veh: u32) -> u32 {
     }
 }
 
-/// Refusal rules of §5: no samp id, locked, model 570, current driver not a player or a remote NPC.
-/// Surfing (the 4th rule) is not tracked by this client yet (TODO-unknown: local surf state, M3 deviation).
+/// Refusal rules of §5 in samp's order: no samp id, locked, model 570, the local ped cuffed or carrying (the ped
+/// object's +0x2DE / +0x2E2, read through A 0x100ACF30 / 0x100ACE80), current driver not a player or a remote NPC.
 fn gate_driver_enter(veh: u32) -> Option<HookEvent> {
-    let info = SHARED.try_lock().ok()?.as_ref()?.by_ptr.get(&veh).copied()?;
-    if info.locked || info.model == vehicle::MODEL_FREIGHT_CARRIAGE {
+    let (info, cuffed, carrying) = {
+        let g = SHARED.try_lock().ok()?;
+        let s = g.as_ref()?;
+        (s.by_ptr.get(&veh).copied()?, s.local_cuffed, s.local_carrying)
+    };
+    if vehicle::driver_enter_refused(info.locked, info.model, cuffed, carrying) {
+        if cuffed || carrying {
+            crate::log!("vehicles: driver enter of vehicle {} refused: local ped cuffed {cuffed} carrying {carrying}", info.id);
+        }
         return None;
     }
     // SAFETY: live vehicle / ped fields.

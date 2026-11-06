@@ -853,3 +853,28 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   under the lock). `tools/diff/rpc-coverage.sh` cannot run from a git worktree (it takes wine/ and the lane game dir
   from the checkout root, not SAMP_RS_ROOT); it has no RPC 128 / arrow step and lists 92 / 150 as untriggerable, so the
   per-RPC evidence for these items is the gap scenario's tracer scm comparison above.
+
+## 2026-11-07 — Audit gaps in vehicles/combat: object hits, surf damage rows, enter gate, RC driver, mod shop, 570
+- Static (REA/Ghidra, samp.dll A; B where the trace lane runs it): 206 send A 0x10006BC0 → object pool lookup
+  A 0x10012A10 (ids 1..=highest, wrapper +0x40); damage decision A 0x100A3BF0 rows 3/4 (+0x2DA = surfed vehicle **or
+  object** wrapper); driver-enter gate A 0x100A3700 (its "surf" checks read the local **ped object** +0x2DE / +0x2E2 =
+  cuffed / carry, set by special actions 24 / 25 — the spec and the audit premise were wrong); RC driver: ped wrapper
+  vtable slot 2 = A 0x1009F460 (`CWorld::Remove` when in the moving list) from the per-frame driver branch; RPC 96
+  type 4 = A 0x10001A60 case 4 (spec written in vehicles.md 96); 570 passenger warp A 0x100AC450 (SCM 0x0430, seat −1).
+- Code: `combat.rs` (`object_of_entity`, `surf_inputs`), `combathooks.rs` (hit type 3, `Shared::{objects, surface}`),
+  `combatclient.rs` / `client.rs` (`update_combat_shared`), `vehhooks.rs` (gate: cuffed / carrying, logged),
+  `vehicle.rs` (`driver_enter_refused`, `passenger_enter_warps`, `Seat`, `mod_shop_follow*`), `vehicles.rs` (RC
+  `remove_from_world`, `mod_shop_follow`, 570 warp, header). 4 new unit-test functions.
+- Tools: `tools/diff/combatveh.sh` (+ `combatveh-measure.sh`, `combatveh_eval.py`): original (trace lane) vs ours
+  (lane ui) — object shot, RC driver links, six enter-gate cases (surf car / beside / surf platform / cuffed / carry /
+  free), mod-shop follow, 570 enter. `samp-bot --modshop A,S,I`; m8afs `surf|P` + OnPlayerInteriorChange log;
+  `tools/e2e/m7.sh` object step; `tools/e2e/m5.sh` finds the auth table through SAMP_RS_ROOT (worktrees).
+- Parity loop: 5 combatveh rounds. Round 1–2: obj/RC/570 equal, harness fixes (peek limit). Round 3: platform
+  case showed ours refusing where the original enters → server surf query proved the original *was* surfing → the
+  gate reads cuffed/carry → fixed. Final round PASS (all items equal).
+- Verified: `cargo test --workspace` 618 passed / 0 failed; clippy host `--all-targets` and i686 0 warnings;
+  `tools/diff/combatveh.sh` PASS; `tools/e2e/m7.sh` (lane veh) PASS (modes 1 2 0; object step: 2/2 hit type 3 hitid 1
+  in modes 1/2, none in mode 0); `tools/e2e/m5.sh` (lane veh) PASS; `tools/diff/cross-client.sh --skip-build`
+  (`xclient-20261107-005834`) 66/66 MATCH, exit 0. Cost: ~2.5 h wall, 6 combatveh rounds (original + ours), 1 m7,
+  2 m5 (first failed on the worktree auth-table path), 1 cross-client.
+

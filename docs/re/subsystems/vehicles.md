@@ -277,7 +277,9 @@ Behaviour (observed): same remote-player checks as 154 S→C (`< 1005`, has ped,
 Then (A 0x100161A0) if the vehicle exists and the remote ped is not already in a vehicle: clear its
 synced keys and start the walk-in task — SCM 0x05CB enter as driver (3000 ms) or SCM 0x05CA enter
 as passenger (any seat, 3000 ms). (Same helper used for the local ped; for the local ped entering
-model 570 as passenger it warps with SCM 0x0430 instead.)
+model 570 as passenger it warps with SCM 0x0430 (`WARP_CHAR_INTO_CAR_AS_PASSENGER`) and seat −1 instead,
+i.e. GTA puts the ped in the carriage's first free passenger seat at once; A 0x100AC450, only when the ped is
+the local player's.)
 
 ### 26 OnPlayerEnterVehicle (C→S)
 
@@ -293,7 +295,9 @@ When sent (observed):
   0x100A3860). When the caller is the player-input code (return address GTA 0x570A20 or 0x570A99)
   the gate A 0x100A3700 decides; if it returns 0 the task creation is skipped (ped does not enter).
   Gate refuses (no RPC) when: the vehicle has no SA-MP ID; the SA-MP doors-locked flag is set; model
-  is 570; two local-player state checks (A 0x100ACF30 / 0x100ACE80, meaning unknown) are true; the
+  is 570; the local ped is cuffed or carrying (A 0x100ACF30 / 0x100ACE80 called on the local **ped object**
+  (local player +0x104): its +0x2DE is set by special action 24 and its +0x2E2 by special action 25, cleared
+  by action 0; corrected 2026-11-06, measured: see remote-control-vehicles §5); the
   vehicle's current driver has a non-zero field +0x598, or is a SA-MP remote player for whom
   A 0x1000E470 is true (unknown). Otherwise: drop parachute if held, send RPC 26 (passenger = 0),
   and allow the task.
@@ -399,10 +403,29 @@ pools are absent. Then by type:
 3. vehicle exists → body colours (arg1, arg2): written to GTA colour bytes +0x434/+0x435 and
    cached in the object; the vehicle pool process re-applies the cached colours every frame unless
    the "in mod shop" flag is set.
-4. remote player `player_id` (< 1005) is driving the vehicle the local ped is a passenger in, both in
-   the same vehicle: arg1 ≠ 0 (entering) → link car to interior arg2 (only if the remote has a vehicle
-   object) and set the local ped's interior to arg2, then A 0x100AC7D0(0); arg1 = 0 (leaving) →
-   interior 0 for both, A 0x100AC7D0(1). (Inferred: passengers follow the driver into the mod shop.)
+4. Mod-shop follow (A 0x10001A60 case 4, static analysis 2026-11-06). Sent by the server to the passengers
+   of a driver who enters or leaves a mod shop. Preconditions, all required, else nothing happens:
+   * `player_id` ≤ 1004 (0x3EC) and that remote player exists in the pool and is streamed in (has a ped);
+   * the vehicle `vehicle_id` exists in the vehicle pool (it is not compared with anything else);
+   * the remote ped and the local ped are both in a vehicle (ped flags +0x46C bit 8);
+   * the remote is **not** a passenger and the local ped **is** one, by samp's passenger test (A 0x100AC000):
+     in a vehicle and either not its driver (`m_pVehicle->m_pDriver` ≠ ped) or the vehicle is a train carriage
+     (569 or 570);
+   * both peds' `m_pVehicle` are the same vehicle (compared as GTA script handles).
+
+   Effect, in this order:
+   * arg1 ≠ 0 (entering): the remote's current vehicle object (remote +0x1E1, the vehicle of its last
+     driver/passenger sync), if present and alive in GTA, is linked to interior `arg2` with SCM 0x0840
+     (`LINK_VEHICLE_TO_INTERIOR`, full 32-bit value); the local ped's interior becomes `arg2 & 0xFF` without a
+     scene refresh (ped method A 0x100AD380 with refresh 0: SCM 0x04BB `SET_AREA_VISIBLE`, then SCM 0x0860
+     `SET_CHAR_AREA_VISIBLE`); then the local player is made uncontrollable (ped method A 0x100AC7D0(0), the
+     RPC 15 code: SCM 0x01B4 (player, 0) and SCM 0x04D7 `FREEZE_CHAR_POSITION` (ped, 1)).
+   * arg1 = 0 (leaving): the same with interior 0 for the vehicle and the ped, then controllable again
+     (A 0x100AC7D0(1): SCM 0x01B4 (player, 1), SCM 0x04D7 (ped, 0); its "teleport to the own position" step
+     only runs for a ped that is not in a vehicle, so never here).
+
+   The client sends nothing in reply; the interior change reaches the server through RPC 118, which the local
+   per-frame code sends on any change of GTA's current area.
 
 ### 96 SCMEvent (C→S)
 

@@ -172,8 +172,12 @@ Every frame while driving (any update type):
   `q := slerp(target, current, 0.75)` normalised and written back as the matrix rotation (position kept).
 * A 0x100AD420 removes a samp-attached object (DETACH_OBJECT 0x0682 + DELETE_OBJECT 0x0108) if the ped has one. (Inferred:
   it clears a hand-held object when seated.)
-* RC models (441, 464, 465, 501, 564, 594): the remote ped object's virtual slot 2 runs. It is the generic "remove from
-  world" (`CWorld::Remove` 0x563280), so the RC "driver" is taken out of the world.
+* RC models (441, 464, 465, 501, 564, 594; tested on the remote's vehicle object +0x1E1, A 0x100B7E40): the remote ped
+  object's virtual slot 2 runs (call site A 0x10016F1B). That slot (A 0x1009F460) is samp's entity "remove from world": when
+  the GTA entity exists, is not a deleted entity (`CPlaceable` vtable 0x863C40) and is in the moving list (CPhysical +0xB4
+  ≠ 0), it calls `CWorld::Remove` (0x563280), which unlinks it from the sector lists (+0xB0) and the moving list. Measured
+  on the original (tools/diff/combatveh-measure.sh, samp-bot driving an RC Bandit): the seated remote ped has +0xB0 = 0 and
+  +0xB4 = 0 in every sample and is not drawn; the nametag stays at the vehicle.
 * NPC drivers whose synced velocity is zero get the vehicle move speed zeroed.
 * Keys/lr/ud are written into the remote's **slot pad** (A 0x100AF380). The horn is applied from that pad: `m_nHornCounter`
   (+0x514) := pad ShockButtonL ≠ 0 (A 0x100AE2B0). AFK timers are in remote-players-sync.
@@ -291,8 +295,9 @@ Consequences (Inferred):
   Speed comes from `extra` (`m_fTrainSpeed`). No rotation slerp, because the rail determines orientation.
 * Unoccupied sync is never sent for rail models. Rail models always run ProcessControl (branch C).
 * Local exit from a train (the leave-car hook, §5) does not send RPC 154. The ped is warped to train position +2.5 on x and y
-  (WARP_CHAR_FROM_CAR_TO_COORD). Model 570 cannot be entered as driver. As passenger, the local ped warps instead of
-  animating.
+  (WARP_CHAR_FROM_CAR_TO_COORD). Model 570 cannot be entered as driver. As passenger (the G poll, A 0x10006FE0 →
+  A 0x100AC450(handle, 1)), the local ped warps instead of animating: SCM 0x0430 WARP_CHAR_INTO_CAR_AS_PASSENGER with
+  seat −1, so GTA picks the carriage's first free passenger seat; RPC 26 (passenger 1) is sent as for other cars.
 * The init patch and hook at 0x6F8CF8 replace the derail block (§2.4). Whether a separate station-passenger block is
   disabled elsewhere was not checked (gta-patches lists the train passenger block as skipped; that row is the same site).
 
@@ -311,7 +316,7 @@ Consequences (Inferred):
 
 | direction | trigger | GTA site / samp | behaviour |
 |---|---|---|---|
-| C→S 26 driver | `CTaskComplexEnterCarAsDriver` ctor entry 0x6402F0, `jmp [0x6919BB]` → A 0x100A3860 | Filtered by return address (0x570A20 or 0x570A99 = player-input code in `CPlayerInfo::Process`, Inferred). The gate A 0x100A3700 refuses when: the car has no samp id; the samp locked flag (+0x60) is set; model 570; the local ped is surfing (fields +0x2DE/+0x2E2 set by the surf detector A 0x10003730; this resolves the vehicles.md unknown); the current driver is a non-player ped; or the current driver is a remote **NPC** (player-pool entry +8 = isNPC, set by PlayerJoin). On refusal the half-built task is deleted through its vtable slot 0 and control jumps to 0x570A9E (no enter). On accept: drop the parachute, send 26 (passenger 0), resume the original ctor at 0x6402F7. |
+| C→S 26 driver | `CTaskComplexEnterCarAsDriver` ctor entry 0x6402F0, `jmp [0x6919BB]` → A 0x100A3860 | Filtered by return address (0x570A20 or 0x570A99 = player-input code in `CPlayerInfo::Process`, Inferred). The gate A 0x100A3700 refuses when: the car has no samp id; the samp locked flag (+0x60) is set; model 570; the local ped is cuffed or carrying (A 0x100ACF30 / 0x100ACE80 read +0x2DE / +0x2E2 of the local **ped object**, local player +0x104 — not the local player's surf fields at the same offsets; the ped object's fields are set by the local special-action code for actions 24 (cuffed) and 25 (carry) and cleared by action 0; measured 2026-11-06: with the surf latch set on a moving platform the original still enters, with special action 24 or 25 it refuses); the current driver is a non-player ped; or the current driver is a remote **NPC** (player-pool entry +8 = isNPC, set by PlayerJoin). On refusal the half-built task is deleted through its vtable slot 0 and control jumps to 0x570A9E (no enter). On accept: drop the parachute, send 26 (passenger 0), resume the original ctor at 0x6402F7. |
 | C→S 26 passenger | per-frame poll A 0x10006FE0 | Closest car < 8 units → TASK_ENTER_CAR_AS_PASSENGER (0x05CA, −1 seat) and send 26 (vehicles.md). |
 | C→S 154 | `CTaskComplexLeaveCar` ctor 0x63B8C0 → A 0x100A38C0 | Only for callers 0x5704A1 / 0x5703FC (player input) and when the vehicle is the local ped's `m_pVehicle` (+0x58C). Trains: warp beside the train, no RPC. Otherwise A 0x10005BF0 (records the last driven vehicle; sends 154 unless RC). The hook then resumes the ctor at 0x63B8C7. It pushes the value of A 0x10113AC0 (−1 normally, 1 for trains) where the original pushed the SEH try-level −1 (Inferred: no functional effect). The "one-shot suppress flag" A 0x10151488 is only read and cleared, never set in A (dead). |
 | local forced | RPC 70 / 71 | 70: warp (0x036A / 0x0430) and camera reset. 71: TASK_LEAVE_CAR; no 154, because the caller address does not match. |
@@ -398,8 +403,9 @@ Pitfalls:
   above speed 1.0. samp's hook clamps the speed to ±1.0 (§2.4).
 * `vehicles.md` 164 step 2: opcodes 0x09C4/0x07FF/0x053F are SET_PETROL_TANK_WEAKPOINT, SET_CAR_HYDRAULICS and
   SET_CAN_BURST_CAR_TYRES (all off). Carriages are not created separately (§1.2.5).
-* `vehicles.md` 26 C→S gate: the two "local-player state checks" are the surf state, and A 0x1000E470 is the remote isNPC
-  flag.
+* `vehicles.md` 26 C→S gate: the two "local-player state checks" are the local ped object's cuffed (+0x2DE) and carry
+  (+0x2E2) flags (an earlier reading as the surf state was wrong: same offsets, different object), and A 0x1000E470 is
+  the remote isNPC flag.
 * `vehicles.md` 154 C→S: flag A 0x10113AC0 only replaces the pushed SEH try-level (Inferred: no functional effect). The
   "one-shot suppress flag" A 0x10151488 is never set.
 * README gap 8: netgame +0x232 is consumed by the ProcessEntityCollision hooks (§2.4).

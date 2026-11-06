@@ -371,7 +371,7 @@ The decoded struct has the same 68-byte layout as C→S. open.mp's writer (two u
 | 27 | offset | 3 × f32 |
 | 39 | weaponId | u8 (current weapon) |
 
-Offset: when an entity was hit, lag-comp selector 0 → hit point transformed into the entity's local frame (inverse matrix); otherwise → hitPos minus entity position. If the hit entity is not a known player/vehicle/object, hitType stays 0 and the offset is converted to world coordinates. Not sent when the weapon is 34 (sniper) and nothing was hit. No throttle.
+Offset: when an entity was hit, lag-comp selector 0 → hit point transformed into the entity's local frame (inverse matrix); otherwise → hitPos minus entity position. The hit entity is looked up in this order: remote player ped (A 0x100138C0) → 1, pool vehicle (A 0x1001EB90) → 2, pool object (A 0x10012A10) → 3 with the samp object id. The object lookup scans ids 1 up to the highest id in use (pool +0, recomputed by A 0x100127A0 on every create) and compares the wrapper's GTA entity (+0x40), so object id 0 is never found (open.mp allocates object ids from 1). If the hit entity is none of these, hitType stays 0 and the offset is converted to world coordinates. Not sent when the weapon is 34 (sniper) and nothing was hit. No throttle.
 
 **S→C** (recv A 0x10009b40): `u8 id, u16 playerId, raw[40]`, playerId < 1004. Apply (A 0x10016370): if hitType != 0 every offset component must be within [−300, 300] or the bullet is dropped; target resolved (1: local ped if hitId == local id; ignored if hitId == shooter; else that remote ped; 2: vehicle). The shooter ped is switched to `weaponId` (given with 9999 ammo if missing) and a synthetic shot is fired from origin toward hitPos (A 0x100af2c0 + A 0x100afab0). **Agrees with open.mp.**
 

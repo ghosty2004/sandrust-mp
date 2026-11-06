@@ -42,6 +42,7 @@
 //   spectate|P|TARGET                      TogglePlayerSpectating + PlayerSpectatePlayer
 //   attachtrailer|TRAILER|VEH              AttachTrailerToVehicle
 //   where|P                                prints position, vehicle, state, health
+//   surf|P                                 prints GetPlayerSurfingVehicleID / GetPlayerSurfingObjectID
 //   manual                                 ManualVehicleEngineAndLights()
 //   stats|P                                prints health, armour, weapon
 // TRACE-6 (world entities, combat); ids are printed as "[ui-fs] SEQ <what> ID":
@@ -164,6 +165,12 @@ public OnPlayerCommandText(playerid, cmdtext[])
 public OnPlayerStateChange(playerid, PLAYER_STATE:newstate, PLAYER_STATE:oldstate)
 {
     printf("[ui-fs] state %d %d->%d veh %d seat %d", playerid, _:oldstate, _:newstate, GetPlayerVehicleID(playerid), GetPlayerVehicleSeat(playerid));
+    return 1;
+}
+
+public OnPlayerInteriorChange(playerid, newinteriorid, oldinteriorid)
+{
+    printf("[ui-fs] interior %d %d->%d", playerid, oldinteriorid, newinteriorid);
     return 1;
 }
 
@@ -560,6 +567,11 @@ Run(seq, const line[])
         new p = pl(line, 1), Float:x, Float:y, Float:z, Float:hp, Float:ang;
         GetPlayerPos(p, x, y, z); GetPlayerHealth(p, hp); GetPlayerFacingAngle(p, ang);
         printf("[ui-fs] %d where %d pos %.3f %.3f %.3f angle %.3f veh %d seat %d state %d health %.1f", seq, p, x, y, z, ang, GetPlayerVehicleID(p), GetPlayerVehicleSeat(p), _:GetPlayerState(p), hp);
+    }
+    else if (!strcmp(cmd, "surf"))
+    {
+        new p = pl(line, 1);
+        printf("[ui-fs] %d surf %d vehicle %d object %d", seq, p, GetPlayerSurfingVehicleID(p), GetPlayerSurfingObjectID(p));
     }
     else if (!strcmp(cmd, "obj"))
         printf("[ui-fs] %d object %d", seq, CreateObject(in(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), fl(line, 7), fl(line, 8)));

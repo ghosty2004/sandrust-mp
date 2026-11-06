@@ -136,14 +136,15 @@ first 200 (`warps_in=1`); car B's in-game position is 0.3–1.8 m from the serve
 * Not applied: row 107 (main table), SP-OFF rows 181/182/189/199 (main), 2/3 (SAA-2), 51 (radar colours: needs
   samp's player palette — so the 0x3EC/0x3EE blips use GTA's colour path for now), 59/60/62/379 (plates / D3D
   proxy, after the M4 merge), 24 (surf glue), 375 (dead in samp), 61 (EU only).
-* Enter refusal: the half-built task is completed by GTA's constructor before being deleted (MR-c). Local surfing
-  is not part of the gate (no local surf state yet).
+* Enter refusal: the half-built task is completed by GTA's constructor before being deleted (MR-c). The gate's
+  cuffed / carry rule is implemented since 2026-11-06 (see "Enter gate, RC driver, 570, mod shop").
 * The train exit warp and the train camera run from the client tick, not inside the constructor hook.
 * `HasCollisionLoaded` gets the current area (samp passes an uninitialised value, MR-5.12).
 * Not reproduced: weapon switch / drive-by / cuffs of remote occupants and the 203 sender while driving (M7),
-  "Car Jacked" ejection (method not specified), RC-driver world removal, the one-shot "force siren" global, model
-  release on stream-out (MR-5.9), SCM event type 4 (mod shop), plate textures, spectating a vehicle, the model-570
-  passenger warp seat, the second towable test (A 0x100B7E10), heli rotor handling of engine params.
+  "Car Jacked" ejection (method not specified), the one-shot "force siren" global, model
+  release on stream-out (MR-5.9), plate textures, spectating a vehicle, the second towable test (A 0x100B7E10), heli
+  rotor handling of engine params. (RC-driver world removal, SCM event type 4 and the 570 passenger warp: done
+  2026-11-06.)
 * RPC 24 doors: `OpenDoor(null ped, node, door, ratio, no sound)` — samp's ped/sound arguments are not documented.
 * RPC 165 for the local driver uses WARP_CHAR_FROM_CAR_TO_COORD to the car position (A 0x100AC5B0 not specified).
 * Blip "occupied" = a driver ped is set (TRACE-4 local enter/exit is consistent with it; passengers unmeasured).
@@ -194,3 +195,28 @@ Report: run `xclient-20261106-161806`, our client, +251 s, read of 0x38C at gta_
   until the harness killed it at 313 s (frame 11492 never advanced) — the model never loaded, i.e. the same broken
   streaming state, where ours used to time out and crash. Our client logged no fault in that run. The
   "game still running 8 s after quit" lines of the original in earlier runs (161806, 163843, 165212) fit the same hang.
+
+## Enter gate, RC driver, 570, mod shop (2026-11-06)
+Static analysis of samp.dll A (B checked where the trace lane runs it), then the parity scenario
+`tools/diff/combatveh.sh` (original in the trace lane, ours in lane ui; `tools/diff/combatveh_eval.py`).
+* **RC driver removal** (A 0x10016F0A → ped wrapper vtable slot 2 = A 0x1009F460): every frame of a remote driver whose
+  vehicle is an RC model (A 0x100B7E40), a live ped that is in the moving list goes through `CWorld::Remove`. Ours:
+  `vehicles.rs` `remove_from_world` after the rotation slerp. Measured (samp-bot driving an RC Bandit): CPhysical +0xB0
+  and +0xB4 of the remote ped are 0 in all 6 samples on both clients, ped flags show "in vehicle" on both.
+* **570 passenger enter** (A 0x10006FE0 → A 0x100AC450(handle, 1)): the local ped warps with SCM 0x0430 and seat −1.
+  Measured (middle carriage of the Unity Station Brown Streak, G): original and ours both PLAYER_STATE_PASSENGER
+  0.39 s after G (warp; the animated enter takes ~2–3 s), server seat 1, GTA passenger slot 0 of the 570 carriage.
+* **RPC 96 type 4** (A 0x10001A60 case 4, spec vehicles.md 96): implemented as `Vehicles::mod_shop_follow`. Measured
+  with `samp-bot --modshop 12,10,1` driving and the local player as passenger (open.mp relays the driver's C→S event to
+  the other players): both clients go to area 1 (`CGame::currArea`, ped and vehicle area code 1) and Pad 0 +0x10E =
+  0x20 (player controls disabled) while "inside", back to 0 / 0x00 after "left"; OnPlayerInteriorChange 0→1 and 1→0 on
+  the server for both.
+* **Driver-enter gate: cuffed / carrying, not surfing.** The gate (A 0x100A3700; B 0x100A3757..0x100A3795) calls
+  A 0x100ACF30 / 0x100ACE80 on the local **ped object** (local player +0x104), whose +0x2DE / +0x2E2 are the cuffed /
+  carry flags of special actions 24 / 25 (set by the local special-action code A 0x1000333A / 0x1000335A, cleared by
+  action 0 at A 0x10003193). The earlier spec reading ("surf glue / latch", same offsets on the local *player* object)
+  was wrong. Measured on the original (`tools/diff/combatveh.sh`): surfing a player-driven Infernus (server surf vehicle
+  5) → F does nothing (GTA itself starts no enter task from the roof; ours logs no gate call either); surfing a
+  moving platform object (server surf object 1 in 3 samples) → F **enters** (enter request, 1→2); special action 24 →
+  no enter request; 25 → none; 0 → enters. Ours now refuses from `combat.cuffs` (`vehhooks::Shared::local_cuffed /
+  local_carrying`, `vehicle::driver_enter_refused`) and logs the refusal; the same six cases match.

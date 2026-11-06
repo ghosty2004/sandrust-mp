@@ -338,7 +338,7 @@ impl Client {
         let now = Instant::now();
         // What the combat hooks queued during this frame's CGame::Process (206 / 115), first.
         self.entities.sent_177 += self.combat.drain(&mut self.net);
-        self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors());
+        self.update_combat_shared();
         // samp's main loop (B 0x1000b5a0): the packet handler first.
         for ev in self.net.tick(now) {
             self.on_event(ev, now);
@@ -463,8 +463,11 @@ impl Client {
             self.entities.tick(&mut self.runner, &mut self.net, &self.players, &self.vehicles);
         }
         // The hooks' view for the next CGame::Process.
-        self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors());
+        self.update_combat_shared();
         self.surf_publish();
+        // The driver-enter gate (A 0x100A3700) refuses while the local ped is cuffed or carrying.
+        let cuffs = self.combat.cuffs;
+        crate::vehhooks::with_shared(|s| (s.local_cuffed, s.local_carrying) = (cuffs.cuffed, cuffs.carry));
         self.entities.sent_177 += self.combat.drain(&mut self.net);
         // Push out what this frame queued (sync packets, RPCs) right away.
         self.net.flush(now);
@@ -646,7 +649,7 @@ impl Client {
             }
             // Bullet sync fires its shot at once (A 0x10009B40 → 0x10016370; combat §8 P10).
             S::Bullet(b) => {
-                self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors());
+                self.update_combat_shared();
                 self.combat.on_bullet(&mut self.runner, &mut self.players, &self.vehicles, &b);
             }
             S::Markers(m) => self.players.on_markers(&mut self.runner, &m),
@@ -1285,6 +1288,18 @@ impl Client {
             Target::Vehicle(id) => self.vehicles.gta_ptr(id),
             Target::Object(id) => self.objects.gta_ptr(id).filter(|&p| p != 0),
         }
+    }
+
+    /// The combat hooks' view of the pools and the local surf state (written before GTA runs and before a remote
+    /// shot is fired).
+    fn update_combat_shared(&self) {
+        let objects = self.objects.pick_list().into_iter().map(|(id, ptr, _)| (ptr, id)).collect();
+        // The surf state's surface as a GTA entity (+0x2DA → wrapper +0x40), also when that entity is missing.
+        let surface = self.surf.target.map(|t| match t {
+            crate::surf::Target::Vehicle(id) => self.vehicles.gta_ptr(id).unwrap_or(0),
+            crate::surf::Target::Object(id) => self.objects.gta_ptr(id).unwrap_or(0),
+        });
+        self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors(), objects, surface);
     }
 
     /// Hands the row-24 hook this frame's surfaces (local and remote, A 0x100A4990).

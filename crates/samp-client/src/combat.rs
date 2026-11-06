@@ -210,8 +210,9 @@ pub struct DamageCtx {
     pub damager_local: bool,
     /// The victim is a `CCivilianPed` (samp actors).
     pub victim_civilian: bool,
-    /// The local player surfs a vehicle and that vehicle is the damager.
-    pub surf_vehicle_is_damager: bool,
+    /// The surfed entity (local surf state +0x2DA, a pool vehicle or object) is the damager.
+    pub surface_is_damager: bool,
+    /// The local surf state has a surface (+0x2DA set).
     pub surfing: bool,
     pub weapon: u32,
     /// Local victim: the attacker as a remote player (ped, or the first remote in the damaging vehicle).
@@ -247,6 +248,23 @@ fn same_team(local_team: u8, other: Option<RemoteRef>) -> bool {
     local_team != 255 && other.is_some_and(|r| r.team == local_team)
 }
 
+/// The surf inputs of the decision (A 0x100A3BF0): `surface` = the GTA entity of the surfed pool vehicle or
+/// object while the local surf state has one (`Some(0)` when that pool entry has no GTA entity).
+pub fn surf_inputs(surface: Option<u32>, damager: u32) -> (bool, bool) {
+    match surface {
+        Some(e) => (true, e == damager),
+        None => (false, false),
+    }
+}
+
+/// Object pool lookup by GTA entity (A 0x10012A10): it scans ids 1..=highest in use, so id 0 is never found.
+pub fn object_of_entity(objects: &[(u32, u16)], entity: u32) -> Option<u16> {
+    if entity == 0 {
+        return None;
+    }
+    objects.iter().find(|o| o.1 != 0 && o.0 == entity).map(|o| o.1)
+}
+
 /// The decision table of remote-control-combat.md §6.1 in samp's order.
 pub fn decide(c: &DamageCtx) -> Decision {
     let cancel = |report| Decision { report, cancel: true };
@@ -255,7 +273,7 @@ pub fn decide(c: &DamageCtx) -> Decision {
         return cancel(None);
     }
     if c.victim_local {
-        if c.surfing && (c.surf_vehicle_is_damager || c.weapon == u32::from(weapon::COLLISION)) {
+        if c.surfing && (c.surface_is_damager || c.weapon == u32::from(weapon::COLLISION)) {
             return cancel(None);
         }
         let report = Some(Report::Take { attacker: c.attacker.map_or(NONE_ID, |r| r.id) });
@@ -593,7 +611,7 @@ mod tests {
             victim_local: false,
             damager_local: false,
             victim_civilian: false,
-            surf_vehicle_is_damager: false,
+            surface_is_damager: false,
             surfing: false,
             weapon: 24,
             attacker: None,
@@ -615,6 +633,15 @@ mod tests {
         // Surfing cases cancel without a report.
         let surf = DamageCtx { surfing: true, ..fall };
         assert_eq!(decide(&surf), Decision { report: None, cancel: true });
+        // Surfing: the surfed entity as damager cancels for any weapon; another damager is reported as usual.
+        let (surfing, by_surface) = surf_inputs(Some(0x1234), 0x1234);
+        let rammed = DamageCtx { victim_local: true, weapon: 49, surfing, surface_is_damager: by_surface, ..ctx() };
+        assert_eq!(decide(&rammed), Decision { report: None, cancel: true });
+        let (surfing, by_surface) = surf_inputs(Some(0x1234), 0x9999);
+        let shot = DamageCtx { victim_local: true, attacker: Some(bot), surfing, surface_is_damager: by_surface, ..ctx() };
+        assert_eq!(decide(&shot), Decision { report: Some(Report::Take { attacker: 3 }), cancel: false });
+        assert_eq!(surf_inputs(None, 0), (false, false));
+        assert_eq!(surf_inputs(Some(0), 0), (true, true));
         // Local attacker.
         let g = DamageCtx { damager_local: true, victim_remote: Some(bot), ..ctx() };
         assert_eq!(decide(&g), Decision { report: Some(Report::Give { victim: 3 }), cancel: false });
@@ -625,6 +652,33 @@ mod tests {
         // Others hitting an actor: cancelled silently; neither side local: original.
         assert_eq!(decide(&DamageCtx { victim_civilian: true, ..ctx() }), Decision { report: None, cancel: true });
         assert_eq!(decide(&ctx()), Decision { report: None, cancel: false });
+    }
+
+    #[test]
+    fn object_lookup_skips_id_zero() {
+        let objs = [(0x100, 0u16), (0x200, 1), (0x300, 999)];
+        assert_eq!(object_of_entity(&objs, 0x100), None);
+        assert_eq!(object_of_entity(&objs, 0x200), Some(1));
+        assert_eq!(object_of_entity(&objs, 0x300), Some(999));
+        assert_eq!(object_of_entity(&objs, 0), None);
+        assert_eq!(object_of_entity(&objs, 0x400), None);
+    }
+
+    #[test]
+    fn bullet_object_hit() {
+        // An object hit keeps the record's local offset (like a vehicle) and carries the object id.
+        let m = ident([10.0, 20.0, 30.0]);
+        let rec = capture(0, [0.0; 3], [11.0, 22.0, 33.0], Some(&m));
+        let b = bullet_sync(&rec, HitTarget::Object(7), None, 24).unwrap();
+        assert_eq!((b.hit_type, b.hit_id), (hit_type::OBJECT, 7));
+        assert_eq!([b.offset.x, b.offset.y, b.offset.z], [1.0, 2.0, 3.0]);
+        let rec = capture(1, [0.0; 3], [11.0, 22.0, 33.0], Some(&m));
+        let b = bullet_sync(&rec, HitTarget::Object(7), None, 24).unwrap();
+        assert_eq!([b.offset.x, b.offset.y, b.offset.z], [1.0, 2.0, 3.0]);
+        // The same entity as an unknown one: hit type 0 with the offset back in world coordinates.
+        let b = bullet_sync(&rec, HitTarget::Other, Some(Placement::Matrix(m)), 24).unwrap();
+        assert_eq!((b.hit_type, b.hit_id), (hit_type::NONE, NONE_ID));
+        assert_eq!([b.offset.x, b.offset.y, b.offset.z], [11.0, 22.0, 33.0]);
     }
 
     #[test]

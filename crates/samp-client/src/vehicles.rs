@@ -11,9 +11,8 @@
 //! packet, no position writes in normal driving), RPC 26/154 at the moment of F, no sync during the exit
 //! animation, stream-out order.
 //!
-//! Not implemented (TODO-unknown or later milestones, see docs/phase3/m5-notes.md): weapons / drive-by / cuffs of
-//! remote occupants and the 203 aim sender (M7), the RC-driver world removal, plate
-//! textures (D3D proxy), model release on stream-out (MR-5.9), SCM event type 4 S→C (mod-shop follow), spectating.
+//! Not here: weapons, drive-by and cuffs of remote occupants (applied through players.rs / combat), plate
+//! textures (plates.rs), spectating (behaviour); open differences are listed in docs/phase3/m5-notes.md.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -46,6 +45,8 @@ mod g {
     /// `CPool<CVehicle>::GetAt(handle)` (thiscall).
     pub const POOL_GET_AT: u32 = 0x4048E0;
     pub const MOVING_LIST: u32 = 0xB4;
+    /// `CWorld::Remove(CEntity*)` (cdecl).
+    pub const CWORLD_REMOVE: u32 = 0x563280;
     pub const TURN_SPEED: u32 = 0x50;
     pub const VEH_FLAGS: u32 = 0x428;
     pub const VEH_SIREN_BYTE: u32 = 0x42D;
@@ -143,6 +144,35 @@ fn write_rows(m: u32, r: &Rotation) {
 
 fn in_vehicle(ped: u32) -> bool {
     rd::<u32>(ped + off::PED_FLAGS) & (1 << 8) != 0
+}
+
+/// samp's entity "remove from world" virtual (A 0x1009F460): a live entity (not the deleted-entity
+/// `CPlaceable` vtable) that is in the moving list goes through `CWorld::Remove`.
+fn remove_from_world(ent: u32) {
+    if ent == 0 || rd::<u32>(ent) == g::VTBL_CPLACEABLE || rd::<u32>(ent + g::MOVING_LIST) == 0 {
+        return;
+    }
+    // SAFETY: `CWorld::Remove(CEntity*)` (cdecl) on a live entity, main thread.
+    unsafe {
+        let f: extern "C" fn(u32) = std::mem::transmute(g::CWORLD_REMOVE as usize);
+        f(ent);
+    }
+}
+
+/// A ped's seat for samp's ped helpers (A 0x100ABEB0 in-vehicle flag, `m_pVehicle`, its driver and model).
+fn seat_of(ped: u32) -> Option<vm::Seat> {
+    if ped == 0 || !in_vehicle(ped) {
+        return None;
+    }
+    let veh: u32 = rd(ped + g::PED_VEHICLE);
+    if veh == 0 {
+        return None;
+    }
+    Some(vm::Seat {
+        vehicle: veh,
+        is_driver: rd::<u32>(veh + g::VEH_DRIVER) == ped,
+        model: u32::from(rd::<u16>(veh + off::ENTITY_MODEL)),
+    })
 }
 
 fn local_ped() -> u32 {
@@ -396,7 +426,7 @@ impl Vehicles {
                     }
                 }
             }
-            V::ScmEvent(e) => self.scm_event(runner, &e),
+            V::ScmEvent(e) => self.scm_event(runner, players, &e),
             V::SetVehiclePlate(p) => {
                 // Text only; the texture is created once by the plate pass (`plates.rs`).
                 if p.plate.len() <= 32
@@ -743,7 +773,7 @@ impl Vehicles {
     }
 
     /// RPC 96 S→C (vehicles.md 96).
-    fn scm_event(&mut self, runner: &mut Runner, e: &rv::ScmEvent) {
+    fn scm_event(&mut self, runner: &mut Runner, players: &Players, e: &rv::ScmEvent) {
         if !self.spawned_once || e.vehicle_id >= u32::from(vm::MAX_VEHICLES) {
             return;
         }
@@ -756,9 +786,40 @@ impl Vehicles {
             }
             2 if kind == Kind::Automobile => add_component(runner, h, e.arg1 as i32),
             3 => self.set_colours(id, e.arg1 as u8, e.arg2 as u8),
-            // 4: mod-shop follow for passengers — TODO-unknown (A 0x100AC7D0 not specified).
+            4 => self.mod_shop_follow(runner, players, e),
             _ => {}
         }
+    }
+
+    /// RPC 96 type 4 (vehicles.md 96 S→C, A 0x10001A60 case 4): the driver `player_id` entered (arg1 ≠ 0) or left
+    /// a mod shop; the local player riding along as a passenger in the same vehicle follows into interior arg2 and
+    /// is frozen, or back to interior 0 and controllable. The packet's vehicle id only has to exist.
+    fn mod_shop_follow(&mut self, runner: &mut Runner, players: &Players, e: &rv::ScmEvent) {
+        if e.player_id > vm::MAX_REMOTE_PLAYER_ID {
+            return;
+        }
+        let Some(rp) = players.get(e.player_id).filter(|p| p.ped != 0) else { return };
+        let local = local_ped();
+        if local == 0 || !vm::mod_shop_follow_applies(seat_of(rp.ped), seat_of(local)) {
+            return;
+        }
+        let Some(h) = game::ped_handle(&ProcessMemory, local).ok().flatten() else { return };
+        let (veh_interior, interior, controllable) = vm::mod_shop_follow(e.arg1, e.arg2);
+        // The remote's vehicle (+0x1E1) follows first (LINK_VEHICLE_TO_INTERIOR when the vehicle exists in GTA).
+        if let Some(v) = self.remote_vehicle(e.player_id).and_then(|id| self.get(id)).filter(|v| v.ptr != 0) {
+            runner.run(op::SET_VEHICLE_AREA_VISIBLE, &[Arg::Int(v.handle), Arg::Int(veh_interior)]);
+        }
+        // Local interior without the scene refresh (A 0x100AD380(interior, 0)).
+        runner.run(op::SET_AREA_VISIBLE, &[Arg::Int(i32::from(interior))]);
+        runner.run(op::SET_CHAR_AREA_VISIBLE, &[Arg::Int(h), Arg::Int(i32::from(interior))]);
+        // Controllable (A 0x100AC7D0): the ped is seated, so the "teleport to its own position" step never runs.
+        runner.run(op::SET_PLAYER_CONTROL, &[Arg::Int(0), Arg::Int(i32::from(controllable))]);
+        runner.run(op::FREEZE_CHAR_POSITION, &[Arg::Int(h), Arg::Int(i32::from(!controllable))]);
+        crate::log!(
+            "vehicles: mod-shop follow (driver {}, arg1 {}): interior {interior}, controllable {controllable}",
+            e.player_id,
+            e.arg1
+        );
     }
 
     /// RPC 70 for the local ped (A 0x100AC2D0).
@@ -1130,6 +1191,11 @@ impl Vehicles {
                     let q = normalise(slerp(d.rotation, cur, remote::SLERP_KEEP));
                     write_rows(m, &rows_from_quat(q));
                 }
+                // RC models (A 0x10016F0A → remote ped wrapper slot 2, A 0x1009F460): the seated "driver" is taken
+                // out of the world (`CWorld::Remove`) whenever GTA has put it in the moving list again.
+                if vm::is_rc(v.model) {
+                    remove_from_world(ped);
+                }
                 if p.npc && d.velocity == [0.0; 3] {
                     put_v3(ptr + off::MOVE_SPEED, [0.0; 3]);
                 }
@@ -1452,7 +1518,7 @@ impl Vehicles {
             .filter(|v| v.ptr != 0 && v.id != 0)
             .filter_map(|v| pos_of(v.ptr).map(|p| (vm::dist3d(p, me), v.id, v.handle, v.model)))
             .min_by(|a, b| a.0.total_cmp(&b.0));
-        let Some((d, id, vh, _model)) = closest else { return };
+        let Some((d, id, vh, model)) = closest else { return };
         if d >= vm::PASSENGER_ENTER_RANGE {
             return;
         }
@@ -1462,11 +1528,15 @@ impl Vehicles {
         if runner.local_i32(0) as u32 == u32::from(vm::WEAPON_PARACHUTE) {
             runner.run(op::SET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Int(0)]);
         }
-        // Model 570 warps instead of animating (vehicles.md 26); the seat it uses is not specified: TODO-unknown.
-        runner.run(
-            op::TASK_ENTER_CAR_AS_PASSENGER,
-            &[Arg::Int(h), Arg::Int(vh), Arg::Int(vm::ENTER_TASK_MS), Arg::Int(-1)],
-        );
+        // A 0x100AC450(handle, 1): model 570 warps (seat −1 = GTA's first free passenger seat), others animate.
+        if vm::passenger_enter_warps(model) {
+            runner.run(op::WARP_CHAR_INTO_CAR_AS_PASSENGER, &[Arg::Int(h), Arg::Int(vh), Arg::Int(-1)]);
+        } else {
+            runner.run(
+                op::TASK_ENTER_CAR_AS_PASSENGER,
+                &[Arg::Int(h), Arg::Int(vh), Arg::Int(vm::ENTER_TASK_MS), Arg::Int(-1)],
+            );
+        }
         crate::log!("vehicles: enter request vehicle {id} (passenger)");
         send(net, &rv::OnPlayerEnterVehicle { vehicle_id: id, passenger: 1 });
         self.n.sent_26 += 1;

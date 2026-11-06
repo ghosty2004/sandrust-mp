@@ -8,6 +8,8 @@
 #     every hit; OnPlayerWeaponShot(hit type 1, the bot) for each in modes 1/2, none in mode 0 (no 206 at all,
 #     TRACE-6 "Lag-comp modes"); the 204 slot record follows the ammo (GetPlayerWeaponData);
 #  3. weapon RPCs: SetPlayerAmmo, SetPlayerArmedWeapon, ResetPlayerWeapons → the server's view (204 / 207);
+#     then a container object on the same ray: both shots give OnPlayerWeaponShot(hit type 3, that object) in
+#     modes 1/2 (none in mode 0);
 #  4. bot shoots local (modes 1/2): samp-bot --mode shoot with 206 hit type 1 at us: our health drops by 46.2 per
 #     hit and we report OnPlayerTakeDamage(46.2, weapon 24) for each; after the third: OnPlayerDeath(killer = bot,
 #     reason 24), then a respawn (OnPlayerSpawn) ~3.6 s later. Mode 0: the server relays no 206; the bot's
@@ -170,6 +172,33 @@ if [[ "${1:-}" == --inner ]]; then
     grep -qE "wdata $L slot 2 weapon 0 ammo 0 " <<< "$w" || fail "ResetPlayerWeapons not reflected in 204"
     stop_bot "$B"
     sleep 2
+
+    # ---- local shoots an object -----------------------------------------------------------------------------
+    # A container on the calibrated ray (where the bot stood): every 206 names it with hit type 3 and its
+    # object id, the offset relative to the object (samp A 0x10006BC0 → object pool lookup A 0x10012A10).
+    fs "obj|2932|$P|0|0|90|300"; O_ID="$(sed -nE 's/.* object ([0-9]+).*/\1/p' <<< "$FS_OUT" | head -n 1)"
+    [[ -n "$O_ID" ]] || fail "object not created"
+    fs "weapon|L|24|50"
+    sleep 2.5
+    s0=$(count "\[ui-fs\] shot $L weapon 24 ")
+    mouse mousedown 3; sleep 1.2
+    for _ in 1 2 3; do mouse mousemove_relative -- 0 -10; sleep 0.05; done
+    sleep 0.6
+    for _ in 1 2; do fire; sleep 1.3; done
+    mouse mouseup 3
+    sleep 1
+    shots=$(( $(count "\[ui-fs\] shot $L weapon 24 ") - s0 ))
+    ohits=$(grep -E "\[ui-fs\] shot $L weapon 24 " "$E2E_LOG" | tail -n "$shots" | grep -cE " hittype 3 hitid $O_ID ")
+    say "local → object $O_ID: $shots OnPlayerWeaponShot, $ohits with hit type 3"
+    grep -E "\[ui-fs\] shot $L weapon 24 " "$E2E_LOG" | tail -n "$shots" | sed 's/^/    /'
+    if [[ "$MODE" == 0 ]]; then
+        (( shots == 0 )) || fail "mode 0 must send no 206"
+    else
+        (( shots == 2 && ohits == 2 )) || fail "want 2 shots, both hit type 3 at object $O_ID"
+    fi
+    fs "objdel|$O_ID"
+    fs "resetw|L"
+    sleep 1
 
     # ---- bot shoots local -----------------------------------------------------------------------------------
     fs "hp|L|100"

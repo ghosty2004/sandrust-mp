@@ -231,8 +231,8 @@ gta-reversed), arg0 = victim ped. Decision returns 1 = **cancel** (stub returns 
 | 0 | no netgame | — | original |
 | 1 | damager ≠ local and victim is a `CCivilianPed` (vtable 0x86C0A8; samp actors) | — | cancel |
 | 2 | neither victim nor damager is local | — | original |
-| 3 | victim local, local is surfing a vehicle (+0x2da) and the damager is that vehicle | — | cancel |
-| 4 | victim local, surfing, weapon 54 | — | cancel |
+| 3 | victim local, the local surf state has a surface (+0x2da: the samp wrapper of a pool vehicle **or** object) and the damager is its GTA entity (wrapper +0x40) | — | cancel |
+| 4 | victim local, surface set (as in 3), weapon 54 | — | cancel |
 | 5 | victim local | RPC 115 taking=1, attacker id (0xFFFF when not a player) | cancel if same team (6.3), else original |
 | 6 | damager local, victim maps to a remote player | RPC 115 taking=0, victim id | cancel if NPC (remote +0x10c ≠ 0) or same team, else original |
 | 7 | damager local, victim is an actor | RPC 177 (damage **not** scaled) | cancel |

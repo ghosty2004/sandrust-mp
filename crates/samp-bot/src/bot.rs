@@ -130,6 +130,9 @@ pub struct Config {
     pub drive_by: bool,
     /// Leave the vehicle (RPC 154) this long after sitting down.
     pub exit_after: Option<Duration>,
+    /// Driver: (after, stay, interior) — RPC 96 type 4 "entered a mod shop" (arg1 1, arg2 interior) this long after
+    /// sitting down, "left" (arg1 0, arg2 0) `stay` later; the server relays it to the vehicle's other players.
+    pub modshop: Option<(Duration, Duration, u32)>,
     pub target: Option<PlayerRef>,
     /// Weapon to shoot with (must be given by the server); default: armed.
     pub weapon: Option<u8>,
@@ -165,6 +168,7 @@ impl Default for Config {
             siren: false,
             drive_by: false,
             exit_after: None,
+            modshop: None,
             target: None,
             weapon: None,
             hit_type: hit_type::PLAYER,
@@ -275,6 +279,8 @@ pub struct Bot {
     t: Timers,
     /// The drive/passenger mode has already used its vehicle.
     vehicle_done: bool,
+    /// RPC 96 type 4 events sent so far (`Config::modshop`).
+    modshop_sent: u8,
     shutting_down: bool,
     aim_since: Option<Instant>,
     next_shot: Option<Instant>,
@@ -319,6 +325,7 @@ impl Bot {
             weapons_tx: WeaponsTracker::default(),
             t: Timers::default(),
             vehicle_done: false,
+            modshop_sent: 0,
             shutting_down: false,
             aim_since: None,
             next_shot: None,
@@ -740,6 +747,22 @@ impl Bot {
                 self.pos = pose.pos;
                 self.heading = pose.heading;
                 self.activity = Activity::Driving { vehicle, motion, since };
+                if let Some((after, stay, interior)) = self.cfg.modshop {
+                    let t = now.duration_since(since);
+                    let (step, arg1, arg2) = match self.modshop_sent {
+                        0 if t >= after => (1, 1, interior),
+                        1 if t >= after + stay => (2, 0, 0),
+                        _ => (0, 0, 0),
+                    };
+                    if step != 0 {
+                        self.modshop_sent = step;
+                        send_rpc(
+                            out,
+                            &vehicle::OnPlayerScmEvent { vehicle_id: u32::from(vehicle), arg1, arg2, event_type: 4 },
+                        );
+                        println!("[car] mod-shop event (RPC 96 type 4) arg1 {arg1} arg2 {arg2} for vehicle {vehicle}");
+                    }
+                }
                 if exit_due && motion.stopped() {
                     self.leave_vehicle(vehicle, 0, now, out);
                 }

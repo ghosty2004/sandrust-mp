@@ -131,8 +131,11 @@ pub struct Shared {
     pub vehicles: Vec<(u32, u16)>,
     /// Actors: (ped, id), filled by the world-entity code (RPC 177 of the damage hook).
     pub actors: Vec<(u32, u16)>,
-    /// The vehicle the local player surfs (0 = none). TODO-unknown until local surfing exists.
-    pub surf_vehicle: u32,
+    /// Pool objects: (GTA pointer, id), for the 206 hit type 3.
+    pub objects: Vec<(u32, u16)>,
+    /// The GTA entity of the surface in the local surf state (+0x2DA: a pool vehicle or object), `None` when the
+    /// state has no surface.
+    pub surface: Option<u32>,
 }
 
 impl Shared {
@@ -547,8 +550,9 @@ fn capture_local(s: u8, origin: V3, hit_pos: V3, hit: u32) {
                 HitTarget::Player(r.id)
             } else if let Some(id) = sh.vehicle_id(entity) {
                 HitTarget::Vehicle(id)
+            } else if let Some(id) = combat::object_of_entity(&sh.objects, entity) {
+                HitTarget::Object(id)
             } else {
-                // Objects (hit type 3) belong to the world-entity pool (M6): TODO-unknown here.
                 HitTarget::Other
             }
         })
@@ -584,8 +588,8 @@ extern "C" fn damage_decide(calc: u32, victim: u32) -> u32 {
             victim_local,
             damager_local,
             victim_civilian: rd::<u32>(victim) == g::VTBL_CIVILIAN_PED,
-            surf_vehicle_is_damager: sh.surf_vehicle != 0 && sh.surf_vehicle == damager,
-            surfing: sh.surf_vehicle != 0,
+            surface_is_damager: combat::surf_inputs(sh.surface, damager).1,
+            surfing: combat::surf_inputs(sh.surface, damager).0,
             weapon,
             attacker: if victim_local { sh.player_of_entity(damager).map(Shared::rref) } else { None },
             victim_remote: if damager_local { sh.player_of_entity(victim).map(Shared::rref) } else { None },
