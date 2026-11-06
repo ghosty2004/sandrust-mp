@@ -40,6 +40,9 @@
 #endif
 
 new gSeed = 4242;
+// JOIN-P: the join dialog's state per player (open since ShowPlayerDialog, GetTickCount of its response).
+new bool:gDialogOpen[MAX_PLAYERS];
+new gDialogClosedAt[MAX_PLAYERS];
 new gUpdates[MAX_PLAYERS];
 new gAlive = 0;
 #if JB_TD > 0
@@ -116,6 +119,8 @@ public OnPlayerUpdate(playerid)
 
 public OnPlayerConnect(playerid)
 {
+    gDialogOpen[playerid] = false;
+    gDialogClosedAt[playerid] = 0;
     if (IsPlayerNPC(playerid)) {
         return 1;
     }
@@ -184,6 +189,8 @@ public OnPlayerConnect(playerid)
         strcat(body, text);
     }
     ShowPlayerDialog(playerid, 77, DIALOG_STYLE_MSGBOX, "{FF0000}JoinBurst rules", body, "Accept", "Quit");
+    gDialogOpen[playerid] = true;
+    gDialogClosedAt[playerid] = 0;
     calls++;
     printf("[joinburst] dialog body %d bytes", strlen(body));
 #endif
@@ -193,6 +200,23 @@ public OnPlayerConnect(playerid)
 
 public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
 {
+    if (dialogid == 77 && gDialogOpen[playerid]) {
+        gDialogOpen[playerid] = false;
+        gDialogClosedAt[playerid] = GetTickCount();
+    }
     printf("[joinburst] dialog response id=%d dialog=%d response=%d", playerid, dialogid, response);
     return 0;
+}
+
+// JOIN-P: every class request with the join dialog's state. "dialog_open=1" = the client asked for a class while
+// the join dialog was still open; after_response_ms = server-side time since the dialog's response (-1: none yet).
+public OnPlayerRequestClass(playerid, classid)
+{
+    new after = -1;
+    if (gDialogClosedAt[playerid] != 0) {
+        after = GetTickCount() - gDialogClosedAt[playerid];
+    }
+    printf("[joinburst] class request id=%d class=%d dialog_open=%d after_response_ms=%d", playerid, classid,
+        gDialogOpen[playerid] ? 1 : 0, after);
+    return 1;
 }

@@ -378,6 +378,9 @@ impl Client {
         self.vehicles.remote_tick(&mut self.runner, &mut self.players);
         self.vehicles.hook_events(&mut self.runner, &mut self.net);
         crate::ui::set_remotes(self.players.ui_snapshot(now));
+        // The UI's messages first: the original sends them from its window procedure, before the local tick
+        // (a dialog closed by Enter sends RPC 62, then this frame's class tick its first RPC 128).
+        crate::ui::send_outgoing(&mut self.net);
         crate::ui::set_class_selection(self.class_sel.is_active());
         if self.behaviour.spectate.on && !self.spawned && matches!(self.net.phase(), Phase::Connected) {
             // Spectating without being spawned (B 0x10007A9A): class selection is left, then the spectator tick.
@@ -1025,14 +1028,23 @@ impl Client {
         let mem = ProcessMemory;
         // Clicks on the class-selection panel (<<, >>, Spawn) act like the keys.
         let click = crate::ui::take_class_click();
+        // The rest runs only while no dialog is open (A 0x10006100 tests dialog+0x28): a dialog the server
+        // shows on connect holds back the first RPC 128 until it is answered; it goes out in the first local
+        // tick after the close (the close clears the flag at once, A 0x1006f860, not after the input-lock
+        // restore).
+        if crate::ui::dialog_open() {
+            return;
+        }
         let keys = classsel::Keys {
             left: click == 1 || async_key_down(VK_LEFT) || game::key_down(&mem, game::key::LEFT),
             right: click == 2 || async_key_down(VK_RIGHT) || game::key_down(&mem, game::key::RIGHT),
+            // Shift does nothing while the chat input is open (A 0x10006100 tests chat input +0x14e0).
             shift: click == 3
-                || async_key_down(VK_SHIFT)
-                || game::key_down(&mem, game::key::SHIFT)
-                || game::key_down(&mem, game::key::LSHIFT)
-                || game::key_down(&mem, game::key::RSHIFT),
+                || (!crate::ui::chat_input_open()
+                    && (async_key_down(VK_SHIFT)
+                        || game::key_down(&mem, game::key::SHIFT)
+                        || game::key_down(&mem, game::key::LSHIFT)
+                        || game::key_down(&mem, game::key::RSHIFT))),
         };
         match self.class_sel.tick(now, keys) {
             Some(classsel::Action::RequestClass(i)) => {
