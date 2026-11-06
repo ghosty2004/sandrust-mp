@@ -54,12 +54,19 @@ MEM_SLOPE_MAX_MB_H = 40.0
 # Samples are at most ~25 s apart even across a case (recover() keeps sampling); a longer gap means the
 # whole run (monitor, server, game, bots) was stopped from outside, e.g. a SIGSTOP of its process group.
 PAUSE_S = 60.0
-# Discrete state the client takes over from a server RPC (join/quit, stream in/out, seat, driver). The
-# client is queried after the server dump; a change on the server in between (an RPC in flight) shows
-# the client already in the new state. These categories are therefore judged against two server dumps,
-# one before and one after the client query, and fail only when the client matches neither.
-BRACKETED = ("remote_known", "remote_ghost", "remote_stream", "remote_vehicle", "veh_stream", "veh_driver")
+# State the client takes over in steps from the server or the driver's sync: join/quit, stream in/out,
+# seat, driver (RPCs) and vehicle health (a step per received sync; the server's copy of our own car's
+# health likewise steps with each of our driver syncs). The client is queried after the server dump; a
+# step on either side in between shows the client already in the next state. These categories are
+# therefore judged against two server dumps, one before and one after the client query, and fail only
+# when the client matches neither. Measured for veh_hp (derby 2 h, docs/phase3/soak-notes.md "F7
+# settled"): 14 of the original's 15 and 29 of our 34 misses showed exactly the second dump's value.
+BRACKETED = ("remote_known", "remote_ghost", "remote_stream", "remote_vehicle", "veh_stream", "veh_driver", "veh_hp")
 WARMUP_S = 300        # memory slope: ignore the first part of each client session (and of each segment, below)
+# A fresh game process keeps streaming in for longer: in derby its RSS still rose by 3-26 MB between 300 s
+# and ~900 s after the launch and was flat (<= 10 MB/h) after that, on the original as on ours (2 h derby,
+# docs/phase3/soak-notes.md "F7 settled"). The judged slope skips that part of a session's first segment.
+WARMUP_FRESH_S = 900
 
 # Wine's messages for a fatal exception (with WINEDEBUG=-all,err+seh) and the DLL's panic hook.
 CRASH_PATTERNS = [r"wine: Unhandled", r"starting debugger", r"Unhandled exception", r"Unhandled page fault", r"err:seh", r"wine: Assertion", r"EXCEPTION_ACCESS_VIOLATION"]
@@ -409,6 +416,7 @@ class Soak:
         self.errors = 0
         self.client_started = now()
         self.last_sample_at = None
+        self.client_started_wall = time.time()
 
     # ---- bookkeeping ---------------------------------------------------------------------------
     def t(self):
@@ -652,6 +660,7 @@ class Soak:
         e.pop("WAYLAND_DISPLAY", None)
         e.pop("SAMP_RS_PRE_DLL", None)
         logf = open(d + "/run.out", "wb")
+        self.client_started_wall = time.time()
         if self.orig is not None:
             # tools/trace/lib.sh trace_launch: the launcher loads samp-tracer.dll, then samp.dll
             e["TRACE_HOST"] = self.proxy_host
@@ -943,6 +952,12 @@ class Soak:
             if "id" in f:
                 rl[int(f["id"])] = f
         local_id = dump["local"]
+        vl = {}
+        hdr_ok = vehicles is not None
+        for l in (vehicles or [])[1:]:
+            f = dict(re.findall(r"(\w+)=(\S+)", l))
+            if "id" in f:
+                vl[int(f["id"])] = f
         for pid_, p in dump["players"].items():
             if pid_ == local_id:
                 continue
@@ -957,10 +972,19 @@ class Soak:
             if not has_ped:
                 continue
             cpos = [float(x) for x in r["pos"].split(",")]
+            # A seated player's server position is its vehicle's (driver and passenger sync carry the vehicle
+            # position); the ped itself sits at the model's seat, up to several metres from the car's origin
+            # (Sandking 0.5 m, Dune 2.1 m, Bus more: measured on both clients). Compare the client's car then.
+            via = ""
+            cv = vl.get(int(r["vehicle"])) if p["st"] in (2, 3) and r.get("vehicle", "-").isdigit() else None
+            if cv is not None and cv.get("pos", "-") != "-":
+                vpos = [float(x) for x in cv["pos"].split(",")]
+                via = " via=veh%s seat_offset=%.2f" % (r["vehicle"], math.dist(cpos, vpos))
+                cpos = vpos
             tol = (TOL_FOOT_M if p["st"] == 1 else TOL_VEH_M) + p["speed"] * LAG_S
             d = math.dist(cpos, p["pos"])
-            comps.append(("remote_pos", p["name"], d <= tol, "d=%.2f tol=%.2f st=%d client=%s server=%s | %s" % (
-                d, tol, p["st"], cpos, p["pos"], " ".join("%s=%s" % (k, r.get(k)) for k in (
+            comps.append(("remote_pos", p["name"], d <= tol, "d=%.2f tol=%.2f st=%d client=%s server=%s%s | %s" % (
+                d, tol, p["st"], cpos, p["pos"], via, " ".join("%s=%s" % (k, r.get(k)) for k in (
                     "id", "slot", "state", "sync_age_ms", "sync_pos", "teleports", "vehicle", "veh_sync")))))
             try:
                 chp = float(r["health"])
@@ -978,12 +1002,6 @@ class Soak:
             comps.append(("remote_ghost", r.get("name", str(cid)), cid in dump["players"],
                           "client lists id %d (%s), server does not" % (cid, r.get("name"))))
         # vehicles
-        vl = {}
-        hdr_ok = vehicles is not None
-        for l in (vehicles or [])[1:]:
-            f = dict(re.findall(r"(\w+)=(\S+)", l))
-            if "id" in f:
-                vl[int(f["id"])] = f
         drivers = {p["veh"]: p for p in dump["players"].values() if p["st"] == 2 and p["veh"] > 0}
         for vid, v in dump["vehicles"].items():
             if v["streamed"] != 1 or not hdr_ok:
@@ -1012,9 +1030,39 @@ class Soak:
         return comps
 
     # ---- recovery ------------------------------------------------------------------------------
+    def chatlog_path(self):
+        """The original's chat log (samp.dll appends every chat entry to chatlog.txt in the user files
+        dir, docs/re/subsystems/ui-chat-audio.md "Logging"); the tracer serves no `chat` command."""
+        return self.prefix + "/drive_c/users/%s/Documents/GTA San Andreas User Files/SAMP/chatlog.txt" % os.environ.get("USER", "")
+
+    def chat_lines(self, n):
+        if self.orig is None:
+            return self.ctl("chat %d" % n, multi=True) or []
+        # the chat window opens the file with mode "w" (truncated at every game start,
+        # docs/re/subsystems/ui-rendering.md): a file not written since this session's launch is the last one's
+        try:
+            p = self.chatlog_path()
+            if os.path.getmtime(p) < self.client_started_wall:
+                return []
+            with open(p, "rb") as f:
+                return f.read().decode("cp1252", "replace").splitlines()[-n:]
+        except OSError:
+            return []
+
     def chat_has(self, text, n=60):
-        lines = self.ctl("chat %d" % n, multi=True) or []
-        return any(text in l for l in lines)
+        return any(text in l for l in self.chat_lines(n))
+
+    def say(self, text):
+        """A chat line from the player: our client's control `say`; the original's chat input typed on the
+        game window (T, the text, Enter), as a player would."""
+        if self.orig is None:
+            return self.ctl("say " + text)
+        self.key("t")
+        time.sleep(0.3)
+        subprocess.run(["xdotool", "type", "--delay", "40", text], env=dict(os.environ, DISPLAY=self.display),
+                       stderr=subprocess.DEVNULL)
+        self.key("Return")
+        return "typed"
 
     def recover(self, name, deadline=STUCK_S, relaunch_on=None):
         """Sample until the client is healthy and spawned again; relaunch_on: chat text after which a
@@ -1083,7 +1131,7 @@ class Soak:
         os.kill(self.proxy.pid, signal.SIGUSR1)
         t = now()
         time.sleep(1)
-        said = self.ctl("say soak netloss probe")
+        said = self.say("soak netloss probe")
         while now() - t < self.netdrop_s:
             time.sleep(0.5)
         os.kill(self.proxy.pid, signal.SIGUSR2)
@@ -1328,6 +1376,7 @@ def report(out, extra=None):
     # (session start / case end + WARMUP_S ... next case start), pooled (one common slope, an intercept
     # per segment), so neither the re-warm-ups nor the steps across the cases (reported separately in
     # memory_case_steps) count as a trend. Judged when the segments cover >= 600 s.
+    # The first segment of a session starts WARMUP_FRESH_S after the game launch (late streaming warm-up).
     case_spans = [(st["t"], en["t"]) for st, en in zip(starts, ends)]
     for m in mem_sessions:
         ss = [s for s in samples if s.get("session") == m["session"] and s.get("rss_kb")]
@@ -1337,16 +1386,21 @@ def report(out, extra=None):
             if s["phase"] != "steady":
                 continue
             b = max(x for x in bounds if x <= s["t"])
-            if active(s["t"]) - active(b) >= WARMUP_S:
+            if active(s["t"]) - active(b) >= (WARMUP_FRESH_S if b == bounds[0] else WARMUP_S):
                 segs.setdefault(b, []).append((active(s["t"]), s["rss_kb"] / 1024.0))
         sxy = sxx = span = 0.0
-        for v in segs.values():
-            if len(v) < 3:
+        m["segments"] = []
+        for b, v in sorted(segs.items()):
+            if len(v) < 3 or v[-1][0] - v[0][0] < 60:
                 continue
             mx, my = sum(t for t, _ in v) / len(v), sum(y for _, y in v) / len(v)
             sxy += sum((t - mx) * (y - my) for t, y in v)
             sxx += sum((t - mx) ** 2 for t, _ in v)
             span += v[-1][0] - v[0][0]
+            sl = linreg([t for t, _ in v], [y for _, y in v])
+            m["segments"].append({"from": round(v[0][0]), "to": round(v[-1][0]), "fresh": b == bounds[0],
+                                  "slope_mb_per_h": round(sl * 3600, 1) if sl is not None else None,
+                                  "rise_mb": round(v[-1][1] - v[0][1], 1)})
         m["judged_slope_mb_per_h"] = round(sxy / sxx * 3600, 1) if sxx else None
         m["judged_span_s"] = round(span)
     longest = max(mem_sessions, key=lambda m: m["judged_span_s"], default=None)

@@ -27,8 +27,9 @@
 #   SOAK_CASES="gmx kick"                     the scripted cases to run (default all; "" = none)
 #   SOAK_CLIENT=orig                          the ORIGINAL samp.dll (+ samp-tracer.dll) instead of our client,
 #                                             in the trace lane (its lock is taken; output target/soak-orig/);
-#                                             no scripted cases unless SOAK_CASES is set (net / remote /
-#                                             vehicles are read from samp.dll's memory, soak_mon.py OrigView)
+#                                             the same cases (chat read from samp's chatlog.txt, chat typed on
+#                                             the game window; net / remote / vehicles are read from samp.dll's
+#                                             memory, soak_mon.py OrigView)
 # Output: target/soak/<gamemode>/ (summary.json, samples.jsonl, events.jsonl, client-N/, bots/).
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -42,7 +43,6 @@ if [[ "$SOAK_CLIENT" == orig ]]; then
     # trace lane: prefix-trace, gta-sa-trace, server 7790, tracer control 47701; blocking lane lock
     source "$ROOT/tools/trace/lib.sh"
     trace_lock
-    export SOAK_CASES="${SOAK_CASES-}"
 fi
 export E2E_TAG="${E2E_TAG:-main}" E2E_PORT="${E2E_PORT:-7777}" E2E_CTL_PORT="${E2E_CTL_PORT:-47700}"
 export SAMP_RS_CTL_PORT="$E2E_CTL_PORT"
