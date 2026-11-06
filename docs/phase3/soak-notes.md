@@ -50,12 +50,12 @@ Comparisons (category: what must hold):
 | `remote_known` | every connected player is in the client's pool with the same name |
 | `remote_ghost` | the client lists no player the server does not have |
 | `remote_stream` | a player streamed in for us (IsPlayerStreamedIn) has a ped in the game |
-| `remote_pos` | that ped vs the server's position |
+| `remote_pos` | that ped vs the server's position; for a seated player the client's position of its vehicle (the server's position of a seated player is its vehicle's; the ped sits at the model's seat, up to several metres from the car's origin: section "F7 settled") |
 | `remote_hp` | synced health vs the server's, ±7 (the server relays health packed with armour into one byte, 4 bits each in steps of 7 HP: a 43 HP bot arrives as 49) |
 | `remote_vehicle` | a seated remote player sits in the same vehicle id in the game |
 | `veh_stream` | a vehicle streamed in for us exists in the game |
 | `veh_pos` | its position vs GetVehiclePos |
-| `veh_hp` | its health vs GetVehicleHealth, ±10 |
+| `veh_hp` | its health vs GetVehicleHealth, ±10 (bracketed, see `BRACKETED`) |
 | `veh_driver` | the game's driver (local / player id / none) is the server's driver |
 
 Position tolerance: 4 m on foot, 6 m in a vehicle (the acceptance values of `m3.sh` / `m5.sh`) plus
@@ -96,7 +96,8 @@ the typed chat line.
 * fps: median ≥ 20 and 5th percentile ≥ half the median;
 * memory: the least-squares slope of the game's RSS over a client session, after its first 300 s
   (streaming warm-up: 160 → 250 MB in the first minutes), ≤ 40 MB/h; only judged on a session with at
-  least 600 s after the warm-up (a 2 h soak), reported otherwise.
+  least 600 s after the warm-up (a 2 h soak), reported otherwise. Judged within segments (below, (b)); the
+  first segment of a game process starts 900 s after the launch (`WARMUP_FRESH_S`, section "F7 settled").
 
 ## Trial results (SOAK_SECS=600, 2026-11-05)
 
@@ -310,8 +311,9 @@ received (3 wraps), RPCs applied to the end, remote_known / remote_ghost / veh_s
   in the trace lane (its lock is taken). `net` / `remote` / `vehicles` are built from samp.dll's memory
   through the tracer's `peek` (the 2019 build that lane runs; offsets in `OrigView`, read from its code),
   the class-selection and spawned flags come from the server's state; remote_hp is not compared (samp keeps
-  the remote CPed's health at 1000 and the synced value elsewhere). `SOAK_CASES` selects the cases (orig
-  default: none; netloss / srvkill / kick need the chat, which the tracer does not serve).
+  the remote CPed's health at 1000 and the synced value elsewhere). `SOAK_CASES` selects the cases (since
+  "F7 settled" the orig default is all of them, as for ours: the chat is read from samp's own `chatlog.txt`,
+  which the chat window truncates at every game start, and the netloss chat line is typed on the game window).
   `TRACE_HOST` in `trace_launch` points the original at the proxy.
 
 ### (c) Original vs ours, same derby configuration (1800 s, bots as in the soak, no cases)
@@ -344,3 +346,89 @@ run3 and run4 ran back to back on the final code (outputs `target/soak-runs/run3
 
 E2E on the branch (lane veh, after run4): m1, m2, m3, m4, m5, m6, m7, m8a, m8b, m9 (with
 `M9_ORIG=<main checkout>/target/m9-orig/trace.jsonl`; bass_diff 0 differences), m10, goal, saa — all exit 0.
+
+## F7 settled: 2-hour derby, original vs ours (2026-11-06, branch soak-final)
+
+The 2 h derby soak on main (`target/soak-early3/`, lane veh) failed narrowly: `remote_pos` 98.83 % (74 of 6353)
+and "memory slope 40.4 MB/h > 40 (session 1, 2438 s judged)", everything else passing. The original ran the
+**same** soak (all five cases, same schedule) in the trace lane: `SOAK_CLIENT=orig` now runs every case
+(chat from samp's `chatlog.txt`, the netloss chat line typed on the game window; the 600 s trial passed all
+five cases on the original: gmx 19 s, netloss 13 s, srvkill 17 s, kick 27 s, srvrestart 43 s).
+Outputs: `target/soak-runs/` in the worktree (`orig-trial`, `orig-2h`, `ours-a`, `ours-final`, `orig-final`).
+
+### The 74 remote_pos misses
+
+* Entities: 73 SkIdle (the idle bot, parked in its derby car, rammed by the drivers), 1 SkWalk (a teleport
+  sample, 12 m). All with the player seated (server state 2), none dying, respawning or in a case window;
+  spread over the run (0–6 per 10 min, per 30-min block 99.4 / 99.4 / 98.2 / 98.4 %).
+* Magnitude: 0–8.3 m beyond the 6 m tolerance (median 1.4 m).
+* 43 of the 73 SkIdle misses had SkIdle's **car** within tolerance in the same sample (veh_pos ok). The
+  ped of a seated player sits at the model's seat, not at the car's origin, while the server's position of
+  a seated player is its vehicle's (driver / passenger sync carry the vehicle position). Measured
+  ped-to-car distance in our client: Sandking (495) 0.5 m, Dune (573) 2.1 m along the car's forward axis
+  (all bots, ped state 50 DRIVING, in-vehicle flag set); the original shows 0.2–0.7 m on the models of its
+  run. Derby rotates the spawn car model on a timer (`DerbyChangeSpawnVehicleTimer`), randomly. Per model
+  in the failing run: Bus (431) remote_pos 95.4 % but veh_pos 99.8 %, Dune 97.4 % / 99.2 %, Sandking
+  99.3 % / 99.5 %. The original's run had neither Bus nor Dune rounds. So the miss rate depended on the
+  random model mix, not on the client: **harness error** (seat position compared with a car origin).
+* The rest (30) is the shared, known case (c) of "The 2-hour derby run": the parked car pushed 6–12 m by
+  the other cars between the idle bot's sparse syncs. How often depends on the spot where the bot parks
+  (derby spawn points; e.g. (-282, 2164) gave 16 of ours-final's 27, the original parked there once).
+
+### veh_hp
+
+Of the original's 15 veh_hp misses 14, of ours-a's 34 (+1 unmatched) 29, showed the client already holding
+exactly the value of the server dump taken **after** the client query (`client=918 dump1=956.8 dump2=918.2`):
+a health step in flight between the first dump and the client query — the sampling-order case the
+bracketed comparison handles for RPC state. Nearly all are our own car (local driver: ours 33, original
+13): its server copy steps with each of our driver syncs. ours-a's one persistent desync (veh1, 3 samples)
+was such a sequence (a rammed bus going 796 → 291 → explosion). Our client queries four control commands
+(~68 ms) where the original's `peek`s take ~15 ms, so a step falls into our window more often; with the
+bracket both clients are measured against the server's state at the moment of the query.
+
+### Memory: why 40.4 judged vs 18.9 for the same session
+
+`slope_mb_per_h` (18.9) is one line through the whole session after 300 s. The judged slope fits each
+segment between in-process reconnects separately (an intercept per segment) and pools them, so every
+segment weighs by its own spread of time. Session 1's segments: 300–925 s +17.2 MB (138 MB/h), then
+5.1, 8.8, 2.4 MB/h. A fresh game process is still streaming in between 300 s and ~900 s; that one segment
+carried the pooled slope to 40.4. In the whole-session line the same 17 MB are spread over 3400 s.
+The original shows the same late warm-up (orig-2h fresh segments 300–930 s: +7.7, +3.2, +11.5 MB = 48, 21,
+56 MB/h; ours-a +9.4, +8.8, +12.6), both flat afterwards (≤ 10 MB/h) at the same plateau (session ends:
+original 302 / 294 / 311 MB, ours 300 / 291 / 304, early3 308 / 307 / 305). Not a leak, on either client.
+Change: the first segment of a game process starts at `WARMUP_FRESH_S` = 900 s (in-process segments keep
+300 s); the 40 MB/h limit is unchanged.
+
+### Original vs ours, 2 h derby, same cases and schedule
+
+| category | original orig-2h (old rules) | ours early3 (main, old rules) | ours-a (old rules) | **ours-final (new rules)** | original orig-final (new rules) |
+| --- | --- | --- | --- | --- | --- |
+| crashes / stuck / cases | 0 / 0 / 7 of 7 ok | 0 / 0 / 7 ok | 0 / 0 / 7 ok | 0 / 0 / 7 ok | 0 / 0 / 7 ok |
+| remote_known, remote_ghost, remote_stream, veh_stream, local_hp | 100 % | 100 % | 100 % | 100 % | 100 % |
+| local_pos | 100 % | 99.91 % | 100 % | 100 % | 100 % |
+| remote_pos | 99.75 % (16, SkIdle) | 98.83 % (74) | 99.53 % (30) | **99.57 %** (27, SkIdle) | 99.78 % (14, SkIdle) |
+| remote_pos on Sandking rounds | 99.67 % | 99.33 % | 99.60 % | 99.32 % | 99.58 % |
+| veh_pos | 99.80 % | 99.57 % | 99.70 % | **99.64 %** | 99.81 % |
+| veh_hp | 99.80 % (14 of 15 in flight) | 99.64 % | 99.54 % (29 of 34 in flight) | **100 %** | 99.99 % (1) |
+| remote_vehicle / veh_driver | 99.98 / 99.99 % | 99.95 / 99.95 % | 99.98 / 99.96 % | 100 / 100 % | 100 / 100 % |
+| persistent desyncs | 0 | 0 | 1 (veh_hp, in flight) | 0 | 0 |
+| fps median | 52.4 | 52.4 | 52.4 | 52.4 | 52.4 |
+| memory, whole session 1 after 300 s | 10.8 MB/h | 18.9 | 12.8 | 11.5 | 15.5 |
+| memory judged (new rule) | 5.2 MB/h | 5.4 | 2.9 | **6.0** (1818 s) | 13.6 (1841 s) |
+| verdict | PASS | FAIL | FAIL (persistent veh_hp) | **PASS** | PASS |
+
+(remote_hp is not read from the original. "old rules" columns: report recomputed where the rule is a
+report-level one, i.e. the memory row.)
+
+### Decisions
+
+* remote_pos and veh_hp: harness measurement errors, fixed in the measurement (seated players via their
+  car; veh_hp bracketed by the two dumps); thresholds unchanged (99 %, 6 m, ±10). Both are applied to the
+  original by the same code (OrigView lists the vehicle of a seated remote player).
+* The remaining position misses are SkIdle's rammed parked car on both clients (Sandking rounds: ours
+  99.32–99.60 % over three 2 h runs, the original 99.46 % (30 min), 99.67 % and 99.58 % (2 h)); how often depends
+  on where the idle bot parks, and our block-to-block spread within one run (98.9–99.8 %) covers the
+  original's values. Shared behaviour (remote-control-vehicles.md §2.2), no client change.
+* Memory: the original shows the same late warm-up of a fresh game process; the judged window starts after
+  it (900 s, measured on the original), the limit stays 40 MB/h. No relative threshold was needed: with the
+  measurement fixed, both clients clear the absolute thresholds with the same margins.
