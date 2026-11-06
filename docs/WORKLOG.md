@@ -632,3 +632,17 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   40.4 > 40 MB/h) — a 2 h original-client comparison is running before any decision.
 
 - F4 tools/diff/visual.sh (full run, fresh original capture, glyph-batch merge d7a116b): exit 0 — 28 elements OK, 0 DIFF, 0 MISSING. Negative tests (changed text, changed batch vertex count) exit 1.
+
+## 2026-11-06 — JOIN-P class request held back by the join dialog (worktree joinp, branch request-class)
+- Original rule (static, A 0x10006100): after the HUD/cursor part, the class-selection tick runs only while the
+  dialog object (A 0x1026e9c8) has "open" (+0x28) = 0; this holds back the first RPC 128 as well as Shift and the
+  arrows. The close (A 0x1006f860) clears +0x28 at once; Shift also needs the chat input closed (+0x14e0 = 0).
+  No other state (menu, textdraw selection, input lock) holds the first request.
+- Measured (tools/e2e/joinburst.sh orig, lane ui, 2/2): no RPC 128 while the dialog is open; RPC 62 in its own
+  datagram, RPC 128 4.2 ms later in the next one (5 ms at the server).
+- Fix: `ui::dialog_open()` gates `class_selection_tick`, `ui::chat_input_open()` gates the Shift key; the UI's
+  queued messages (`ui::send_outgoing`) now go out before the local tick, so RPC 62 precedes RPC 128 like the
+  original's window-procedure send. Residual: ours packs 62 and 128 into one datagram (RakNet send timing).
+- joinburst.sh: JOIN-P assertions (server-side dialog state + ms since the response, client-leg capture order and
+  delta ≤ JB_CLASS_MAX_MS), JB_LANE=ui. Ours: 2/2 (plain + mix-sc:8), 0 ms, same datagram. m1, m2, m8a pass;
+  607 tests; clippy 0 host + i686.

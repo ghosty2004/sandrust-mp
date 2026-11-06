@@ -1445,6 +1445,27 @@ pub fn set_class_selection(active: bool) {
     let _ = try_with_ui(|st| st.core.class_selection = active);
 }
 
+/// A dialog is open (samp's dialog object +0x28, A 0x1026e9c8): class selection's tick does nothing
+/// while it is (A 0x10006100).
+pub fn dialog_open() -> bool {
+    with_ui(|st| st.core.dialogs.is_open()).unwrap_or(false)
+}
+
+/// The chat input is open (chat input object +0x14e0, A 0x1026e9fc): Shift does not request a spawn.
+pub fn chat_input_open() -> bool {
+    with_ui(|st| st.core.input.is_open()).unwrap_or(false)
+}
+
+/// Sends the UI's queued messages now. The original sends them from its window procedure (a
+/// dialog's RPC 62 when Enter is released, chat lines, clicks), i.e. before the frame's local
+/// tick: the session tick calls this before the local player's part, `net_tick` again at its end.
+pub fn send_outgoing(net: &mut NetClient) {
+    let out = with_ui(|st| st.core.take_outgoing()).unwrap_or_default();
+    for o in out {
+        send_one(net, o);
+    }
+}
+
 /// Once per session tick: connection lines and the UI's outgoing messages.
 pub fn net_tick(net: &mut NetClient) {
     let c = net.counters();
@@ -1466,57 +1487,57 @@ pub fn net_tick(net: &mut NetClient) {
         s.acks_received = l.acks_received as u32;
         s.duplicate_acks_received = l.duplicate_acks_received as u32;
     });
-    let out = with_ui(|st| st.core.take_outgoing())
-    .unwrap_or_default();
-    for o in out {
-        match o {
-            Outgoing::Chat(message) => {
-                crate::log!("ui: RPC 101 {:?}", String::from_utf8_lossy(&message));
-                net.send_rpc(&PlayerRequestChatMessage { message }, Reliability::Reliable);
-            }
-            Outgoing::Command(command) => {
-                crate::log!("ui: RPC 50 {:?}", String::from_utf8_lossy(&command));
-                net.send_rpc(&PlayerRequestCommandMessage { command }, Reliability::Reliable);
-            }
-            Outgoing::Rcon(command) => net.send_sync(&RconCommand { command }),
-            Outgoing::DialogResponse(r) => {
-                crate::log!(
-                    "ui: RPC 62 id={} response={} listitem={} text={:?}",
-                    r.dialog_id,
-                    r.response,
-                    r.list_item,
-                    String::from_utf8_lossy(&r.text)
-                );
-                net.send_rpc(&r, Reliability::ReliableOrdered);
-            }
-            Outgoing::SelectTextDraw(textdraw_id) => {
-                crate::log!("ui: RPC 83 textdraw {textdraw_id:#x}");
-                net.send_rpc(&OnPlayerSelectTextDraw { textdraw_id }, Reliability::ReliableOrdered);
-            }
-            Outgoing::MenuRow(row) => {
-                crate::log!("ui: RPC 132 row {row}");
-                net.send_rpc(&OnPlayerSelectedMenuRow { row }, Reliability::Reliable);
-            }
-            Outgoing::MenuExit => {
-                crate::log!("ui: RPC 140");
-                net.send_rpc(&OnPlayerExitedMenu, Reliability::Reliable);
-            }
-            Outgoing::ScoresRequest => net.send_rpc(&OnPlayerRequestScoresAndPings, Reliability::Reliable),
-            Outgoing::ClickPlayer(player_id) => {
-                crate::log!("ui: RPC 23 player {player_id}");
-                let p = samp_proto::rpcs::session::OnPlayerClickPlayer {
-                    player_id,
-                    source: samp_proto::rpcs::session::OnPlayerClickPlayer::SOURCE_SCOREBOARD,
-                };
-                net.send_rpc(&p, Reliability::ReliableOrdered);
-            }
-            Outgoing::ClickMap(pos) => {
-                crate::log!("ui: RPC 119 {pos:?}");
-                let p = samp_proto::rpcs::session::OnPlayerClickMap {
-                    pos: samp_proto::types::Vec3 { x: pos[0], y: pos[1], z: pos[2] },
-                };
-                net.send_rpc(&p, Reliability::Reliable);
-            }
+    send_outgoing(net);
+}
+
+fn send_one(net: &mut NetClient, o: Outgoing) {
+    match o {
+        Outgoing::Chat(message) => {
+            crate::log!("ui: RPC 101 {:?}", String::from_utf8_lossy(&message));
+            net.send_rpc(&PlayerRequestChatMessage { message }, Reliability::Reliable);
+        }
+        Outgoing::Command(command) => {
+            crate::log!("ui: RPC 50 {:?}", String::from_utf8_lossy(&command));
+            net.send_rpc(&PlayerRequestCommandMessage { command }, Reliability::Reliable);
+        }
+        Outgoing::Rcon(command) => net.send_sync(&RconCommand { command }),
+        Outgoing::DialogResponse(r) => {
+            crate::log!(
+                "ui: RPC 62 id={} response={} listitem={} text={:?}",
+                r.dialog_id,
+                r.response,
+                r.list_item,
+                String::from_utf8_lossy(&r.text)
+            );
+            net.send_rpc(&r, Reliability::ReliableOrdered);
+        }
+        Outgoing::SelectTextDraw(textdraw_id) => {
+            crate::log!("ui: RPC 83 textdraw {textdraw_id:#x}");
+            net.send_rpc(&OnPlayerSelectTextDraw { textdraw_id }, Reliability::ReliableOrdered);
+        }
+        Outgoing::MenuRow(row) => {
+            crate::log!("ui: RPC 132 row {row}");
+            net.send_rpc(&OnPlayerSelectedMenuRow { row }, Reliability::Reliable);
+        }
+        Outgoing::MenuExit => {
+            crate::log!("ui: RPC 140");
+            net.send_rpc(&OnPlayerExitedMenu, Reliability::Reliable);
+        }
+        Outgoing::ScoresRequest => net.send_rpc(&OnPlayerRequestScoresAndPings, Reliability::Reliable),
+        Outgoing::ClickPlayer(player_id) => {
+            crate::log!("ui: RPC 23 player {player_id}");
+            let p = samp_proto::rpcs::session::OnPlayerClickPlayer {
+                player_id,
+                source: samp_proto::rpcs::session::OnPlayerClickPlayer::SOURCE_SCOREBOARD,
+            };
+            net.send_rpc(&p, Reliability::ReliableOrdered);
+        }
+        Outgoing::ClickMap(pos) => {
+            crate::log!("ui: RPC 119 {pos:?}");
+            let p = samp_proto::rpcs::session::OnPlayerClickMap {
+                pos: samp_proto::types::Vec3 { x: pos[0], y: pos[1], z: pos[2] },
+            };
+            net.send_rpc(&p, Reliability::Reliable);
         }
     }
 }
