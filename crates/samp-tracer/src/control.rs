@@ -3,7 +3,8 @@
 //! marker record into the trace, used by scenario scripts to label steps).
 //! `hideped on|off` hides the local player ped from rendering (DIFF-2 screenshots).
 //! `remote` answers a header line plus one line per remote player ped, like
-//! samp-client's (DIFF-3).
+//! samp-client's (DIFF-3). `bubbles` / `synced` read samp.dll's chat bubbles and synced
+//! health/armour (`crate::sampstate`), same reply format as samp-client's.
 //!
 //! Served from a background thread with blocking sockets, so it also answers
 //! while the game is loading or paused.
@@ -26,6 +27,10 @@ pub enum Command {
     },
     Mark(String),
     Remote,
+    /// `bubbles`: the chat bubbles samp holds per player (DIFF-3, `crate::sampstate`).
+    Bubbles,
+    /// `synced`: samp's synced health/armour per remote player (DIFF-3, `crate::sampstate`).
+    Synced,
     /// `d3d off|on|ui|all|text [FRAMES]` (Direct3D call-stream logger, `crate::d3d`).
     D3d(String),
     /// `efx arm|watch|status|disarm …` (effect tracer, `crate::efx`).
@@ -95,6 +100,8 @@ pub fn parse(line: &str) -> Option<Command> {
         "ping" => Command::Ping,
         "state" => Command::State,
         "remote" => Command::Remote,
+        "bubbles" => Command::Bubbles,
+        "synced" => Command::Synced,
         "hideped on" => Command::HidePed(true),
         "hideped off" => Command::HidePed(false),
         "quit" | "exit" => Command::Quit,
@@ -150,6 +157,8 @@ mod tests {
         assert_eq!(parse(" STATE "), Some(Command::State));
         assert_eq!(parse("quit"), Some(Command::Quit));
         assert_eq!(parse("Remote\n"), Some(Command::Remote));
+        assert_eq!(parse("bubbles"), Some(Command::Bubbles));
+        assert_eq!(parse("SYNCED"), Some(Command::Synced));
         assert_eq!(parse("hideped on"), Some(Command::HidePed(true)));
         assert_eq!(parse("HIDEPED off"), Some(Command::HidePed(false)));
         assert!(matches!(parse("hideped"), Some(Command::Unknown(_))));

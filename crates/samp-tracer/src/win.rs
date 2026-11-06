@@ -987,6 +987,7 @@ fn handle(cmd: &Command) -> (String, bool) {
             }
         }
         Command::Remote => (gta::format_remote(&ProcMem, &gta::scan_cached_remote()), false),
+        Command::Bubbles | Command::Synced => (samp_state(cmd), false),
         Command::Mark(text) => {
             emit(record("mark", None, None, None, Val::obj().with("text", text.as_str())));
             flush();
@@ -1031,6 +1032,26 @@ fn handle(cmd: &Command) -> (String, bool) {
             ("bye".into(), false)
         }
         Command::Unknown(c) => (format!("error unknown command {c:?}"), false),
+    }
+}
+
+/// `bubbles` / `synced` from the loaded samp.dll's data (`crate::sampstate`).
+fn samp_state(cmd: &Command) -> String {
+    let w: Vec<u16> = "samp.dll".encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: NUL-terminated wide string.
+    let h = unsafe { GetModuleHandleW(w.as_ptr()) };
+    if h.is_null() {
+        return "error samp.dll not loaded".into();
+    }
+    let base = h as usize as u32;
+    let e = ProcMem.u32(base + 0x3C).unwrap_or(0);
+    let stamp = ProcMem.u32(base + e + 8).unwrap_or(0);
+    let Some(build) = crate::efx::build_of_stamp(stamp) else {
+        return format!("error unknown samp.dll build (PE stamp {stamp:#x})");
+    };
+    match cmd {
+        Command::Bubbles => crate::sampstate::format_bubbles(&ProcMem, base, build),
+        _ => crate::sampstate::format_synced(&ProcMem, base, build),
     }
 }
 

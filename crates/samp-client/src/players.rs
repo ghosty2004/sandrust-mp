@@ -642,6 +642,16 @@ impl Players {
         }
     }
 
+    /// `synced` control-channel reply: the synced health/armour held per remote player (what the
+    /// nametag bars show), ascending id. Same format as samp-tracer's `synced` for the original (DIFF-3).
+    pub fn synced_lines(&self) -> String {
+        let mut out = format!("synced count={}", self.players.len());
+        for p in self.players.values() {
+            out.push_str(&format!("\nsynced id={} health={:.1} armour={:.1}", p.id, p.health, p.armour));
+        }
+        out
+    }
+
     /// `remote` control-channel reply: a header line, then one line per remote player.
     pub fn status(&self, now: Instant, extra: impl Fn(&RemotePlayer) -> String) -> String {
         let mem = ProcessMemory;

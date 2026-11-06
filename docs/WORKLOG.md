@@ -704,3 +704,31 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   of loading while the host had ~3 GB available; the rerun joined in 28 s. Not reproduced since; watch item.
 - F3 `tools/diff/cross-client.sh`: 45/45 enabled MATCH, exit 0, but 8 step-directions still PENDING (unoccupied /
   trailer, combat hit, objects, chat) although M4–M7 are done → being enabled (F3 not yet counted as proven).
+
+## 2026-11-06 — DIFF-3: unoccupied/trailer, objects, chat, aimed hit enabled (F3 covers PLAN §1)
+- The four PENDING groups of `tools/diff/xclient.py` are real steps, both directions (51 steps, 66
+  step-directions, 0 pending): `veh_unoccupied_A/B` (+ `veh_reenter_B`), `veh_trucks`, `veh_trailer_A/B`,
+  `obj_setup`, `objects`, `chat_A/B`, `bubble`, `hit_setup_A/B`, `combat_hit_A/B`. Checks and the learned
+  tolerances: docs/phase3/diff-notes.md "M4–M7 steps".
+- New control queries with one reply format on both sides: `bubbles` (samp-tracer reads samp.dll build B's bubble
+  pool at 0x1026e9f0; ours its `ChatBubbles`) and `synced` (samp's remote player health/armour +0x1b0/+0x1ac via
+  netgame 0x1026ea0c → pools +0x3de → player pool +8; ours `RemotePlayer.health/armour`); offsets from the B build's
+  RPC 59 handler / add function and remote-player stores (objdump). Chat lines come from each lane's own
+  `chatlog.txt`, objects from GTA's object pool, vehicles/trailers by pointer.
+- `xclient.pwn`: truck/trailer, objects, bubble, out commands; vehicle lines in `xc info` (with
+  IsVehicleStreamedIn); shot/damage/unoccupied-update logging.
+- Measurement fixes (each from original-vs-original evidence, details in diff-notes): aim geometry (free-aim shot
+  leaves 2.67° right of the facing angle and rises over the head → turned start + mouse pitch, 3 m gap, own spots
+  > 2 m from the previous ones); trucks for both players at once (open.mp streams vehicles on the receiving
+  player's own syncs only); trailer window 12 s (rig at rest); bystander of the unoccupied steps 60 m away (open.mp
+  refuses a new 209 sender that is not the closest to the stale server position); tolerances learned only from the
+  judged step-directions; `sender_vs_original` not judged for an original sender.
+- `cross-client.sh` runs from a git worktree (`SAMP_RS_ROOT` for wine/, data/, re/gta, target/diff and the lane
+  lock; `lane-lock.sh` locks `$SAMP_RS_ROOT/target/locks/diff.lock`); `XC_STEPS` for development runs.
+- Negative tests `negative_tests.py f3` +6 cases (unoccupied car off, no trailer, no head object, no chat line, no
+  bubble, our shot misses): all 10 turn MATCH into DIFF.
+- No DIFF on our client found by the new steps; no client behaviour changed (only the two control queries added).
+- Verified: cargo test --workspace, clippy host + i686 clean; 4 calibration runs (3 used, one skipped: the
+  original's known respawn flake); `tools/diff/cross-client.sh` → 66/66 step-directions MATCH, 0 DIFF, 0 pending,
+  exit 0 (run xclient-20261106-161102; tolerances pos 0.114 m, uveh 0.167 m, trailer 0.1 m, obj_player 0.437 m /
+  0.624 rad). Cost: ~2.5 h wall, ~20 cross-client runs in lane diff.

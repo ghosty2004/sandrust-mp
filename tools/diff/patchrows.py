@@ -15,7 +15,8 @@ import struct
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 CSV = os.path.join(ROOT, "docs", "re", "data", "gta-patches-r4-annotated.csv")
-EXE = os.path.join(ROOT, "re", "gta", "1.0-US", "gta_sa.exe")
+# The ignored game binary lives in the checkout that holds re/gta (SAMP_RS_ROOT for a worktree).
+EXE = os.path.join(os.environ.get("SAMP_RS_ROOT") or ROOT, "re", "gta", "1.0-US", "gta_sa.exe")
 # gta_sa.exe 1.0 US image: ImageBase 0x400000, SizeOfImage 0x1177000 (PE header).
 IMAGE_LO, IMAGE_HI = 0x400000, 0x400000 + 0x1177000
 

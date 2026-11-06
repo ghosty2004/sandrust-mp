@@ -22,6 +22,7 @@ pub mod gta;
 pub mod hooks;
 pub mod json;
 pub mod mem;
+pub mod sampstate;
 pub mod scm;
 pub mod watch;
 pub mod x86;

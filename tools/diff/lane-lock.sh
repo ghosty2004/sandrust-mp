@@ -5,7 +5,9 @@
 # SAMP_RS_DIFF_LOCK_HELD=1 so nested harness scripts do not wait for themselves.
 # Also a no-op when an ancestor process is `flock … diff.lock …` (the PLAN §4 way of wrapping
 # a run), so `flock target/locks/diff.lock tools/diff/cross-client.sh` does not deadlock.
-DIFF_LOCK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# The lock lives in the checkout that owns the lanes (SAMP_RS_ROOT for a worktree), so every checkout waits
+# for the same file.
+DIFF_LOCK_ROOT="${SAMP_RS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 _diff_lock_by_ancestor() {
     local pid=$$ cmd

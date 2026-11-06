@@ -903,6 +903,30 @@ impl UiCore {
         s
     }
 
+    /// `bubbles` control reply: header + one line per active bubble, ascending player id. Same format
+    /// as samp-tracer's `bubbles` for the original (DIFF-3).
+    pub fn bubbles_report(&self) -> String {
+        let mut lines = Vec::new();
+        for id in 0..samp_ui::bubbles::SLOTS as u16 {
+            if let Some(b) = self.bubbles.get(id) {
+                lines.push(format!(
+                    "bubble id={id} colour={:#010x} distance={:.2} duration={} lines={} text={}",
+                    b.colour,
+                    b.distance,
+                    b.duration_ms,
+                    b.lines,
+                    quote(&b.text)
+                ));
+            }
+        }
+        let mut out = format!("bubbles count={}", lines.len());
+        for l in lines {
+            out.push('\n');
+            out.push_str(&l);
+        }
+        out
+    }
+
     /// Routes one window event; returns whether it is consumed.
     pub fn handle_event(&mut self, ev: Event, gta_menu: bool, game: &dyn GameInfo, wheel_lines: u32) -> bool {
         let r = keys::route(ev, &self.key_state(gta_menu));

@@ -909,6 +909,11 @@ fn service_control(_from: &str) {
         Command::Chat(n) => crate::ui::control_chat(*n),
         Command::Input => crate::ui::control_input(),
         Command::Ui => crate::ui::control_ui(),
+        Command::Bubbles => crate::ui::control_bubbles(),
+        Command::Synced => match CLIENT.try_lock() {
+            Ok(g) => g.as_ref().map(|c| c.synced_lines()).unwrap_or_else(|| "synced count=0".into()),
+            Err(_) => "error client busy".into(),
+        },
         Command::Say(t) => crate::ui::control_say(t),
         Command::Audio => crate::audio::status(),
         Command::Quit => "bye".into(),

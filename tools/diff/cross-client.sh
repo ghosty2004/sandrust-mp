@@ -27,11 +27,19 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-A_PREFIX="$ROOT/wine/prefix-diff";  A_GTA="$ROOT/wine/gta-sa-diff";  A_PORT=47706
-B_PREFIX="$ROOT/wine/prefix-diff2"; B_GTA="$ROOT/wine/gta-sa-diff2"; B_PORT=47705
+# SAMP_RS_ROOT: the checkout holding the gitignored wine/, data/, re/gta and the shared target/locks + target/diff
+# (a git worktree finds the main checkout by itself, as tools/diff/visual.sh). Builds stay in this checkout.
+if [[ -z "${SAMP_RS_ROOT:-}" && ! -d "$ROOT/wine" ]]; then
+    common="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+    [[ -n "$common" && -d "$(dirname "$common")/wine" ]] && SAMP_RS_ROOT="$(dirname "$common")"
+fi
+export SAMP_RS_ROOT="${SAMP_RS_ROOT:-$ROOT}"
+DATA="$SAMP_RS_ROOT"
+A_PREFIX="$DATA/wine/prefix-diff";  A_GTA="$DATA/wine/gta-sa-diff";  A_PORT=47706
+B_PREFIX="$DATA/wine/prefix-diff2"; B_GTA="$DATA/wine/gta-sa-diff2"; B_PORT=47705
 export WINEPREFIX="$A_PREFIX" GTA_DIR="$A_GTA"
 export E2E_TAG=diff E2E_PORT=7795 E2E_CTL_PORT=47705
-DIFF_OUT="$ROOT/target/diff"
+DIFF_OUT="$DATA/target/diff"
 DIFF_BIN="${DIFF_CARGO_TARGET:-$ROOT/target/diff-cargo}/i686-pc-windows-gnu/release"
 B_TPORT=47707
 A_NAME=XcOrig; B_NAME=XcOurs
@@ -83,7 +91,7 @@ fi
 for f in samp_tracer.dll samp-launcher.exe samp_client.dll; do
     [ -f "$DIFF_BIN/$f" ] || { say "missing $DIFF_BIN/$f"; exit 1; }
 done
-[ -f "$ROOT/data/auth_table.txt" ] || say "warning: data/auth_table.txt missing; our client cannot join"
+[ -f "$DATA/data/auth_table.txt" ] || say "warning: data/auth_table.txt missing; our client cannot join"
 for p in "$A_PORT" "$B_PORT" "$B_TPORT"; do
     if [ "$(E2E_CTL_PORT=$p e2e_ctl ping)" = pong ]; then say "port $p already answers; refusing"; exit 1; fi
 done
@@ -138,7 +146,7 @@ launch_game() {
             # Watch-only tracer first (F5 frame-local write watch); it changes no game byte.
             export SAMP_RS_CTL_PORT="$port" SAMP_TRACER_MODE=watch SAMP_TRACER_PORT="$B_TPORT"
             dlls+=(--dll "$(winepath -w "$gta/samp-tracer.dll")")
-            SAMP_RS_AUTH_TABLE="$(winepath -w "$ROOT/data/auth_table.txt")"; export SAMP_RS_AUTH_TABLE
+            SAMP_RS_AUTH_TABLE="$(winepath -w "$DATA/data/auth_table.txt")"; export SAMP_RS_AUTH_TABLE
             dlls+=(--dll "$(winepath -w "$gta/samp_client.dll")")
         else
             export SAMP_TRACER_PORT="$port"
@@ -178,9 +186,12 @@ say "displays: A=$DISP_A B=$DISP_B; run -> $OUT"
 launch_game "$A_PREFIX" "$A_GTA" "$DISP_A" orig "$A_NAME" "$A_PORT" "$OUT/launch-A.out"; LA=$LAUNCH_PID
 launch_game "$B_PREFIX" "$B_GTA" "$DISP_B" "$B_KIND" "$B_NAME" "$B_PORT" "$OUT/launch-B.out"; LB=$LAUNCH_PID
 
+chatlog() { printf '%s/drive_c/users/%s/Documents/GTA San Andreas User Files/SAMP/chatlog.txt' "$1" "$USER"; }
 args=(drive --out "$OUT" --log "$E2E_LOG" --port "$E2E_PORT" --rcon-pass "$RCON_PASS"
       --a-port "$A_PORT" --a-display "$DISP_A" --a-name "$A_NAME" --a-kind orig --a-gamescope "$WL_A"
-      --b-port "$B_PORT" --b-display "$DISP_B" --b-name "$B_NAME" --b-kind "$B_KIND" --b-gamescope "$WL_B")
+      --a-chatlog "$(chatlog "$A_PREFIX")"
+      --b-port "$B_PORT" --b-display "$DISP_B" --b-name "$B_NAME" --b-kind "$B_KIND" --b-gamescope "$WL_B"
+      --b-chatlog "$(chatlog "$B_PREFIX")")
 [ "$B_KIND" = ours ] && args+=(--b-tracer-port "$B_TPORT")
 [ "$PATCHES_ONLY" = 1 ] && args+=(--patches-only)
 python3 -I "$HERE/xclient.py" "${args[@]}"

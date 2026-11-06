@@ -63,6 +63,10 @@ PED_VEHICLE = 0x58C                # CPed::m_pVehicle; in-vehicle = bit 8 of the
 # CVehicle (plugin-sdk CVehicle.h VALIDATE_OFFSET): m_anUpgrades[15] +0x43A, m_pDriver +0x460,
 # m_apPassengers[8] +0x464; CMatrix forward (+0x10) and pos (+0x30).
 VEH_UPGRADES, VEH_DRIVER, VEH_PASSENGERS = 0x43A, 0x460, 0x464
+VEH_TRACTOR, VEH_TRAILER = 0x4C4, 0x4C8            # CVehicle::m_pTractor / m_pTrailer (CVehicle.h VALIDATE_OFFSET)
+# CPools::ms_pObjectPool (CPools.cpp): CPool { objects, byteMap, size, … } (CPool.h, byte map bit 7 = empty);
+# pool elements are CCutsceneObject, 0x19C bytes (CCutsceneObject.h VALIDATE_SIZE).
+OBJECT_POOL, OBJECT_SIZE = 0xB7449C, 0x19C
 MOVE_NAMES = {0: "none", 1: "still", 2: "turn_l", 3: "turn_r", 4: "walk", 5: "jog", 6: "run", 7: "sprint"}
 
 # --- scenario -------------------------------------------------------------------------
@@ -71,6 +75,30 @@ MOVE_NAMES = {0: "none", 1: "still", 2: "turn_l", 3: "turn_r", 4: "walk", 5: "jo
 BASE = (1700.0, -2490.0, 13.55)
 SPOT = {"A": (BASE[0], BASE[1] + 2.5, BASE[2], 90.0), "B": (BASE[0], BASE[1] - 2.5, BASE[2], 90.0)}
 SKIN_STEP = {"A": 101, "B": 115}
+# Combat hit: the shooter faces the victim 3 m away (A south, B north). The free-aim shot does not leave along the
+# facing angle: it went 2.6 deg to the left of a ped turned left by 5.27 deg (original, xcalib dev run 2026-11-06 14:12),
+# i.e. 2.67 deg right of the facing angle, and rises (~3 deg; it passed over the head at 5 m). The shooter therefore
+# starts turned left by 2.67 deg, and the players stand 3 m apart. Each round has its own spot, more than 2 m east of
+# where the players stood before: samp moves a remote ped by velocity nudges only within 2 m (x/y) of its synced position
+# and teleports beyond (remote-players-sync 2.1), and on the original a standing ped nudged by 1 m stays where it was
+# (calibration: 1.0 m off for the whole step). Round A at +5 m east, round B at +10 m.
+HIT_AIM_TURN = 2.67
+HIT_GAP = 1.5
+HIT_EAST = {"A": 5.0, "B": 10.0}
+SPOT_HIT = {r: {"A": (BASE[0] + HIT_EAST[r], BASE[1] + HIT_GAP, BASE[2], 180.0 + HIT_AIM_TURN),
+                "B": (BASE[0] + HIT_EAST[r], BASE[1] - HIT_GAP, BASE[2], 0.0 + HIT_AIM_TURN)} for r in ("A", "B")}
+# Unoccupied-car steps: where the bystander waits (60 m north of the lanes the cars roll along, within streaming range).
+FAR_SPOT = (1560.0, BASE[1] + 60.0, BASE[2])
+# Trailer steps: each player's Linerunner (+ trailer 10 m east) on its own lane, clear of the cars.
+TRUCK_AT = {"A": (BASE[0], BASE[1] + 25.0, 14.0), "B": (BASE[0], BASE[1] - 25.0, 14.0)}
+# Objects: one global object (gunbox), one attached to each player's car (cardboard box / sandbag), one attached
+# to each player's head (SA:MP models from SAMP.img: motorcycle helmet / police cap).
+OBJ_GLOBAL = (1271, BASE[0] - 8.0, BASE[1], BASE[2] + 0.5, 30.0)
+OBJ_VEHICLE = {"A": 1220, "B": 2060}
+OBJ_PLAYER = {"A": 18645, "B": 18636}
+CHAT_TEXT = {"A": "xc chat from A", "B": "xc chat from B"}
+# SetPlayerChatBubble(id, "bubble of <side>", 0xFFAA00FF, 50.0, 15000) (xclient.pwn `xc bubble`).
+BUBBLE = {"colour": 0xFFAA00FF, "distance": 50.0, "duration": 15000}
 
 # Check tolerances. Position/heading: the remote ped is placed from the 207
 # packets. With a --calibrate run (original vs original) the report uses
@@ -78,8 +106,19 @@ SKIN_STEP = {"A": 101, "B": 115}
 # the defaults without one. See docs/phase3/diff-notes.md "DIFF-3".
 TOL = {"pos": 0.5, "heading": 0.15, "health": 1.0, "armour": 1.0, "veh_pos": 1.0, "veh_heading": 0.15}
 TOL_FLOOR = {"pos": 0.1, "heading": 0.03}
+# Checks added with the M4–M7 steps: every tolerance is learned from the calibration runs (1.5 x the
+# original's own largest deviation, floors as above: positions 0.1 m, angles 0.03 rad). The TOL value is only
+# the placeholder of a report without calibration.
+LEARNED = {"uveh_pos": "pos", "uveh_heading": "heading", "uveh_server": "pos",
+           "trailer_pos": "pos", "trailer_heading": "heading", "trailer_server": "pos",
+           "obj_global": "pos", "obj_global_rot": "heading", "obj_vehicle": "pos", "obj_vehicle_rot": "heading",
+           "obj_player": "pos", "obj_player_rot": "heading"}
+for _k, _kind in LEARNED.items():
+    TOL[_k] = TOL["veh_pos"] if _kind == "pos" else TOL["veh_heading"]
 
 SAMPLE_PERIOD = 0.1
+# Run paths in reports are relative to the checkout that holds target/diff (SAMP_RS_ROOT for a worktree).
+DATA_ROOT = os.environ.get("SAMP_RS_ROOT") or patchrows.ROOT
 
 STATIC = ["visible", "pos", "heading", "skin", "health", "armour", "ducking", "anim_final"]
 
@@ -179,13 +218,81 @@ STEPS = STEPS + (
         "window": 5.0, "checks": VEH_CHECKS + ["veh_mods", "veh_pos"]}]
 )
 
-# Enabled when the milestone lands; never guessed before (PLAN §3b).
-PENDING = [
-    ("vehicle_unoccupied_trailer", "M5", "unoccupied (209) and trailer (210) sync"),
-    ("combat_hit", "M7", "a 206 that hits the other client (needs an aimed-hit geometry for two real clients)"),
-    ("objects", "M6", "same objects/attachments visible on both"),
-    ("chat", "M4", "chat lines and bubbles of the other player"),
-]
+# M5 unoccupied (209) and trailer (210) steps. veh_unoccupied_X: the other player is first put 60 m north of the lane
+# (still streamed), then the actor (driver of its own car) drives west for 1.5 s and leaves the car with F while it
+# still rolls: the actor, the closest player throughout, reports the empty car with 209 and the other side applies it.
+# With the bystander next to the car's path the 209 sender changes mid-roll and open.mp accepts the new sender only
+# if it is closer than every other player to the server's last (stale) car position (Vehicle::updateFromUnoccupied):
+# 4.2 vs 4.5 m decided whether the server's car stopped 21 m short (xclient-20261106-153610) — a race of where the
+# peds stand, not of either client (the hand-over itself worked both ways in other runs: `[xc] unocc` lines). veh_trucks puts each player into its own new Linerunner and hitches a trailer
+# (AttachTrailerToVehicle) — both at once: open.mp streams new vehicles to a player only on that player's sync packets
+# (Vehicles component onPlayerUpdate), and an original client sitting in a car that has come to rest sends none, so a
+# truck created later for the other player never reached it (server IsVehicleStreamedIn, dev runs 2026-11-06 14:40);
+# veh_trailer_X drives it west for 3 s and waits until the rig is at rest (12 s window; with 8 s the truck still rolled
+# and the compared positions depended on when the last 210 left, xclient-20261106-145939): the trailer follows the driver's
+# 210 on the other side. "track": the
+# actor's vehicle (sender: its local ped's car, observer: the car of its remote ped, both from the pre samples) is
+# read on both sides in every sample (with the trailer hitched to it).
+STEPS = STEPS + (
+    [{"name": "veh_unoccupied_A", "actor": "A", "track": True,
+      "events": [(0.0, "tp_far", None), (1.0, "keydown", "w"), (2.5, "keyup", "w"), (2.5, "key", "f")],
+      "window": 9.0,
+      "checks": ["visible", "vehicle", "pos", "uveh_pos", "uveh_heading", "uveh_server"]},
+     {"name": "veh_reenter_B", "actor": "B", "events": [(0.0, "rcon_each", "xc putin {id} {id} 0 ;")], "window": 4.0,
+      "checks": VEH_CHECKS},
+     {"name": "veh_unoccupied_B", "actor": "B", "track": True,
+      "events": [(0.0, "tp_far", None), (1.0, "keydown", "w"), (2.5, "keyup", "w"), (2.5, "key", "f")],
+      "window": 9.0,
+      "checks": ["visible", "vehicle", "pos", "uveh_pos", "uveh_heading", "uveh_server"]}]
+    + [{"name": "veh_trucks", "actor": "both",
+        "events": [(0.0, "truck", None), (1.5, "rcon_each", "xc tputin {id} ;"), (3.0, "rcon_each", "xc hitch {id} ;")],
+        "window": 6.0, "checks": VEH_CHECKS + ["trailer"]}]
+    + [{"name": f"veh_trailer_{a}", "actor": a, "track": True,
+        "events": [(0.0, "keydown", "w"), (3.0, "keyup", "w")], "window": 12.0,
+        "checks": VEH_CHECKS + ["trailer", "trailer_pos", "trailer_heading", "trailer_server"]} for a in ("A", "B")]
+)
+
+# M6 objects: both players leave their trucks and go back to their spots; then the server creates one global object,
+# one object attached to each player's car and one attached to each player's head. Each client's GTA object pool is
+# read after the window ("post"): for X→Y, the objects of X (its car's, its head's) and the global one as Y shows
+# them are compared with X's own client.
+STEPS = STEPS + (
+    [{"name": "obj_setup", "actor": "both", "events": [(0.0, "rcon_each", "xc out {id} ;"), (3.5, "tp", None)],
+      "window": 6.0, "checks": ["visible", "vehicle", "pos", "heading"]},
+     {"name": "objects", "actor": "both",
+      "events": [(0.0, "gobj", None), (0.0, "rcon_each", "xc vobj {id} {vmodel} ;"),
+                 (0.0, "rcon_each", "xc pobj {id} {pmodel} ;")],
+      "window": 4.0, "post": ["objects"], "checks": ["visible", "pos", "obj_global", "obj_vehicle", "obj_player"]}]
+)
+
+# M4 chat: the actor types a chat line (T, text, Enter); both chatlog.txt files (one per lane's private Documents)
+# must get the same line. Then the server gives both players a chat bubble (SetPlayerChatBubble): the other client
+# must hold it with the server's text, distance and duration (and the original's colour).
+STEPS = STEPS + (
+    [{"name": f"chat_{a}", "actor": a, "events": [(0.0, "type", None)], "window": 4.0, "post": ["chatlog"],
+      "checks": ["visible", "chat"]} for a in ("A", "B")]
+    + [{"name": "bubble", "actor": "both", "events": [(0.0, "rcon_each", "xc bubble {id} {side} ;")], "window": 3.0,
+        "post": ["bubbles"], "checks": ["visible", "bubble", "bubble_colour"]}]
+)
+
+# M7 hits: the shooter (Desert Eagle) faces the victim 3 m away and fires one aimed shot (right mouse held, the
+# camera pitched down by a relative mouse move of 40 px up — y is inverted in these lanes; without it the shot passes
+# over the victim's head —, left click). Positions are not checked here: the hit reaction moves the peds and would
+# widen the one position tolerance of every step (hit_setup_* checks them). The server log gives the shooter's 206 hit (OnPlayerWeaponShot), the damage both clients reported
+# (OnPlayerGiveDamage / OnPlayerTakeDamage, RPC 115); the shooter's synced view of the victim's health is compared
+# with the victim's own health ("post": `synced`).
+STEPS = STEPS + [st for a in ("A", "B") for st in (
+    {"name": f"hit_setup_{a}", "actor": "both",
+     "events": [(0.0, "rcon_each", "xc hpar {id} 100 0 ;"), (0.2, "rcon_each", "xc weapon {id} 24 50 ;"),
+                (0.5, "tp_hit", a)],
+     "window": 3.5, "checks": ["visible", "pos", "heading", "weapon", "health"]},
+    {"name": f"combat_hit_{a}", "actor": a,
+     "events": [(0.0, "mousedown", "3"), (0.6, "mouserel", "0 -40"), (1.2, "mousedown", "1"), (1.4, "mouseup", "1"),
+                (2.6, "mouseup", "3")],
+     "window": 4.5, "post": ["synced"], "checks": ["visible", "weapon", "hit", "hit_damage", "victim_health"]})]
+
+# Enabled when the milestone lands; never guessed before (PLAN §3b). Every milestone is enabled now.
+PENDING = []
 
 
 def say(*a):
@@ -286,7 +393,8 @@ def read_peds(conn, peds, clump_off):
         v["in_vehicle"] = bool(fl[1] & 1)
         v["_veh"] = u32(vb) if vb and v["in_vehicle"] else 0
         if v["_veh"]:
-            second += [(v["_veh"], 0x60), (v["_veh"] + VEH_UPGRADES, 30), (v["_veh"] + VEH_DRIVER, 36)]
+            second += [(v["_veh"], 0x60), (v["_veh"] + VEH_UPGRADES, 30), (v["_veh"] + VEH_DRIVER, 36),
+                       (v["_veh"] + VEH_TRAILER, 4)]
         v["ped_state"] = u32(st, 0)
         v["move"] = u32(st, PED_MOVE - PED_STATE)
         v["health"] = round(f32(st, PED_HEALTH - PED_STATE), 2)
@@ -317,16 +425,20 @@ def read_peds(conn, peds, clump_off):
                            r2.get((v["_veh"] + VEH_DRIVER, 36)))
             if vh and up and occ:
                 occupants = struct.unpack("<9I", occ)
-                v["vehicle"] = {"model": struct.unpack_from("<h", vh, E_MODEL)[0],
+                v["vehicle"] = {"ptr": f"{v['_veh']:#x}", "model": struct.unpack_from("<h", vh, E_MODEL)[0],
                                 "seat": occupants.index(p) if p in occupants else -1,
                                 "speed": round(math.sqrt(sum(c * c for c in struct.unpack_from("<3f", vh, PHYS_SPEED))), 4),
                                 "mods": sorted(m for m in struct.unpack("<15h", up) if m > 0),
                                 "_matrix": u32(vh, E_MATRIX)}
+                tb = r2.get((v["_veh"] + VEH_TRAILER, 4))
+                v["vehicle"]["_trailer"] = u32(tb) if tb else 0
         cdb = r2.get((v["_clump"] + clump_off, 4)) if v["_clump"] and clump_off else None
         if cdb and u32(cdb):
             cds[p] = u32(cdb)
     mats = conn.peeks([(v["vehicle"]["_matrix"], 0x40) for v in views.values()
-                       if v.get("vehicle") and v["vehicle"]["_matrix"]])
+                       if v.get("vehicle") and v["vehicle"]["_matrix"]]
+                      + [(v["vehicle"]["_trailer"] + E_MODEL, 2) for v in views.values()
+                         if v.get("vehicle") and v["vehicle"]["_trailer"]])
     for v in views.values():
         vv = v.get("vehicle")
         if not vv:
@@ -337,6 +449,9 @@ def read_peds(conn, peds, clump_off):
             vv["pos"] = [round(c, 3) for c in struct.unpack_from("<3f", m, 0x30)]
             vv["heading"] = round(math.atan2(-fx, fy), 4)
         del vv["_matrix"]
+        tr = vv.pop("_trailer")
+        tm = mats.get((tr + E_MODEL, 2)) if tr else None
+        vv["trailer"] = struct.unpack("<h", tm)[0] if tm else (-1 if tr else 0)
     # Association list: head at clumpdata+0 (RwLLLink next); node = assoc + 4.
     heads = conn.peeks([(cd, 4) for cd in cds.values()])
     cur = {p: u32(heads[(cd, 4)]) for p, cd in cds.items() if heads.get((cd, 4))}
@@ -372,11 +487,98 @@ def read_peds(conn, peds, clump_off):
     return views
 
 
+def _placement(conn, ents):
+    """{entity: (model, pos, forward, up)} from each entity's model index and matrix (CPlaceable::m_matrix,
+    CMatrix right +0, forward +0x10, up +0x20, pos +0x30)."""
+    ents = [e for e in ents if e]
+    hdr = conn.peeks([(e, 0x24) for e in ents])
+    mats = {}
+    for e in ents:
+        h = hdr.get((e, 0x24))
+        if h and u32(h, E_MATRIX):
+            mats[e] = (struct.unpack_from("<h", h, E_MODEL)[0], u32(h, E_MATRIX))
+    mb = conn.peeks([(m, 0x40) for _, m in mats.values()])
+    out = {}
+    for e, (model, m) in mats.items():
+        b = mb.get((m, 0x40))
+        if b:
+            out[e] = (model, [round(c, 3) for c in struct.unpack_from("<3f", b, 0x30)],
+                      [round(c, 4) for c in struct.unpack_from("<3f", b, 0x10)],
+                      [round(c, 4) for c in struct.unpack_from("<3f", b, 0x20)])
+    return out
+
+
+def read_tracked(conn, ptr):
+    """One vehicle by pointer (the step's tracked vehicle) and the trailer hitched to it: model, position,
+    heading (atan2 of the forward vector, as `vehicle` in read_peds), speed."""
+    if not ptr:
+        return None
+    r = conn.peeks([(ptr, 0x60), (ptr + VEH_TRAILER, 4)])
+    h, tb = r.get((ptr, 0x60)), r.get((ptr + VEH_TRAILER, 4))
+    if not h:
+        return {"ptr": f"{ptr:#x}", "error": "unreadable"}
+    trailer = u32(tb) if tb else 0
+    pl = _placement(conn, [ptr, trailer])
+
+    def view(e, hb=None):
+        if e not in pl:
+            return None
+        model, pos, fwd, _up = pl[e]
+        v = {"ptr": f"{e:#x}", "model": model, "pos": pos, "heading": round(math.atan2(-fwd[0], fwd[1]), 4)}
+        if hb:
+            v["speed"] = round(math.sqrt(sum(c * c for c in struct.unpack_from("<3f", hb, PHYS_SPEED))), 4)
+        return v
+
+    v = view(ptr, h) or {"ptr": f"{ptr:#x}", "error": "no matrix"}
+    v["trailer"] = view(trailer) if trailer else None
+    return v
+
+
+def read_objects(conn, models):
+    """Every object of the GTA object pool whose model is in `models`: model, position, forward and up vectors."""
+    hb = conn.peeks([(OBJECT_POOL, 4)]).get((OBJECT_POOL, 4))
+    pool = u32(hb) if hb else 0
+    if not pool:
+        return {"error": "no object pool"}
+    ph = conn.peeks([(pool, 12)]).get((pool, 12))
+    if not ph:
+        return {"error": "object pool unreadable"}
+    objs, bmap, size = struct.unpack("<IIi", ph)
+    size = max(0, min(size, 4096))
+    flags = conn.peeks([(bmap, size)]).get((bmap, size)) or b""
+    live = [objs + i * OBJECT_SIZE for i, f in enumerate(flags) if not f & 0x80]
+    mb = conn.peeks([(e + E_MODEL, 2) for e in live])
+    want = [e for e in live if mb.get((e + E_MODEL, 2)) and struct.unpack("<h", mb[(e + E_MODEL, 2)])[0] in models]
+    pl = _placement(conn, want)
+    return {"live": len(live), "objects": [{"ptr": f"{e:#x}", "model": m, "pos": p, "fwd": f, "up": u}
+                                           for e, (m, p, f, u) in sorted(pl.items())]}
+
+
+def parse_lines(lines, kind):
+    """`<kind> k=v … text="…"` lines of a `bubbles` / `synced` reply → list of dicts (text kept escaped)."""
+    out = []
+    for ln in lines[1:]:
+        if not ln.startswith(kind + " "):
+            continue
+        d = {}
+        m = re.search(r' text="(.*)"$', ln)
+        if m:
+            d["text"] = m.group(1)
+            ln = ln[:m.start()]
+        for kv in ln.split()[1:]:
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                d[k] = v
+        out.append(d)
+    return out
+
+
 # --- sides ----------------------------------------------------------------------------
 class Side:
-    def __init__(self, key, port, display, name, kind, gamescope=""):
+    def __init__(self, key, port, display, name, kind, gamescope="", chatlog=""):
         self.key, self.port, self.display, self.name, self.kind = key, port, display, name, kind
         self.gamescope = gamescope
+        self.chatlog = chatlog  # this lane's Documents/GTA San Andreas User Files/SAMP/chatlog.txt
         self.conn = None
         self.clump_off = None
         self.pid = None  # server player id
@@ -409,15 +611,45 @@ class Side:
                 lines.append(f"# ambiguous: {len(peds)} remote peds")
         return ped, lines
 
-    def sample(self, other_name):
+    def sample(self, other_name, track=0):
         c = self.connect()
         t = time.time()
         lp = c.peeks([(PLAYERS0_PED, 4)]).get((PLAYERS0_PED, 4))
         local = u32(lp) if lp else 0
         rped, rlines = self.remote_ped(other_name)
         views = read_peds(c, [local, rped or 0], self.clump_off)
-        return {"t": round(t, 3), "local": views.get(local) if local else None,
-                "remote": views.get(rped) if rped else None, "remote_raw": rlines}
+        out = {"t": round(t, 3), "local": views.get(local) if local else None,
+               "remote": views.get(rped) if rped else None, "remote_raw": rlines}
+        if track:
+            out["track"] = read_tracked(c, track)
+        return out
+
+    def chatlog_size(self):
+        try:
+            return os.path.getsize(self.chatlog)
+        except OSError:
+            return 0
+
+    def chatlog_since(self, off):
+        """Lines appended to this lane's chatlog.txt since byte offset `off`."""
+        try:
+            with open(self.chatlog, "rb") as f:
+                f.seek(off)
+                data = f.read()
+        except OSError as e:
+            return {"error": str(e)}
+        return {"lines": [ln for ln in data.decode("latin-1").replace("\r", "").split("\n") if ln]}
+
+    def post(self, what):
+        """End-of-step reads ("post" of a step)."""
+        c = self.connect()
+        if what == "objects":
+            models = {OBJ_GLOBAL[0], *OBJ_VEHICLE.values(), *OBJ_PLAYER.values()}
+            return read_objects(c, models)
+        if what in ("bubbles", "synced"):
+            lines = c.cmd_multi(what)
+            return {"raw": lines, what: parse_lines(lines, what[:-1] if what == "bubbles" else what)}
+        return {"error": f"unknown post read {what}"}
 
     def close(self):
         if self.conn:
@@ -437,9 +669,10 @@ class Driver:
         self.a = a
         self.log = drive.Log(a.log)
         self.sides = {
-            "A": Side("A", a.a_port, a.a_display, a.a_name, a.a_kind, a.a_gamescope),
-            "B": Side("B", a.b_port, a.b_display, a.b_name, a.b_kind, a.b_gamescope),
+            "A": Side("A", a.a_port, a.a_display, a.a_name, a.a_kind, a.a_gamescope, a.a_chatlog),
+            "B": Side("B", a.b_port, a.b_display, a.b_name, a.b_kind, a.b_gamescope, a.b_chatlog),
         }
+        self.track = {}
         os.makedirs(a.out, exist_ok=True)
         self.f = open(os.path.join(a.out, "samples.jsonl"), "w")
         self.pool = concurrent.futures.ThreadPoolExecutor(2)
@@ -462,16 +695,21 @@ class Driver:
         return m, lines
 
     def server_view(self, tag):
+        """({player name: info}, [vehicle info]) as the server sees them at the end of a step."""
         _m, lines = self.xc(f"xc info {tag} ;", wait=rf"\[xc\] ok info {re.escape(tag)}\b")
-        out = {}
+        out, veh = {}, []
         for ln in lines:
             m = re.search(r"\[xc\] info \S+ id=(\d+) name=(\S+) (.*)", ln)
             if m:
                 out[m.group(2)] = dict(kv.split("=", 1) for kv in m.group(3).split())
-        return out
+            m = re.search(r"\[xc\] vinfo \S+ (.*)", ln)
+            if m:
+                veh.append(dict(kv.split("=", 1) for kv in m.group(1).split()))
+        return out, veh
 
     def sample_both(self):
-        futs = {k: self.pool.submit(s.sample, self.sides[self.other(k)].name) for k, s in self.sides.items()}
+        futs = {k: self.pool.submit(s.sample, self.sides[self.other(k)].name, self.track.get(k, 0))
+                for k, s in self.sides.items()}
         out = {}
         for k, f in futs.items():
             try:
@@ -496,19 +734,44 @@ class Driver:
         elif kind in ("mousedown", "mouseup"):
             for k in targets:
                 self.sides[k].xdo(kind, arg)
+        elif kind == "mouserel":
+            for k in targets:
+                self.sides[k].xdo("mousemove_relative", "--", *arg.split())
         elif kind == "rcon_each":
             for k in targets:
                 s = self.sides[k]
-                self.xc(arg.format(id=s.pid, other=self.sides[self.other(k)].pid, skin=SKIN_STEP[k]))
+                self.xc(arg.format(id=s.pid, other=self.sides[self.other(k)].pid, skin=SKIN_STEP[k], side=k,
+                                   vmodel=OBJ_VEHICLE[k], pmodel=OBJ_PLAYER[k]))
+        elif kind == "gobj":
+            m, x, y, z, rz = OBJ_GLOBAL
+            self.xc(f"xc gobj {m} {x:.3f} {y:.3f} {z:.3f} {rz:.1f} ;")
+        elif kind == "truck":
+            for k in targets:
+                x, y, z = TRUCK_AT[k]
+                self.xc(f"xc truck {self.sides[k].pid} {x:.3f} {y:.3f} {z:.3f} ;")
+        elif kind == "type":
+            # Chat input like a player: T opens it, the text, Enter sends it (as tools/diff/netscen.sh).
+            for k in targets:
+                s = self.sides[k]
+                s.xdo("key", "--delay", "80", "t")
+                time.sleep(0.6)
+                s.xdo("type", "--delay", "60", "--", CHAT_TEXT[k])
+                time.sleep(0.3)
+                s.xdo("key", "--delay", "80", "Return")
         elif kind == "ensure_spawn":
             # Spawned since the previous step (the death) began? Else the server spawns the player.
             for k in targets:
                 if self.spawn_count(k) <= self.step_spawns[-2][k]:
                     self.forced_spawn.append(k)
                     self.xc(f"xc spawn {self.sides[k].pid} ;")
-        elif kind == "tp":
+        elif kind == "tp_far":
+            # The players other than the actor: 60 m north of the unoccupied-car lane.
+            for k in self.sides:
+                if actor != "both" and k != actor:
+                    self.xc(f"xc tp {self.sides[k].pid} {FAR_SPOT[0]:.3f} {FAR_SPOT[1]:.3f} {FAR_SPOT[2]:.3f} 90.0 ;")
+        elif kind in ("tp", "tp_hit"):
             for k in targets:
-                x, y, z, ang = SPOT[k]
+                x, y, z, ang = (SPOT if kind == "tp" else SPOT_HIT[arg])[k]
                 self.xc(f"xc tp {self.sides[k].pid} {x:.3f} {y:.3f} {z:.3f} {ang:.1f} ;")
 
     def spawn_count(self, k):
@@ -520,12 +783,25 @@ class Driver:
         return len(re.findall(rf"\[e2e\] spawn id={self.sides[k].pid}\b", text))
 
     def run_step(self, st):
-        rec = {"name": st["name"], "actor": st["actor"], "checks": st["checks"], "window": st["window"]}
+        rec = {"name": st["name"], "actor": st["actor"], "checks": st["checks"], "window": st["window"],
+               "pids": {k: s.pid for k, s in self.sides.items()}, "names": {k: s.name for k, s in self.sides.items()}}
         if not hasattr(self, "step_spawns"):
             self.step_spawns = []
         self.step_spawns.append({k: self.spawn_count(k) for k in self.sides})
         self.forced_spawn = []
+        self.track = {}
         rec["pre"] = [self.sample_both() for _ in range(2)]
+        if st.get("track"):
+            # The actor's vehicle on both sides: its own local ped's car, the car of its remote ped on the other.
+            a = st["actor"]
+            last = rec["pre"][-1]
+            for k in self.sides:
+                v = ((last.get(k) or {}).get("local" if k == a else "remote") or {}).get("vehicle") or {}
+                self.track[k] = int(v["ptr"], 16) if v.get("ptr") else 0
+            rec["track"] = {k: f"{p:#x}" for k, p in self.track.items()}
+        chat_off = {k: s.chatlog_size() for k, s in self.sides.items()} if "chatlog" in st.get("post", []) else {}
+        self.log.skip_to_end()
+        log_from = len(self.log.hist)
         t0 = time.time()
         events = sorted(st["events"], key=lambda e: e[0])
         samples = []
@@ -542,12 +818,28 @@ class Driver:
             samples.append(s)
             time.sleep(max(0.0, SAMPLE_PERIOD - (time.time() - ts)))  # at most 10 Hz on either client
         rec["samples"] = samples
+        self.track = {}
+        if st.get("post"):
+            time.sleep(0.5)  # the last chat line / RPC of the window reaches the files and pools
+            rec["post"] = {}
+            for k, s in self.sides.items():
+                rec["post"][k] = {}
+                for what in st["post"]:
+                    try:
+                        rec["post"][k][what] = (s.chatlog_since(chat_off.get(k, 0)) if what == "chatlog"
+                                                else s.post(what))
+                    except OSError as e:
+                        s.close()
+                        rec["post"][k][what] = {"error": f"{type(e).__name__}: {e}"}
+        self.log.skip_to_end()
+        rec["server_log"] = [ln for ln in self.log.hist[log_from:]
+                             if re.search(r"\[xc\] (shot|takedamage|givedamage|unocc) ", ln)]
         if self.forced_spawn:
             rec["forced_spawn"] = self.forced_spawn
             say(f"step {st['name']}: no spawn request from {self.forced_spawn} after the death; server spawned")
         # The tracer serves one connection at a time: reuse the persistent one.
         rec["state"] = {k: self.side_cmd(s, "state") for k, s in self.sides.items()}
-        rec["server"] = self.server_view(st["name"])
+        rec["server"], rec["server_veh"] = self.server_view(st["name"])
         self.write(rec)
         say(f"step {st['name']:<14} samples={len(samples)}")
 
@@ -698,7 +990,10 @@ class Driver:
         self.watch_frame_local()
         if a.patches_only:
             return 0
+        only = os.environ.get("XC_STEPS")  # development: a regex of step names (the report then refuses the run)
         for st in STEPS:
+            if only and not re.search(only, st["name"]):
+                continue
             self.run_step(st)
         return 0
 
@@ -772,11 +1067,137 @@ def scalar(chk, ser, last_s, last_o):
     return None
 
 
+# --- checks of the M4–M7 steps ---------------------------------------------------------
+# Delta checks (a position/angle difference against a learned tolerance) and scalar checks (sender value vs
+# observer value, same calibration rules as `scalar`). "Sender" is always the acting player's own client (for the
+# combat hits: the shooter), "observer" the other client (the victim).
+EXT_DELTA = {"uveh_pos", "uveh_heading", "uveh_server", "trailer_pos", "trailer_heading", "trailer_server",
+             "obj_global", "obj_vehicle", "obj_player"}
+EXT_SCALAR = {"trailer", "chat", "bubble", "bubble_colour", "hit", "hit_damage", "victim_health"}
+
+
+def _last_track(rec, k):
+    for smp in reversed(rec["samples"]):
+        t = (smp.get(k) or {}).get("track")
+        if t:
+            return t
+    return None
+
+
+def _server_veh(rec, owner_pid, kind):
+    for v in rec.get("server_veh", []):
+        if v.get("owner") == str(owner_pid) and v.get("kind") == kind:
+            try:
+                return [float(c) for c in v["pos"].split(",")]
+            except (KeyError, ValueError):
+                return None
+    return None
+
+
+def _angle(u, v):
+    nu, nv = math.sqrt(sum(c * c for c in u)), math.sqrt(sum(c * c for c in v))
+    if nu == 0 or nv == 0:
+        return math.pi
+    return math.acos(max(-1.0, min(1.0, sum(a * b for a, b in zip(u, v)) / (nu * nv))))
+
+
+def ext_delta(chk, rec, sender, observer):
+    """(delta or None, rdelta or None, text) of a delta check."""
+    if chk.startswith("uveh_") or chk.startswith("trailer_"):
+        ts, to = _last_track(rec, sender), _last_track(rec, observer)
+        part = "trailer" if chk.startswith("trailer_") else None
+        if part:
+            ts, to = (ts or {}).get("trailer"), (to or {}).get("trailer")
+        if chk.endswith("_server"):
+            srv = _server_veh(rec, rec["pids"][sender], "trailer" if part else "car")
+            if not ts or "pos" not in ts or srv is None:
+                return None, None, "tracked vehicle or server vehicle missing"
+            d = dist(ts["pos"], srv)
+            return d, None, f"server Δ={d:.3f} m"
+        if not ts or not to or "pos" not in ts or "pos" not in to:
+            return None, None, f"{part or 'vehicle'} not tracked on both sides (sender {bool(ts)}, observer {bool(to)})"
+        if chk.endswith("_pos"):
+            d = dist(ts["pos"], to["pos"])
+            return d, None, f"Δ={d:.3f} m"
+        d = angdiff(ts["heading"], to["heading"])
+        return d, None, f"Δ={d:.3f} rad"
+    # Objects: obj_global (the server's object), obj_vehicle (the one on the sender's car), obj_player (the one on
+    # the sender's head): the sender's client vs the observer's, matched pairwise by position.
+    model = {"obj_global": OBJ_GLOBAL[0], "obj_vehicle": OBJ_VEHICLE[sender], "obj_player": OBJ_PLAYER[sender]}[chk]
+    po = rec.get("post", {})
+    ls = [o for o in (po.get(sender, {}).get("objects") or {}).get("objects", []) if o["model"] == model]
+    lo = [o for o in (po.get(observer, {}).get("objects") or {}).get("objects", []) if o["model"] == model]
+    if not ls or len(ls) != len(lo):
+        return None, None, f"model {model}: sender shows {len(ls)}, observer {len(lo)}"
+    d = r = 0.0
+    rest = list(lo)
+    for a in ls:
+        b = min(rest, key=lambda o: dist(a["pos"], o["pos"]))
+        rest.remove(b)
+        d = max(d, dist(a["pos"], b["pos"]))
+        r = max(r, _angle(a["fwd"], b["fwd"]), _angle(a["up"], b["up"]))
+    return d, r, f"model {model} x{len(ls)}: Δ={d:.3f} m, rotation Δ={r:.3f} rad"
+
+
+def _norm_chat(line, names):
+    line = re.sub(r"^\[\d\d:\d\d:\d\d\] ", "", line)
+    for k, n in sorted(names.items(), key=lambda kn: -len(kn[1])):  # XcOrig2 before XcOrig
+        line = line.replace(n, "{" + k + "}")
+    return line
+
+
+def ext_scalar(chk, rec, sender, observer):
+    """(sender value, observer value) of a scalar check."""
+    po = rec.get("post", {})
+    ps, pob = rec["pids"][sender], rec["pids"][observer]
+    if chk == "trailer":
+        # Model of the trailer hitched to the sender's car (0: none), on its own client and on the observer's.
+        last = rec["samples"][-1] if rec["samples"] else {}
+        vs = (((last.get(sender) or {}).get("local") or {}).get("vehicle") or {})
+        vo = (((last.get(observer) or {}).get("remote") or {}).get("vehicle") or {})
+        return vs.get("trailer"), vo.get("trailer")
+    if chk == "chat":
+        def lines(k):
+            got = po.get(k, {}).get("chatlog") or {}
+            if "error" in got:
+                return None
+            return [_norm_chat(ln, rec["names"]) for ln in got.get("lines", []) if CHAT_TEXT[sender] in ln]
+        return lines(sender), lines(observer)
+    if chk in ("bubble", "bubble_colour"):
+        mine = [b for b in (po.get(observer, {}).get("bubbles") or {}).get("bubbles", []) if b.get("id") == str(ps)]
+        if chk == "bubble":
+            want = (f"bubble of {sender}", BUBBLE["distance"], BUBBLE["duration"])
+            got = (mine[0].get("text"), float(mine[0]["distance"]), int(mine[0]["duration"])) if mine else None
+            return want, got
+        return BUBBLE["colour"], (int(mine[0]["colour"], 16) if mine else None)
+    if chk in ("hit", "hit_damage"):
+        log = rec.get("server_log", [])
+
+        def kv(ln):
+            return dict(x.split("=", 1) for x in ln.split() if "=" in x)
+        shots = [kv(ln) for ln in log if "[xc] shot " in ln and f" id={ps} " in ln]
+        give = [kv(ln) for ln in log if "[xc] givedamage " in ln and f" id={ps} " in ln and f" damaged={pob} " in ln]
+        take = [kv(ln) for ln in log if "[xc] takedamage " in ln and f" id={pob} " in ln and f" issuer={ps} " in ln]
+        if chk == "hit":
+            hit = any(x.get("hittype") == "1" and x.get("hitid") == str(pob) for x in shots)
+            base = "miss" if shots else "no shot"
+            return ("hit" if hit else base), ("hit" if take else base)
+        return (round(sum(float(x["amount"]) for x in give), 2), round(sum(float(x["amount"]) for x in take), 2))
+    if chk == "victim_health":
+        syn = [x for x in (po.get(sender, {}).get("synced") or {}).get("synced", []) if x.get("id") == str(pob)]
+        last = rec["samples"][-1] if rec["samples"] else {}
+        own = ((last.get(observer) or {}).get("local") or {}).get("health")
+        return (float(syn[0]["health"]) if syn else None), own
+    return None
+
+
 def same(chk, a, b):
     if a is None or b is None:
         return False
     if chk in ("health", "armour"):
         return abs(a - b) <= TOL[chk]
+    if chk == "victim_health":
+        return abs(a - b) <= TOL["health"]
     return a == b
 
 
@@ -818,6 +1239,20 @@ def evaluate(rec, sender, observer, tol, calibs=None, min_hold=2):
             d = angdiff(last_s["heading"], last_o["heading"])
             ok, extra = d <= tol["heading"], {"delta": d}
             val = f"Δ={d:.3f} rad (tol {tol['heading']:.2f}) {last_s['heading']:.3f}/{last_o['heading']:.3f}"
+        elif chk in EXT_DELTA:
+            d, r, txt = ext_delta(chk, rec, sender, observer)
+            if d is None:
+                ok, val = False, txt
+            else:
+                t_ = tol.get(chk, TOL[chk])
+                ok, extra = d <= t_, {"delta": d}
+                val = f"{txt} (tol {t_:.3f}"
+                if r is not None:
+                    tr = tol.get(chk + "_rot", TOL[chk + "_rot"])
+                    ok = ok and r <= tr
+                    extra["rdelta"] = r
+                    val += f", rotation tol {tr:.3f}"
+                val += ")"
         elif chk == "anims":
             # Animations the sender played in this step (blend >= 0.5 in at least `min_hold`
             # samples, not already playing before the action) must show up on the observer's ped at
@@ -850,7 +1285,7 @@ def evaluate(rec, sender, observer, tol, calibs=None, min_hold=2):
                         + (f", sometimes {sorted(may - must)}" if may - must else "")
                         + f" in {len(cm)} original-vs-original run(s))")
         else:
-            a_, b_ = scalar(chk, ser, last_s, last_o)
+            a_, b_ = ext_scalar(chk, rec, sender, observer) if chk in EXT_SCALAR else scalar(chk, ser, last_s, last_o)
             ok = same(chk, a_, b_)
             val = f"sender {a_} / observer {b_}"
             extra = {"observer": b_, "sender": a_}
@@ -889,20 +1324,26 @@ def evaluate(rec, sender, observer, tol, calibs=None, min_hold=2):
 
 def learn_tol(calib_recs):
     """Tolerances: 1.5 x the largest deviation the original-vs-original run
-    showed (floors TOL_FLOOR); the TOL defaults without a calibration run."""
+    showed (floors TOL_FLOOR); the TOL defaults without a calibration run.
+    Only the step-directions the report judges are measured (a one-actor step is judged actor → other only):
+    the other direction of such a step is no relation of that step (e.g. a bystander's ped nudged by the
+    actor's rolling car, 0.45 m on the original, veh_unoccupied_B)."""
     tol = dict(TOL)
     if not calib_recs:
         return tol
-    mx = {"pos": 0.0, "heading": 0.0}
+    kinds = {"pos": "pos", "heading": "heading", **LEARNED}
+    mx = {k: None for k in kinds}
     for rec in calib_recs:
-        for s, o in (("A", "B"), ("B", "A")):
-            ev = evaluate(rec, s, o, {"pos": 1e9, "heading": 1e9})
-            for k in mx:
-                c = ev["checks"].get(k)
-                if c and "delta" in c:
-                    mx[k] = max(mx[k], c["delta"])
-    for k in mx:
-        tol[k] = max(TOL_FLOOR[k], round(1.5 * mx[k], 3))
+        for s, o in directions(rec):
+            ev = evaluate(rec, s, o, {k: 1e9 for k in kinds})
+            for k in kinds:
+                c = ev["checks"].get(k[:-4] if k.endswith("_rot") else k)
+                key = "rdelta" if k.endswith("_rot") else "delta"
+                if c and key in c:
+                    mx[k] = max(mx[k] or 0.0, c[key])
+    for k, kind in kinds.items():
+        if mx[k] is not None:
+            tol[k] = max(TOL_FLOOR[kind], round(1.5 * mx[k], 3))
     return tol
 
 
@@ -961,7 +1402,7 @@ def report(run, out, calib_runs=None):
                if "delta" in e["checks"].get(k, {}) and e["checks"][k]["delta"] > TOL[k]]
         if far:
             skipped.append(c)
-            print(f"[xc] calibration {os.path.relpath(c, patchrows.ROOT)} not used: positions apart beyond the "
+            print(f"[xc] calibration {os.path.relpath(c, DATA_ROOT)} not used: positions apart beyond the "
                   f"default tolerance from {far[0][0]} on ({len(far)} checks)", file=sys.stderr)
             continue
         used.append((c, crecs))
@@ -978,11 +1419,18 @@ def report(run, out, calib_runs=None):
         for rec in crecs:
             for s, o in directions(rec):
                 calib_ev.setdefault((rec["name"], s, o), []).append(evaluate(rec, s, o, tol, min_hold=min_hold))
-    calib_run = ", ".join(os.path.relpath(c, patchrows.ROOT) for c, _ in used) or None
+    calib_run = ", ".join(os.path.relpath(c, DATA_ROOT) for c, _ in used) or None
     rows = []
     for rec in recs:
         for s, o in directions(rec):
             ev = evaluate(rec, s, o, tol, calib_ev.get((rec["name"], s, o)), min_hold=min_hold)
+            svo = ev["checks"].get("sender_vs_original")
+            if svo and svo["ok"] is False and sides[s]["kind"] == "orig":
+                # The sender IS the original client: a difference from the calibration senders is the original's
+                # own run-to-run variance (e.g. a short walk animation on the way to the car door), not ours.
+                svo["ok"] = None
+                svo["val"] = f"not judged, the sender is the original ({svo['val']})"
+                ev["verdict"] = "MATCH" if all(c["ok"] is not False for c in ev["checks"].values()) else "DIFF"
             if s in rec.get("forced_spawn", []):
                 # The sender did not request its spawn after the death; the server spawned it (ensure_spawn).
                 if sides[s]["kind"] == "orig":
@@ -1002,10 +1450,10 @@ def report(run, out, calib_runs=None):
     enabled = [r for r in rows if r["verdict"] != "PENDING"]
     nmatch = sum(r["verdict"] == "MATCH" for r in enabled)
     calib_rel = calib_run
-    summary = {"run": os.path.relpath(run, patchrows.ROOT), "calibration": calib_rel, "sides": sides,
+    summary = {"run": os.path.relpath(run, DATA_ROOT), "calibration": calib_rel, "sides": sides,
                "enabled": len(enabled), "match": nmatch, "diff": len(enabled) - nmatch,
                "pending": len(rows) - len(enabled), "tolerances": tol, "anim_min_hold": min_hold,
-               "calibration_skipped": [os.path.relpath(c, patchrows.ROOT) for c in skipped], "rows": rows,
+               "calibration_skipped": [os.path.relpath(c, DATA_ROOT) for c in skipped], "rows": rows,
                "pass": bool(enabled) and nmatch == len(enabled) and len(recs) == len(STEPS)}
     os.makedirs(out, exist_ok=True)
     name = "cross-client" if not (ka == kb == "orig") else "cross-client-calibration"
@@ -1055,6 +1503,7 @@ def main():
         d.add_argument(f"--{s}-name", required=True)
         d.add_argument(f"--{s}-kind", choices=["orig", "ours"], required=True)
         d.add_argument(f"--{s}-gamescope", default="", help="gamescope wayland socket (screenshots)")
+        d.add_argument(f"--{s}-chatlog", default="", help="that lane's SAMP/chatlog.txt (chat steps)")
     d.add_argument("--patches-only", action="store_true")
     for s in ("a", "b"):
         d.add_argument(f"--{s}-tracer-port", type=int, default=0,

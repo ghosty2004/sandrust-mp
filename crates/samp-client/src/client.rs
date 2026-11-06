@@ -236,6 +236,11 @@ impl Client {
         self.players.status(Instant::now(), |p| self.vehicles.remote_fields(p))
     }
 
+    /// Control-channel `synced`: synced health/armour per remote player.
+    pub fn synced_lines(&self) -> String {
+        self.players.synced_lines()
+    }
+
     /// Control-channel `vehicles`: one header line plus one line per streamed vehicle.
     pub fn vehicle_lines(&self) -> String {
         self.vehicles.status(&self.players)

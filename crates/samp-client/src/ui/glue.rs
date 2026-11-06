@@ -1577,6 +1577,11 @@ pub fn control_input() -> String {
     .unwrap_or_else(|| "error ui busy".into())
 }
 
+/// `bubbles`: the chat bubbles held per player (DIFF-3).
+pub fn control_bubbles() -> String {
+    try_with_ui(|st| st.core.bubbles_report()).unwrap_or_else(|| "error ui busy".into())
+}
+
 /// `ui`: dialog, scoreboard, textdraws, menus, death window, bubbles, cursor mode.
 pub fn control_ui() -> String {
     try_with_ui(|st| format!("{} cursor_mode={} tags={}", st.core.ui_report(), st.lock.mode(), st.remotes.len()))

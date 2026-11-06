@@ -287,7 +287,7 @@ tools/diff/cross-client.sh --report RUN_DIR     # report only
   headless gamescope (`E2E_DISPLAY_TAG=xc-a` / `xc-b`; `tools/e2e/lib.sh` now supports several displays
   at once). `wine-env.sh` is sourced per lane (private Documents, headless video mode).
 * Driver `tools/diff/xclient.py`: join, Shift on both until spawned, teleport both to the LSIA runway
-  (5 m apart, facing west), dump the patch bytes (F5), then 17 steps. Keys go to the actor's display only.
+  (5 m apart, facing west), dump the patch bytes (F5), then the 51 steps of `xclient.py STEPS`. Keys go to the actor's display only.
 * What is read: the same code on both sides, through `peek` (gta_sa.exe 1.0 US, plugin-sdk offsets):
   model, position, heading, health, armour, move state, `bIsDucking` / `bIsInTheAir` / `bIsStanding`,
   and the RpClump's animation blend list (hierarchy hash, group, id, blend). The other player's ped
@@ -304,7 +304,13 @@ tools/diff/cross-client.sh --report RUN_DIR     # report only
   comparing our observer with the original's observer, and adds `sender_vs_original`: the acting
   player's own ped must play what the original's did in the same step (else "sender == observer"
   holds trivially when neither side applied an RPC).
-* Vehicle (M5), combat (M7), objects (M6) and chat (M4) steps are listed as PENDING.
+* Vehicle (M5: driving, passengers, unoccupied 209, trailers 210), combat (M7: weapons, aim, shots, an aimed
+  hit, death/respawn), objects (M6) and chat (M4: chat lines, bubbles) steps are all enabled; nothing is
+  PENDING any more (section "M4–M7 steps" below).
+* Worktrees: `cross-client.sh` takes wine/, data/, re/gta, the lane lock and target/diff from `SAMP_RS_ROOT`
+  (found from the git common dir when unset, as `visual.sh`); builds stay in the checkout that runs it.
+  `lane-lock.sh` locks `$SAMP_RS_ROOT/target/locks/diff.lock`, so every checkout waits for the same file.
+  `XC_STEPS=REGEX` runs only the matching steps (development; the report then refuses the run).
 * Output: `target/diff/cross-client.{md,json}` (+ `cross-client-calibration.*`), runs in
   `target/diff/runs/xclient-*` / `xcalib-*` (`samples.jsonl`, `meta.json`, patch dumps, logs).
   Exit 0 only if every enabled step matches both ways.
@@ -344,6 +350,63 @@ Report rules now (`xclient.py report`):
 * Negative tests (`tools/diff/negative_tests.py f3`): our observer without the door/get-in anims
   (`veh_enter_A`), our sender without them (`veh_enter_B`), the original observer showing `CAR_sit_pro`
   for our sender, our client not requesting its spawn after the death — each turns MATCH into DIFF.
+
+## M4–M7 steps: unoccupied, trailers, objects, chat, aimed hit (2026-11-06)
+
+The four groups that were PENDING are real steps now (51 steps, 66 step-directions). What each compares —
+always the acting player's own client ("sender") against the other client ("observer"):
+
+| step(s) | checks |
+|---|---|
+| `veh_unoccupied_A`, `veh_reenter_B`, `veh_unoccupied_B` | the other player is put 60 m north of the lane (still streamed); the actor drives its Sultan west 1.5 s and leaves it with F while it rolls (~40 m, ~3 s), so the actor sends every 209 (server `[xc] unocc` lines). The actor's car is tracked by pointer on both sides (sender: its local ped's car, observer: the car of its remote ped, from the pre samples): `uveh_pos` / `uveh_heading` = sender's car vs observer's car at the end; `uveh_server` = the server's position of that car (only 209 moves it) vs the sender's |
+| `veh_trucks` (both), `veh_trailer_A`, `veh_trailer_B` | each player is put into its own Linerunner and a trailer is hitched (AttachTrailerToVehicle); then the actor drives 3 s (12 s window, the rig comes to rest). `trailer` = model hitched to the sender's car (CVehicle::m_pTrailer +0x4C8) on both sides; `trailer_pos` / `trailer_heading` = the hitched trailer, sender vs observer; `trailer_server` = server trailer position (210) vs sender |
+| `obj_setup`, `objects` (both) | one global object (1271), one object attached to each player's car (1220 / 2060, AttachObjectToVehicle) and one to each player's head (SAMP.img 18645 / 18636, SetPlayerAttachedObject). GTA's object pool (CPools::ms_pObjectPool 0xB7449C, 0x19C per CCutsceneObject) is read on both sides after the window: `obj_global` / `obj_vehicle` / `obj_player` = same count of that model on both, positions (matched pairwise) and rotation (forward/up vector angles) within the learned tolerances |
+| `chat_A`, `chat_B` | the actor types `xc chat from X` (T, text, Enter). `chat` = the lines with that text appended to each lane's own `chatlog.txt` (private Documents) during the step, timestamp removed and player names replaced by `{A}`/`{B}`: sender's == observer's |
+| `bubble` (both) | SetPlayerChatBubble(id, "bubble of X", 0xFFAA00FF, 50, 15000). New control query `bubbles` on both clients (samp-tracer reads samp.dll's bubble pool, our client its own; same line format). `bubble` = (text, distance, duration) the observer holds for the sender == the server's call; `bubble_colour` = stored colour (the original keeps `(c >> 8) | 0xFF000000`, so it is judged against the original observer) |
+| `hit_setup_A/B` (both), `combat_hit_A/B` | Desert Eagle, the shooter faces the victim 3 m away (spots 5 / 10 m east of the base: a remote ped is only nudged within 2 m of its synced position and a standing one nudged by 1 m stayed put on the original, so each round teleports both), aims (right button, mouse 40 px up to pitch the camera down — without it the free-aim ray passes over the head), fires once. `hit` = shooter's 206 hit the victim (OnPlayerWeaponShot hittype 1) vs the victim reported damage from the shooter (OnPlayerTakeDamage); `hit_damage` = OnPlayerGiveDamage amount vs OnPlayerTakeDamage amount; `victim_health` = the shooter's synced health of the victim (new control query `synced`, samp's remote player +0x1b0 in the original) vs the victim's own ped health. The original keeps 56 vs 53.8 (S→C foot sync packs health coarsely), so it is judged against the original's observer, and `sender_vs_original` makes the shooter's view match the original shooter's |
+
+Tolerances learned from `xcalib-20261106-155105`, `-160111`, `-160606` (1.5 × the original's own largest
+deviation, floors 0.1 m / 0.03 rad):
+
+| check | tolerance | original max |
+|---|---|---|
+| pos (all steps) / heading | 0.114 m / 0.03 rad | 0.076 m / ≤ 0.02 rad |
+| uveh_pos / uveh_heading / uveh_server | 0.167 m / 0.03 rad / 0.161 m | 0.111 m / ≤ 0.02 rad / 0.107 m |
+| trailer_pos / trailer_heading / trailer_server | 0.1 m / 0.03 rad / 0.1 m (floors) | ≤ 0.067 m |
+| obj_global (+ rotation) | 0.1 m / 0.03 rad (floors) | 0.000 |
+| obj_vehicle (+ rotation) | 0.167 m / 0.03 rad | 0.111 m (follows the car) |
+| obj_player (+ rotation) | 0.437 m / 0.624 rad | 0.291 m / 0.416 rad (the original shows the other player's helmet that far from where that player's own client has it) |
+| health, victim_health | 1.0 (existing default) | — |
+
+Result (2026-11-06, `tools/diff/cross-client.sh`, run `xclient-20261106-161102`): **66/66 step-directions MATCH,
+0 DIFF, 0 pending**, exit 0. `negative_tests.py f3` on that run: all 10 cases turn MATCH into DIFF.
+
+New server-side helpers in `xclient.pwn`: `xc out|truck|tputin|hitch|gobj|vobj|pobj|bubble`, vehicle lines in
+`xc info` (`vinfo … streamed=<bit per player>`), and shot/damage logging. New negative tests
+(`negative_tests.py f3`): `obs_unoccupied_off`, `obs_no_trailer`, `obs_no_head_object`, `obs_no_chat`,
+`obs_no_bubble`, `ours_shot_misses`.
+
+Measurement fixes found on the way (all original-vs-original evidence):
+* The bystander of `veh_unoccupied_*` waits 60 m away. Next to the car's path, the 209 sender changed mid-roll
+  (both clients hand over correctly: `[xc] unocc` shows the original or ours taking over), but open.mp accepts a new
+  sender only if no other streamed player is closer to the server's last, stale car position
+  (`Vehicle::updateFromUnoccupied`): in `xclient-20261106-153610` our ped stood 4.2 m and the original's 4.5 m from
+  it, the original's 209s were refused and the server's car stopped 21 m short (`uveh_server`; the car-attached
+  object of `objects` followed). A race of where two peds stand, decided on the server.
+* Trucks are created for both players at once. open.mp streams new vehicles to a player only from that player's
+  sync packets (Vehicles component `onPlayerUpdate`); an original client sitting in a car at rest sends none, so a
+  truck created later for the other player was never streamed to it (`IsVehicleStreamedIn` 0 for that player).
+* Tolerances are learned only from the step-directions the report judges (`learn_tol` used both directions of
+  every step; the bystander of `veh_unoccupied_B` is nudged 0.45 m by the actor's rolling car on the original,
+  which would have raised the one position tolerance of every step from 0.11 to 0.67 m). The position tolerance
+  of the older steps is 0.114 m now (0.117 before; new calibration runs).
+* `sender_vs_original` is not judged when the sender is the original itself (orig→ours): a difference from the
+  calibration senders is then the original's own run-to-run variance (xclient-20261106-152517: the original
+  sender of `veh_enter_A` skipped a short group-118 walk animation every calibration sender played).
+* Calibration runs in which the two originals disagree are not used (existing rule): `xcalib-20261106-150532`
+  (the original in lane A kept showing the other original at the gamemode spawn after the first teleport) and
+  `xcalib-20261106-155601` (lane A's original did not request its spawn after `combat_death_A`, the known flake).
+* `combat_hit_*` checks no position (the hit reaction would widen the shared position tolerance); `hit_setup_*` does.
 
 ## Baseline (2026-11-04, run xclient-20261104-212008, calibration xcalib-20261104-211825)
 

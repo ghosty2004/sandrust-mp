@@ -20,6 +20,10 @@
 //! * `chat [N]` → `chat count=K …` header plus K lines `line type=… colour=…
 //!   name=… text=… runs=[…]` (the newest K ≤ N chat entries, default 20)
 //! * `input` → chat input state (`input open=… text=… caret=… …`)
+//! * `bubbles` → `bubbles count=N` header plus N lines `bubble id=… colour=… distance=… duration=…
+//!   lines=… text=…` (chat bubbles held per player; samp-tracer answers the same for the original)
+//! * `synced` → `synced count=N` header plus N lines `synced id=… health=… armour=…` (synced
+//!   health/armour per remote player, what the nametag bars show; same format in samp-tracer)
 //! * `say TEXT` → debugging aid: TEXT is handled as if typed into the chat
 //!   input and sent with Enter (next frame); replies `say queued`
 //! * anything else → `error unknown command`
@@ -59,6 +63,10 @@ pub enum Command {
     Input,
     /// `ui`: dialog / scoreboard / textdraw / menu / death window state.
     Ui,
+    /// `bubbles`: chat bubbles held per player (DIFF-3).
+    Bubbles,
+    /// `synced`: synced health/armour per remote player (DIFF-3).
+    Synced,
     Say(String),
     /// `audio`: audio stream / PlayerPlaySound state (M9).
     Audio,
@@ -119,6 +127,8 @@ pub fn parse(line: &str) -> Option<Command> {
         "chat" => Command::Chat(20),
         "input" => Command::Input,
         "ui" => Command::Ui,
+        "bubbles" => Command::Bubbles,
+        "synced" => Command::Synced,
         "audio" => Command::Audio,
         "quit" | "exit" => Command::Quit,
         _ => Command::Unknown(t.to_string()),
@@ -236,6 +246,8 @@ mod tests {
         assert_eq!(parse("Spawn\n"), Some(Command::Spawn));
         assert_eq!(parse(""), None);
         assert_eq!(parse("chat"), Some(Command::Chat(20)));
+        assert_eq!(parse("bubbles"), Some(Command::Bubbles));
+        assert_eq!(parse("synced"), Some(Command::Synced));
         assert_eq!(parse("chat 5"), Some(Command::Chat(5)));
         assert_eq!(parse("input"), Some(Command::Input));
         assert_eq!(parse("say Hello World"), Some(Command::Say("Hello World".into())));

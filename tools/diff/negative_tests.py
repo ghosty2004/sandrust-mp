@@ -24,6 +24,12 @@ F3 cases (on a copy of samples.jsonl):
                        never does for an original sender (calibration): what we send differs
   ours_no_respawn      our client did not request its spawn after the death (the driver had the server
                        spawn it: combat_respawn_B marked forced_spawn B)
+  obs_unoccupied_off   our observer keeps A's rolling empty car 1 m off (veh_unoccupied_A, uveh_pos)
+  obs_no_trailer       our observer shows A's truck without the trailer (veh_trailer_A)
+  obs_no_head_object   our client lacks the object attached to A's head (objects, obj_player)
+  obs_no_chat          A's chat line is missing from our chatlog (chat_A)
+  obs_no_bubble        our client holds no chat bubble for A (bubble)
+  ours_shot_misses     our aimed shot misses the original: no player hit, no damage (combat_hit_B)
 Exit 0 when every case fails as expected (and the unchanged run still passes those steps).
 """
 import argparse
@@ -255,10 +261,74 @@ def f3(a):
                 r["forced_spawn"] = ["B"]
         return "combat_respawn_B", "ours→orig"
 
+    def case_observer_unoccupied_off(rs):
+        # Our observer keeps A's empty car 1 m from where A's client (and its 209s) put it.
+        for r in rs:
+            if r["name"] == "veh_unoccupied_A":
+                for s in r["samples"]:
+                    t = (s.get("B") or {}).get("track")
+                    if t and t.get("pos"):
+                        t["pos"][0] += 1.0
+        return "veh_unoccupied_A", "orig→ours"
+
+    def case_observer_no_trailer(rs):
+        # Our observer shows A's truck without its trailer.
+        for r in rs:
+            if r["name"] == "veh_trailer_A":
+                for s in r["samples"]:
+                    v = ((s.get("B") or {}).get("remote") or {}).get("vehicle")
+                    if v:
+                        v["trailer"] = 0
+                    t = (s.get("B") or {}).get("track")
+                    if t:
+                        t["trailer"] = None
+        return "veh_trailer_A", "orig→ours"
+
+    def case_observer_no_head_object(rs):
+        # Our client does not show the object attached to A's head.
+        for r in rs:
+            if r["name"] == "objects":
+                o = r["post"]["B"]["objects"]
+                o["objects"] = [x for x in o.get("objects", []) if x["model"] != 18645]
+        return "objects", "orig→ours"
+
+    def case_observer_no_chat(rs):
+        # A's chat line never reaches our chat window / chatlog.
+        for r in rs:
+            if r["name"] == "chat_A":
+                r["post"]["B"]["chatlog"]["lines"] = []
+        return "chat_A", "orig→ours"
+
+    def case_observer_no_bubble(rs):
+        # Our client holds no bubble for A.
+        for r in rs:
+            if r["name"] == "bubble":
+                b = r["post"]["B"]["bubbles"]
+                b["bubbles"] = [x for x in b.get("bubbles", []) if x.get("id") != str(r["pids"]["A"])]
+        return "bubble", "orig→ours"
+
+    def case_ours_shot_misses(rs):
+        # Our shot does not hit the original (206 without the player hit, no damage on either side).
+        for r in rs:
+            if r["name"] == "combat_hit_B":
+                r["server_log"] = [ln.replace("hittype=1", "hittype=0") for ln in r["server_log"]
+                                   if "damage " not in ln]
+                for k in r["post"]["B"]["synced"]["synced"]:
+                    k["health"] = "100.0"
+                for s in r["samples"]:
+                    v = (s.get("A") or {}).get("local")
+                    if v:
+                        v["health"] = 100.0
+        return "combat_hit_B", "ours→orig"
+
     rc = 0
     unchanged = report_f3(run, a.calib, os.path.join(work, "f3-report-unchanged"))
     for name, fn in (("observer_no_enter", case_observer_no_enter), ("sender_no_enter", case_sender_no_enter),
-                     ("observer_sit_pro", case_observer_sit_pro), ("ours_no_respawn", case_ours_no_respawn)):
+                     ("observer_sit_pro", case_observer_sit_pro), ("ours_no_respawn", case_ours_no_respawn),
+                     ("obs_unoccupied_off", case_observer_unoccupied_off),
+                     ("obs_no_trailer", case_observer_no_trailer),
+                     ("obs_no_head_object", case_observer_no_head_object), ("obs_no_chat", case_observer_no_chat),
+                     ("obs_no_bubble", case_observer_no_bubble), ("ours_shot_misses", case_ours_shot_misses)):
         d = os.path.join(work, "f3-" + name)
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d)
