@@ -686,3 +686,21 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - Harness: orphaned cars (driver left the server while seated, nobody driving) excluded from veh_pos and passenger
   remote_pos until a driver sits in it or the server position changes; no threshold changed. Logged in ROADMAP
   decisions and soak-notes "Orphaned cars". No client code changed.
+
+## 2026-11-06 — Final proofs on main 29fb29b (F1, F2, F4–F7)
+- Logs in target/final-proof/ (gitignored). Memory: the host's background-shell reaper stopped the first parallel
+  run (three soaks + an agent's two games + 3.3 GB of old scratch files in the /tmp tmpfs); rerun with less load.
+- F2 `tools/diff/network.sh`: checks 387, matching 387, accepted 0, open 0 — exit 0.
+- F4 `tools/diff/visual.sh`: first run DIFF on dlg5 only (D3DX split one sprite batch of 8 vertices into 4 + 4; the
+  sprite.Draw calls were identical) → visual_diff.py merges consecutive D3DX draws with identical state and
+  compares the joined vertex lists (negative test: one altered vertex → DIFF, exit 1). Rerun: 28 elements OK, exit 0.
+- F5 `tools/diff/patch-coverage.sh`: PASS, 0 missing, 0 different, 0 unverified — exit 0.
+- F6 `tools/diff/files.sh`: IDENTICAL, PASS — exit 0.
+- F1 `tools/diff/rpc-coverage.sh`: steps 179, RPCs covered 131/141, MATCH 131, UNTRIGGERABLE 10 — exit 0.
+- F7 `tools/e2e/soak.sh`, 7200 s per gamemode, one lane each in parallel (gungame veh, derby ui, simpletdm trace):
+  gungame PASS (99.996 %), simpletdm PASS (100 %), derby PASS (99.902 %; remote_pos 99.47 %, the rammed-car case
+  shared with the original), fps 52.5, 0 crashes, every case ok — each exit 0. A first derby attempt in lane ui
+  stayed at gGameState 6 and crashed in GTA's level loader (write to 0x18, gta_sa.exe+0x137d12) after ~160 s
+  of loading while the host had ~3 GB available; the rerun joined in 28 s. Not reproduced since; watch item.
+- F3 `tools/diff/cross-client.sh`: 45/45 enabled MATCH, exit 0, but 8 step-directions still PENDING (unoccupied /
+  trailer, combat hit, objects, chat) although M4–M7 are done → being enabled (F3 not yet counted as proven).
