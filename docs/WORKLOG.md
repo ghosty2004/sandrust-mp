@@ -570,3 +570,7 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - F5 exit 1: row 368 frame-local toggle caught by snapshot luck; harness now watches the writes (ff689b8): 2 runs PASS, negative test FAIL as expected.
 - F1 exit 1 (130/131: gangzone_stopflash screenshot phase), F3 exit 1 (44/45: veh_enter_B short anim sampling) — handed to a deflaking agent.
 - F4 exit 1: vehtag DIFF, netstats DIFF 2 lines, dl/dloff/testdw MISSING (scenario not driven for ours) — handed to a visual agent.
+
+## 2026-11-06 — 2-hour soaks on gungame and simpletdm
+
+- tools/e2e/soak.sh (SOAK_GAMEMODES="gungame simpletdm", 7200 s each, lane veh) on main 0a65b5f: `[soak] results: gungame:PASS simpletdm:PASS` / `[soak] PASS`. Derby 2 h started next.
