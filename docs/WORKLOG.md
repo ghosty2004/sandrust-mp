@@ -618,3 +618,15 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - Verified: `tools/diff/visual.sh` exit 0 twice (28/28 OK); negative test on copies of the
   captures (dialog colour, F5 label, missing driver tag, missing element) → exit 1 each;
   workspace tests + clippy (host + i686) 0 warnings.
+
+## 2026-11-06 — Final proof run (second pass, main 43c1a31)
+
+- F5 tools/diff/patch-coverage.sh: exit 0 — `**PASS**: 0 missing, 0 different, 0 unverified.`
+- F1 tools/diff/rpc-coverage.sh: exit 0 — `MATCH: 131`, `UNTRIGGERABLE: 10` (logged decision DIFF2-U1).
+- F3 tools/diff/cross-client.sh: exit 0 — `45/45 enabled step-directions MATCH, 0 DIFF`.
+- F2 tools/diff/network.sh: exit 0 — `checks: 385, matching: 385, accepted decisions: 0, open differences: 0`.
+- F6 tools/diff/files.sh: exit 0 — `IDENTICAL`, `PASS`.
+- F4 tools/diff/visual.sh: exit 1 — dl/dloff/testdw MISSING on the ORIGINAL side: the run reused an
+  original capture made before those elements joined the scenario. Rerun with `--orig` started.
+- F7: gungame and simpletdm 2 h PASS; derby 2 h FAIL narrowly (remote_pos 98.83% < 99%, memory slope
+  40.4 > 40 MB/h) — a 2 h original-client comparison is running before any decision.
