@@ -179,15 +179,15 @@ for ((n = 0; n < OURS_RUNS; n++)); do
 done
 [ "${#orig_dirs[@]}" -gt 0 ] || { say "no usable original run; no report"; exit 1; }
 # Calibration data accumulates: up to REUSE_ORIG earlier complete original runs of the same scenario (started after
-# the last change of the scenario files, same samp.dll and tracer, every step fired, full step list) join the report.
+# the last change of the scenario files and the driver, same samp.dll and tracer, every step fired, full step list) join the report.
 if [ -z "$ONLY" ] && [ "$REUSE_ORIG" -gt 0 ]; then
     mapfile -t reuse < <(python3 -I - "$DIFF_OUT/runs" "$REUSE_ORIG" "${orig_dirs[@]}" \
-        "$HERE/rpcfire.pwn" "$HERE/diffbase.pwn" "$0" "$ROOT/tools/e2e/probe/e2eprobe.pwn" \
+        "$HERE/rpcfire.pwn" "$HERE/diffbase.pwn" "$0" "$ROOT/tools/e2e/probe/e2eprobe.pwn" "$HERE/drive.py" \
         "$GTA_DIR/samp.dll" "$GTA_DIR/samp-tracer.dll" <<'PY'
 import glob, hashlib, json, os, sys
 runs, n, rest = sys.argv[1], int(sys.argv[2]), sys.argv[3:]
-dlls, scen = rest[-2:], rest[-6:-2]
-fresh = set(rest[:-6])
+dlls, scen = rest[-2:], rest[-7:-2]
+fresh = set(rest[:-7])
 since = max(os.path.getmtime(f) for f in scen)
 want = {hashlib.sha256(open(f, "rb").read()).hexdigest() for f in dlls}
 out = []

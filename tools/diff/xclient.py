@@ -135,12 +135,16 @@ STEPS = STEPS + (
     + [{"name": "combat_death_A", "actor": "A", "events": [(0.0, "rcon_each", "xc hpar {id} 0 0 ;")], "window": 3.0,
         "checks": ["visible", "dead"]},
        # The respawn puts the player at the gamemode's spawn far away; the actor is brought back to its spot.
-       {"name": "combat_respawn_A", "actor": "A", "events": [(2.5, "tp", None)], "window": 5.5,
-        "checks": ["visible", "dead", "pos"]},
+       # The ORIGINAL client sometimes never requests its spawn after this death (GTA restarts the ped at
+       # 2488,-1666, samp does not follow; 2 of 9 runs, always lane A): `ensure_spawn` then has the server
+       # spawn the player (SpawnPlayer) so the later steps do not cascade, and the step records it
+       # (`self_spawn`: noted for an original sender, a DIFF for ours).
+       {"name": "combat_respawn_A", "actor": "A", "events": [(2.0, "ensure_spawn", None), (3.5, "tp", None)],
+        "window": 6.5, "checks": ["visible", "dead", "pos"]},
        {"name": "combat_death_B", "actor": "B", "events": [(0.0, "rcon_each", "xc hpar {id} 0 0 ;")], "window": 3.0,
         "checks": ["visible", "dead"]},
-       {"name": "combat_respawn_B", "actor": "B", "events": [(2.5, "tp", None)], "window": 5.5,
-        "checks": ["visible", "dead", "pos"]}]
+       {"name": "combat_respawn_B", "actor": "B", "events": [(2.0, "ensure_spawn", None), (3.5, "tp", None)],
+        "window": 6.5, "checks": ["visible", "dead", "pos"]}]
 )
 
 # M5 vehicle steps: each player gets its own Sultan 2.5 m north (driver door towards it); the actor enters it with F
@@ -496,13 +500,31 @@ class Driver:
             for k in targets:
                 s = self.sides[k]
                 self.xc(arg.format(id=s.pid, other=self.sides[self.other(k)].pid, skin=SKIN_STEP[k]))
+        elif kind == "ensure_spawn":
+            # Spawned since the previous step (the death) began? Else the server spawns the player.
+            for k in targets:
+                if self.spawn_count(k) <= self.step_spawns[-2][k]:
+                    self.forced_spawn.append(k)
+                    self.xc(f"xc spawn {self.sides[k].pid} ;")
         elif kind == "tp":
             for k in targets:
                 x, y, z, ang = SPOT[k]
                 self.xc(f"xc tp {self.sides[k].pid} {x:.3f} {y:.3f} {z:.3f} {ang:.1f} ;")
 
+    def spawn_count(self, k):
+        """Server-side spawns of side k's player so far (`[e2e] spawn id=N` lines of the server log)."""
+        try:
+            text = open(self.log.path, errors="replace").read()
+        except OSError:
+            return 0
+        return len(re.findall(rf"\[e2e\] spawn id={self.sides[k].pid}\b", text))
+
     def run_step(self, st):
         rec = {"name": st["name"], "actor": st["actor"], "checks": st["checks"], "window": st["window"]}
+        if not hasattr(self, "step_spawns"):
+            self.step_spawns = []
+        self.step_spawns.append({k: self.spawn_count(k) for k in self.sides})
+        self.forced_spawn = []
         rec["pre"] = [self.sample_both() for _ in range(2)]
         t0 = time.time()
         events = sorted(st["events"], key=lambda e: e[0])
@@ -520,6 +542,9 @@ class Driver:
             samples.append(s)
             time.sleep(max(0.0, SAMPLE_PERIOD - (time.time() - ts)))  # at most 10 Hz on either client
         rec["samples"] = samples
+        if self.forced_spawn:
+            rec["forced_spawn"] = self.forced_spawn
+            say(f"step {st['name']}: no spawn request from {self.forced_spawn} after the death; server spawned")
         # The tracer serves one connection at a time: reuse the persistent one.
         rec["state"] = {k: self.side_cmd(s, "state") for k, s in self.sides.items()}
         rec["server"] = self.server_view(st["name"])
@@ -755,10 +780,14 @@ def same(chk, a, b):
     return a == b
 
 
-def evaluate(rec, sender, observer, tol, calib=None):
-    """calib: the same step/direction evaluated on an original-vs-original run.
-    Where the original itself does not keep a relation (e.g. a remote ped's GTA
-    health is not the sender's), ours must show what the original observer showed."""
+def evaluate(rec, sender, observer, tol, calibs=None, min_hold=2):
+    """calibs: the same step/direction evaluated on original-vs-original runs (a list; one per
+    calibration run). Where the original itself does not keep a relation (e.g. a remote ped's GTA
+    health is not the sender's), ours must show what the original observer showed.
+    min_hold: samples (blend >= 0.5) a sender animation must last to be required on the observer."""
+    if isinstance(calibs, dict):
+        calibs = [calibs]
+    calibs = calibs or []
     ser = series(rec, sender, observer)
     pre = [((s.get(sender) or {}).get("local")) for s in rec["pre"]]
     last_s, last_o = (ser[-1] if ser else (None, None))
@@ -790,48 +819,68 @@ def evaluate(rec, sender, observer, tol, calib=None):
             ok, extra = d <= tol["heading"], {"delta": d}
             val = f"Δ={d:.3f} rad (tol {tol['heading']:.2f}) {last_s['heading']:.3f}/{last_o['heading']:.3f}"
         elif chk == "anims":
-            # Animations the sender played in this step (blend >= 0.5 in at least
-            # two samples, not already playing before the action) must show up on
-            # the observer's ped at some point of the window (blend > 0.1).
+            # Animations the sender played in this step (blend >= 0.5 in at least `min_hold`
+            # samples, not already playing before the action) must show up on the observer's ped at
+            # some point of the window (blend > 0.1).
             counts = {}
             for v, _ in ser:
                 for a_ in (v or {}).get("anims", []):
                     if a_["blend"] >= 0.5:
                         counts[hkey(a_["anim"])] = counts.get(hkey(a_["anim"]), 0) + 1
-            distinct = {k for k, n in counts.items() if n >= 2} - anim_set(pre, 0.5)
+            before = anim_set(pre, 0.5)
+            distinct = {k for k, n in counts.items() if n >= min_hold} - before
+            short_ = {k for k, n in counts.items() if n < min_hold} - before
             seen = anim_set([v for _, v in ser], 0.1)
             missing = distinct - seen
             ok = not missing
             sv = [v for v, _ in ser]
-            extra = {"distinct": sorted(distinct), "sender_seen": sorted(anim_set(sv, 0.1))}
+            extra = {"distinct": sorted(distinct), "sender_seen": sorted(anim_set(sv, 0.1)),
+                     "missing": sorted(missing), "hold": {k: counts[k] for k in distinct | short_}}
             val = f"sender {full_names(sv, distinct) or '-'}; missing on observer {full_names(sv, missing) or '-'}"
-            if calib is not None and not calib["checks"].get(chk, {}).get("ok", True):
-                ok, val = None, val + " (not judged: unstable in the original-vs-original run)"
+            if short_ - seen:
+                val += f"; shorter than {min_hold} samples, not required: {full_names(sv, short_ - seen)}"
+            cm = [set(c["checks"][chk].get("missing", [])) for c in calibs if chk in c["checks"]]
+            if cm and any(cm):
+                # The original observer does not show every animation of the original sender in this
+                # step/direction (orig-vs-orig runs). Ours must reproduce that: miss what every
+                # calibration run missed, and miss nothing no calibration run missed.
+                must, may = set.intersection(*cm), set.union(*cm)
+                ok = must <= missing <= may
+                val += (f" (original observer missed {full_names(sv, must) or sorted(must)}"
+                        + (f", sometimes {sorted(may - must)}" if may - must else "")
+                        + f" in {len(cm)} original-vs-original run(s))")
         else:
             a_, b_ = scalar(chk, ser, last_s, last_o)
             ok = same(chk, a_, b_)
             val = f"sender {a_} / observer {b_}"
             extra = {"observer": b_, "sender": a_}
-            c = (calib or {}).get("checks", {}).get(chk)
-            if c is not None and not c["ok"] and "observer" in c:
-                # The original does not keep sender == observer here: compare the
-                # observer with what the original's observer showed.
-                ok = same(chk, b_, c["observer"])
-                val += f" (original observer showed {c['observer']}: relation not kept by the original)"
+            cs = [c["checks"][chk] for c in calibs if chk in c["checks"]]
+            notkept = [c for c in cs if not c["ok"] and "observer" in c]
+            if notkept:
+                # The original does not keep sender == observer here: compare the observer with what
+                # the original's observer showed (any of the calibration runs; sender == observer also
+                # passes when some calibration run kept the relation).
+                obs = [c["observer"] for c in notkept]
+                ok = any(same(chk, b_, o) for o in obs) or (ok and len(notkept) < len(cs))
+                val += f" (original observer showed {obs[0] if len(set(map(str, obs))) == 1 else obs}: relation not kept by the original)"
         res[chk] = {"ok": ok, "val": val, **extra}
-    if calib is not None:
+    if calibs:
         # The acting player's own ped must do what the original's did in the
         # same step (else "sender == observer" can hold trivially, e.g. when
         # neither side applied an RPC).
         bad = []
         for chk, r in res.items():
-            c = calib["checks"].get(chk, {})
-            if chk == "anims" and "distinct" in c and "sender_seen" in r:
-                miss = sorted(set(c["distinct"]) - set(r["sender_seen"]))
+            cs = [c["checks"][chk] for c in calibs if chk in c["checks"]]
+            if not cs:
+                continue
+            if chk == "anims" and "sender_seen" in r and all("distinct" in c for c in cs):
+                # Played by the original sender in every calibration run.
+                miss = sorted(set.intersection(*(set(c["distinct"]) for c in cs)) - set(r["sender_seen"]))
                 if miss:
                     bad.append(f"anims {miss} not played")
-            elif "sender" in c and "sender" in r and not same(chk, r["sender"], c["sender"]):
-                bad.append(f"{chk} {r['sender']} (original {c['sender']})")
+            elif "sender" in r and all("sender" in c for c in cs) \
+                    and not any(same(chk, r["sender"], c["sender"]) for c in cs):
+                bad.append(f"{chk} {r['sender']} (original {cs[0]['sender']})")
         res["sender_vs_original"] = {"ok": not bad, "val": "; ".join(bad) or "same as the original sender"}
     judged = [r["ok"] for r in res.values() if r["ok"] is not None]
     verdict = "MATCH" if all(judged) else "DIFF"
@@ -863,23 +912,85 @@ def directions(rec):
     return [(rec["actor"], "B" if rec["actor"] == "A" else "A")]
 
 
-def report(run, out, calib_run=None):
+CALIB_MAX = 3   # most recent original-vs-original runs the report uses
+
+
+def learn_min_hold(evs):
+    """Sub-sample tolerance from the calibration runs: an animation the original observer showed in
+    one original-vs-original run and missed in another of the same step/direction was missed by
+    sampling (both observers are the original). Sender animations held for no more samples than the
+    longest such one are not required on the observer. At least 2 (one sample is never required)."""
+    longest = 0
+    for key, lst in evs.items():
+        miss = [set(e["checks"].get("anims", {}).get("missing", [])) for e in lst]
+        if len(miss) < 2 or not any(miss):
+            continue
+        transient = set.union(*miss) - set.intersection(*miss)
+        for e in lst:
+            hold = e["checks"].get("anims", {}).get("hold", {})
+            longest = max([longest] + [hold.get(k, 0) for k in transient])
+    return max(2, longest + 1)
+
+
+def report(run, out, calib_runs=None):
     recs = [json.loads(ln) for ln in open(os.path.join(run, "samples.jsonl"))]
     meta = json.load(open(os.path.join(run, "meta.json")))
     sides = meta["sides"]
     ka, kb = sides["A"]["kind"], sides["B"]["kind"]
     label = {"A": ka, "B": kb if kb != ka else kb + "2"}
-    calib_recs, calib_ev = [], {}
-    if calib_run and os.path.abspath(calib_run) != os.path.abspath(run):
-        calib_recs = [json.loads(ln) for ln in open(os.path.join(calib_run, "samples.jsonl"))]
+    if isinstance(calib_runs, str):
+        calib_runs = [calib_runs]
+    want = [st["name"] for st in STEPS]
+    used, skipped = [], []
+    for c in calib_runs or []:
+        if os.path.abspath(c) == os.path.abspath(run) or len(used) >= CALIB_MAX:
+            continue
+        try:
+            crecs = [json.loads(ln) for ln in open(os.path.join(c, "samples.jsonl"))]
+        except OSError:
+            continue
+        # Only calibration runs of the current scenario (same steps) are used.
+        if [r["name"] for r in crecs] != want:
+            skipped.append(c)
+            continue
+        # A calibration run in which the scenario itself went wrong (the two originals disagree on a
+        # position by more than the default tolerance, e.g. a respawn the observer never showed, after
+        # which every later step is off) measures that failure, not the noise floor: not used.
+        far = [(r["name"], k, round(e["checks"][k]["delta"], 1)) for r in crecs for so in directions(r)
+               for e in [evaluate(r, so[0], so[1], TOL)] for k in ("pos", "veh_pos")
+               if "delta" in e["checks"].get(k, {}) and e["checks"][k]["delta"] > TOL[k]]
+        if far:
+            skipped.append(c)
+            print(f"[xc] calibration {os.path.relpath(c, patchrows.ROOT)} not used: positions apart beyond the "
+                  f"default tolerance from {far[0][0]} on ({len(far)} checks)", file=sys.stderr)
+            continue
+        used.append((c, crecs))
+    calib_recs = [r for _, crecs in used for r in crecs]
     tol = learn_tol(calib_recs)
-    for rec in calib_recs:
-        for s, o in directions(rec):
-            calib_ev[(rec["name"], s, o)] = evaluate(rec, s, o, tol)
+    first = {}
+    for _, crecs in used:
+        for rec in crecs:
+            for s, o in directions(rec):
+                first.setdefault((rec["name"], s, o), []).append(evaluate(rec, s, o, tol, min_hold=1))
+    min_hold = learn_min_hold(first)
+    calib_ev = {}
+    for _, crecs in used:
+        for rec in crecs:
+            for s, o in directions(rec):
+                calib_ev.setdefault((rec["name"], s, o), []).append(evaluate(rec, s, o, tol, min_hold=min_hold))
+    calib_run = ", ".join(os.path.relpath(c, patchrows.ROOT) for c, _ in used) or None
     rows = []
     for rec in recs:
         for s, o in directions(rec):
-            ev = evaluate(rec, s, o, tol, calib_ev.get((rec["name"], s, o)))
+            ev = evaluate(rec, s, o, tol, calib_ev.get((rec["name"], s, o)), min_hold=min_hold)
+            if s in rec.get("forced_spawn", []):
+                # The sender did not request its spawn after the death; the server spawned it (ensure_spawn).
+                if sides[s]["kind"] == "orig":
+                    ev["checks"]["self_spawn"] = {"ok": None, "val": "the original did not request its spawn after "
+                                                  "the death (its own flake, see diff-notes); server SpawnPlayer"}
+                else:
+                    ev["checks"]["self_spawn"] = {"ok": False, "val": "ours did not request its spawn after the death"}
+                    ev["verdict"] = "DIFF"
             srv = rec.get("server", {}).get(sides[s]["name"], {})
             rows.append({"step": rec["name"], "direction": f"{label[s]}→{label[o]}",
                          "desc": f"{label[o]} sees {label[s]}", **ev,
@@ -890,10 +1001,11 @@ def report(run, out, calib_run=None):
             rows.append({"step": name, "direction": d, "verdict": "PENDING", "checks": {}, "milestone": ms, "desc": what})
     enabled = [r for r in rows if r["verdict"] != "PENDING"]
     nmatch = sum(r["verdict"] == "MATCH" for r in enabled)
-    calib_rel = os.path.relpath(calib_run, patchrows.ROOT) if calib_recs else None
+    calib_rel = calib_run
     summary = {"run": os.path.relpath(run, patchrows.ROOT), "calibration": calib_rel, "sides": sides,
                "enabled": len(enabled), "match": nmatch, "diff": len(enabled) - nmatch,
-               "pending": len(rows) - len(enabled), "tolerances": tol, "rows": rows,
+               "pending": len(rows) - len(enabled), "tolerances": tol, "anim_min_hold": min_hold,
+               "calibration_skipped": [os.path.relpath(c, patchrows.ROOT) for c in skipped], "rows": rows,
                "pass": bool(enabled) and nmatch == len(enabled) and len(recs) == len(STEPS)}
     os.makedirs(out, exist_ok=True)
     name = "cross-client" if not (ka == kb == "orig") else "cross-client-calibration"
@@ -905,7 +1017,10 @@ def report(run, out, calib_run=None):
           f"**{nmatch}/{len(enabled)} enabled step-directions MATCH**, {summary['diff']} DIFF, "
           f"{summary['pending']} pending (milestones not landed). Steps recorded: {len(recs)}/{len(STEPS)}.", "",
           f"Tolerances: position {tol['pos']} m, heading {tol['heading']} rad, health/armour {tol['health']}"
-          + (f" (learned from the original-vs-original run `{calib_rel}`)." if calib_rel else " (defaults; no calibration run)."),
+          + (f" (learned from the original-vs-original run(s) `{calib_rel}`)." if calib_rel else " (defaults; no calibration run)."),
+          "", f"Animations: a sender animation is required on the observer when held (blend >= 0.5) for at least "
+          f"{min_hold} samples (sub-sample tolerance learned from the original-vs-original runs: one more than the "
+          "longest animation the original observer showed in one calibration run and missed in another).",
           "", "Animations are compared by hierarchy hash (`hash/group:id` shown). Checks the original itself does "
           "not keep (calibration) compare our observer with the original's observer.", "",
           "| step | direction | verdict | failed checks | details |", "|---|---|---|---|---|"]
@@ -947,7 +1062,8 @@ def main():
     r = sub.add_parser("report")
     r.add_argument("--run", required=True)
     r.add_argument("--out", default=os.path.join(patchrows.ROOT, "target", "diff"))
-    r.add_argument("--calib", help="original-vs-original run (cross-client.sh --calibrate)")
+    r.add_argument("--calib", action="append",
+                   help="original-vs-original run (cross-client.sh --calibrate); repeat for several, newest first")
     a = ap.parse_args()
     if a.cmd == "report":
         return report(a.run, a.out, a.calib)

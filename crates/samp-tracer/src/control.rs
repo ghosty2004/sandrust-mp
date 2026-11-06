@@ -1,6 +1,7 @@
 //! Control channel, same line protocol as samp-client (`ping`, `state`,
 //! `quit`, `peek ADDR LEN`, `remote`) plus tracer-only `mark TEXT` (writes a
 //! marker record into the trace, used by scenario scripts to label steps).
+//! `hideped on|off` hides the local player ped from rendering (DIFF-2 screenshots).
 //! `remote` answers a header line plus one line per remote player ped, like
 //! samp-client's (DIFF-3).
 //!
@@ -40,6 +41,8 @@ pub enum Command {
     Cov(String),
     /// `window [click ID]` (top-level windows of the process, FEAT-B; `win/window.rs`).
     Window(String),
+    /// `hideped on|off`: leave the local player's ped out of rendering (DIFF-2 screenshots).
+    HidePed(bool),
     Unknown(String),
 }
 
@@ -92,6 +95,8 @@ pub fn parse(line: &str) -> Option<Command> {
         "ping" => Command::Ping,
         "state" => Command::State,
         "remote" => Command::Remote,
+        "hideped on" => Command::HidePed(true),
+        "hideped off" => Command::HidePed(false),
         "quit" | "exit" => Command::Quit,
         _ => Command::Unknown(t.to_string()),
     })
@@ -145,6 +150,9 @@ mod tests {
         assert_eq!(parse(" STATE "), Some(Command::State));
         assert_eq!(parse("quit"), Some(Command::Quit));
         assert_eq!(parse("Remote\n"), Some(Command::Remote));
+        assert_eq!(parse("hideped on"), Some(Command::HidePed(true)));
+        assert_eq!(parse("HIDEPED off"), Some(Command::HidePed(false)));
+        assert!(matches!(parse("hideped"), Some(Command::Unknown(_))));
         assert_eq!(parse(""), None);
         assert_eq!(parse("mark class selection"), Some(Command::Mark("class selection".into())));
         assert_eq!(parse("peek 0x53EB12 5"), Some(Command::Peek { addr: 0x53EB12, len: 5 }));

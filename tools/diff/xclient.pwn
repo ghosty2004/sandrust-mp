@@ -128,6 +128,11 @@ public OnRconCommand(cmd[])
         SetPlayerSkin(id, strval(tok[2]));
         printf("[xc] ok skin %d", id);
     }
+    else if (!strcmp(tok[0], "spawn"))
+    {
+        SpawnPlayer(id);
+        printf("[xc] ok spawn %d", id);
+    }
     else if (!strcmp(tok[0], "sa") && n >= 3)
     {
         SetPlayerSpecialAction(id, SPECIAL_ACTION:strval(tok[2]));

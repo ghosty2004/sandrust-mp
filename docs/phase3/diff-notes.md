@@ -192,6 +192,56 @@ Our client survived all 176 steps, including gmx; only its final `quit` needed t
   * the two vehicle-entity blips the original has are missing.
   * Ambient traffic in ours also adds visual noise to unrelated steps (e.g. 11, 137, 138).
 
+## Time-varying elements (2026-11-06)
+
+A screenshot samples one moment. Everything that moves on its own clock made the change mask depend on
+when the shot landed, so the F1 visual check passed or failed by luck (each full run had one different
+flaky step). Measured on the six original runs + ours of the final run (ff689b8):
+* **The local ped's idle animation** was the main source, not the gang-zone flash. The changed cells of
+  `gangzone_stopflash` (and of player_message, ptextdraw_*, label_*, mapicon_*, gangzone_show/hide,
+  menu_show, client_check …) were the ped's outline (breathing/head), right in the middle of the
+  picture. In the failing run both clients drew the zone identically (red after the stop); ours just
+  missed 3 of the 4 outline cells all six original runs happened to change. DIFF2-D3 (`explosion`) was
+  the same effect.
+* **Gang-zone flash**: samp redraws the zone every frame (`CRadar::DrawAreaOnRadar`, rgba `0x800000ff`
+  zone colour, `0x80ff0000` flash colour) and swaps the colour every ~0.5 s on its own clock (27 frames
+  at 52 fps; the first phase after RPC 121 is cut short). The shot catches either colour.
+
+What the harness does now:
+* `drive.py` sends `hideped on` to the tracer after `flow_spawn` (new additive tracer hook on
+  `CPed::Render` 0x5E7680, wrapped: returns without drawing for `CWorld::Players[0].m_pPed` while the flag
+  is set; nothing logged, no game state touched; same on both clients). The screenshots show the scene
+  and the UI without the ped; what the ped does is judged by trace and state as before.
+  `DIFF_SHOW_PED=1` keeps it. A 2+2 subset run (gangzone/mapicon/ptextdraw/label/checkpoint/racecp/
+  menu/client_check/chat steps): 23/23 steps visually identical between the original runs, every
+  ours mask equal to the original's (18 of these 23 steps were visually unstable across the six original
+  runs of the final run).
+* `rpc_report.py` judges the radar draw stream (`radar` component, per step and drawn element
+  (function, rect, in_menu)): still drawn at the end of the step; the set of colours (ours must contain
+  the colours every original run drew and none no original run drew); flash phase length (median of the
+  whole phases, within the original runs' medians ± 2 frame intervals, no phase longer than the
+  original's longest + 2 frames); end state (steady colour = last run longer than the longest flash
+  phase of any original run, else still flashing), same as every original run. Independent of the
+  phase a shot hits.
+* The radar region of the screenshot (pixel box 24,256–116,348 of the 640×360 shot) is not judged in a
+  step when a radar element changes colour within this step or the previous one, on any side.
+* State positions are recorded quantised (camera 1 m, ped 0.5 m, heading 0.05 rad). The first full run
+  after the changes failed on `surf_move` with `snap.cam_pos: 1996,1340,48 vs 1996,1341,48`: the camera
+  on the moving platform sat on a rounding boundary. These keys now compare per component with a
+  tolerance of one quantum (adjacent quanta match; two or more quanta apart still fail).
+* `vehicle_remove_player`: GTA's own `CPlaceable::SetPosn` of the local ped at 0x5E09AF after RPC 71 appears in
+  2 of 46 original runs and 1 of 3 ours runs; a 12-run calibration without one of them called it extra in ours.
+  Logged as DIFF2-D4 (that template only).
+* Full runs after the changes (6 new + 6 reused original runs each): original visual determinism 173–177 of
+  179 steps (was 156); `rpc-coverage.sh` exit 1 (surf_move rounding, fixed), 0, 1 (DIFF2-D4 case);
+  `--report` of the two failing runs with the final report: exit 0, MATCH 131.
+* DIFF2-D3 (`explosion` screenshot = the ped's breathing pose) is superseded: row removed from
+  `rpc-decisions.tsv`, the step is judged in full (0 changed cells on both sides).
+* Negative tests (`tools/diff/negative_tests.py f1`, on copies of a recorded ours run): zone keeps
+  flashing after RPC 85, flash ignored, wrong flash colour, phase twice as long, zone not hidden by
+  RPC 120, a player textdraw not drawn (screenshot of the previous step), SetPlayerPos landing 1 m off
+  (two quanta) — every case turns the step from MATCH into DIFF / NOT-IMPLEMENTED.
+
 ## Open problems
 
 * Some entities are placed outside the camera view (actor at +6/+3, car at +7/+6 relative
@@ -258,6 +308,42 @@ tools/diff/cross-client.sh --report RUN_DIR     # report only
 * Output: `target/diff/cross-client.{md,json}` (+ `cross-client-calibration.*`), runs in
   `target/diff/runs/xclient-*` / `xcalib-*` (`samples.jsonl`, `meta.json`, patch dumps, logs).
   Exit 0 only if every enabled step matches both ways.
+
+## Animations: what the original observer shows (2026-11-06)
+
+The final run's `veh_enter_B ours→orig` DIFF ("missing on observer `1ccd46ef/0:63`") was not a sampling
+miss. `1ccd46ef` is `CAR_sit_pro` and `218ee4bb` is `CAR_sit` (CRC of the names in `anim/ped.ifp`). The
+sender ends the enter in `CAR_sit_pro` and holds it for the rest of the window (> 20 samples); the
+ORIGINAL observer in lane A shows `CAR_sit` instead, for the whole window, whoever the lane-B sender is:
+2 of 2 ours→orig runs and 3 of 3 valid original-vs-original runs (orig2→orig). Lane B's observer shows
+`CAR_sit_pro` for lane A (orig→orig2 and orig→ours). The vehicle steps simply had no calibration on
+main (`xcalib-20261104-211825` predates them), so the original's own behaviour was judged as ours.
+
+Report rules now (`xclient.py report`):
+* Several calibration runs: `cross-client.sh` passes every `runs/xcalib-*`; the report uses the newest
+  three with the current step list. A calibration run whose two originals are further apart than the
+  default tolerance (0.5 m / 1.0 m vehicle) is not used: `xcalib-20261106-010557` lost the respawned
+  player on the observer (`combat_respawn_A` 1137 m) and every later step with it — the original can
+  desync like that, but it measures a failure, not the noise floor.
+* `anims` where the original observer missed sender animations in calibration: ours must miss exactly
+  what every calibration run missed, and nothing no calibration run missed (`must ⊆ missing ⊆ may`).
+  Before, such a check was "not judged".
+* Sub-sample tolerance, measured: a sender animation is required on the observer when held (blend ≥ 0.5)
+  for at least `min_hold` samples (~100 ms each); `min_hold` = 1 + the longest animation the original
+  observer showed in one calibration run and missed in another (a miss that can only be sampling, both
+  observers being the original), at least 2. Currently 2: no such transient miss in the three valid calibration runs.
+* `sender_vs_original` (multi-run): the anims every calibration sender played must be played by ours.
+* **Respawn after `combat_death_*`**: in 2 of 9 runs (one original-vs-original, one ours run; both times the
+  ORIGINAL in lane A) the original never requested its spawn after the death. Its trace shows GTA's own
+  restart at +3.61 s (`CPed::Teleport` to 2488.6,-1666.9) and then no samp spawn, where a good run spawns at
+  the gamemode position in the same frame; the server keeps the player wasted (state 7), the timed `tp`
+  is lost and every later step is off by ~1137 m. The driver now checks at +2.0 s of `combat_respawn_*`
+  whether the server saw a spawn since the death began; if not, it spawns the player (`xc spawn` →
+  SpawnPlayer), teleports at +3.5 s (window 6.5 s) and records `forced_spawn`. The report adds
+  `self_spawn`: not judged for an original sender (its own flake), DIFF for ours.
+* Negative tests (`tools/diff/negative_tests.py f3`): our observer without the door/get-in anims
+  (`veh_enter_A`), our sender without them (`veh_enter_B`), the original observer showing `CAR_sit_pro`
+  for our sender, our client not requesting its spawn after the death — each turns MATCH into DIFF.
 
 ## Baseline (2026-11-04, run xclient-20261104-212008, calibration xcalib-20261104-211825)
 

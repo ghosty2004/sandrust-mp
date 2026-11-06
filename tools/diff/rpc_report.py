@@ -20,7 +20,12 @@ Three components per step:
            compare added/removed items;
   visual — screenshot change mask (this step's shot vs the previous one,
            sharp pixel changes per cell of a 32x18 grid), compared between the two clients (relative bound, see
-           VISUAL_MIN_CELLS / VISUAL_SHARE).
+           VISUAL_MIN_CELLS / VISUAL_SHARE). The local ped is not in the shots (drive.py
+           `hideped`): its idle animation has its own clock. The radar region is not judged
+           in steps where a radar element flashes at one of the two shots;
+  radar  — the per-frame CRadar::DrawAreaOnRadar stream of the step (gang zones): drawn at
+           the end, colours, flash phase lengths and end state (steady colour or still
+           flashing), independent of the flash phase (compare_radar).
 Verdicts: MATCH, DIFF, NOT-IMPLEMENTED (ours has no handler for the step's RPCs
 or shows no reaction at all where the original reacts), NOT-FIRED (scenario
 error). Per RPC: the worst verdict over the steps that cover it; RPC ids no
@@ -38,6 +43,7 @@ import glob
 import json
 import os
 import re
+import statistics
 import sys
 from collections import Counter, OrderedDict
 
@@ -160,7 +166,8 @@ def load_run(d):
             run["steps"][r["name"]] = r
     except (OSError, ValueError):
         pass
-    run["segments"] = load_segments(os.path.join(d, "trace.jsonl"))
+    run["radar"] = {}
+    run["segments"] = load_segments(os.path.join(d, "trace.jsonl"), run["radar"])
     return run
 
 
@@ -173,10 +180,12 @@ def split_watch(line):
     return ["watch " + kv for kv in line[6:].split(" ") if kv]
 
 
-def load_segments(path):
+def load_segments(path, radar=None):
     """{step name: [normalised reaction-candidate lines]} from step marks, plus
     {"gap:" + step name: lines between the previous step's end and this begin}
-    (the driver's pre-step state collection: ongoing per-frame activity)."""
+    (the driver's pre-step state collection: ongoing per-frame activity).
+    `radar` (optional dict) receives the raw per-frame radar draws of every step segment
+    (see radar_summary)."""
     segs = {}
     cur = None
     gap = []
@@ -198,8 +207,17 @@ def load_segments(path):
                     if cur:
                         segs[cur] = []
                         segs["gap:" + cur] = gap
+                        if radar is not None:
+                            radar[cur] = {"first": rec.get("frame"), "last": rec.get("frame"), "draws": []}
                     gap = []
                 continue
+            if radar is not None and cur is not None and cur in radar:
+                if isinstance(rec.get("frame"), int):
+                    radar[cur]["last"] = rec["frame"]
+                if fn in RADAR_FNS:
+                    a = rec.get("args") or {}
+                    radar[cur]["draws"].append((rec.get("frame"), rec.get("t"), fn, json.dumps(a.get("rect")),
+                                                bool(a.get("in_menu")), a.get("rgba")))
             if fn in NOISE_FNS:
                 continue
             # Keep calls the client made (directly, from its stack, or as a script
@@ -399,6 +417,27 @@ def pre_differs(sa, sb, k):
     return a != b
 
 
+# Position/heading keys are recorded quantised (gtastate.fmt_pos / rnd, parse_state_line). Two runs whose true
+# values lie a hair apart on either side of a rounding boundary (1340.49 vs 1340.51 -> "1340" vs "1341") would
+# differ by luck, so these compare per component with a tolerance of one quantum: adjacent quanta match, two or
+# more apart do not (a real difference of 2 quanta or more is always caught).
+QUANTUM = {"snap.cam_pos": 1.0, "snap.ped_pos": 0.5, "state.pos": 0.5,
+           "snap.ped_heading": 0.05, "state.heading": 0.05}
+
+
+def state_eq(k, a, b):
+    if a == b:
+        return True
+    q = QUANTUM.get(k)
+    if q is None or not isinstance(a, str) or not isinstance(b, str):
+        return False
+    try:
+        va, vb = [float(x) for x in a.split(",")], [float(x) for x in b.split(",")]
+    except ValueError:
+        return False
+    return len(va) == len(vb) and all(abs(x - y) <= q * 1.001 for x, y in zip(va, vb))
+
+
 def compare_state(sa, sb, ignore=frozenset(), drift=False):
     """Differences between two steps' state reactions -> list of text lines.
     drift=True (original vs ours): a key the original did not change in this
@@ -410,7 +449,7 @@ def compare_state(sa, sb, ignore=frozenset(), drift=False):
     for k in sorted(set(sca) | set(scb)):
         if k in ignore or (drift and k not in sca and pre_differs(sa, sb, k)):
             continue
-        if posta.get(k) != postb.get(k):
+        if not state_eq(k, posta.get(k), postb.get(k)):
             out.append(f"{k}: {posta.get(k)!s} vs {postb.get(k)!s}")
     for k in sorted(set(lia) | set(lib)):
         if k in ignore or (drift and k not in lia and pre_differs(sa, sb, k)):
@@ -424,6 +463,134 @@ def compare_state(sa, sb, ignore=frozenset(), drift=False):
 def reacted_state(step):
     sc, li, _ = state_delta(step)
     return bool(sc or li)
+
+
+# ---------------------------------------------------------------- radar draw stream
+# Gang zones flash: samp redraws the zone every frame with CRadar::DrawAreaOnRadar and swaps between the
+# zone colour and the flash colour on its own clock (~0.5 s per phase). A screenshot samples one phase at
+# random, so the radar part of the picture is not judged from screenshots while a zone flashes; the
+# per-frame draw stream is judged instead, independent of the phase (radar_summary / compare_radar).
+RADAR_FNS = {"CRadar::DrawAreaOnRadar"}
+# Radar circle in the 640x360 screenshot (HUD at 1280x720, 4:3 HUD scaling): pixel box, as grid cells below.
+RADAR_BOX_PX = (24, 256, 116, 348)
+# A phase may differ by this many frame intervals between clients (frame quantisation of the swap on
+# each side); the original's own spread across calibration runs is added on top.
+RADAR_FRAME_SLACK = 2
+
+
+def radar_summary(run, name):
+    """{(fn, rect, in_menu): {"colours", "runs": [(colour, frames, ms)], "end_drawn"}} for a step,
+    or {} when the step has no radar draws. `runs` are run lengths of the per-frame colour sequence;
+    interior runs (not the first, not the last) are whole flash phases."""
+    seg = run.get("radar", {}).get(name)
+    if not seg or not seg["draws"]:
+        return {}
+    by = {}
+    for frame, t, fn, rect, menu, rgba in seg["draws"]:
+        by.setdefault((fn, rect, menu), []).append((frame, t, rgba))
+    out = {}
+    for key, seq in by.items():
+        seq.sort(key=lambda x: (x[0] or 0))
+        runs = []
+        for frame, t, rgba in seq:
+            if runs and runs[-1][0] == rgba:
+                runs[-1][1] += 1
+                runs[-1][3] = t
+            else:
+                runs.append([rgba, 1, t, t])
+        out[key] = {
+            "colours": sorted({r[0] for r in runs}),
+            "runs": [(c, n, (t1 or 0) - (t0 or 0)) for c, n, t0, t1 in runs],
+            # Still drawn at the end of the step (the screenshot is taken right before the end mark).
+            "end_drawn": (seq[-1][0] or 0) >= (seg["last"] or 0) - 2,
+            "frame_ms": ((seq[-1][1] or 0) - (seq[0][1] or 0)) / max(1, len(seq) - 1),
+        }
+    return out
+
+
+def radar_volatile(run, name):
+    """True when a radar element changes colour within the step (the screenshot's radar part then
+    depends on the phase it hits)."""
+    return any(len(v["colours"]) > 1 for v in radar_summary(run, name).values())
+
+
+def radar_phase_max(orig_runs):
+    """Longest whole flash phase (ms) any original run shows in any step; 1000 ms when none flashes."""
+    ph = [ms for r in orig_runs for name in r.get("radar", {})
+          for v in radar_summary(r, name).values() for _, _, ms in v["runs"][1:-1]]
+    return max(ph) if ph else 1000
+
+
+def compare_radar(orig_runs, ours, name, phase_max=1000):
+    """(ok: bool|None, text). None: no radar draws on either side. Judged per drawn element:
+    drawn at all / still drawn at the end, the set of colours, every whole flash phase of ours within
+    the original's phase lengths (± slack), and the end state: steady (last phase longer than any flash
+    phase) with the same colour, or still flashing, as in every original run."""
+    so = [radar_summary(r, name) for r in orig_runs]
+    sa = radar_summary(ours, name)
+    if not sa and not any(so):
+        return None, "no radar draws"
+    problems, notes = [], []
+    keys = sorted(set(sa) | {k for s in so for k in s})
+    for key in keys:
+        label = f"{key[0].split('::')[-1]} {key[1]}"
+        os_ = [s.get(key) for s in so]
+        a = sa.get(key)
+        # Still drawn at the end of the step (what the screenshot shows): an element not drawn at all in a
+        # run counts as not drawn at the end.
+        ends = {bool(o and o["end_drawn"]) for o in os_}
+        a_end = bool(a and a["end_drawn"])
+        if len(ends) == 1 and a_end not in ends:
+            problems.append(f"{label}: drawn at the end of the step: ours {a_end}, original {ends.pop()}")
+        elif len(ends) > 1:
+            notes.append(f"{label}: drawn at the end in some original runs only, not judged")
+        if any(o is None for o in os_) or a is None:
+            # Drawn in some runs only (an element that appears/disappears right at the step boundary): its
+            # colours and phases are not judged here, only the end state above.
+            if all(o is None for o in os_) and a_end:
+                problems.append(f"{label}: drawn by ours only")
+            elif a is None and all(o is not None for o in os_):
+                problems.append(f"{label}: not drawn by ours")
+            else:
+                notes.append(f"{label}: drawn in {sum(o is not None for o in os_)}/{len(os_)} original runs"
+                             f"{'' if a else ' and not by ours'}")
+            continue
+        inter = set.intersection(*(set(o["colours"]) for o in os_))
+        union = set.union(*(set(o["colours"]) for o in os_))
+        if not inter <= set(a["colours"]) or not set(a["colours"]) <= union:
+            problems.append(f"{label}: colours ours {a['colours']} vs original {sorted(inter)}..{sorted(union)}")
+        # Flash phases: interior runs. The first flash phase after the RPC can be cut short (the flash clock
+        # does not start with the RPC), so the phase length is judged by the median of a run's interior runs,
+        # and no phase of ours may be longer than the original's longest.
+        phases = [ms for o in os_ for _, _, ms in o["runs"][1:-1]]
+        medians = [statistics.median(p) for p in ([ms for _, _, ms in o["runs"][1:-1]] for o in os_) if p]
+        mine = [ms for _, _, ms in a["runs"][1:-1]]
+        fms = max([o["frame_ms"] for o in os_] + [a["frame_ms"]])
+        slack = RADAR_FRAME_SLACK * fms
+        if medians and len(medians) == len(os_):
+            lo, hi = min(medians) - slack, max(medians) + slack
+            if not mine or not lo <= statistics.median(mine) <= hi or max(mine) > max(phases) + slack:
+                problems.append(f"{label}: flash phases {mine} ms, original medians {min(medians)}..{max(medians)} ms, "
+                                f"longest {max(phases)} ms")
+            else:
+                notes.append(f"{label}: flash phases ours {mine} ms, original medians {min(medians)}..{max(medians)} ms")
+        elif mine and phases and max(mine) > max(phases) + slack:
+            problems.append(f"{label}: flash phases {mine} ms, original longest {max(phases)} ms")
+        # End state: the last run is a steady colour when it outlasts any flash phase (learned over all
+        # steps of the original runs, `phase_max`), else the element is still flashing.
+        def end_state(sm):
+            c, _, ms = sm["runs"][-1]
+            if len(sm["runs"]) == 1 or ms > phase_max + slack:
+                return ("steady", c)
+            return ("flashing", None)
+        oe = {end_state(o) for o in os_}
+        ae = end_state(a)
+        if len(oe) == 1 and ae not in oe:
+            problems.append(f"{label}: end state ours {ae} vs original {next(iter(oe))}")
+        elif len(oe) > 1:
+            notes.append(f"{label}: end state differs between original runs {sorted(oe, key=str)}, not judged")
+    text = "; ".join(problems + notes) or "same radar draws"
+    return not problems, text
 
 
 # ---------------------------------------------------------------- visual
@@ -448,6 +615,20 @@ def grid(run, step):
     return g
 
 
+# {step name: "radar"}: screenshot regions not judged in that step (set by compare_runs).
+EXCLUDE = {}
+
+
+def region_cells(box, shape):
+    """Grid cells (row, col) overlapping a pixel box (x0, y0, x1, y1) of a 640x360 shot."""
+    gx, gy = GRID
+    h, w = shape
+    ch, cw = h // gy, w // gx
+    x0, y0, x1, y1 = box
+    return [(r, c) for r in range(gy) for c in range(gx)
+            if c * cw < x1 and (c + 1) * cw > x0 and r * ch < y1 and (r + 1) * ch > y0]
+
+
 def change_mask(run, name):
     names = list(run["steps"])
     i = names.index(name)
@@ -459,7 +640,11 @@ def change_mask(run, name):
     gx, gy = GRID
     h, w = a.shape
     d = abs(b - a)[: h // gy * gy, : w // gx * gx] > PIXEL_THRESHOLD
-    return d.reshape(gy, h // gy, gx, w // gx).mean(axis=(1, 3)) > CELL_FRACTION
+    m = d.reshape(gy, h // gy, gx, w // gx).mean(axis=(1, 3)) > CELL_FRACTION
+    if EXCLUDE.get(name) == "radar":
+        for r, c in region_cells(RADAR_BOX_PX, (h, w)):
+            m[r, c] = False
+    return m
 
 
 def dilate(m):
@@ -559,6 +744,16 @@ def compare_runs(orig_runs, ours):
     handled = handled_rpcs() if ours else set()
     o0 = orig_runs[0]
     steps = []
+    phase_max = radar_phase_max(orig_runs)
+    # Radar part of the screenshot not judged where a radar element flashes at either of the two shots
+    # the change mask compares (this step or the previous one) on any side: judged by compare_radar.
+    every = orig_runs + ([ours] if ours else [])
+    names = list(o0["steps"])
+    EXCLUDE.clear()
+    for i, name in enumerate(names):
+        prev = names[i - 1] if i else None
+        if any(radar_volatile(r, name) or (prev and radar_volatile(r, prev)) for r in every):
+            EXCLUDE[name] = "radar"
     for name, st in o0["steps"].items():
         row = {"idx": st["idx"], "name": name, "rpcs": st["rpcs"], "action": st.get("action")}
         fired = [r["steps"].get(name, {}).get("fired") for r in orig_runs]
@@ -653,6 +848,10 @@ def compare_runs(orig_runs, ours):
                 accepted.append(f"{d}: visual `{vis_text}`")
                 vis_ok = None
         trace_ok = not missing and not extra and not order_bad
+        radar_ok, radar_text = compare_radar(orig_runs, ours, name, phase_max)
+        row["radar"] = {"ok": radar_ok, "detail": radar_text}
+        if EXCLUDE.get(name):
+            vis_text += " (radar region not judged: a radar element flashes at one of the shots)"
         row["accepted"] = accepted
         row["trace"] = {"ok": trace_ok, "missing_in_ours": missing, "extra_in_ours": extra, "order_differs": order_bad}
         row["state"] = {"ok": not state_diff, "diff": state_diff}
@@ -671,7 +870,7 @@ def compare_runs(orig_runs, ours):
             row["verdict"] = "NOT-IMPLEMENTED"
             row["why"] = "no handler in samp-client for " + ",".join(map(str, no_handler)) + \
                 " (the original's only reaction is an unstable screenshot change)"
-        elif trace_ok and not state_diff and vis_ok is not False:
+        elif trace_ok and not state_diff and vis_ok is not False and radar_ok is not False:
             row["verdict"] = "MATCH"
             if not orig_reacted:
                 row["why"] = "no observable reaction in the original (trace, state, screenshot)"
@@ -843,6 +1042,8 @@ def write_report(out_dir, orig_runs, ours, steps, rpcs):
             vok = s["visual"]["ok"]
             vtext = "ok" if vok else "not judged" if vok is None else "DIFF"
             md.append(f"* visual: {vtext} ({s['visual']['detail']})")
+            if s.get("radar", {}).get("ok") is not None:
+                md.append(f"* radar draws: {'ok' if s['radar']['ok'] else 'DIFF'} ({s['radar']['detail']})")
             if s.get("ours_rx") is not None:
                 md.append(f"* RPCs received by ours: {s['ours_rx']}")
         md.append("")

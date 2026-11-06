@@ -17,4 +17,4 @@ flow_join	trace-missing	^scm 0x0249 MARK_MODEL_AS_NO_LONGER_NEEDED \[(4\d\d|5\d\
 flow_join	trace-extra	^scm 0x0249 MARK_MODEL_AS_NO_LONGER_NEEDED \[(4\d\d|5\d\d|60\d|61[01])\]$	DIFF2-D2	as above
 gamemode_restart	trace-missing	^scm 0x0249 MARK_MODEL_AS_NO_LONGER_NEEDED \[(4\d\d|5\d\d|60\d|61[01])\]$	DIFF2-D2	as above
 gamemode_restart	trace-extra	^scm 0x0249 MARK_MODEL_AS_NO_LONGER_NEEDED \[(4\d\d|5\d\d|60\d|61[01])\]$	DIFF2-D2	as above
-explosion	visual	.	DIFF2-D3	screenshot-only: the ped idle pose at the shot differs with the harness step timing (trace and state match)
+vehicle_remove_player	trace-extra	^CPlaceable::SetPosn\(vec\) \{this=\{type=ped,player=True\},pos=\[-?[0-9.]+,-?[0-9.]+,-?[0-9.]+\]\}  <gta>$	DIFF2-D4	GTA exit-task SetPosn of the local ped (0x5E09AF) the original also makes in 2 of 46 runs

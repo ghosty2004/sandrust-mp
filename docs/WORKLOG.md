@@ -574,3 +574,23 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 ## 2026-11-06 — 2-hour soaks on gungame and simpletdm
 
 - tools/e2e/soak.sh (SOAK_GAMEMODES="gungame simpletdm", 7200 s each, lane veh) on main 0a65b5f: `[soak] results: gungame:PASS simpletdm:PASS` / `[soak] PASS`. Derby 2 h started next.
+
+## 2026-11-06 — F1/F3 deflaking (time-varying elements, calibration-derived anim rules)
+
+- F1: the `gangzone_stopflash` DIFF was the local ped's idle silhouette, not the flash (both clients drew the
+  zone identically). Tracer: additive `CPed::Render` wrap + `hideped on|off` control command; drive.py hides
+  the local ped after spawn. rpc_report.py: radar draw-stream component (per-frame `CRadar::DrawAreaOnRadar`:
+  drawn at end, colours, flash phase medians, end state), radar region of the shot not judged while a zone
+  flashes, quantised positions compared with a one-quantum tolerance. DIFF2-D3 superseded (row removed),
+  DIFF2-D4 logged (rare GTA SetPosn after RPC 71, original 2/46 runs). Original visual determinism 156/179 →
+  173–177/179.
+- F3: `veh_enter_B` was not a sampling miss: the original observer in lane A shows `CAR_sit` instead of
+  `CAR_sit_pro` for a lane-B driver in every run (3/3 valid orig-vs-orig runs); main had no calibration with
+  vehicle steps. xclient.py: several calibration runs (newest 3, desynced ones dropped), expected-miss sets
+  from calibration, learned sub-sample hold, `ensure_spawn` recovery + `self_spawn` check for the original's
+  occasional missing respawn after death (2/9 runs).
+- Runs (main + tools): F1 `rpc-coverage.sh` ×3: exit 1 (surf_move cam rounding; fixed), exit 0, exit 1
+  (vehicle_remove_player rare SetPosn; DIFF2-D4) — `--report` of runs 1 and 3 with the final report: exit 0.
+  F3 `cross-client.sh` ×4: exit 0, exit 1 (original did not respawn; fixed), exit 0, exit 0 (45/45).
+- Negative tests `tools/diff/negative_tests.py f1|f3`: 7 + 4 broken cases, all fail as expected.
+- samp-tracer: 49 tests pass, clippy host + i686 clean. Details: docs/phase3/diff-notes.md.

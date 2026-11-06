@@ -21,7 +21,7 @@
 # the server by its exact binary path, gamescope by process group. No pkill.
 #
 # Output: target/diff/cross-client.{md,json} (--calibrate: cross-client-calibration.{md,json}; later
-# reports learn tolerances and the original's own relations from target/diff/xcalib-latest); run data in target/diff/runs/xclient-<stamp>/
+# reports learn tolerances and the original's own relations from the newest target/diff/runs/xcalib-* runs); run data in target/diff/runs/xclient-<stamp>/
 # (samples.jsonl, meta.json, patch-bytes-{A,B}.json, server.log, launch logs).
 # Exit 0 only if every enabled step matches in both directions.
 set -uo pipefail
@@ -43,8 +43,15 @@ say() { printf '[xc] %s\n' "$*"; }
 lane_wine_kill() { WINEPREFIX="$A_PREFIX" wineserver -k 2>/dev/null; WINEPREFIX="$B_PREFIX" wineserver -k 2>/dev/null; true; }
 put() { rm -f "$2/$3"; cp "$1" "$2/$3"; }   # never write through a hard link
 
-# Original-vs-original baseline (--calibrate) used by the report, if present.
-calib_args() { [ -f "$DIFF_OUT/xcalib-latest/samples.jsonl" ] && echo --calib "$(readlink -f "$DIFF_OUT/xcalib-latest")"; }
+# Original-vs-original baselines (--calibrate) used by the report, newest first; the report keeps the
+# newest runs of the current step list (xclient.py CALIB_MAX) and learns tolerances and the original's
+# own relations from them.
+calib_args() {
+    local d
+    for d in $(ls -1d "$DIFF_OUT"/runs/xcalib-* 2>/dev/null | sort -r); do
+        [ -f "$d/samples.jsonl" ] && printf -- '--calib %s ' "$d"
+    done
+}
 if [ "${1:-}" = --report ]; then
     # shellcheck disable=SC2046
     exec python3 -I "$HERE/xclient.py" report --run "$2" --out "$DIFF_OUT" $(calib_args)

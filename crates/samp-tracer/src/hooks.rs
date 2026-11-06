@@ -67,6 +67,10 @@ pub enum Special {
     /// `CWorld::ProcessLineOfSight`: wrapped so calls made by a client module are written
     /// with their result (hit entity and colpoint) as one `los` record (TRACE-6).
     Los,
+    /// `CPed::Render`: wrapped so the local player's ped can be left out of the picture on request
+    /// (`hideped on`, DIFF-2 screenshots: the ped's idle animation is not a client reaction and its
+    /// phase at the screenshot differs run to run). Nothing is logged; game state is not touched.
+    PedRender,
 }
 
 /// How to render one argument. Stack slots count from the first argument
@@ -530,6 +534,14 @@ pub static HOOKS: &[HookSpec] = &[
         policy: Count,
         special: Special::ObjRender,
         args: &[Entity(0, "entity")],
+    },
+    HookSpec {
+        name: "CPed::Render",
+        addr: 0x5E7680,
+        prologue: &[0x83, 0xEC, 0x14, 0x53, 0x55],
+        policy: Count,
+        special: Special::PedRender,
+        args: &[],
     },
     h("CEntity::CreateRwObject", 0x533D30, &[0x56, 0x8B, 0xF1, 0x8B, 0x46, 0x1C], Relevant, &[ThisEntity]),
     h("CEntity::DeleteRwObject", 0x534030, &[0x56, 0x8B, 0xF1, 0x57, 0x8B, 0x7E, 0x18], Relevant, &[ThisEntity]),

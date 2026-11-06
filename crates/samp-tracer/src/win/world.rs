@@ -117,6 +117,19 @@ fn sample_objects(m: &ProcMem) {
 
 // ------------------------------------------------------------- object render paths -----
 
+/// `hideped on|off` (control channel): `CPed::Render` returns without drawing for the local player's ped.
+pub static HIDE_LOCAL_PED: AtomicBool = AtomicBool::new(false);
+
+/// Continuation of the inline hook on `CPed::Render` (thiscall, no arguments).
+pub extern "thiscall" fn ped_render_wrap(this: u32) {
+    if HIDE_LOCAL_PED.load(Ordering::Relaxed) && this != 0 && this == gta::player_ped(&ProcMem) {
+        return;
+    }
+    // SAFETY: the trampoline runs the original prologue and jumps back into the function.
+    let f: extern "thiscall" fn(u32) = unsafe { std::mem::transmute(tramp_of(Special::PedRender) as usize) };
+    f(this);
+}
+
 static RENDERS: Mutex<BTreeMap<(u32, &'static str, String), u32>> = Mutex::new(BTreeMap::new());
 static RENDER_PREV: Mutex<(String, u64)> = Mutex::new((String::new(), 0));
 

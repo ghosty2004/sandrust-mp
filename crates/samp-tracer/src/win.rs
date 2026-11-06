@@ -427,6 +427,7 @@ fn on_call(idx: usize, r: &Regs) {
         Special::VehProcessControl => return vehicles::on_vpc_call(r),
         Special::ObjRender => return world::on_obj_render(spec, r),
         Special::Los => return world::on_los_call(r),
+        Special::PedRender => return,
         Special::WndProc => {
             if !(0x100..=0x109).contains(&ProcMem.u32(r.esp + 8).unwrap_or(0)) {
                 return;
@@ -912,6 +913,7 @@ fn install_all() -> (usize, Vec<String>) {
             Special::WorldProcess => Some(remote::world_process_wrap as extern "C" fn() as usize as u32),
             Special::VehProcessControl => Some(vehicles::vpc_inner_wrap as extern "thiscall" fn(u32) as usize as u32),
             Special::Los => Some(world::los_wrap as world::LosWrapFn as usize as u32),
+            Special::PedRender => Some(world::ped_render_wrap as extern "thiscall" fn(u32) as usize as u32),
             _ => None,
         };
         let (code, tramp) = match build_thunk(slot, i as u32, cont, spec) {
@@ -996,6 +998,12 @@ fn handle(cmd: &Command) -> (String, bool) {
         Command::D3d(args) => (d3d::command(args), false),
         Command::Cov(args) => (cov::command(args), false),
         Command::Window(args) => (window::command(args), false),
+        Command::HidePed(on) => {
+            world::HIDE_LOCAL_PED.store(*on, Ordering::SeqCst);
+            emit(record("hideped", None, None, None, Val::obj().with("on", *on)));
+            flush();
+            (format!("ok hideped {}", if *on { "on" } else { "off" }), false)
+        }
         Command::Efx(args) => (efx::command(args), false),
         Command::Poke { addr, bytes } => {
             if !ProcMem.read(*addr, &mut vec![0u8; bytes.len()]) {

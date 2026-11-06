@@ -10,6 +10,7 @@ Steps (from the rpcfire filterscript's `diff list`):
   -> for every step: pre state -> mark "step <i> <name> begin" -> fire (RCON
   `diff fire <name>` or a key press) -> wait settle -> post state + screenshot
   -> mark "step <i> <name> end".
+After flow_spawn the tracer hides the local ped from rendering (`hideped on`; DIFF_SHOW_PED=1 keeps it).
 Output: DIR/steps.jsonl (one record per step), DIR/shots/<idx>-<name>.jpg.
 Exit 0 when every step ran (an error in single steps is recorded, not fatal).
 """
@@ -264,6 +265,13 @@ class Driver:
         say(f"spawn: {'ok' if ok else 'FAILED'}")
         if not ok:
             return 1
+
+        # The local ped's idle animation (breathing, head movement) runs on its own clock: its pose at a
+        # screenshot is a sampling accident, not a client reaction, and it covers the middle of the picture.
+        # From here on the tracer leaves the local ped out of rendering on both clients (`hideped`, a
+        # render filter: game state untouched); what the ped does is judged through the trace and state.
+        if os.environ.get("DIFF_SHOW_PED") != "1":
+            say("hideped:", ctl(a.tracer_port, "hideped on"))
 
         only = re.compile(a.only) if a.only else None
         dead = 0
