@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddrV4, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -30,15 +30,16 @@ use samp_proto::session::{self, InitGame};
 use samp_proto::sync::{SyncPacket, policy};
 use samp_proto::unconnected::{ServerReply, open_connection_request, parse_reply};
 
-/// Interval between open-connection requests while the server is silent.
-const OPEN_RETRY: Duration = Duration::from_millis(1000);
+/// Interval between open-connection requests while the server is silent: the next request (or,
+/// after the 6th, the failure `0x1D`) is due in the first update cycle whose RakNet time (whole
+/// ms) is strictly greater than the last request's + 1000 (A 0x1004165d skips while
+/// `next >= now`; A 0x1004169c next = now + 1000; the pending record starts with next = the
+/// Connect time, A 0x1003e6a0). Measured on the original: 1.001–1.002 s between requests, the
+/// next attempt's first request 1.04–1.05 s after the 6th, 6.05 s per silent attempt (the rest is
+/// samp's frame and RakClient::Connect's start-up, [`RAKNET_STOP`]); docs/phase3/reconnect-notes.md.
+const OPEN_RETRY_MS: u64 = 1000;
 /// Open-connection requests per attempt (TRACE-8: 6 requests 1.0 s apart per socket).
 const OPEN_REQUESTS: u32 = 6;
-/// The attempt fails when more than this passed since its last request (RakNet's update cycle
-/// A 0x10041656: the request time + 1000 ms is the deadline, `0x1D` once it lies in the past).
-/// Measured: the next attempt's first request follows the 6th by 1.03–1.07 s (6.05–6.07 s per
-/// attempt), the rest is samp's frame and RakClient::Connect's start-up ([`RAKNET_STOP`]).
-const OPEN_FAIL_AFTER: Duration = Duration::from_millis(1000);
 /// RakClient::Connect / Disconnect block samp's main thread while RakNet's update thread is
 /// stopped and a new one started: RakPeer::Disconnect polls the thread's exit with `Sleep(15)`
 /// (A 0x10040700), RakPeer::Initialize polls the new thread's start with `Sleep(10)` (A 0x10042934).
@@ -151,6 +152,13 @@ struct Worker {
     handle: std::thread::JoinHandle<()>,
 }
 
+/// The open-connection cookie: one value for the whole process (A 0x10118e20, .data, initially 0),
+/// written only by a cookie reply (A 0x1003fdc2) and read by every request (A 0x100416a5). Nothing
+/// resets it on Connect, so after a lost connection the first request of every new attempt already
+/// carries the cookie of the last join; while the server's cookie is unchanged (open.mp reseeds every
+/// 300 s) that first request is accepted at once (docs/phase3/reconnect-notes.md).
+static COOKIE: AtomicU16 = AtomicU16::new(0);
+
 /// RakNet's update thread sleep (`threadSleepTimer` passed by samp's connect tick, A 0x10008988).
 const UPDATE_SLEEP: Duration = Duration::from_millis(2);
 
@@ -164,10 +172,11 @@ struct Core {
     name: String,
     auth: AuthTable,
     phase: Phase,
-    cookie: u16,
     open_attempts: u32,
-    /// When the attempt's first request went out (requests are due at whole seconds from it).
-    first_open: Option<Instant>,
+    /// RakNet time (ms) after which the next request / the failure is due.
+    next_open_ms: u64,
+    /// Origin of the RakNet millisecond clock of the open-connection timer.
+    epoch: Instant,
     conn: Option<Connection>,
     player_id: Option<u16>,
     last_rpcs: VecDeque<u8>,
@@ -208,9 +217,9 @@ impl NetClient {
             name: name.to_string(),
             auth,
             phase: Phase::Idle,
-            cookie: 0,
             open_attempts: 0,
-            first_open: None,
+            next_open_ms: 0,
+            epoch: Instant::now(),
             conn: None,
             player_id: None,
             last_rpcs: VecDeque::new(),
@@ -245,9 +254,8 @@ impl NetClient {
             crate::log!("net: connect to {} from {:?}", c.server, sock.local_addr().ok());
             c.sock = Some(sock);
             c.phase = Phase::Opening;
-            c.cookie = 0;
             c.open_attempts = 0;
-            c.first_open = None;
+            c.next_open_ms = c.rak_ms(Instant::now());
             c.player_id = None;
         }
         self.rak_start();
@@ -448,18 +456,16 @@ impl Core {
             return;
         }
         if self.phase == Phase::Opening {
-            // Requests at whole seconds from the first one (RakNet's own timer: measured 0, 1.001,
-            // 2.003, … s).
-            let since_first = self.first_open.map(|t| now.duration_since(t));
-            let due = since_first.is_none_or(|d| d >= OPEN_RETRY * self.open_attempts);
-            if due && self.open_attempts < OPEN_REQUESTS {
-                self.send_open_request(now);
-            } else if self.open_attempts >= OPEN_REQUESTS
-                && since_first.is_some_and(|d| d > OPEN_RETRY * (OPEN_REQUESTS - 1) + OPEN_FAIL_AFTER)
-            {
-                crate::log!("net: no answer to {} open-connection requests", self.open_attempts);
-                self.end_attempt(NetPacket::AttemptFailed);
-                return;
+            let now_ms = self.rak_ms(now);
+            if now_ms > self.next_open_ms {
+                if self.open_attempts < OPEN_REQUESTS {
+                    self.next_open_ms = now_ms + OPEN_RETRY_MS;
+                    self.send_open_request();
+                } else {
+                    crate::log!("net: no answer to {} open-connection requests", self.open_attempts);
+                    self.end_attempt(NetPacket::AttemptFailed);
+                    return;
+                }
             }
         }
         let mut delivered = Vec::new();
@@ -516,13 +522,17 @@ impl Core {
         self.events.push(Event::Packet(p));
     }
 
-    fn send_open_request(&mut self, now: Instant) {
+    /// RakNet's time in whole milliseconds.
+    fn rak_ms(&self, now: Instant) -> u64 {
+        now.saturating_duration_since(self.epoch).as_millis() as u64
+    }
+
+    fn send_open_request(&mut self) {
         self.open_attempts += 1;
-        self.first_open.get_or_insert(now);
         if self.open_attempts == 1 || self.open_attempts.is_multiple_of(10) {
             crate::log!("net: open-connection request #{} to {}", self.open_attempts, self.server);
         }
-        let req = open_connection_request(self.cookie);
+        let req = open_connection_request(COOKIE.load(AtomicOrdering::Relaxed));
         self.send_plain_dg(&req);
     }
 
@@ -545,7 +555,7 @@ impl Core {
                 // The original stores the cookie and answers with the next request of its
                 // 1000 ms retry timer (TRACE-4 capture orig-20261104-204143, net-59452: request
                 // at 0 s, cookie at 0.001 s, next request at 1.001 s).
-                Some(ServerReply::Cookie(c)) => self.cookie = c,
+                Some(ServerReply::Cookie(c)) => COOKIE.store(c, AtomicOrdering::Relaxed),
                 Some(ServerReply::Accepted) => {
                     crate::log!("net: open-connection accepted after {} request(s)", self.open_attempts);
                     let mut conn = Connection::connecting(now);
@@ -768,14 +778,24 @@ mod tests {
         let t0 = Instant::now();
         let mut buf = [0u8; 64];
         let mut first_port = None;
+        // Each request is due once RakNet's ms time is past the previous one's + 1000.
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        server.set_nonblocking(true).unwrap();
+        let mut at = 2;
         for i in 0..6u64 {
-            assert!(c.tick(t0 + Duration::from_millis(1000 * i)).is_empty());
+            if i > 0 {
+                assert!(c.tick(ms(at - 1)).is_empty());
+                assert!(server.recv_from(&mut buf).is_err(), "request {} only 1000 ms after the last", i + 1);
+            }
+            assert!(c.tick(ms(at)).is_empty());
+            std::thread::sleep(Duration::from_millis(5));
             let (_, peer) = server.recv_from(&mut buf).unwrap();
             first_port.get_or_insert(peer.port());
+            at += 1001;
         }
-        assert!(c.tick(t0 + Duration::from_millis(6000)).is_empty());
+        assert!(c.tick(ms(at - 1)).is_empty());
         assert!(server.recv_from(&mut buf).is_err(), "a 7th request");
-        let ev = c.tick(t0 + Duration::from_millis(6001));
+        let ev = c.tick(ms(at));
         assert!(matches!(ev.as_slice(), [Event::Packet(NetPacket::AttemptFailed)]));
         assert_eq!(c.phase(), Phase::Idle);
         // Connect stops RakNet (15 ms) and starts it again (10 ms) before returning.
@@ -798,10 +818,10 @@ mod tests {
             _ => unreachable!(),
         };
         let mut c = NetClient::new(addr, "Tester", AuthTable::parse("").unwrap()).unwrap();
-        let t0 = Instant::now();
-        assert!(c.tick(t0).is_empty());
+        assert!(c.tick(Instant::now()).is_empty());
         assert_eq!(c.phase(), Phase::Idle);
         c.connect().unwrap();
+        let t0 = Instant::now();
         assert!(c.tick(t0).is_empty());
         let mut buf = [0u8; 64];
         let (n, peer) = server.recv_from(&mut buf).unwrap();
@@ -815,9 +835,9 @@ mod tests {
         assert!(server.recv_from(&mut buf).is_err(), "answered the cookie before the retry timer");
         let mut got_second = false;
         for _ in 0..200 {
-            c.tick(t0 + OPEN_RETRY);
+            c.tick(t0 + Duration::from_millis(OPEN_RETRY_MS + 2));
             if let Ok((n, _)) = server.recv_from(&mut buf) {
-                assert!(n >= 3);
+                assert_eq!(open_request_cookie(&buf[..n], addr.port()), Some(0x1234));
                 got_second = true;
                 break;
             }
@@ -834,5 +854,31 @@ mod tests {
         }
         assert_eq!(c.phase(), Phase::Connecting);
         assert!(c.status_line().starts_with("net phase=connecting server=127.0.0.1:"));
+
+        // The cookie is process-global (A 0x10118e20): a new attempt (new socket) and even a new
+        // session start with it instead of 0.
+        for fresh in [false, true] {
+            if fresh {
+                c = NetClient::new(addr, "Tester", AuthTable::parse("").unwrap()).unwrap();
+            }
+            c.connect().unwrap();
+            server.set_nonblocking(true).unwrap();
+            while server.recv_from(&mut buf).is_ok() {} // the old connection's datagrams
+            server.set_nonblocking(false).unwrap();
+            c.tick(Instant::now());
+            let (n, _) = server.recv_from(&mut buf).unwrap();
+            assert_eq!(open_request_cookie(&buf[..n], addr.port()), Some(0x1234), "fresh session: {fresh}");
+            c.disconnect_silent();
+        }
+    }
+
+    /// The cookie an encrypted open-connection request carries.
+    fn open_request_cookie(wire: &[u8], port: u16) -> Option<u16> {
+        let mut plain = Vec::new();
+        cipher::decrypt(wire, CipherKey::from_port(port), &mut plain).ok()?;
+        match plain.as_slice() {
+            [0x18, lo, hi] => Some(u16::from_le_bytes([*lo, *hi]) ^ samp_proto::unconnected::COOKIE_MASK),
+            _ => None,
+        }
     }
 }

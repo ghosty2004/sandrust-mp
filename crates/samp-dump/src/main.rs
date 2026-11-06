@@ -75,7 +75,7 @@ fn main() -> Result<()> {
         };
         let prefix = if raw { format!("{:>9.3} ", (p.ts_us - t0) as f64 / 1e6) } else { String::new() };
 
-        if let Some(line) = unconnected(dir, body) {
+        if let Some(line) = unconnected(dir, body, raw) {
             println!("{prefix}{} {line}", dir.arrow());
             lines += 1;
             continue;
@@ -103,10 +103,16 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn unconnected(dir: Dir, b: &[u8]) -> Option<String> {
+fn unconnected(dir: Dir, b: &[u8], raw: bool) -> Option<String> {
+    // --raw: the cookie a request carries (0x6969 ^ cookie on the wire) and the one a cookie reply issues.
+    let cookie = |x: u16| if raw { format!(" cookie={x:#06x}") } else { String::new() };
     Some(match (dir, b) {
-        (Dir::ClientToServer, [0x18, ..]) if b.len() == 3 => "open-connection-request".into(),
-        (Dir::ServerToClient, [0x1a, ..]) if b.len() == 3 => "open-connection-cookie".into(),
+        (Dir::ClientToServer, [0x18, lo, hi]) => {
+            format!("open-connection-request{}", cookie(u16::from_le_bytes([*lo, *hi]) ^ 0x6969))
+        }
+        (Dir::ServerToClient, [0x1a, lo, hi]) => {
+            format!("open-connection-cookie{}", cookie(u16::from_le_bytes([*lo, *hi])))
+        }
         (Dir::ServerToClient, [0x19, ..]) if b.len() <= 2 => "open-connection-reply".into(),
         (Dir::ServerToClient, [x @ (0x1d | 0x1f | 0x24), ..]) if b.len() <= 2 => {
             format!("open-connection-refused {x:#04x}")

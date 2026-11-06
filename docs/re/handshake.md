@@ -44,6 +44,7 @@ Conventions: all multi-byte integers on the wire are **little-endian** (RakNet b
   | 1 | u16 LE | `0x6969 XOR cookie` |
 
   `cookie` is a process-global u16 (A 0x10118e20, .data, initial value 0). The constant 0x6969 is read from A 0x100fe7e0 (bytes `69 69 00 00`).
+  The cookie has exactly one writer (the `0x1a` handler, A 0x1003fdc2; B 0x1003fd72) and one reader (this send, A 0x100416a5; B 0x10041655): nothing clears it on Connect / Initialize / Disconnect. So after the first join every later attempt of the process — including the reconnect after a lost connection, on its new socket — starts with the last issued cookie, and a server whose cookie for this address has not changed (open.mp reseeds its cookie table every `network.cookie_reseed_time`, default 300 s) accepts the very first request (`0x19`) without another `0x1a` round. Measured: docs/phase3/reconnect-notes.md.
 * if attempts reached 6: the request is dropped and the application receives a synthetic one-byte packet `0x1d` (connection attempt failed), which the client UI reports as "The server didn't respond. Retrying.." and returns to state 1 (so the next try is after 3000 ms).
 
 **Unconnected datagrams accepted by the client** (ProcessNetworkPacket, 0x1003f440; sender not a connected system):

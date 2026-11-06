@@ -658,3 +658,16 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - Found: after the 15 s netloss drop ours opens a reconnect socket at +10.1 s and another at +16.1 s; the
   original one socket at +12.2 s. Once ours reached the server before it had timed the old player out →
   "Unacceptable NickName" → relaunch. Parity task NET-R started (reconnect timeline vs the original).
+
+## 2026-11-06 — NET-R: reconnect after a network gap, original vs ours
+- Measured the original (lane trace) and ours (lane veh) in derby with only netloss cases (`SOAK_CASES="netloss …"`,
+  drops 15 / 40 / 6 / 15 s, `SOAK_CAPTURE=1`), timelines from the client leg with the new
+  `tools/e2e/netloss_timeline.py`. Statics: the open-connection cookie is a process-global with one writer
+  (A 0x1003fdc2) and one reader (A 0x100416a5), never reset; request timer "now > last + 1000 ms" (A 0x1004165d).
+- Cause of the extra socket: ours reset the cookie per attempt, so the first request answered after the gap only
+  fetched a cookie and the attempt failed (second socket 1 s later). Fix: process-global cookie; RakNet's strict
+  request timer. Harness: `soak_mon.py` had two `say` methods (log lines were sent as chat — instantly for ours,
+  typed for seconds on the original); the chat is now `chat_say`, typed on the game window for both clients.
+- Result: same sockets, cookies and outcome as the original in every case (incl. a server cookie reseed); lost
+  connection 10.02–10.04 s after the first reliable send in the gap (original 10.04–10.06), residuals logged in
+  ROADMAP. Notes: docs/phase3/reconnect-notes.md.

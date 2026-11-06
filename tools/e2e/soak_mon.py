@@ -372,7 +372,9 @@ class Soak:
         self.secs = float(env("SOAK_SECS", "7200"))
         self.sample_s = float(env("SOAK_SAMPLE_SECS", "5"))
         self.event_period = float(env("SOAK_EVENT_PERIOD", "900"))
-        self.netdrop_s = float(env("SOAK_NETDROP_SECS", "15"))
+        # one value, or a list used by the netloss cases in turn (e.g. "15 40 6")
+        self.netdrops = [float(x) for x in env("SOAK_NETDROP_SECS", "15").split()]
+        self.netdrop_n = 0
         self.bot_bin = env("SOAK_BOT")
         # ours: our client (tools/run-client.sh); orig: the original samp.dll + samp-tracer.dll (trace lane)
         self.kind = env("SOAK_CLIENT", "ours")
@@ -1037,7 +1039,8 @@ class Soak:
 
     def chat_lines(self, n):
         if self.orig is None:
-            return self.ctl("chat %d" % n, multi=True) or []
+            # without the reply's header line (it carries scroll / count state)
+            return [l for l in (self.ctl("chat %d" % n, multi=True) or []) if not l.startswith("chat count=")]
         # the chat window opens the file with mode "w" (truncated at every game start,
         # docs/re/subsystems/ui-rendering.md): a file not written since this session's launch is the last one's
         try:
@@ -1052,17 +1055,19 @@ class Soak:
     def chat_has(self, text, n=60):
         return any(text in l for l in self.chat_lines(n))
 
-    def say(self, text):
-        """A chat line from the player: our client's control `say`; the original's chat input typed on the
-        game window (T, the text, Enter), as a player would."""
-        if self.orig is None:
-            return self.ctl("say " + text)
+    def chat_say(self, text):
+        """A chat line from the player, typed on the game window (T, the text, Enter) for both clients,
+        as a player would: the same input and the same timing for the original and ours (the reliable
+        chat send leaves when Enter is pressed, ~1.1 s after T for the netloss probe). Returns the wall
+        time of the Enter key. (This was once named `say`, which shadowed the log `say` above: every
+        event and status line went into the game's chat — instantly via the control channel for ours,
+        typed for seconds on the original's window — and the netloss timing differed between them.)"""
         self.key("t")
         time.sleep(0.3)
         subprocess.run(["xdotool", "type", "--delay", "40", text], env=dict(os.environ, DISPLAY=self.display),
                        stderr=subprocess.DEVNULL)
         self.key("Return")
-        return "typed"
+        return round(time.time(), 3)
 
     def recover(self, name, deadline=STUCK_S, relaunch_on=None):
         """Sample until the client is healthy and spawned again; relaunch_on: chat text after which a
@@ -1122,25 +1127,43 @@ class Soak:
                 "expect_ok": closed and alive and n_conn2 == n_conn and quit_ok}
 
     def case_netloss(self):
-        """The client's path is cut for netdrop_s. A chat line typed 1 s in is a reliable send that
+        """The client's path is cut for drop_s (SOAK_NETDROP_SECS). A chat line typed 1 s in is a reliable send that
         stays unacknowledged, so the client must declare the connection lost (RakNet's ack timer:
         about 10 s after the first unacked reliable send, docs/phase3/trace-notes.md TRACE-8); an
         idle client sends only unreliable syncs and would ride out the gap. When the server still
         holds the old player at the reconnect, the nick is rejected and (as with samp) nothing
-        retries: then the game is started again."""
+        retries: then the game is started again. SOAK_NETDROP_SECS < 10: no lost connection expected
+        (the chat line's resends get through before the ack timer runs out)."""
+        drop_s = self.netdrops[self.netdrop_n % len(self.netdrops)]
+        self.netdrop_n += 1
+        before = self.chat_lines(200)
+        lost_text = "Lost connection to the server. Reconnecting.."
+
+        def lost_since():
+            # only chat lines added since the drop count (an earlier case's line may still be in view)
+            after = self.chat_lines(200)
+            for m in range(len(before) + 1):
+                k = len(before) - m
+                if before[m:] == after[:k]:
+                    return any(lost_text in l for l in after[k:])
+            return any(lost_text in l for l in after)
+
         os.kill(self.proxy.pid, signal.SIGUSR1)
         t = now()
+        drop_on = round(time.time(), 3)
         time.sleep(1)
-        said = self.say("soak netloss probe")
-        while now() - t < self.netdrop_s:
-            time.sleep(0.5)
+        said = self.chat_say("soak netloss probe")
+        time.sleep(max(0.0, drop_s - (now() - t)))
         os.kill(self.proxy.pid, signal.SIGUSR2)
-        lost_during = self.chat_has("Lost connection to the server. Reconnecting..", 100)
+        drop_off = round(time.time(), 3)
+        lost_during = lost_since()
         net_mid = self.ctl("net")
         rec = self.recover("netloss", deadline=STUCK_S + 60, relaunch_on="CONNECTION REJECTED: Unacceptable NickName")
-        lost = lost_during or self.chat_has("Lost connection to the server. Reconnecting..", 100)
-        return {"drop_s": self.netdrop_s, "say": said, "lost_line": lost, "lost_within_drop": lost_during,
-                "net_after_drop": net_mid, "recovered_s": rec, "expect_ok": bool(lost)}
+        lost = lost_during or lost_since()
+        return {"drop_s": drop_s, "drop_on": drop_on, "chat_sent": said, "drop_off": drop_off, "lost_line": lost, "lost_within_drop": lost_during,
+                "net_after_drop": net_mid, "recovered_s": rec,
+                # a gap shorter than the ack timeout (10 s after the chat send) is ridden out, as by samp
+                "expect_ok": (not lost and rec is not None) if drop_s < 10 else bool(lost)}
 
     def case_srvkill(self):
         self.server_stop(signal.SIGKILL)

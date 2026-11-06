@@ -5,7 +5,8 @@
 #   gmx         server restart via RPC 40 (SendRconCommand gmx)
 #   kick        Kick → "Server closed the connection.", no automatic reconnect (as samp), the game
 #               stays up; then quit the game and start it again (rejoin)
-#   netloss     the client's UDP path dropped for SOAK_NETDROP_SECS (default 15) by a userspace proxy
+#   netloss     the client's UDP path dropped for SOAK_NETDROP_SECS (default 15; a list like "15 40 6"
+#               is used by the netloss cases in turn) by a userspace proxy
 #               (tools/e2e/soak_udpproxy.py; the client always connects through it) → lost connection
 #               → reconnect
 #   srvkill     server process killed (SIGKILL) and started again → lost connection → reconnect
