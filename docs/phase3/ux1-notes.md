@@ -87,6 +87,12 @@ Branch `ui-loading` (git worktree `~/samp-rs-wt/ui2`). Acceptance: `tools/e2e/ux
 * **Remote driver nametag** (MR-M8A-5): `samp-bot --mode drive --speed 0` placed next to a car
   becomes the driver (state 1→2); the original draws its tag. A driver (samp state 0x13) with a
   vehicle is anchored at the vehicle's position and skips the moving-list test (A 0x10074270).
+  F4 (2026-11-06): the 248-line `vehtag` difference was timing, not the anchor: the killed Bot1
+  timed out on the server (~14 s) during the capture window, so it vanished between frames 1 and 2
+  on the original and only at frame 3 on ours. `killbots` now waits for the server's `[part]` line
+  and the capture waits 8 s after state 1→2 (the get-in animation). Measured with `remote_probe`
+  (`vehtag-remote.txt`): the remote vehicle stands at 1696.000,−2591.13,13.274 on both clients
+  before and after the capture, and the call streams match (tag, bars, LOS, per frame).
 
 ## Implemented (samp-client)
 
@@ -109,8 +115,14 @@ measures, `RenderTarget` with format), `ui/dxut.rs` (resource-manager state bloc
 * Model-preview textdraws (font 5): samp creates a GTA ped/vehicle/object, renders it with an RW
   camera into a 256×256 raster (A 0x100b34e0 → 0x1006c140/0x1006c3c0/0x1006c9b0) — not
   implemented in this step (decision logged; follow-up task).
-* F5 numbers come from our own counters (datagrams/messages; RakNet-only counters are 0); labels,
-  layout and colours match; DIFF-4 compares the element without digits.
+* F5 values (A 0x10060d20, measured 2026-11-06): rates = byte deltas of the connection totals
+  sampled while the overlay draws, once > 1000 ms passed, / 1024; pool block = vehicles in the
+  pool, distinct models among those with a GTA vehicle, GTA vehicle models 400…610 with a
+  non-zero streaming load state, GTA's RW object counter (0xB71804), remote ped slots in use
+  (2…209), objects in the pool, the lag-comp selector (InitGame 1 → 0, 2 → 1, else 2), null
+  model-info slots among ids 1000…19999; network block = RakNet's statistics, from our
+  reliability layer (`samp_proto::connection::Stats`). Labels, layout and colours match; DIFF-4
+  compares the element without digits.
 * D3DX glyph-atlas batch splits (two DIPs vs one) depend on each font's glyph-cache history; the
   glyph draws themselves match — covered rows in `visual-decisions.tsv`.
 * IME composition is not modelled (no IME on the test display).

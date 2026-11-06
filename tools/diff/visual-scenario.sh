@@ -92,9 +92,27 @@ visual_scenario() {
     sleep 2
     fs 'pos|B2|1694.0|-2592.0|13.5|0.0'
     waitlog 'state [0-9]+ 1->2' 30
-    sleep 3; cap vehtag ui
+    # The remote get-in animation and the vehicle's settling run for a few seconds after the
+    # server's state change: capture the seated, static driver (tag anchor unchanged per frame).
+    sleep 8; remote_probe vehtag; cap vehtag ui; remote_probe vehtag
     killbots
-    # The chat input last: opening it resizes the chat GUI dialog for good.
+    # The chat input: opening it resizes the chat GUI dialog for good.
     key t; typ "hello"; sleep 0.5; cap input ui
     key Escape; sleep 0.5
+    # FEAT-B (FEAT-8): `/dl` vehicle labels on and off, `/testdw` death-window rows. A Landstalker
+    # 6 m east and an Infernus 12 m north (inside the 20 m label range; the vehtag Infernus stays).
+    # Escape keeps the input's text ("clip text 1hello" from paste + input): send it as a chat
+    # line first so the commands below start on an empty input.
+    mark_log; key t; sleep 0.3; key Return; waitlog 'clip text 1hello' 5
+    fs 'pos|L|1700.0|-2600.0|13.5|90.0'
+    sleep 2
+    fs 'veh|400|1706.0|-2600.0|13.5|0.0|1|1'
+    fs 'veh|411|1700.0|-2588.0|13.5|90.0|1|1'
+    sleep 3
+    key t; typ "/dl"; key Return; sleep 1.5
+    cap dl ui
+    key t; typ "/dl"; key Return; sleep 1
+    cap dloff ui
+    key t; typ "/testdw"; key Return; sleep 1
+    cap testdw ui
 }

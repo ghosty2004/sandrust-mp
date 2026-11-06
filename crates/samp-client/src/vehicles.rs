@@ -468,6 +468,12 @@ impl Vehicles {
     }
 
     /// (id, GTA vehicle, stream-in position) of every vehicle with a GTA object, in id order (`/dl`, FEAT-B).
+    /// F5: vehicles in the pool and the distinct models among those with a GTA vehicle.
+    pub fn pool_stats(&self) -> (u32, u32) {
+        let models: std::collections::BTreeSet<u32> = self.pool.values().filter(|v| v.ptr != 0).map(|v| v.model).collect();
+        (self.pool.len() as u32, models.len() as u32)
+    }
+
     pub fn debug_rows(&self) -> Vec<(u16, u32, [f32; 3])> {
         self.pool.values().filter(|v| v.ptr != 0).map(|v| (v.id, v.ptr, v.spawn_pos)).collect()
     }

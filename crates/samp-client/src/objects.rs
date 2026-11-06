@@ -209,6 +209,11 @@ pub struct Objects {
 }
 
 impl Objects {
+    /// F5 ObjectSlotsUsed: objects in the pool.
+    pub fn count(&self) -> u32 {
+        self.pool.len() as u32
+    }
+
     fn now_ms(&mut self) -> u32 {
         let e = *self.epoch.get_or_insert_with(Instant::now);
         e.elapsed().as_millis() as u32
