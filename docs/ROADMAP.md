@@ -12,26 +12,38 @@ differential capture against the original client, e2e script.
 
 | Slot | Running | Next |
 |---|---|---|
-| lane main | reserved for the user's manual play | — |
-| worktree (lanes diff, veh) | TRAILER-CRASH: our client crashed at gta_sa.exe+0x2d321c during the F3 truck/trailer steps | F3 rerun |
-| lanes ui, trace | — (free) | CLEANUP verification runs |
-| no-game | — | CLEANUP (readability pass), then RENAME |
+| final proof batch (lanes ui, diff, then trace / veh) | F4, F1, then F5, F3, F2, objstress on main 244cb98 | rerun what the gap fixes below touch |
+| worktree (lanes ui / trace when free) | GAP-PREVIEW: model-preview textdraws (font 5, A2) + class-selection panel hidden while a dialog is open (A3) | merge, F4 |
+| worktree (lanes veh / diff when free) | GAP-VEH: object hit type 3 (A4), surf damage cancel (A5), surf driver-enter refusal (A6), RC driver removal (A7), mod-shop follow SCM type 4 (A8), model 570 passenger warp (A9) | merge, F3, m5, m7 |
+| worktree (lanes ui / veh when free) | GAP-UI: class-selection sounds (A1), cursor steps on device reset (A10), `/rs` on-foot position + vehicle heading (A11), RPC 92 / 150 handlers (A12), CdStreamSync decision | merge, m8a, m10 |
+| lane main, main2 | reserved for the user's manual play | — |
 
 ## Next up (ordered queue — the scheduler takes from the top)
 
-Goal F1–F7 / phases A–G: F1, F2, F4–F7 proven on main (2026-11-06, docs/WORKLOG.md "Final proofs on main").
-F3 with the M4–M7 steps: one run passed 66/66, the run on main hit a crash in our trailer-attach path → fix in
-progress (TRAILER-CRASH, lane diff/veh), then F3 again.
+Goal F1–F7 / phases A–G: all seven proven on main 2026-11-06 (WORKLOG "Final proofs on main"); after the user's
+real-server reports (cursor, label colours, driver nametag, material text, model previews) a read-only audit
+(2026-11-06) listed 12 observable gaps (class A) still open → GAP-PREVIEW, GAP-VEH, GAP-UI above; the proofs
+are re-run on the code that includes them before the goal is closed.
 
-1. CLEANUP — readability pass requested by the user (2026-11-06), no behaviour change: comments without internal
-   task ids (514 occurrences) rewritten as plain explanations, samp.dll address citations moved to a reference
-   table in docs/re/, files over ~1,400 lines and functions over ~150 lines split by subsystem, raw memory
-   access concentrated in a few audited helpers. Verified by tests, clippy and re-running F1–F7.
-2. RENAME — samp-rs → sandrust-mp (crates sandrust-*), when no worktrees are open.
-3. M11 / F8 — other client versions (R1/R3/R5/DL): blocked on the binaries (RE-8).
-4. M12 / F9 — Windows validation: user on Windows.
-5. WATCH — a derby soak start in lane ui once stayed at gGameState 6 and crashed in GTA's level loader
+1. GAP-PREVIEW, GAP-VEH, GAP-UI (in progress, see "Lanes now").
+2. B-list from the audit (unmeasured details without a known visible effect): vehicle model release on
+   stream-out (MR-5.9), second towable test (A 0x100B7E10), UsesSiren force flag (A 0x100A5DD0), RPC 165 global
+   flag A 0x1026EA50, vehicle blip "occupied" rule for remote passengers (A 0x100B7720), RPC 40 reset's
+   jetpack-task kill and five wrapper resets, timed objects (+0x1199), radio resume after a stream stops,
+   SAMPAUX3 22/28 font creation timing, remote drive-by firing / satchel detonation (samp-bot cannot drive them).
+3. CLEANUP — readability pass requested by the user (2026-11-06), no behaviour change: comments without internal
+   task ids rewritten as plain explanations (also the stale "not implemented" headers found by the audit),
+   samp.dll address citations moved to a reference table in docs/re/, files over ~1,400 lines and functions
+   over ~150 lines split by subsystem, raw memory access concentrated in a few audited helpers. Verified by
+   tests, clippy and re-running F1–F7.
+4. Nice to have (user, 2026-11-06: later): per-RPC parameter sweeps original vs ours; samp.dll branch coverage
+   of the RPC handlers as the coverage metric; non-geo visual checks where the scene is reproducible.
+5. RENAME — samp-rs → sandrust-mp (crates sandrust-*), when no worktrees are open.
+6. M11 / F8 — other client versions (R1/R3/R5/DL): blocked on the binaries (RE-8).
+7. M12 / F9 — Windows validation: user on Windows.
+8. WATCH — a derby soak start in lane ui once stayed at gGameState 6 and crashed in GTA's level loader
    (gta_sa.exe+0x137d12, write to 0x18) while the host had ~3 GB available; not reproduced since.
+9. EFX-2 — step-mode capture for our own client (tooling).
 
 ## Phase 0 — Reverse engineering (specs in `docs/re/`)
 
