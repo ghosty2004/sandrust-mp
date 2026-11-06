@@ -403,6 +403,8 @@ class Soak:
         self.prev_ticks = None
         self.frozen = 0
         self.seat_transition = False   # the previous sample was a local seat transition (see compare)
+        self.veh_driver_prev = {}      # vehicle id -> player id seated as its driver in the previous first dump
+        self.veh_orphaned = {}         # vehicle id -> server position when its driver left the server (see compare)
         self.persist = {}              # (category, entity) -> consecutive bad samples
         self.persistent = []
         self.server_crashes = 0
@@ -555,6 +557,9 @@ class Soak:
             spec["SkPass"] = ["--mode", "passenger"]
         else:
             spec["SkWalk2"] = ["--mode", "walk"]
+        only = os.environ.get("SOAK_BOTS")
+        if only is not None:
+            spec = {k: v for k, v in spec.items() if k in only.split()}
         return spec
 
     def bots_tick(self):
@@ -570,7 +575,8 @@ class Soak:
                 b["next"] = now() + random.uniform(5, 15)
             if now() < b["next"]:
                 continue
-            secs = random.randint(240, 720)
+            lo, hi = (int(x) for x in os.environ.get("SOAK_BOT_SECS", "240-720").split("-"))
+            secs = random.randint(lo, hi)
             b["runs"] += 1
             logf = open("%s/bots/%s-%d.log" % (self.out, name, b["runs"]), "wb")
             b["p"] = subprocess.Popen(
@@ -832,6 +838,10 @@ class Soak:
             net = self.ctl("net")
             remote = self.ctl("remote", multi=True)
             vehicles = self.ctl("vehicles", multi=True)
+            if net is not None:
+                # same record as the original's orig-view.log, for side-by-side analysis
+                with open(self.session_dir() + "/client-view.log", "a") as lf:
+                    lf.write("t=%.1f %s\n%s\n%s\n" % (self.t(), net, "\n".join(remote or []), "\n".join(vehicles or [])))
         tc = now()
         # the closing bracket of the client query (see BRACKETED)
         dump2 = self.server_dump() if dump is not None else None
@@ -882,6 +892,8 @@ class Soak:
                     # comparison is gone or holds there): the client shows the later server state
                     if not c[2] and c[0] in BRACKETED and later.get((c[0], c[1]), True):
                         comps[i] = (c[0], c[1], True, c[3] + " [matches the dump after the client query]")
+        if self.veh_orphaned:
+            s["veh_orphaned"] = sorted(self.veh_orphaned)   # veh_pos not compared (see compare)
         s["n_comp"] = len(comps)
         s["bad"] = [c for c in comps if not c[2]]
         s["by_cat"] = {}
@@ -947,6 +959,25 @@ class Soak:
             d = math.dist(cpos, sp["pos"])
             comps.append(("local_pos", "local", d <= tol, "d=%.2f tol=%.2f st=%d client=%s server=%s" % (d, tol, st, cpos, sp["pos"])))
             comps.append(("local_hp", "local", abs(chp - sp["hp"]) <= TOL_HP, "client=%.1f server=%.1f" % (chp, sp["hp"])))
+        drivers = {p["veh"]: p for p in dump["players"].values() if p["st"] == 2 and p["veh"] > 0}
+        # A car whose driver left the server while seated keeps the driver's last synced position on the server,
+        # while every client keeps the car where its own copy came to rest: samp nudges a remote car toward each
+        # driver sync (velocity += delta * 0.06, remote-control-vehicles.md 2.2) and nothing corrects it after the
+        # driver is gone. A bot that brakes to a stop and quits left it up to 7.7 m off on the original (6.3 m on
+        # ours; docs/phase3/soak-notes.md "Orphaned cars"). Its position, and that of a passenger seated in it (the
+        # server's position of a passenger is the car's, from the passenger's sync), is not compared until the
+        # server's copy is current again: a driver sits in it, or its server position changes (unoccupied sync,
+        # respawn, SetVehiclePos).
+        if commit:
+            present = {(p["id"], p["name"]) for p in dump["players"].values()}
+            for vid, who in self.veh_driver_prev.items():
+                if vid not in drivers and who not in present and vid in dump["vehicles"]:
+                    self.veh_orphaned[vid] = dump["vehicles"][vid]["pos"]
+            for vid in list(self.veh_orphaned):
+                v = dump["vehicles"].get(vid)
+                if vid in drivers or v is None or math.dist(v["pos"], self.veh_orphaned[vid]) > 0.01:
+                    del self.veh_orphaned[vid]
+            self.veh_driver_prev = {vid: (p["id"], p["name"]) for vid, p in drivers.items()}
         # remote players
         rl = {}
         for l in (remote or [])[1:]:
@@ -985,9 +1016,10 @@ class Soak:
                 cpos = vpos
             tol = (TOL_FOOT_M if p["st"] == 1 else TOL_VEH_M) + p["speed"] * LAG_S
             d = math.dist(cpos, p["pos"])
-            comps.append(("remote_pos", p["name"], d <= tol, "d=%.2f tol=%.2f st=%d client=%s server=%s%s | %s" % (
-                d, tol, p["st"], cpos, p["pos"], via, " ".join("%s=%s" % (k, r.get(k)) for k in (
-                    "id", "slot", "state", "sync_age_ms", "sync_pos", "teleports", "vehicle", "veh_sync")))))
+            if not (p["st"] == 3 and p["veh"] in self.veh_orphaned):   # passenger of an orphaned car (see above)
+                comps.append(("remote_pos", p["name"], d <= tol, "d=%.2f tol=%.2f st=%d client=%s server=%s%s | %s" % (
+                    d, tol, p["st"], cpos, p["pos"], via, " ".join("%s=%s" % (k, r.get(k)) for k in (
+                        "id", "slot", "state", "sync_age_ms", "sync_pos", "teleports", "vehicle", "veh_sync")))))
             try:
                 chp = float(r["health"])
                 comps.append(("remote_hp", p["name"], abs(chp - p["hp"]) <= TOL_REMOTE_HP, "client=%.0f server=%.1f" % (chp, p["hp"])))
@@ -1004,7 +1036,6 @@ class Soak:
             comps.append(("remote_ghost", r.get("name", str(cid)), cid in dump["players"],
                           "client lists id %d (%s), server does not" % (cid, r.get("name"))))
         # vehicles
-        drivers = {p["veh"]: p for p in dump["players"].values() if p["st"] == 2 and p["veh"] > 0}
         for vid, v in dump["vehicles"].items():
             if v["streamed"] != 1 or not hdr_ok:
                 continue
@@ -1016,8 +1047,10 @@ class Soak:
             cpos = [float(x) for x in c["pos"].split(",")]
             tol = TOL_VEH_M + v["speed"] * LAG_S
             d = math.dist(cpos, v["pos"])
-            comps.append(("veh_pos", "veh%d" % vid, d <= tol, "d=%.2f tol=%.2f client=%s server=%s driver=%s" % (
-                d, tol, cpos, v["pos"], c.get("driver"))))
+            # orphaned car (its driver left the server): the server's position is stale, not compared (see above)
+            if vid not in self.veh_orphaned:
+                comps.append(("veh_pos", "veh%d" % vid, d <= tol, "d=%.2f tol=%.2f client=%s server=%s driver=%s" % (
+                    d, tol, cpos, v["pos"], c.get("driver"))))
             try:
                 comps.append(("veh_hp", "veh%d" % vid, abs(float(c["health"]) - v["hp"]) <= TOL_VEH_HP,
                               "client=%s server=%.1f" % (c["health"], v["hp"])))

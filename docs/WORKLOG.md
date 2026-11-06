@@ -671,3 +671,18 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - Result: same sockets, cookies and outcome as the original in every case (incl. a server cookie reseed); lost
   connection 10.02–10.04 s after the first reliable send in the gap (original 10.04–10.06), residuals logged in
   ROADMAP. Notes: docs/phase3/reconnect-notes.md.
+
+## 2026-11-06 — Soak: orphaned car after a driver quits (gungame 2 h persistent veh_pos)
+- Question: the 2 h gungame soak's only persistent desync (veh1 6.26 m off for 32 s after SkDrive braked,
+  left the car and quit): client or measurement?
+- Static (A 0x100155E0 / 0x10015140, REA): synced velocity written, then nudge Δ·0.06 within 8/8/0.5, teleport
+  beyond or when the car is not in the moving list; quitting ped warped out and deleted, car untouched; a car at
+  rest sends no 209. Ours matches (`vehicle::correct_driver`).
+- Dynamic: same scenario on the original (trace lane) and ours (lane ui): gungame, SkDrive + SkPass restarted every
+  45–90 s, 1 s samples (new knobs SOAK_BOTS, SOAK_BOT_SECS; ours now writes client-view.log). Both runs stopped by
+  host memory pressure after ~540 s, 5 quits each. Original: car 5.85 / 0.13 / 0.16 / 1.53 / 7.72 m from the
+  server's position after the quit, constant; the old harness flagged a persistent veh_pos (7.72 m) and the
+  passenger's remote_pos on the original. Ours 0.16–1.17 m in this run, 6.26 m in the 2 h soak. Shared behaviour.
+- Harness: orphaned cars (driver left the server while seated, nobody driving) excluded from veh_pos and passenger
+  remote_pos until a driver sits in it or the server position changes; no threshold changed. Logged in ROADMAP
+  decisions and soak-notes "Orphaned cars". No client code changed.

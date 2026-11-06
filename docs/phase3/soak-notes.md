@@ -432,3 +432,57 @@ report-level one, i.e. the memory row.)
 * Memory: the original shows the same late warm-up of a fresh game process; the judged window starts after
   it (900 s, measured on the original), the limit stays 40 MB/h. No relative threshold was needed: with the
   measurement fixed, both clients clear the absolute thresholds with the same margins.
+
+## Orphaned cars: the driver quits right after braking to a stop (2026-11-06)
+
+The final 2 h gungame soak of our client (`target/soak/gungame/` in the main checkout) flagged one persistent
+desync: at t=2231.7 s veh1 was 6.25 m from the server's position (tolerance 6.00) while SkDrive was still listed
+as its driver (sync 555 ms old, the bot had braked to a stop at -1315.05,2497.24 and sent RPC 154); the same
+second the bot quit (its run ended), and the empty car stayed 6.26 m off for 32 s, until SkDrive rejoined and
+drove it again. The server keeps the last synced position of a car whose driver is gone.
+
+**Original, static** (A = 2021 build): the driver-sync apply A 0x100155E0 writes the synced velocity, then
+A 0x10015140 nudges: every |Δ| ≤ 0.05 → nothing; |Δx|, |Δy| ≤ 8 and |Δz| ≤ 0.5 (2.0 air/water) → move speed +=
+Δ·0.06 (constant at A 0x100FE4B4) on the axes with |Δ| > 0.05; beyond → matrix write; a car not in GTA's moving
+list is always written directly. A stopped sync (velocity 0) gives the car one push of Δ·0.06 per received sync,
+which GTA's brake/friction (pad from the same sync: brake, then nothing) absorbs. A quitting player's ped is
+warped out of the car (remote-control-onfoot §1.5) and deleted; nothing moves the car. An empty car at rest
+sends no unoccupied sync (§3.2: "not stopped"), so the server's copy stays the bot's last sync. Ours implements
+the same rule (`vehicle::correct_driver`, called from `vehicles.rs` after `move speed := synced velocity`).
+
+**Original vs ours, measured**: the same scenario on both clients, gungame with only SkDrive and SkPass, each
+bot restarted every 45–90 s (so SkDrive brakes, leaves the car and quits about once a minute), samples every
+second, no cases:
+
+    SOAK_GAMEMODES=gungame SOAK_SECS=1200 SOAK_SAMPLE_SECS=1 SOAK_CASES= SOAK_BOTS="SkDrive SkPass" SOAK_BOT_SECS=45-90 \
+        SOAK_CLIENT=orig tools/e2e/soak.sh                     # trace lane
+    WINEPREFIX=$SAMP_RS_ROOT/wine/prefix-ui GTA_DIR=$SAMP_RS_ROOT/wine/gta-sa-ui E2E_TAG=ui E2E_PORT=7800 \
+        E2E_CTL_PORT=47710 <same SOAK_* variables> flock target/locks/ui.lock tools/e2e/soak.sh   # ours, lane ui
+
+Both runs were stopped after ~540 s by the host's memory pressure (not by the harness); 5 quits each. The
+client's position of the car (`orig-view.log` from samp.dll's memory / ours `client-view.log`) vs the server's
+position after the quit:
+
+| quit | original: last sample with driver → after quit (constant until driven again) | ours |
+| --- | --- | --- |
+| 1 | 5.82 → 5.85 m | 0.79 → 0.93 m |
+| 2 | 0.90 → 0.13 → 0.05 m | 0.44 → 0.83 m |
+| 3 | 0.15 → 0.16 m | 0.36 → 0.94–1.17 m (veh3) |
+| 4 | 1.48 → 1.53 m | (rejoin overlap, 0.77 m) |
+| 5 | **7.80 → 7.72 m** | 0.16 → 0.16 m |
+| 2 h soak | – | **6.25 → 6.26 m** |
+
+On the original the old harness raised the same persistent desync (`veh_pos veh1 d=7.72 tol=6.00 driver=-`,
+t=509.8, and `remote_pos SkPass` 7.72 m: the passenger sat in that car, and the server's position of a passenger
+is the car's from the passenger's own sync). How far off a car ends up depends on where on the circle the bot
+stops (its stop pose is its own ideal path; the car on a client is GTA's, braking with the synced pad); after the
+quit nothing corrects it on either client. **Shared behaviour, not a client difference; no client change.**
+
+**Harness** (`compare`, no threshold changed): a vehicle whose driver (by id and name) was seated in the previous
+sample and has left the server, while nobody drives it now, is *orphaned*: its `veh_pos`, and the `remote_pos`
+of a passenger seated in it, are not compared until the server's copy is current again (a driver sits in it, or
+its server position changes: unoccupied sync, respawn, SetVehiclePos). The sample lists such vehicles in
+`veh_orphaned`. The last sample before the quit (driver still listed) is judged as before (one sample, inside the
+99 % rule). New knobs for scenario runs: `SOAK_BOTS` (subset of bots), `SOAK_BOT_SECS` (bot run length range,
+default 240-720); our client's replies are written to `client-N/client-view.log` like the original's
+`orig-view.log`.

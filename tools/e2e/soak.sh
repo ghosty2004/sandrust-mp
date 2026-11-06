@@ -31,6 +31,8 @@
 #                                             the same cases (chat read from samp's chatlog.txt, chat typed on
 #                                             the game window; net / remote / vehicles are read from samp.dll's
 #                                             memory, soak_mon.py OrigView)
+#   SOAK_BOTS="SkDrive SkPass"                only these bots (default all of the gamemode)
+#   SOAK_BOT_SECS="40-90"                     session length range of each bot run (default 240-720)
 # Output: target/soak/<gamemode>/ (summary.json, samples.jsonl, events.jsonl, client-N/, bots/).
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
