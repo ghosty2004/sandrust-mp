@@ -863,11 +863,17 @@ fn nametags(st: &mut State) -> Vec<TagDraw> {
         if d >= core.name_tag_distance {
             continue;
         }
-        // A 0x10074270: a driver (samp state 0x13) whose vehicle exists is anchored at the
-        // vehicle's position; everyone else needs to be in the moving list (A 0x1009f430,
-        // `CPhysical` +0xB4 ≠ 0) and is anchored at bone 8.
+        // A 0x10074270: only the driver (samp state 0x13) of an RC vehicle (A 0x100b7e40: valid
+        // pool handle and model 441/464/465/501/564/594) is anchored at the vehicle's matrix
+        // position; every other player, drivers of ordinary cars included, needs to be in the
+        // moving list (A 0x1009f430, `CPhysical` +0xB4 ≠ 0) and is anchored at bone 8 (head).
         let vehicle = if r.state == crate::vehicle::state::DRIVER {
-            ProcessMemory.read_u32(r.ped + PED_VEHICLE).unwrap_or(0)
+            let v = ProcessMemory.read_u32(r.ped + PED_VEHICLE).unwrap_or(0);
+            let model = ped_valid(v)
+                .then(|| ProcessMemory.read_u16(v + off::ENTITY_MODEL).ok())
+                .flatten()
+                .map(u32::from);
+            if crate::vehicle::tag_at_vehicle(r.state, model) { v } else { 0 }
         } else {
             0
         };

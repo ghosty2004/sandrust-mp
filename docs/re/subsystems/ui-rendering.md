@@ -733,8 +733,13 @@ remote player ids 0..max. A player is drawn when the slot is active, the remote 
 ped (+0x1dd), state (+0x10a) ≠ 0, "show nametag" (+0x04, set by RPC 80) ≠ 0, the ped is
 valid, the distance (A 0x1009f1f0) < the server's nametag draw distance (settings +0x27,
 float), and the player is not an NPC (+0x10c = 0).
-- Anchor: the ped position, or for state 0x13 with a vehicle the vehicle position (only if
-  that vehicle is valid). If "nametag LOS" (+0x2f) is on — always in R4: the RPC 139 handler reads the bit into
+- Anchor: bone 8 (head) of the ped, which must be valid and in the moving list (A 0x1009f430,
+  `CPhysical` +0xB4 ≠ 0) — also for drivers of ordinary vehicles. Only for state 0x13 with a
+  vehicle (remote +0x1e1) that passes A 0x100b7e40 — valid pool handle (GTA 0x4048E0) **and an
+  RC model** (441, 464, 465, 501, 564, 594) — the anchor is the vehicle's matrix position
+  (+0x30 of its matrix). Measured (vehtag, original): an Infernus driver's tag sits at samp's
+  anchor global A 0x10140bdc = the head, ≈ 0.50 m above the seated ped's root and 0.30 m above
+  the car's matrix position. If "nametag LOS" (+0x2f) is on — always in R4: the RPC 139 handler reads the bit into
   +0x2f and then writes 1 there (B 0x10010778), whatever the server sent — script opcode 0x06BD
   (line-of-sight clear: buildings and objects only) from the anchor to the camera position
   must pass.

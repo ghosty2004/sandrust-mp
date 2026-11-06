@@ -96,8 +96,7 @@ Changes outside `ui/`: `dll.rs` (frame order, game-frame hook calls the RT updat
 
 * Sprite textdraws (font 4) follow samp's loader and match the original's draw; `mdlNNN` sprites and
   model previews (font 5, A 0x100b34e0: 256×256 RT quad measured) are not drawn (TODO).
-* Nametags of players in vehicles (state 0x13 → vehicle position) are not reproduced (no remote
-  vehicles before M5).
+* Nametags of drivers: resolved 2026-11-06, see "Remote driver nametag (MR-M8A-5)" below.
 * Resolved: the 1-px glyph difference of GUI font 0 (`a` of "Cancel") came from the missing
   class-selection panel — the original caches `a` first through its `Spawn` button; with the panel
   drawn, dlg0–dlg5 diff to 0 lines.
@@ -106,3 +105,35 @@ Changes outside `ui/`: `dll.rs` (frame order, game-frame hook calls the RT updat
 * The object-editor SAMPAUX3 22/28 fonts created at start are not created (no visible effect).
 * The original passes an uninitialised rect / stale colour to its DT_CALCRECT calls; ours pass zeros (the
   diff ignores those arguments).
+
+## Remote driver nametag (MR-M8A-5, 2026-11-06)
+
+User report: as the passenger of a car, the driver's nametag sat low ("below the vehicle"). Ours anchored
+every remote in samp state 0x13 (driver) at the vehicle's matrix position.
+
+* Static (A = 2021 build): A 0x10074270 (bars) and A 0x10075390 (names) take the vehicle path only when
+  state is 0x13, the remote's vehicle (+0x1e1) is set and A 0x100b7e40 passes. A 0x100b7e40 = valid pool
+  handle (GTA `CPool::GetAt` 0x4048E0) **and** model 441/464/465/501/564/594 — RC vehicles only. Every other
+  driver goes through A 0x1009f430 (ped valid and `CPhysical` +0xB4 ≠ 0) and bone 8 (head), like a
+  pedestrian. The vehicle path reads the matrix position (A 0x1009eb70 copies the matrix; +0x30); no extra
+  offset; the raise is `0.0475·d + 0.2` with d = ped-to-camera (0xB6F9CC) for every path.
+* Dynamic (`tools/diff/vehtag.sh` = `vehtag-measure.sh` through visual.sh; samp-bot drives an Infernus at
+  speed 0; fixed cameras 4/8/16 m east of the car via new m8afs `campos`/`camlook`; then the local player
+  as that car's passenger; viewport 1280×720). On the original, samp's anchor global A 0x10140bdc read
+  after the frame was (1695.517, y, 13.569) = the driver's head (ped root 13.065, car matrix 13.274), and
+  projecting it with samp's own VIEW/PROJ copies (A 0x10140be8/0x10140c28) reproduces the bars (e.g.
+  passenger 580,328 vs bars 581,327). Bar origins (X, Y) — original / ours after the fix:
+  foot4 780,317 / 792,318; foot8 715,325 / 732,325; foot16 695,327 / 717,327; passenger 581,327 / 582,327
+  (twice). The anchor height recovered from Y with each side's VIEW/PROJ (tracer `xform`): original
+  +0.43…+0.52 m above the ped root, ours +0.50…+0.52 m (tolerance 0.08 m; the vehicle anchor would be
+  0.21 m). X wanders with the car (the remote car rocks ±0.3–0.5 m laterally between the probes; the
+  original alone gave foot4 X 804 and 780 in two runs), so X is not compared 1:1.
+* Ours before the fix (same scenario, measured, target/vehtag-before): passenger 639,352 (twice) instead
+  of 581,327 — 25 px lower and 58 px towards the car's centre; foot4 839,376 (59 px lower), foot8 774,352,
+  foot16 690,340; recovered anchor = the car's matrix position (−0.10…+0.02 m), +0.11…+0.23 m above the
+  ped root. `vehtag_eval.py --check` FAILs all 5 captures on that build and PASSes all 5 after the fix.
+* Fix: `vehicle::tag_at_vehicle(state, model)` (RC models only), used by `ui/glue.rs` `nametags`.
+* Permanent check: `tools/diff/vehtag.sh` (exit 0 = PASS; `--check` re-evaluates existing captures).
+  The old `vehtag` element of visual-scenario.sh is a geo element whose tag is off-screen (X ≈ 1700 at
+  W 1280) — it never compared a position.
+* Not measured: an RC driver's tag (vehicle path) — from static analysis only.

@@ -49,6 +49,9 @@ static TEX0: AtomicU32 = AtomicU32::new(0);
 static CUR_DECL: AtomicU32 = AtomicU32::new(0);
 static LAST_SHOW: AtomicU32 = AtomicU32::new(u32::MAX);
 static SHOW_REPEATS: AtomicU32 = AtomicU32::new(0);
+/// Last device VIEW (0..16) and PROJECTION (16..32) matrices and viewport (x, y, w, h as u32,
+/// min/max z as f32 bits), whatever the logging mode (`xform` control command).
+static XFORM: [AtomicU32; 38] = [const { AtomicU32::new(0) }; 38];
 static D3D9_RANGE: AtomicU64 = AtomicU64::new(0);
 static D3DX_RANGE: AtomicU64 = AtomicU64::new(0);
 
@@ -262,6 +265,25 @@ pub fn command(args: &str) -> String {
         m.name(),
         INSTALLED.load(Ordering::SeqCst),
         PRESENTS.load(Ordering::SeqCst)
+    )
+}
+
+/// `xform`: the last device VIEW and PROJECTION matrices (row-major, full precision) and the
+/// last viewport, as `xform vp=X,Y,W,H,MINZ,MAXZ view=16 floats proj=16 floats`.
+pub fn xform() -> String {
+    let f = |i: usize| f32::from_bits(XFORM[i].load(Ordering::Relaxed));
+    let u = |i: usize| XFORM[i].load(Ordering::Relaxed);
+    let mat = |b: usize| (b..b + 16).map(|i| format!("{:e}", f(i))).collect::<Vec<_>>().join(",");
+    format!(
+        "xform vp={},{},{},{},{:e},{:e} view={} proj={}",
+        u(32),
+        u(33),
+        u(34),
+        u(35),
+        f(36),
+        f(37),
+        mat(0),
+        mat(16)
     )
 }
 
@@ -748,6 +770,21 @@ fn on_call(idx: usize, r: &Regs) {
         }
         Sp::SetTexture if arg(0) == 0 => TEX0.store(arg(1), Ordering::Relaxed),
         Sp::BeginStateBlock => RECORDING_SB.store(true, Ordering::Relaxed),
+        // VIEW and the last perspective PROJECTION (_34 ≠ 0): D3DX sprites set their own
+        // orthographic one late in the frame, which is not the world camera.
+        Sp::SetTransform
+            if arg(0) == 2 || (arg(0) == 3 && m.u32(arg(1) + 4 * 11).is_some_and(|v| f32::from_bits(v) != 0.0)) =>
+        {
+            let base = if arg(0) == 2 { 0 } else { 16 };
+            for i in 0..16 {
+                XFORM[base + i].store(m.u32(arg(1) + 4 * i as u32).unwrap_or(0), Ordering::Relaxed);
+            }
+        }
+        Sp::SetViewport => {
+            for i in 0..6 {
+                XFORM[32 + i].store(m.u32(arg(0) + 4 * i as u32).unwrap_or(0), Ordering::Relaxed);
+            }
+        }
         Sp::VbUnlock => return vb_unlock(this),
         _ => {}
     }

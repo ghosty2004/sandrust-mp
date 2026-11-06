@@ -1006,6 +1006,7 @@ fn handle(cmd: &Command) -> (String, bool) {
             (format!("ok hideped {}", if *on { "on" } else { "off" }), false)
         }
         Command::Efx(args) => (efx::command(args), false),
+        Command::Xform => (d3d::xform(), false),
         Command::Poke { addr, bytes } => {
             if !ProcMem.read(*addr, &mut vec![0u8; bytes.len()]) {
                 return (format!("error {addr:#x} is not readable"), false);

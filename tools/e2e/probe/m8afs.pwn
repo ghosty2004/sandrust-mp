@@ -474,6 +474,8 @@ Run(seq, const line[])
     else if (!strcmp(cmd, "weather")) SetPlayerWeather(gLocal, in(line, 1));
     else if (!strcmp(cmd, "interior")) SetPlayerInterior(pl(line, 1), in(line, 2));
     else if (!strcmp(cmd, "camera")) SetCameraBehindPlayer(pl(line, 1));
+    else if (!strcmp(cmd, "campos")) SetPlayerCameraPos(pl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4));
+    else if (!strcmp(cmd, "camlook")) SetPlayerCameraLookAt(pl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), CAMERA_CUT);
     else if (!strcmp(cmd, "togglecontrol")) TogglePlayerControllable(pl(line, 1), bool:in(line, 2));
     else if (!strcmp(cmd, "spectate"))
     {

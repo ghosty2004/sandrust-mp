@@ -98,6 +98,9 @@ pub enum Sp {
     VbUnlock,
     RtsBeginScene,
     RtsEndScene,
+    /// Device VIEW / PROJECTION and viewport are kept for the `xform` control command.
+    SetTransform,
+    SetViewport,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -144,8 +147,8 @@ pub static METHODS: &[Method] = &[
     m(Device, 41, "BeginScene", &[], Frame, Sp::BeginScene),
     m(Device, 42, "EndScene", &[], Frame, Sp::EndScene),
     m(Device, 43, "Clear", &[U("count"), Skip, X("flags"), X("color"), F("z"), U("stencil")], Frame, Sp::None),
-    m(Device, 44, "SetTransform", &[U("state"), Mat("m")], Frame, Sp::None),
-    m(Device, 47, "SetViewport", &[Viewport("vp")], Frame, Sp::None),
+    m(Device, 44, "SetTransform", &[U("state"), Mat("m")], Frame, Sp::SetTransform),
+    m(Device, 47, "SetViewport", &[Viewport("vp")], Frame, Sp::SetViewport),
     m(Device, 57, "SetRenderState", &[U("rs"), X("value")], Frame, Sp::None),
     m(Device, 59, "CreateStateBlock", &[U("type")], Always, Sp::None),
     m(Device, 60, "BeginStateBlock", &[], Always, Sp::BeginStateBlock),

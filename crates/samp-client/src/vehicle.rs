@@ -128,6 +128,14 @@ pub fn is_rc(model: u32) -> bool {
     RC_MODELS.contains(&model)
 }
 
+/// Nametag anchor (A 0x10074270 / 0x10075390 with A 0x100b7e40): only a remote driving an RC
+/// vehicle is tagged at the vehicle's matrix position; every other player, drivers of ordinary
+/// vehicles included, at the ped's bone 8 (head). Measured on the original: a driver of an
+/// Infernus is tagged at its head, 0.3 m above the car's matrix position.
+pub fn tag_at_vehicle(remote_state: u8, vehicle_model: Option<u32>) -> bool {
+    remote_state == state::DRIVER && vehicle_model.is_some_and(is_rc)
+}
+
 /// Towable trailer models (A 0x100B7DB0 list; remote-players-sync §210).
 pub fn is_towable_list(model: u32) -> bool {
     [435, 450, 584, 591, 606, 607, 608, 610, 611].contains(&model)
@@ -695,6 +703,10 @@ mod tests {
         assert_eq!(kind_from_vtable(vtbl::TRAIN), Kind::Train);
         assert!(is_rail(570) && !is_rail(560));
         assert!(is_rc(441));
+        assert!(tag_at_vehicle(state::DRIVER, Some(441)));
+        assert!(!tag_at_vehicle(state::DRIVER, Some(411)), "an Infernus driver is tagged at the head");
+        assert!(!tag_at_vehicle(state::PASSENGER, Some(441)));
+        assert!(!tag_at_vehicle(state::DRIVER, None));
         assert_eq!(carriage_of(538), Some(570));
         assert_eq!(
             (train_type(538), train_type(537), train_type(449), train_type(560)),

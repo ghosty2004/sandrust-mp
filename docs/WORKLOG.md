@@ -764,3 +764,19 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - Verified: `tools/diff/visual.sh --orig` (fresh original capture) then `tools/diff/visual.sh`: exit 0, 30/30
   elements OK (dl: 2 lines covered by the glyph-atlas decision); cargo test --workspace; clippy host + i686
   clean; tools/e2e/m6.sh in lane ui. Notes: docs/phase3/diff-notes.md "DIFF-4: 3D labels and bubbles".
+
+## 2026-11-06 — Remote driver nametag position (user report: passenger sees the driver's tag "below the vehicle")
+- Static (REA, A 0x10074270 / 0x10075390): the vehicle-position anchor is taken only when A 0x100b7e40 says the
+  remote's vehicle is an RC model (441/464/465/501/564/594); every other driver is tagged at bone 8 like a
+  pedestrian. Ours anchored every driver at the vehicle's matrix position.
+- Tooling: tracer `xform` command (last device VIEW, last perspective PROJECTION, viewport, full precision);
+  m8afs `campos`/`camlook`; `tools/diff/vehtag-measure.sh` (scenario for visual.sh: samp-bot drives an Infernus,
+  fixed cameras 4/8/16 m, then local player as passenger), `tools/diff/vehtag_eval.py` (bar origins, anchor
+  height recovered from the bar Y; `--check ORIG OURS`), `tools/diff/vehtag.sh` (runs both + check).
+- Original (trace lane): samp's anchor global A 0x10140bdc = driver's head (z 13.569; ped root 13.065, car
+  13.274); bars passenger 581,327, foot 780,317 / 715,325 / 695,327. Ours before: passenger 639,352, foot
+  839,376 / 774,352 / 690,340 (check FAIL 5/5). Fix `vehicle::tag_at_vehicle` → ours after: passenger 582,327,
+  foot 792,318 / 732,325 / 717,327; recovered anchor +0.50…+0.52 m above the ped root vs original
+  +0.43…+0.52 (check PASS 5/5). X differs with the car's lateral rocking (ROADMAP decision VEHTAG).
+- Cost: 3 original runs (one wasted on a wrong bot id, one on the ortho projection), 4 ours runs (one lost to a
+  gamescope/Xwayland restart under memory pressure).

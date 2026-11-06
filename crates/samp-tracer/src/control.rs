@@ -48,6 +48,8 @@ pub enum Command {
     Window(String),
     /// `hideped on|off`: leave the local player's ped out of rendering (DIFF-2 screenshots).
     HidePed(bool),
+    /// `xform`: last device VIEW / PROJECTION matrices and viewport (`win/d3d.rs`).
+    Xform,
     Unknown(String),
 }
 
@@ -102,6 +104,7 @@ pub fn parse(line: &str) -> Option<Command> {
         "remote" => Command::Remote,
         "bubbles" => Command::Bubbles,
         "synced" => Command::Synced,
+        "xform" => Command::Xform,
         "hideped on" => Command::HidePed(true),
         "hideped off" => Command::HidePed(false),
         "quit" | "exit" => Command::Quit,
