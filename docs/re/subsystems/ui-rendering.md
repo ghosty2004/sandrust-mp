@@ -306,8 +306,18 @@ request (A 0x10006100, player-state scope).
 
 ## 5. Cursor and input-lock modes [O]
 
+- At start-up (A 0x10062970 (B 0x10062930), called from A 0x100c5221 (B 0x100c5201)) samp
+  inline-hooks `user32!ShowCursor` with a stub (A 0x10062960 (B 0x10062920)) that never touches
+  the display counter and answers 0 for "show" and −1 for "hide"; the original is kept at
+  A/B 0x1012e350 and only the object editor calls it (capture / release). GTA itself calls
+  `ShowCursor(FALSE)` in its window procedure on activation (0x747FE9), on every `WM_SETCURSOR`
+  it receives (0x7481CD, with `SetCursor(NULL)`) and at shutdown (0x748EAF); without the stub
+  the counter goes negative before samp's subclass exists and no cursor is ever visible
+  (CURSOR-1, measured under Wine 11 + DXVK 3.1.1: the original makes no `NtUserShowCursor`
+  call at all).
 - On the first `WM_SETCURSOR` the client calls `SetCursor(NULL)` once and then always
-  answers TRUE, so the Windows cursor is hidden.
+  answers TRUE, so the Windows cursor is hidden. The "done once" flag (A 0x1012de68) is
+  cleared again by the lost-device handler (A 0x100c3f90, store at A 0x100c419b).
 - The visible cursor is the **D3D hardware cursor**: a 32×32 `A8R8G8B8` offscreen surface
   (system memory) loaded from `mouse.png`, set with `SetCursorProperties(0, 0, surface)`,
   and shown with `IDirect3DDevice9::ShowCursor`. It is re-created after every device reset.

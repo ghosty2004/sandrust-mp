@@ -71,6 +71,27 @@ Changes outside `ui/`: `dll.rs` (frame order, game-frame hook calls the RT updat
   differences are scenario content (names, ids, number of bots) — see the final report.
 * m1 (headless), m2, m3, m4 pass in lane ui.
 
+## Mouse cursor (CURSOR-1, 2026-11-06)
+
+* User report (lane main): no mouse cursor with the chat input, a dialog or the scoreboard open, although
+  both clients issue the same D3D cursor calls (one `SetCursorProperties`, the same `ShowCursor(1)` count).
+* Measurement: gamescope screenshots do not contain the cursor. `tools/e2e/xcursor.py` reads the X cursor
+  of the isolated headless display (XFixes). Trace lane hold sessions, mouse moved with xdotool:
+  original — input / dialog / scoreboard: 32×32 arrow (438 opaque px, sha a918be417195), hidden (1×1)
+  when closed; ours before the fix — 1×1 (hidden) in every state.
+* DXVK 3.1.1 turns a ≤ 32×32 cursor into a Win32 cursor (`CreateIconIndirect`, `SetCursor`).
+  `WINEDEBUG=+cursor`: ours made `NtUserShowCursor(0)` twice before our window subclass existed
+  (count −2: GTA's window procedure on activation, 0x747FE9, and on `WM_SETCURSOR`, 0x7481CD), so every
+  later `SetCursor(mouse cursor)` stayed invisible; the original made none. Cause: samp inline-hooks
+  `user32!ShowCursor` at start-up with a counter-neutral stub (UR §5; seen live: the export starts with a
+  jump into samp.dll+0x62920, B build).
+* Fix: `crates/samp-client/src/cursorhook.rs` redirects gta_sa.exe's `ShowCursor` import to the same stub at
+  attach (deviation: import slot instead of export hook, ROADMAP "Decisions"). After the fix ours shows the
+  identical 32×32 image in the same three states, hidden when closed, and makes no `NtUserShowCursor` call.
+  The scoreboard opens on the Tab key-up in both clients.
+* Lane main (Wine virtual desktop through tools/run-client.sh) has the same cause: GTA's activation runs
+  before any subclass in every setup.
+
 ## Deviations / TODO-unknown
 
 * Sprite textdraws (font 4) follow samp's loader and match the original's draw; `mdlNNN` sprites and

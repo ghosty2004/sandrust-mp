@@ -164,6 +164,10 @@ fn attach() {
         Ok(()) => crate::log!("early: CdStreamSync wait at {:#x} -> {wait:#x}", crate::cdstream::SYNC_WAIT_CALL),
         Err(e) => crate::log!("early: CdStreamSync wait FAILED: {e}"),
     }
+    // samp's ShowCursor stub (cursorhook.rs), before GTA creates and activates its window.
+    if let Err(e) = crate::cursorhook::install(&mut patcher, &mut mem) {
+        crate::log!("early: ShowCursor import FAILED: {e}");
+    }
     crate::log!("early: physical RAM {ram_mb} MB -> streaming budget {:#x}", patches::streaming_budget(ram_mb));
     // SAA-2: serve files from samp.saa like samp (filehook.rs), before the game opens anything.
     if let crate::filehook::Mode::Archive = crate::filehook::init(&mut patcher, &mut mem) {

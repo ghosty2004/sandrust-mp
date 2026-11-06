@@ -732,3 +732,17 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   original's known respawn flake); `tools/diff/cross-client.sh` → 66/66 step-directions MATCH, 0 DIFF, 0 pending,
   exit 0 (run xclient-20261106-161102; tolerances pos 0.114 m, uveh 0.167 m, trailer 0.1 m, obj_player 0.437 m /
   0.624 rad). Cost: ~2.5 h wall, ~20 cross-client runs in lane diff.
+
+## 2026-11-06 — CURSOR-1: no mouse cursor with chat input / dialog / scoreboard
+- Measured the visible X cursor of the isolated headless display (new `tools/e2e/xcursor.py`, XFixes; gamescope
+  screenshots do not contain the cursor) in trace-lane hold sessions: original shows samp's 32×32 arrow with the
+  chat input, a dialog and the scoreboard open; ours showed a hidden 1×1 cursor in every state.
+- `WINEDEBUG=+cursor`: DXVK 3.1.1 makes the D3D cursor a Win32 cursor (CreateIconIndirect + SetCursor); in ours
+  GTA's window procedure had already called `ShowCursor(FALSE)` twice (activation 0x747FE9, `WM_SETCURSOR`
+  0x7481CD) → count −2, cursor never visible. The original makes no ShowCursor call: samp stubs
+  `user32!ShowCursor` at start-up (B 0x10062930/0x10062920; export seen jumping into samp.dll live). Spec: UR §5.
+- Fix: `cursorhook.rs` redirects gta_sa.exe's ShowCursor import to the same counter-neutral stub at attach; the
+  crash dialog uses the stub. After the fix: same cursor image in the same states, no NtUserShowCursor calls.
+- Verified: cargo test --workspace ok; clippy host + i686-pc-windows-gnu clean; tools/e2e/m8a.sh PASS;
+  tools/diff/visual.sh (ours vs the main checkout's original capture) every element OK incl. dlg0–5, input,
+  paste, scoreboard. Residuals (device-reset cursor details) in ROADMAP decisions.

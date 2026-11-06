@@ -293,7 +293,7 @@ mod imp {
     use windows_sys::Win32::System::Diagnostics::Debug::{EXCEPTION_POINTERS, SetUnhandledExceptionFilter};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DestroyWindow, DialogBoxIndirectParamA, EndDialog, GetDlgItem, IDC_ARROW, LoadCursorW, SW_HIDE, SW_MINIMIZE,
-        SetCursor, SetDlgItemTextA, ShowCursor, ShowWindow, WM_COMMAND, WM_DESTROY, WM_INITDIALOG,
+        SetCursor, SetDlgItemTextA, ShowWindow, WM_COMMAND, WM_DESTROY, WM_INITDIALOG,
     };
 
     /// GTA main window handle (`RsGlobal.ps->window`).
@@ -448,7 +448,8 @@ mod imp {
                     SetDlgItemTextA(dlg, i32::from(ID_TEXT), text.as_ptr());
                     SetFocus(GetDlgItem(dlg, i32::from(ID_CLOSE)));
                     SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW));
-                    ShowCursor(1);
+                    // samp's own import resolves to its ShowCursor stub (cursorhook.rs): no counter change.
+                    crate::cursorhook::show_cursor_stub(1);
                     0
                 }
                 WM_COMMAND if (w & 0xFFFF) as u16 == ID_CLOSE => {

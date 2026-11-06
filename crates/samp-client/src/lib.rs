@@ -51,6 +51,8 @@ mod combatclient;
 #[cfg(windows)]
 mod combathooks;
 #[cfg(windows)]
+mod cursorhook;
+#[cfg(windows)]
 mod diag;
 #[cfg(windows)]
 mod dll;
