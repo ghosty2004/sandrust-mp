@@ -12,27 +12,26 @@ differential capture against the original client, e2e script.
 
 | Slot | Running | Next |
 |---|---|---|
-| samp-client worktree netp (lane veh) | NET6-P: 203 idle/spectate cadence, 209 after passenger exit, editor Esc, /quit flush, RPC 25 bit count | — |
-| samp-client worktree crash1 (lane veh) | CRASH-1: user's crash at 0x7F5A3A (RwD3D9DynamicVertexBufferCreate, NULL read) after a device-loss stall + object-heavy teleport | — |
-| lane main | reserved for the user's manual play | 2-hour soak on final code |
-| lane ui | — (free) | F1/F5 closing (remaining DIFF-2 rows, 27 CSV rows) |
-| no-game | — (free) | rename to sandrust-mp |
+| lane main | reserved for the user's manual play | — |
+| worktree (lanes diff, veh) | TRAILER-CRASH: our client crashed at gta_sa.exe+0x2d321c during the F3 truck/trailer steps | F3 rerun |
+| lanes ui, trace | — (free) | CLEANUP verification runs |
+| no-game | — | CLEANUP (readability pass), then RENAME |
 
 ## Next up (ordered queue — the scheduler takes from the top)
 
-In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1, EFX-1.
+Goal F1–F7 / phases A–G: F1, F2, F4–F7 proven on main (2026-11-06, docs/WORKLOG.md "Final proofs on main").
+F3 with the M4–M7 steps: one run passed 66/66, the run on main hit a crash in our trailer-attach path → fix in
+progress (TRAILER-CRASH, lane diff/veh), then F3 again.
 
-1. WATCH — goal.sh failed once (bot did not walk, run took 48 s), passed twice on rerun; m5 hang once (M9 run)
-1. M6-P — world leftovers: object editor gizmo + drag (117 response 2 every 250–287 ms), selection picking, wire TODO(input-lock) sites to ui::set_input_mode, CSV row 81 camera test for objects/vehicles; PLATE-1 number plates; M8A-PREVIEW model-preview textdraws
-1. EFX-2 — step-mode capture for OUR client too (build samp_client.dll with a symbol map so `efx arm` can single-step our handler by name) — needed to settle effect diffs like the local skin handler's extra 0247/0248 and the +0x55c write
-1. PAR-AUDIT — retroactive parity loop on everything already in main (protocol/bot, M1, M2, M3, SAA-2, SP-OFF, M4, M5): re-run DIFF-2 on current main, cross-client, COV-1 coverage diff, EFX-1 effect diffs for the RPCs each feature handles, D3D diff for chat, network diffs; produce a per-feature diff list and run fix agents through the parity loop until empty or logged decisions (after COV-1 + EFX-1 land)
-2. (done in worktree ui2, awaiting merge) UX-1 + DIFF-4 + M8a leftovers except model previews
-4. M7 — combat (TRACE-6 ✔ measured: docs/phase3/trace-notes.md "Combat (TRACE-6)"; starts when the player-parity worktree is merged — same damage/swap code; open measurements: local-hit suppression for remote hit type 0, remote hit type 1 in lag-comp 0/2, drive-by, projectiles): aim/bullet/weapons sync, damage, death
-5. M5-P — vehicle open items (+ COV-1: CPostEffects::SpeedFX row 177, SetDirtTextures row 62, CPed::RemoveWeaponWhenEnteringVehicle direct call on enter) (train exit, remote passenger weapons/drive-by, trailer receive, aircraft remote z, plates + radar colours after the D3D proxy merge)
-6. M8A-PREVIEW — model-preview textdraws (font 5): samp creates a temporary GTA ped/vehicle/object and renders it with an RW camera into a 256×256 raster (A 0x100b34e0 → 0x1006c140 / 0x1006c3c0 / 0x1006c9b0); measure the creation frames (`d3d-preview-create.jsonl` in target/m8a-orig3 of worktree ui2) and implement. Also PLATE-1: number-plate textures (rows 59/60, samp's plate painter 128×32 RT → 64×32 texture)
-7. M8b, M9, M10 — remaining behaviour (spectating, camera RPCs, animations table, SCM events), audio streams, client features (reconnect, server restart, kicks)
-9. SOAK — stability: 2 h soaks pass on gungame, simpletdm and derby (derby settled against the original's 2 h run: docs/phase3/soak-notes.md "F7 settled", branch soak-final)
-10. RENAME — samp-rs → sandrust-mp (crates sandrust-*), when no worktrees are open
+1. CLEANUP — readability pass requested by the user (2026-11-06), no behaviour change: comments without internal
+   task ids (514 occurrences) rewritten as plain explanations, samp.dll address citations moved to a reference
+   table in docs/re/, files over ~1,400 lines and functions over ~150 lines split by subsystem, raw memory
+   access concentrated in a few audited helpers. Verified by tests, clippy and re-running F1–F7.
+2. RENAME — samp-rs → sandrust-mp (crates sandrust-*), when no worktrees are open.
+3. M11 / F8 — other client versions (R1/R3/R5/DL): blocked on the binaries (RE-8).
+4. M12 / F9 — Windows validation: user on Windows.
+5. WATCH — a derby soak start in lane ui once stayed at gGameState 6 and crashed in GTA's level loader
+   (gta_sa.exe+0x137d12, write to 0x18) while the host had ~3 GB available; not reproduced since.
 
 ## Phase 0 — Reverse engineering (specs in `docs/re/`)
 
@@ -43,8 +42,8 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | RE-3 | samp.dll → gta_sa.exe memory patches, annotated (384 rows) | done | byte-level vs gta_sa.exe | `gta-patches-r4-annotated.csv` |
 | RE-4 | Remote player control: on-foot / vehicles / combat | done | byte-level checks of key hooks | `remote-control-*.md` |
 | RE-5 | UI rendering specs | done | `docs/re/subsystems/ui-rendering.md` (~900 lines): Present-wrapper render path, draw order, fonts, colour codes, DXUT-based GUI skinned by sampgui.png, all dialog styles, scoreboard, nametags, death window, keys, sa-mp.cfg keys | runtime unknowns (pixel metrics under Wine/DXVK, skin colour slots, textdraw hit rects…) → TRACE-3 |
-| RE-6 | Startup/config (cmdline, sa-mp.cfg, registry, chatlog, screenshots) | todo | — | partly needed for M1/M2 |
-| RE-7 | Audio streams (BASS usage, 3D audio) | deferred | — | |
+| RE-6 | Startup/config (cmdline, sa-mp.cfg, registry, chatlog, screenshots) | done | covered by TRACE-8 measurements and M10 (`tools/e2e/m10.sh`), specs in docs/re/subsystems/ui-rendering.md (sa-mp.cfg, commands) and session-misc.md | superseded by M10 |
+| RE-7 | Audio streams (BASS usage, 3D audio) | done | covered by M9 (`tools/e2e/m9.sh`, BASS call-log diff), spec docs/re/subsystems/ui-chat-audio.md §41/42 | superseded by M9 |
 | RE-8 | Other client versions (R1, R3, R5, 0.3.DL) | blocked | — | needs the binaries |
 
 ## Phase 1–2 — Network client (`crates/samp-proto`, `samp-bot`, `samp-dump`)
@@ -55,7 +54,7 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | NET-2 | Typed codecs for all RPCs + sync packets, Huffman strings | done | 223 tests, strcomp live | |
 | NET-3 | Bot: class selection, spawn, on-foot sync, stats sync | done | probe filterscript + differential | |
 | NET-4 | `samp-dump` + `tools/capture.sh` differential pipeline | done | used against original client | |
-| NET-5 | Differential: vehicles, passengers, dialogs, commands, death | todo | captures of original client | needs user gameplay or M3+ automation |
+| NET-5 | Differential: vehicles, passengers, dialogs, commands, death | done | F2 `tools/diff/network.sh` (scenarios incl. vehicles, passengers, dialogs, commands, death: 387/387 match) | superseded by NET-6 / F2 |
 | NET-6 | RakNet ack/resend timing parity + F2 `tools/diff/network.sh` | done (F2 proven on main: network.sh exit 0, 311/311 match, 0 accepted, 0 open) | network.sh exit 0: 303 checks, 296 match, 7 accepted; RakNet level identical (ack 1.1/2.0 ms p50/p90, standalone acks, packing, 2 pings, resend 90 ms ×3 without backoff, keep-alive); app-level residuals NET6-P1..P4 fixed (branch sync-fixes: idle/spectator 203, 209 gating + frame-limiter Sleep, Escape in the object editor; no accepted decisions left); docs/phase3/net6-notes.md | update thread 2 ms, priority queues, 3 × ping resend, splits |
 | NET-7 | Unified outgoing (C→S) RPC enum with send params per payload | done | main session: 334 tests pass, clippy 0; capture-verified send params for 25/128/129/52, the other 28 from specs (listed in `docs/phase3/net7-notes.md` for differential confirmation) | RPC 131 has two senders (rel 9 hook / rel 10 poll) |
 
@@ -83,6 +82,7 @@ In progress elsewhere (see "Lanes now"): M8a + M4-P, M2-P + M3-P, TRACE-6, COV-1
 | DIFF-2 | Per-RPC coverage harness (F1) | done | `tools/diff/rpc-coverage.sh` (~65 min: original ×6 + up to 6 reused earlier original runs + ours; `rpc-decisions.tsv`); 131/141 S→C ids fired, 10 untriggerable as decision DIFF2-U1; CLOSE (parity-close): MATCH 112 / DIFF 19 → see WORKLOG 2026-11-05 "F1/F5 closing" | `docs/phase3/close-notes.md`, `docs/phase3/diff-notes.md` |
 | DIFF-3 | Cross-client harness (F3) | done | `tools/diff/cross-client.sh`: original + ours on one server, both directions. 2026-11-06: every PLAN §1 area is a step now — on foot, vehicles (driving, passengers, components, unoccupied 209, trailers 210), combat (weapons, aim, shots, an aimed hit with damage/synced health, death/respawn), objects (global, vehicle- and player-attached), chat (lines via each lane's chatlog.txt, bubbles via the new `bubbles` query); 51 steps / 66 step-directions, 0 pending; tolerances learned from 3 original-vs-original runs; result 66/66 step-directions MATCH, 0 DIFF, 0 pending, exit 0 (xclient-20261106-161102) | new queries `bubbles` / `synced` on samp-client and samp-tracer (same format); details docs/phase3/diff-notes.md "M4–M7 steps"; harness rules in Decisions "DIFF3-M4M7" |
 | DIFF-4 | Visual parity harness: same scenario on both clients, D3D call-stream diff per UI element | done (tools/diff/visual.sh: 28 elements, 0 open lines; F4 2026-11-06 exit 0 twice) | `tools/diff/visual.sh` exit 0: boot, class, dlg0–5, help, sprite, spritesel, textdraws, select, mdl, menu, dw, f10, netstats, f8, after-f8, paste, tags, scoreboard, vehtag, input, dl, dloff, testdw all clean (glyph-atlas batch splits covered by `tools/diff/visual-decisions.tsv`) | `docs/phase3/ux1-notes.md` |
+| SOAK | Stability: 2 h soak per bundled gamemode + scripted cases (F7) | done | `tools/e2e/soak.sh` on main 29fb29b, 7200 s each: gungame PASS (99.996 %), simpletdm PASS (100 %), derby PASS (99.902 %), 0 crashes, every case ok, fps 52.5 (2026-11-06) | thresholds and shared-with-original cases: docs/phase3/soak-notes.md |
 | M2 | Network inside the game: join, class select, spawn, local on-foot sync | done | `tools/e2e/m2.sh` exit 0 (main session): Shift → spawn, W held → server-side 16.12 m, st=1; agent: 3 consecutive passes; 289 tests; clippy 0 host + i686 | own minimal main.scm via redirect of the main.scm open; spawn order from TRACE-1; deviations in `docs/phase3/m2-notes.md` (anim field 0, no 203/204, no death handling, no clothes) |
 | F5 | Patch-coverage harness | done (F5 exit 0) | `tools/diff/patch-coverage.sh`: 346 matching, 24 applied (static only), 0 different, 0 missing, 14 justified (CLOSE; before: 20 missing, 2 different) | `docs/phase3/close-notes.md`; justifications in `tools/diff/patch-justifications.tsv` + ROADMAP decisions |
 | SP-OFF | Single-player systems off like samp | done | tracer 5-min idle (ours-212451): 0 peds, 0 vehicles, 0 cops, wanted 0, max wanted 0, no interior peds — same as the original | max wanted 0 comes from samp's own main.scm (SAA-2) + CSV rows 181/182/185/186/189/164/55/163 |
