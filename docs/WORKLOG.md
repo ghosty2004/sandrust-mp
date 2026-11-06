@@ -630,3 +630,5 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   original capture made before those elements joined the scenario. Rerun with `--orig` started.
 - F7: gungame and simpletdm 2 h PASS; derby 2 h FAIL narrowly (remote_pos 98.83% < 99%, memory slope
   40.4 > 40 MB/h) — a 2 h original-client comparison is running before any decision.
+
+- F4 tools/diff/visual.sh (full run, fresh original capture, glyph-batch merge d7a116b): exit 0 — 28 elements OK, 0 DIFF, 0 MISSING. Negative tests (changed text, changed batch vertex count) exit 1.
