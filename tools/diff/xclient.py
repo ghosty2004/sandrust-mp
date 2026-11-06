@@ -146,12 +146,16 @@ STEPS = (
     + actor_steps("A")
     + [{"name": "tp_B", "actor": "both", "events": [(0.0, "tp", None)], "window": 3.0, "checks": STATIC}]
     + actor_steps("B")
-    + [{"name": "handsup", "actor": "both", "events": [(0.0, "rcon_each", "xc sa {id} 10 ;")], "window": 3.0,
+    # The skin change comes before the hands-up pair: samp frees the old clump's animation associations
+    # on a skin change while the hands-up task still points at one (the death later writes into the freed
+    # block; docs/phase3/m5-notes.md "CRASH-F3"). In that order the original intermittently corrupted its
+    # heap and hung in the next vehicle model wait, which made F3 fail through the original.
+    + [{"name": "skin", "actor": "both", "events": [(0.0, "rcon_each", "xc skin {id} {skin} ;")], "window": 4.0,
+        "checks": ["visible", "skin", "pos", "heading"]},
+       {"name": "handsup", "actor": "both", "events": [(0.0, "rcon_each", "xc sa {id} 10 ;")], "window": 3.0,
         "checks": ["visible", "anims", "anim_final", "pos"]},
        {"name": "handsup_off", "actor": "both", "events": [(0.0, "rcon_each", "xc sa {id} 0 ;")], "window": 3.0,
-        "checks": ["visible", "anim_final", "pos"]},
-       {"name": "skin", "actor": "both", "events": [(0.0, "rcon_each", "xc skin {id} {skin} ;")], "window": 4.0,
-        "checks": ["visible", "skin", "pos", "heading"]}]
+        "checks": ["visible", "anim_final", "pos"]}]
 )
 
 # M7 combat steps: weapons (RPC 22 → the other side sees the weapon through 207), aiming (203 + keys → the
