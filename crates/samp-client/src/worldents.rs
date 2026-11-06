@@ -142,6 +142,29 @@ pub fn material_name_ok(name: &[u8]) -> bool {
     name.len() <= MATERIAL_NAME_MAX
 }
 
+/// One log line per material record of RPC 44 / 84 (every field), so user reports carry the parameters.
+pub fn material_log_line(rpc: u8, object: u16, m: &samp_proto::rpcs::world::ObjectMaterial) -> String {
+    use samp_proto::rpcs::world::ObjectMaterial as M;
+    let s = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    match m {
+        M::Texture { slot, model, txd, texture, colour } => format!(
+            "rpc {rpc} material: object {object} slot {slot} texture model {model} txd {:?} texture {:?} colour {colour:#010x}",
+            s(txd),
+            s(texture)
+        ),
+        M::Text { slot, material_size, font, font_size, bold, font_colour, background_colour, alignment, text } => {
+            format!(
+                "rpc {rpc} material: object {object} slot {slot} text size {material_size} font {:?} font size {font_size} \
+                 bold {bold} font colour {font_colour:#010x} back colour {background_colour:#010x} alignment {alignment} \
+                 text {:?}",
+                s(font),
+                s(text)
+            )
+        }
+        M::Unknown { kind } => format!("rpc {rpc} material: object {object} unknown kind {kind}"),
+    }
+}
+
 /// The object pass a samp-marked object belongs to (render-list filter, CSV row 78, A 0x100A5150).
 pub fn drawn_by_samp(has_materials: bool, draw_distance: f32, timed: bool) -> bool {
     has_materials || draw_distance > SAMP_PASS_DRAW_DISTANCE || timed
@@ -354,6 +377,38 @@ impl MaterialPrePass {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn material_log_line_has_every_field() {
+        use samp_proto::rpcs::world::ObjectMaterial;
+        let m = ObjectMaterial::Text {
+            slot: 1,
+            material_size: 130,
+            font: b"Arial".to_vec(),
+            font_size: 60,
+            bold: 1,
+            font_colour: 0xFF00_00FF,
+            background_colour: 0,
+            alignment: 1,
+            text: b"{0000FF}Romania".to_vec(),
+        };
+        assert_eq!(
+            super::material_log_line(84, 7, &m),
+            "rpc 84 material: object 7 slot 1 text size 130 font \"Arial\" font size 60 bold 1 font colour 0xff0000ff \
+             back colour 0x00000000 alignment 1 text \"{0000FF}Romania\""
+        );
+        let t = ObjectMaterial::Texture {
+            slot: 0,
+            model: 18646,
+            txd: b"matcolours".to_vec(),
+            texture: b"white".to_vec(),
+            colour: 0xFFFF_FFFF,
+        };
+        assert_eq!(
+            super::material_log_line(44, 3, &t),
+            "rpc 44 material: object 3 slot 0 texture model 18646 txd \"matcolours\" texture \"white\" colour 0xffffffff"
+        );
+    }
+
     use super::*;
 
     #[test]

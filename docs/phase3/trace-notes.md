@@ -1249,11 +1249,13 @@ frames/s. The server is open.mp 1.6.7, which never sends RPC 84; see 44 below.
 * The test is not a `ProcessLineOfSight` call from samp (`GetIsLineOfSightClear` is hooked since run 2 to confirm).
 
 ### Material text (44 with text records), run `orig-20261104-225641`, `tools/trace/world2.sh`
-`SetObjectMaterialText(19353, "RE10 {FF0000}red", index 0, size 130 = 256x128, "Arial", 24, bold, FFFFFFFF on
+`SetObjectMaterialText(19353, "RE10 {FF0000}red", index 0, size 130 = 512x256, "Arial", 24, bold, FFFFFFFF on
 FF000000, centre)`. One render, in the frame after the RPC, from samp's object pass (`samp.dll+0xa9f77` in B):
 1. `D3DXCreateTexture(512, 256, 1, RENDERTARGET, X8R8G8B8, DEFAULT)` and
-   `D3DXCreateRenderToSurface(512, 256, X8R8G8B8, depth, D16)`. The render target is **twice** the material size
-   (256x128 → 512x256).
+   `D3DXCreateRenderToSurface(512, 256, X8R8G8B8, depth, D16)`. The render target has **exactly** the material
+   size (130 = 512x256). **Correction (MATTEXT-1, 2026-11-06):** this line first read "size 130 = 256x128, twice
+   the material size", which made our client render into 1024x512 targets (text half as large as samp's); the
+   size table B 0x100A8C90 maps 130 → 512x256 and the renderer uses it unscaled (world-entities.md §44 kind 2).
 2. `D3DXCreateFontA("Arial", h 24, w 0, weight 700, mip 1, italic 0, charset 1, out-precision 0, quality 0, pitch 0)`.
    The font size is passed unchanged.
 3. `rts.BeginScene` → `Clear(colour = background ARGB 0xFF000000)` → `sprite.Begin(0x10)`.

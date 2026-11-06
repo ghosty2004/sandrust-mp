@@ -966,6 +966,7 @@ fn apply_material(runner: &mut Runner, o: &mut Obj, m: &ObjectMaterial, from_cre
         ObjectMaterial::Unknown { .. } => u32::MAX,
     };
     crate::crash::note(crate::crash::crumb::OBJ_MATERIAL, o.id, slot);
+    crate::log!("{}", world::material_log_line(if from_create { 44 } else { 84 }, o.id, m));
     match m {
         ObjectMaterial::Texture { slot, model, txd, texture, colour } => {
             let slot = usize::from(*slot);
@@ -975,6 +976,11 @@ fn apply_material(runner: &mut Runner, o: &mut Obj, m: &ObjectMaterial, from_cre
             let model = world::material_model(*model, from_create);
             release_texture(o.materials[slot].texture);
             o.materials[slot].texture = 0;
+            // The slot's text texture is gone: samp clears +0x110B, so its render target is never shown again.
+            if o.materials[slot].text.take().is_some() {
+                let specs: Vec<_> = o.materials.iter().filter_map(|m| m.text.clone()).collect();
+                crate::ui::mattext::register(o.ptr, specs);
+            }
             if model > 0 {
                 if crate::client::load_model(runner, model) {
                     o.materials[slot].texture = find_texture(txd, texture);
@@ -1007,8 +1013,23 @@ fn apply_material(runner: &mut Runner, o: &mut Obj, m: &ObjectMaterial, from_cre
             if slot >= MATERIAL_SLOTS || !world::material_name_ok(font) || text.is_empty() {
                 return;
             }
+            // B 0x100A86C0: the slot's texture (a kind-1 texture or an earlier text texture) and render target
+            // are released; a fresh 2x2 RenderWare texture becomes the slot texture (the render target replaces
+            // it at D3D level) and the slot colour is cleared.
+            release_texture(o.materials[slot].texture);
+            o.materials[slot].texture = 0;
+            o.materials[slot].text = None;
+            let tex = text_slot_texture();
+            if tex == 0 {
+                let specs: Vec<_> = o.materials.iter().filter_map(|m| m.text.clone()).collect();
+                crate::ui::mattext::register(o.ptr, specs);
+                return;
+            }
+            o.materials[slot].texture = tex;
+            o.materials[slot].colour = 0;
             o.materials[slot].text = Some(crate::ui::mattext::TextSpec {
                 slot,
+                key: crate::ui::mattext::d3d_texture_of(tex),
                 size: *material_size,
                 font: font.clone(),
                 font_size: *font_size,
@@ -1022,6 +1043,31 @@ fn apply_material(runner: &mut Runner, o: &mut Obj, m: &ObjectMaterial, from_cre
             crate::ui::mattext::register(o.ptr, specs);
         }
         ObjectMaterial::Unknown { .. } => {}
+    }
+}
+
+/// The 2x2 texture of a material-text slot (B 0x100A8715: `RwRasterCreate(2, 2, 0, 0)` + `RwTextureCreate`,
+/// filter mode + 1).
+fn text_slot_texture() -> u32 {
+    // SAFETY: RenderWare's cdecl RwRasterCreate (0x7FB230), RwTextureCreate (0x7F37C0), RwRasterDestroy (0x7FB020).
+    unsafe {
+        let raster_create: extern "C" fn(i32, i32, i32, i32) -> u32 = std::mem::transmute(0x7FB230usize);
+        let texture_create: extern "C" fn(u32) -> u32 = std::mem::transmute(0x7F37C0usize);
+        let raster = raster_create(2, 2, 0, 0);
+        if raster == 0 {
+            return 0;
+        }
+        let tex = texture_create(raster);
+        if tex == 0 {
+            let destroy: extern "C" fn(u32) -> u32 = std::mem::transmute(0x7FB020usize);
+            destroy(raster);
+            return 0;
+        }
+        // samp adds 1 to `RwTexture.filterAddressing` (+0x50): filter mode NEAREST (1) → LINEAR (2), so the text
+        // is sampled bilinearly (measured: MIN/MAGFILTER 2 on the original's text draws, 1 without this).
+        let fa = (tex + 0x50) as usize as *mut u32;
+        fa.write_unaligned(fa.read_unaligned() + 1);
+        tex
     }
 }
 

@@ -49,6 +49,7 @@
 //   objmove|ID|x|y|z|speed[|rx|ry|rz]      MoveObject            objpos|ID|x|y|z  objrot|ID|rx|ry|rz
 //   objmat|ID|index|model|txd|tex|AARRGGBB SetObjectMaterial     nocamcol|ID
 //   objtext|ID|index|text|size|font|fsize|bold|AARRGGBB|AARRGGBB|align   SetObjectMaterialText
+//   mtscene|x|y|z   mtmat                  material-text parameter set (F4 element mattext): MtScene below
 //   objattveh|ID|VEH|ox|oy|oz|rx|ry|rz     objattobj|ID|PARENT|ox|oy|oz|rx|ry|rz|sync  objattpl|ID|P|ox|oy|oz|rx|ry|rz
 //   objedit|P|ID  objsel|P  editcancel|P   EditObject / SelectObject / CancelEdit
 //   att|P|slot|model|bone|ox|oy|oz|rx|ry|rz|sx|sy|sz   SetPlayerAttachedObject   attdel|P|slot  attedit|P|slot
@@ -403,6 +404,70 @@ pl(const line[], n)
     return player(b);
 }
 
+// One material-text object of the F4 mattext set: object `n` of a 4-column grid on the plane x = bx (columns
+// 4.5 m apart along y, rows 4 m apart in z), turned by rz.
+MtObj(n, model, Float:bx, Float:by, Float:bz, Float:rz)
+{
+    new Float:y = by + float(n % 4) * 4.5, Float:z = bz + float(n / 4) * 4.0;
+    // Objects 6.. are player objects: open.mp re-creates a global object (RPC 44) on every material change but
+    // sends RPC 84 for player objects.
+    if (n >= 6) return CreatePlayerObject(gLocal, model, bx, y, z, 0.0, 0.0, rz, 300.0);
+    return CreateObject(model, bx, y, z, 0.0, 0.0, rz, 300.0);
+}
+
+// F4 element mattext (tools/diff/visual-scenario.sh visual_mattext): SetObjectMaterialText over sizes, fonts,
+// bold, alignment, background colours (0 = transparent, opaque, half alpha), colour codes and newlines, and
+// SetObjectMaterial + text on the same and on different material indices. `mtscene` creates all 14 objects and
+// gives the global objects 0..5 their text (open.mp re-creates a global object with RPC 44 on every material
+// change); `mtmat` (a later command) sets the rest on existing player objects 6..13 (RPC 84).
+new gMt[14];
+MtScene(seq, Float:bx, Float:by, Float:bz)
+{
+    gMt[0] = MtObj(0, 19353, bx, by, bz, 0.0);
+    SetObjectMaterialText(gMt[0], "{0000FF}Romania {FFFF00}Super {FF0000}Stunt", 0, OBJECT_MATERIAL_SIZE_512x256, "Arial", 60, true, 0xFFFFFFFF, 0x00000000, OBJECT_MATERIAL_TEXT_ALIGN_CENTER);
+    gMt[1] = MtObj(1, 19353, bx, by, bz, 0.0);
+    SetObjectMaterialText(gMt[1], "left top\nsecond {00FF00}line", 0, OBJECT_MATERIAL_SIZE_256x128, "Arial", 24, false, 0xFFFFFFFF, 0xFF000000, OBJECT_MATERIAL_TEXT_ALIGN_LEFT);
+    gMt[2] = MtObj(2, 19353, bx, by, bz, 0.0);
+    SetObjectMaterialText(gMt[2], "right {FF0000}red", 0, OBJECT_MATERIAL_SIZE_128x64, "Verdana", 20, true, 0xFF000000, 0xFFFFFF00, OBJECT_MATERIAL_TEXT_ALIGN_RIGHT);
+    gMt[3] = MtObj(3, 19482, bx, by, bz, 0.0);
+    SetObjectMaterialText(gMt[3], "BIG\nTWO", 0, OBJECT_MATERIAL_SIZE_512x512, "Impact", 80, false, 0xFFFFFF00, 0x80FF0000, OBJECT_MATERIAL_TEXT_ALIGN_CENTER);
+    gMt[4] = MtObj(4, 18244, bx, by, bz, 0.0);
+    SetObjectMaterialText(gMt[4], "transparent left", 0, OBJECT_MATERIAL_SIZE_512x128, "Arial", 40, true, 0xFF00FF00, 0x00000000, OBJECT_MATERIAL_TEXT_ALIGN_LEFT);
+    gMt[5] = MtObj(5, 19327, bx, by, bz, 0.0);
+    SetObjectMaterialText(gMt[5], "x", 0, OBJECT_MATERIAL_SIZE_32x32, "Arial", 20, false, 0xFFFFFFFF, 0xFF0000FF, OBJECT_MATERIAL_TEXT_ALIGN_CENTER);
+    gMt[6] = MtObj(6, 19353, bx, by, bz, 0.0);
+    gMt[7] = MtObj(7, 19353, bx, by, bz, 0.0);
+    gMt[8] = MtObj(8, 19353, bx, by, bz, 0.0);
+    gMt[9] = MtObj(9, 19353, bx, by, bz, 0.0);
+    gMt[10] = MtObj(10, 19353, bx, by, bz, 0.0);
+    gMt[11] = MtObj(11, 19353, bx, by, bz, 0.0);
+    gMt[12] = MtObj(12, 7914, bx, by, bz, 0.0);
+    gMt[13] = MtObj(13, 7914, bx, by, bz, 0.0);
+    printf("[ui-fs] %d mtscene %d..%d", seq, gMt[0], gMt[13]);
+}
+
+// The second half of the set: material records for objects that already exist (RPC 84).
+MtMat(seq)
+{
+    // Texture, then text on the same index (the text replaces the texture).
+    SetPlayerObjectMaterial(gLocal, gMt[6], 0, 18646, "matcolours", "white", 0xFFFFFFFF);
+    SetPlayerObjectMaterialText(gLocal, gMt[6], "mat {FF0000}+ text", 0, OBJECT_MATERIAL_SIZE_256x256, "Arial", 50, true, 0xFF000000, 0x00000000, OBJECT_MATERIAL_TEXT_ALIGN_CENTER);
+    // Text, then texture on the same index (the text is not shown any more).
+    SetPlayerObjectMaterialText(gLocal, gMt[7], "hidden", 0, OBJECT_MATERIAL_SIZE_256x256, "Arial", 50, true, 0xFFFFFFFF, 0xFF00FF00, OBJECT_MATERIAL_TEXT_ALIGN_CENTER);
+    SetPlayerObjectMaterial(gLocal, gMt[7], 0, 18646, "matcolours", "red", 0xFFFFFFFF);
+    // Text larger than its target (NOCLIP), tiny sizes, other fonts.
+    SetPlayerObjectMaterialText(gLocal, gMt[8], "clip", 0, OBJECT_MATERIAL_SIZE_64x32, "Arial", 80, false, 0xFFFFFFFF, 0xFF202020, OBJECT_MATERIAL_TEXT_ALIGN_CENTER);
+    SetPlayerObjectMaterialText(gLocal, gMt[9], "right\ntransparent", 0, OBJECT_MATERIAL_SIZE_256x32, "Courier New", 30, false, 0xFF00FFFF, 0x00000000, OBJECT_MATERIAL_TEXT_ALIGN_RIGHT);
+    SetPlayerObjectMaterialText(gLocal, gMt[10], "{FFFFFF}white {000000}black", 0, OBJECT_MATERIAL_SIZE_512x64, "Tahoma", 40, true, 0xFFFF0000, 0xFF808080, OBJECT_MATERIAL_TEXT_ALIGN_LEFT);
+    SetPlayerObjectMaterialText(gLocal, gMt[11], "30", 0, OBJECT_MATERIAL_SIZE_64x64, "Arial", 30, true, 0xFFFFFFFF, 0xFF0000FF, OBJECT_MATERIAL_TEXT_ALIGN_LEFT);
+    // Texture on index 0 + text on index 1, and text on 0 + texture on 1 (billboard with several materials).
+    SetPlayerObjectMaterial(gLocal, gMt[12], 0, 18646, "matcolours", "blue", 0xFFFFFFFF);
+    SetPlayerObjectMaterialText(gLocal, gMt[12], "index {FFFF00}one", 1, OBJECT_MATERIAL_SIZE_256x128, "Arial", 40, true, 0xFFFFFFFF, 0x00000000, OBJECT_MATERIAL_TEXT_ALIGN_CENTER);
+    SetPlayerObjectMaterialText(gLocal, gMt[13], "index zero", 0, OBJECT_MATERIAL_SIZE_128x128, "Arial", 30, false, 0xFFFFFFFF, 0xFF0000FF, OBJECT_MATERIAL_TEXT_ALIGN_CENTER);
+    SetPlayerObjectMaterial(gLocal, gMt[13], 1, 18646, "matcolours", "green", 0xFFFFFFFF);
+    printf("[ui-fs] %d mtmat", seq);
+}
+
 Run(seq, const line[])
 {
     new cmd[24], a[1024], b[1024], c[128], d[128];
@@ -518,6 +583,8 @@ Run(seq, const line[])
         field(line, 3, a); unescape(a); field(line, 5, c);
         SetObjectMaterialText(in(line, 1), a, in(line, 2), OBJECT_MATERIAL_SIZE:in(line, 4), c, in(line, 6), bool:in(line, 7), colour(line, 8), colour(line, 9), OBJECT_MATERIAL_TEXT_ALIGN:in(line, 10));
     }
+    else if (!strcmp(cmd, "mtscene")) MtScene(seq, fl(line, 1), fl(line, 2), fl(line, 3));
+    else if (!strcmp(cmd, "mtmat")) MtMat(seq);
     else if (!strcmp(cmd, "nocamcol")) SetObjectNoCameraCol(in(line, 1));
     else if (!strcmp(cmd, "objattveh")) AttachObjectToVehicle(in(line, 1), in(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), fl(line, 7), fl(line, 8));
     else if (!strcmp(cmd, "objattobj")) AttachObjectToObject(in(line, 1), in(line, 2), fl(line, 3), fl(line, 4), fl(line, 5), fl(line, 6), fl(line, 7), fl(line, 8), bool:in(line, 9));

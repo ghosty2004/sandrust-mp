@@ -296,9 +296,6 @@ pub struct SavedMaterials {
 struct ApplyCtx<'a> {
     slots: &'a [MatSlot; MATERIAL_SLOTS],
     saved: &'a mut SavedMaterials,
-    /// Material-text slots: (slot, render target) in, (original D3D texture, render target) out.
-    texts: &'a [(usize, u32)],
-    pairs: Vec<(u32, u32)>,
 }
 
 extern "C" fn apply_atomic_cb(atomic: u32, data: *mut ApplyCtx) -> u32 {
@@ -318,13 +315,6 @@ fn apply_atomic(atomic: u32, ctx: &mut ApplyCtx) {
     let flags: u32 = rd(geom + 8);
     let mut geom_saved = false;
     for i in 0..(n.max(0) as usize).min(MATERIAL_SLOTS) {
-        if let Some(&(_, rt)) = ctx.texts.iter().find(|(s, _)| *s == i) {
-            let m: u32 = rd(mats + 4 * i as u32);
-            let orig = if m != 0 { crate::ui::mattext::d3d_texture_of(rd(m)) } else { 0 };
-            if orig != 0 {
-                ctx.pairs.push((orig, rt));
-            }
-        }
         let slot = ctx.slots[i];
         if slot.texture == 0 && slot.colour == 0 {
             continue;
@@ -384,7 +374,10 @@ pub fn mark_drawn(entity: u32) {
 /// buffer (D3DERR_INVALIDCALL), kept a buffer-less record in its dynamic list (0xC97B8C) and crashed at
 /// 0x7F5A3A on the next differently sized create. The originals are saved on every applying render; the
 /// post-pass restores them.
-pub fn apply_materials(entity: u32, slots: &[MatSlot; MATERIAL_SLOTS], texts: &[(usize, u32)]) -> SavedMaterials {
+///
+/// `texts`: (D3D texture of a text slot's 2x2 RW texture, render target) — samp's device proxy swaps them in
+/// `SetTexture` while the object renders (the 2x2 texture is that slot's material texture, B 0x100A86C0).
+pub fn apply_materials(entity: u32, slots: &[MatSlot; MATERIAL_SLOTS], texts: &[(u32, u32)]) -> SavedMaterials {
     let mut saved = SavedMaterials::default();
     let rw: u32 = rd(entity + g::ENTITY_RW_OBJECT);
     if rw == 0 || (texts.is_empty() && slots.iter().all(|s| s.texture == 0 && s.colour == 0)) {
@@ -394,7 +387,7 @@ pub fn apply_materials(entity: u32, slots: &[MatSlot; MATERIAL_SLOTS], texts: &[
     if !apply {
         return saved;
     }
-    let mut ctx = ApplyCtx { slots, saved: &mut saved, texts, pairs: Vec::new() };
+    let mut ctx = ApplyCtx { slots, saved: &mut saved };
     match rd::<u8>(rw) {
         1 => apply_atomic(rw, &mut ctx),
         2 => {
@@ -408,10 +401,9 @@ pub fn apply_materials(entity: u32, slots: &[MatSlot; MATERIAL_SLOTS], texts: &[
         }
         _ => {}
     }
-    let pairs = std::mem::take(&mut ctx.pairs);
-    if !pairs.is_empty() {
+    if !texts.is_empty() {
         saved.text = true;
-        crate::ui::mattext::set_active(pairs);
+        crate::ui::mattext::set_active(texts.to_vec());
     }
     saved
 }

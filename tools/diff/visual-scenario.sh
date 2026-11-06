@@ -116,6 +116,38 @@ visual_scenario() {
     key t; typ "/testdw"; key Return; sleep 1
     cap testdw ui
     visual_labels
+    visual_mattext
+}
+
+# Object material text (RPC 44 + 84, user report "Romania Super Stunt"): m8afs `mtscene` creates 14 sign / board
+# objects on a wall west of the player (text for six of them inside RPC 44), `mtmat` sets the rest (RPC 84):
+# sizes 32x32..512x512, Arial / Verdana / Impact / Courier New / Tahoma, font sizes 20..80, bold 0/1, alignment
+# 0/1/2, background 0 / opaque / half alpha, colour codes and newlines, texture + text on the same and on
+# different indices.
+# mattext: every render-target fill (logged in `ui` mode: they run outside GTA's scene). mattextw: a fixed camera
+# on the wall; the render targets bound while the objects are drawn (+ mattextw.png, mattext2.png close-ups).
+visual_mattext() {
+    fs 'time|12|0'
+    fs 'weather|1'
+    fs 'pos|L|1722.0|-2600.0|13.5|90.0'
+    sleep 2
+    cap_start mattext ui 240
+    fs 'mtscene|1700.0|-2607.0|14.0'
+    sleep 1
+    fs 'mtmat'
+    sleep 1
+    cap_end mattext
+    fs 'togglecontrol|L|0'
+    fs 'campos|L|1721.0|-2600.25|21.0'
+    fs 'camlook|L|1700.0|-2600.25|21.0'
+    sleep 3
+    cap mattextw all 2
+    fs 'campos|L|1709.0|-2600.25|16.0'
+    fs 'camlook|L|1700.0|-2600.25|16.0'
+    sleep 2
+    shot mattext2
+    fs 'camera|L'
+    fs 'togglecontrol|L|1'
 }
 
 # 3D text labels (RPC 36) and chat bubbles with `{RRGGBB}` codes: the pool pass A 0x10001350 and the bubble pass

@@ -17,6 +17,12 @@ labels numbered in order of use, floats to 2 decimals):
   sprite.Draw calls too, unless the element sets `glyphs`: then they stay without positions, so the
   per-glyph colours of the colour-code wrapper are compared);
 - `boot` (UX-1): tools/diff/boot_diff.py on d3d-full.jsonl.
+- `rt` (object material text, RPC 84): over ALL logged frames of the capture, every render-target
+  window (the render target's creation through `rts.EndScene`: texture / render-to-surface / font
+  creation, Clear, render states, DrawText, glyph sprite draws, D3DX's own calls), in order.
+- `rtuse` (material text in the world): the multiset of render-target textures bound with
+  `SetTexture` and the number of draws made with one bound (with sampler 0's filters and address
+  modes), in the element's frame.
 Lines matching a row of the decisions TSV (element, regex, ROADMAP decision) are reported as
 covered. Exit 0 when every element has no uncovered difference and every element exists on
 both sides.
@@ -49,6 +55,9 @@ ELEMENTS = {
     # 3D text with colour codes (end of the scenario): world labels, a coloured bubble + a player-attached label.
     # `glyphs`: geo, but the per-glyph sprite.Draw calls stay (without positions) so their colours are compared.
     "label3d": ("ui", {"geo": True, "glyphs": True}), "bubblecol": ("ui", {"geo": True, "glyphs": True}),
+    # Object material text (visual_mattext): render-target creation + fill for the m8afs `mtscene` set, then the
+    # render targets bound while the board objects are drawn (fixed camera).
+    "mattext": ("rt", {}), "mattextw": ("rtuse", {}),
 }
 
 
@@ -157,6 +166,53 @@ def normalise(tool, kind, opts, frame):
     return out
 
 
+def rt_windows(tool, frames):
+    """Every material-text render-target fill, normalised, across all frames (see the module doc)."""
+    sprites = {}
+    out = []
+    on = False
+    for frame in frames:
+        for r in frame:
+            fn = r.get("fn", "")
+            a = r.get("args") or {}
+            if not on and fn in ("dev.CreateTexture", "D3DXCreateTexture") and str(a.get("usage")) == "0x1":
+                on = True
+                out.append("-- render target")
+            if not on:
+                continue
+            if fn == "dev.CreateTexture":
+                continue  # D3DX's own call inside D3DXCreateTexture (logged before it)
+            n = common(tool, r, sprites)
+            n.pop("org", None)
+            out.append(json.dumps(n, sort_keys=True))
+            if fn == "rts.EndScene":
+                on = False
+    return out
+
+
+def rt_use(frame):
+    """Render-target textures bound with SetTexture in one frame, and the draws made while one is bound."""
+    bound = {}
+    cur = {}
+    draws = {}
+    ss = {}
+    for r in frame:
+        fn = r.get("fn", "")
+        a = r.get("args") or {}
+        if fn == "dev.SetSamplerState" and a.get("sampler") == 0:
+            ss[a.get("ss")] = a.get("value")
+        if fn == "dev.SetTexture":
+            t = str(a.get("tex"))
+            cur[a.get("stage")] = t if " u0x1 " in t + " " and "f80" not in t else None
+            if cur[a.get("stage")]:
+                bound[t] = bound.get(t, 0) + 1
+        elif fn.startswith("dev.Draw") and cur.get(0):
+            # with the sampler's filters (MAG 5, MIN 6, MIP 7) and address modes (U 1, V 2)
+            k = "%s filter %s/%s/%s address %s/%s" % ((cur[0],) + tuple(ss.get(i) for i in (5, 6, 7, 1, 2)))
+            draws[k] = draws.get(k, 0) + 1
+    return ["bound %s x%d" % kv for kv in sorted(bound.items())] + ["drawn %s x%d" % kv for kv in sorted(draws.items())]
+
+
 def d3dx_draw(n):
     """A DrawIndexedPrimitive issued by D3DX itself (ID3DXSprite / ID3DXFont batches)."""
     return n.get("fn") == "dev.DrawIndexedPrimitive" and n.get("by") == "d3dx9_25.dll"
@@ -214,13 +270,23 @@ def main():
                 bad += 1
                 continue
             fo, fg = tool.frames(tool.load(po)), tool.frames(tool.load(pg))
+            if kind == "rt":
+                lo, lg = rt_windows(tool, fo), rt_windows(tool, fg)
+                if not lg:
+                    rows.append((name, "NO RT", 0, 0))
+                    print("== %-10s the original filled no render target" % name)
+                    bad += 1
+                    continue
             k = min(args.frame, len(fo) - 1, len(fg) - 1)
             if k < 0:
                 rows.append((name, "NO FRAMES", 0, 0))
                 print("== %-10s no logged frames" % name)
                 bad += 1
                 continue
-            lo, lg = normalise(tool, kind, opts, fo[k]), normalise(tool, kind, opts, fg[k])
+            if kind == "rtuse":
+                lo, lg = rt_use(fo[k]), rt_use(fg[k])
+            elif kind != "rt":
+                lo, lg = normalise(tool, kind, opts, fo[k]), normalise(tool, kind, opts, fg[k])
             diff = list(difflib.unified_diff(lg, lo, "original", "ours", n=1, lineterm=""))
             lines = [d for d in diff if d[:1] in "+-" and not d.startswith(("+++", "---"))]
             changes = len(lines)

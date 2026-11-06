@@ -179,8 +179,32 @@ Client behaviour (observed):
      "blanktex" texture. Model > 0 → the model is loaded (waits at most ~250 × 2 ms) and the
      texture `txd/texture` is looked up. Model −1 → no texture, only the colour. The colour is
      stored per slot.
-   - kind 2 (0x100a86f0): builds a render-target texture and stores text, font, sizes,
-     colours and alignment for slot rendering.
+   - kind 2 (A 0x100a86f0, B 0x100a86c0; analysed 2026-11-06, MATTEXT-1): releases the slot's texture
+     (a kind-1 texture or an earlier text texture; its remembered D3D texture +0x110B is cleared too), an
+     earlier render target (+0x114B, "created" flag +0x31B := 0) and the stored text. Then it creates a
+     **2×2 RenderWare texture** (`RwRasterCreate(2, 2, 0, 0)` 0x7FB230 + `RwTextureCreate` 0x7F37C0, then
+     `filterAddressing` (+0x50) += 1: filter NEAREST → LINEAR, measured as MIN/MAGFILTER 2 on the text draws) as the slot texture (+0x217), copies the text, and stores per slot (record of 0xD7 bytes at +0x3E4):
+     slot, material size, font name, font size, bold (as 0/1), font colour, background colour, alignment.
+     Slot colour +0x257 := 0 (so no colour modulation), slot kind +0x2DB := 2, "has materials" +0x118B := 1,
+     and +0x110B := the 2×2 texture's D3D texture (raster +0x34). A kind-1 record on the same slot later
+     releases the 2×2 texture and clears +0x110B, so the render target is never shown again (it stays allocated).
+   - Render-target fill (object pool pass B 0x100A9EF0, once per slot with kind 2, a slot texture and
+     +0x31B = 0; renderer B 0x100708E0, size table B 0x100A8C90):
+     * size: 10 → 32×32, 20 → 64×32, 30 → 64×64, 40 → 128×32, 50 → 128×64, 60 → 128×128, 70 → 256×32,
+       80 → 256×64, 90 → 256×128, 100 → 256×256, 110 → 512×64, 120 → 512×128, 130 → 512×256, 140 → 512×512;
+       any other value → no render target. The render target has **exactly** that size (no scaling).
+     * `GetDisplayMode` (result unused); `D3DXCreateTexture(w, h, 1, RENDERTARGET, fmt, DEFAULT)` with fmt
+       **A8R8G8B8 (21) when the background colour is 0**, else X8R8G8B8 (22); `GetSurfaceLevel(0)`, `GetDesc`;
+       `D3DXCreateRenderToSurface(desc w, desc h, desc format, depth 1, D16)`;
+       `D3DXCreateFontA(face, height = font size, width 0, weight bold ? 700 : 400, mip 1, italic 0,
+       charset 1, precision 0, quality 0, pitch 0)` (failure → debug line "SignText: Can't create font %s").
+     * `rts.BeginScene(surface)`, `Clear(0, TARGET|ZBUFFER, background ARGB, z 0.0, 0)`, `sprite.Begin(0x10)`;
+       **background 0 → `SetRenderState(DESTBLEND, BLENDFACTOR)`**; `DrawTextA(text, -1, [0, 0, w, h], fmt,
+       font colour)` with fmt = alignment 1 → 0x105 (centre, vcentre, noclip), 2 → 0x102 (right, top, noclip),
+       anything else → 0x100 (left, top, noclip); colour codes per glyph through samp's sprite wrapper;
+       `sprite.End`, `rts.EndScene(0)`.
+     * While the object renders, the device proxy's `SetTexture` swaps the 2×2 texture (+0x110B) for the
+       render target (§4 RE-10), so the text covers exactly the RW materials of that slot's index.
    - Slot check is `slot < 17` against 16-entry arrays (off by one). A Rust client should accept
      only 0…15.
 5. If the no-camera-collision byte is non-zero, it sets wrapper +0x53 = 1. That flag makes the
@@ -828,8 +852,8 @@ seconds from samp's millisecond clock (A 0x1002E7F0) since the previous pass.
 * Device lost (B 0x100C3F60 → object pool loop 0x10012B20 → 0x100A8EE0 per object with materials): every material
   text render target (+0x114B + 4i) is released and its "created" flag cleared; the object pass re-creates it.
 * Material **text** slots are substituted at Direct3D level: while such an object renders, samp's device proxy
-  `SetTexture` (A 0x10074BB0) replaces the slot's original texture (+0x110B + 4i) with the text render target
-  (+0x114B + 4i).
+  `SetTexture` (A 0x10074BB0) replaces the slot's 2×2 texture (+0x110B + 4i; set as the slot texture by the
+  kind-2 record, not the model's original texture) with the text render target (+0x114B + 4i).
 
 ### 5. Attached objects on players (RPC 113), per frame — Observed
 `CWorld::ProcessPedsAfterPreRender` is called through A 0x100A2640 (row 25). After the original, for the local ped and

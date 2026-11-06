@@ -805,3 +805,31 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   original froze in its endless wait for model 403 at `veh_trucks`, i.e. the same corruption hitting samp.dll.
   Suggestion for main: run `skin` before `handsup` in xclient.py (needs new calibration runs) so the scenario stops
   triggering samp's own use-after-free. Cost: ~5 h wall, ~25 cross-client runs, 4 trace-lane sessions.
+
+## 2026-11-06 — MATTEXT-1: object material text (user report: "Romania Super Stunt" board on samp.rss-ro.com)
+- Report: the original draws the board's text large, bold, coloured over the board's light background; ours drew it
+  much smaller, left, on black.
+- Static (samp.dll B, REA/Ghidra): kind-2 record 0x100A86C0, object pass 0x100A9EF0, renderer 0x100708E0, size table
+  0x100A8C90, kind-1 record 0x100A8540. Spec: world-entities.md §44 kind 2 (every field; render target = material
+  size; A8R8G8B8 + SetRenderState(DESTBLEND, BLENDFACTOR) when the background is 0; DrawText 0x100 / 0x105 / 0x102;
+  the slot gets a fresh 2×2 RW texture, filter mode + 1 = LINEAR, colour cleared; the device proxy swaps that
+  texture for the render target). trace-notes.md: the earlier "twice the material size" reading corrected.
+- Root causes in ours: render targets twice the material size (text half as large), always X8R8G8B8 (transparent
+  background → opaque black, hiding the board behind), DT_VCENTER on left/right, substitution of the model's own
+  texture instead of a per-slot texture, point filtering (found by the new `mattextw` element), plus one sprite
+  created per fill (samp keeps one).
+- Fix: `ui/mattext.rs` (sizes, format, blend state, formats per alignment, persistent sprite, key = 2×2 texture,
+  unchanged slots keep their render target), `objects.rs` (kind 2 releases the slot texture, creates the 2×2 RW
+  texture with LINEAR filter, clears the colour; kind 1 on a text slot drops the text; one `samp-rs.log` line per
+  material record with every field), `worldhooks.rs` (substitution pairs from mattext), `worldents.rs`
+  (`material_log_line` + test).
+- Harness (F4): `visual-scenario.sh` `visual_mattext` + m8afs `mtscene` / `mtmat` (14 boards: sizes 10..140, five
+  fonts, font sizes 20..80, bold 0/1, alignment 0/1/2, backgrounds 0 / opaque / half alpha, colour codes, newlines,
+  texture + text on the same / different indices; global objects → RPC 44, player objects → RPC 84);
+  `visual_diff.py` kinds `rt` (all render-target fills across the capture) and `rtuse` (render targets bound +
+  sampler state on the draws); `visual.sh` `VISUAL_OURS_LANE` / `VISUAL_OURS_PORT|_CTL|_TPORT`.
+- Verified: scenario-only runs (orig trace lane `orig-20261106-222919`, ours lane diff): `mattext` 0, `mattextw` 0
+  differing lines (13 fills, 568 normalised lines each; 28 bind/draw lines); screenshots differ only in the chat line
+  naming the server port. cargo test --workspace ok, clippy host + i686 clean, tools/e2e/m6.sh PASS (lane veh),
+  full `tools/diff/visual.sh --orig` exit 0 (32 elements OK incl. mattext / mattextw; captures in the worktree's
+  target/visual — the main checkout needs `--orig` once for the new elements).

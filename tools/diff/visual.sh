@@ -11,6 +11,8 @@
 #   tools/diff/visual.sh --diff-only     only the diff of the existing captures
 #   tools/diff/visual.sh --ours-only     only capture our side
 #   VISUAL_ONLY=a,b                      diff only these elements
+#   VISUAL_OURS_LANE=diff                 our side in another lane (wine/prefix-LANE, its lock) instead of ui;
+#   VISUAL_OURS_PORT / _CTL / _TPORT       its server, control and tracer ports (default 7800, 47710, 47711)
 #   VISUAL_SCENARIO_FILE=PATH            another scenario file defining visual_scenario (default
 #                                        tools/diff/visual-scenario.sh, every element); VISUAL_DIR=PATH
 #                                        its own output root
@@ -247,7 +249,7 @@ run_orig() {
 # ------------------------------------------------------------------ our side ---------------
 run_ours_inner() {
     # Inside the headless display (lane ui).
-    SIDE=ours; OUT="$V/ours"; PORT=7800; TPORT=47711
+    SIDE=ours; OUT="$V/ours"; PORT=${VISUAL_OURS_PORT:-7800}; TPORT=${VISUAL_OURS_TPORT:-47711}
     GAMESCOPE="$E2E_GAMESCOPE"
     E2E_SERVER="$E2E_SERVER_DIR"; E2E_LOG="$E2E_SERVER/e2e-server.log"; SF="$E2E_SERVER/scriptfiles/uicmd.txt"
     export SAMP_RS_PRE_DLL="$GTA_DIR/samp-tracer.dll" SAMP_TRACER_PORT=$TPORT
@@ -259,14 +261,15 @@ run_ours_inner() {
     spawn_local TraceOrig
     [[ "${VISUAL_SCENARIO:-1}" == 1 ]] && visual_scenario
     killbots
-    E2E_CTL_PORT=47710 e2e_ctl quit > /dev/null
+    E2E_CTL_PORT=${VISUAL_OURS_CTL:-47710} e2e_ctl quit > /dev/null
     for ((i = 0; i < 30; i++)); do kill -0 "$RUN" 2>/dev/null || break; sleep 1; done
 }
 run_ours() {
-    SIDE=ours; OUT="$V/ours"; PORT=7800
+    SIDE=ours; OUT="$V/ours"; PORT=${VISUAL_OURS_PORT:-7800}
     rm -rf "$OUT"; mkdir -p "$OUT"
-    export E2E_CTL_PORT=47710 SAMP_RS_CTL_PORT=47710
-    export WINEPREFIX="$SAMP_RS_ROOT/wine/prefix-ui" GTA_DIR="$SAMP_RS_ROOT/wine/gta-sa-ui"
+    export E2E_CTL_PORT=${VISUAL_OURS_CTL:-47710} SAMP_RS_CTL_PORT=${VISUAL_OURS_CTL:-47710}
+    local lane="${VISUAL_OURS_LANE:-ui}"
+    export WINEPREFIX="$SAMP_RS_ROOT/wine/prefix-$lane" GTA_DIR="$SAMP_RS_ROOT/wine/gta-sa-$lane"
     source "$ROOT/tools/wine-env.sh"
     say "ours: building (client, launcher, tracer, bot)"
     { (cd "$ROOT" && cargo build -q --release --target i686-pc-windows-gnu -p samp-client -p samp-launcher -p samp-tracer) &&
@@ -276,7 +279,7 @@ run_ours() {
     local USER_FILES="$WINEPREFIX/drive_c/users/$USER/Documents/GTA San Andreas User Files"
     mkdir -p "$USER_FILES/SAMP"
     printf 'pagesize=10\r\nfpslimit=48\r\nmulticore=1\r\naudioproxyoff=0\r\n'"${VISUAL_CFG_EXTRA:-}" > "$USER_FILES/SAMP/sa-mp.cfg"
-    server_prepare ui || { say "ours: server did not start"; return 1; }
+    server_prepare "${VISUAL_OURS_LANE:-ui}" || { say "ours: server did not start"; return 1; }
     E2E_SERVER_DIR="$E2E_SERVER" e2e_headless_run bash -c "source '$SELF' --functions; run_ours_inner"
     ( wineserver -k 2>/dev/null ) || true
     cp -f "$GTA_DIR/d3d.jsonl" "$OUT/d3d-full.jsonl" 2>/dev/null
@@ -293,8 +296,12 @@ case "${1:-}" in
     --diff-only) ;;
     --ours-only)
         mkdir -p "$SAMP_RS_ROOT/target/locks"
-        ui_lane_locked bash -c "source '$SELF' --functions; run_ours" \
-            || { say "our side failed"; exit 1; }
+        if [[ "${VISUAL_OURS_LANE:-ui}" == ui ]]; then
+            ui_lane_locked bash -c "source '$SELF' --functions; run_ours" || { say "our side failed"; exit 1; }
+        else
+            flock "$SAMP_RS_ROOT/target/locks/${VISUAL_OURS_LANE}.lock" bash -c "source '$SELF' --functions; run_ours" \
+                || { say "our side failed"; exit 1; }
+        fi
         exit 0
         ;;
     *)

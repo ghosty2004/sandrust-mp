@@ -1,21 +1,27 @@
-//! Object material text (RPC 44 material kind 2, milestone M6), Windows only.
+//! Object material text (RPC 44 / 84 material kind 2, milestone M6), Windows only.
 //!
-//! TRACE-6 batch 3 / TRACE-7 (docs/phase3/trace-notes.md "World entities"): once per text slot, from samp's
-//! CGame::Process wrapper (object pool pass; after the previous Present, before RenderWare's BeginScene): `D3DXCreateTexture(2w, 2h, 1, RENDERTARGET, X8R8G8B8, DEFAULT)` and
-//! `D3DXCreateRenderToSurface(2w, 2h, X8R8G8B8, depth, D16)` (the render target is twice the material size),
-//! `D3DXCreateFontA(face, height = font size, width 0, weight 700 when bold, mip 1, charset 1, quality 0)`;
-//! `BeginScene`, `Clear(background ARGB)`, `sprite.Begin(0x10)`, `DrawTextA(stripped text, [0, 0, 2w, 2h],
-//! 0x105 for centre alignment, font colour, colour codes per glyph)`, flush, `EndScene`. Never redrawn.
-//! While the object renders, samp's device proxy `SetTexture` (A 0x10074BB0) replaces the slot's original texture
-//! with the render target (world-entities.md RE-10 §4).
+//! samp (static B 0x100A86C0 record, 0x100A9EF0 object pass, 0x100708E0 renderer, size table 0x100A8C90;
+//! TRACE-6 batch 3 / TRACE-7 for the D3D order): the record gives the slot a fresh 2x2 RenderWare texture
+//! (`RwRasterCreate(2, 2, 0, 0)` + `RwTextureCreate`) as its material texture and remembers that texture's
+//! D3D texture; the slot colour is cleared. Once per text slot, from samp's CGame::Process wrapper (object pool
+//! pass; after the previous Present, before RenderWare's BeginScene): `GetDisplayMode`,
+//! `D3DXCreateTexture(w, h, 1, RENDERTARGET, fmt, DEFAULT)` with (w, h) the material size itself and fmt
+//! A8R8G8B8 when the background colour is 0, else X8R8G8B8; `GetSurfaceLevel(0)`, `GetDesc`,
+//! `D3DXCreateRenderToSurface(desc w, desc h, desc format, depth, D16)`,
+//! `D3DXCreateFontA(face, height = font size, width 0, weight 700 when bold else 400, mip 1, charset 1,
+//! quality 0)`; `BeginScene`, `Clear(TARGET|ZBUFFER, background ARGB, 0.0)`, `sprite.Begin(0x10)`, for
+//! background 0 `SetRenderState(DESTBLEND, BLENDFACTOR)`, `DrawTextA(text, [0, 0, w, h], fmt, font colour)`
+//! with fmt 0x100 (left, top), 0x105 (centre), 0x102 (right, top), colour codes per glyph, `sprite.End`,
+//! `EndScene`. Never redrawn. While the object renders, samp's device proxy `SetTexture` (A 0x10074BB0)
+//! replaces the 2x2 texture with the render target (world-entities.md RE-10 §4).
 //!
-//! Inferred (not measured): left / right alignment as DT_LEFT / DT_RIGHT with the same DT_VCENTER | DT_NOCLIP.
 //! Device loss (CRASH-1, measured with a forced Reset on both clients): the render targets are released before
 //! `Reset` and re-created by the next object pass ([`on_lost`]).
 
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use samp_ui::colour;
 
@@ -25,7 +31,9 @@ use super::d3d::{self, D3dx, Font, FontArgs, Rect, Sprite, dt};
 #[derive(Clone, Debug)]
 pub struct TextSpec {
     pub slot: usize,
-    /// Material size code (10 = 32×32 … 140 = 512×512).
+    /// D3D texture of the slot's 2x2 RenderWare texture: the one the render target stands in for (samp +0x110B).
+    pub key: u32,
+    /// Material size code (10 = 32x32 … 140 = 512x512); the render target has exactly this size.
     pub size: u8,
     pub font: Vec<u8>,
     pub font_size: u8,
@@ -36,7 +44,7 @@ pub struct TextSpec {
     pub text: Vec<u8>,
 }
 
-/// Material size code → (width, height) (samp A 0x100A8CC0).
+/// Material size code → render-target (width, height) (samp A 0x100A8CC0 / B 0x100A8C90).
 pub fn material_size(code: u8) -> Option<(u32, u32)> {
     Some(match code {
         10 => (32, 32),
@@ -80,13 +88,20 @@ fn with<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
 /// Registers the text slots of an object (replacing earlier ones, whose textures are released).
 pub fn register(object: u32, specs: Vec<TextSpec>) {
     let old = with(|s| {
-        let old = s.objects.remove(&object);
-        if !specs.is_empty() {
-            s.objects.insert(object, specs.into_iter().map(|spec| Entry { spec, texture: 0, tried: false }).collect());
+        let mut old = s.objects.remove(&object).unwrap_or_default();
+        // Slots whose record did not change (same 2x2 key) keep their render target, like samp's per-slot state.
+        let entries: Vec<Entry> = specs
+            .into_iter()
+            .map(|spec| match old.iter().position(|e| e.spec.key == spec.key && e.spec.slot == spec.slot) {
+                Some(i) => old.swap_remove(i),
+                None => Entry { spec, texture: 0, tried: false },
+            })
+            .collect();
+        if !entries.is_empty() {
+            s.objects.insert(object, entries);
         }
         old
-    })
-    .flatten();
+    });
     release(old);
 }
 
@@ -122,6 +137,10 @@ pub fn on_lost() {
         out
     })
     .unwrap_or_default();
+    let sp = SPRITE.load(Ordering::SeqCst);
+    if sp != 0 && !SPRITE_LOST.swap(true, Ordering::SeqCst) {
+        std::mem::ManuallyDrop::new(Sprite { ptr: sp as usize as *mut c_void }).on_lost();
+    }
     for t in &old {
         // SAFETY: we own these render-target texture references.
         unsafe { d3d::release(*t as usize as *mut c_void) };
@@ -131,9 +150,8 @@ pub fn on_lost() {
     }
 }
 
-/// From the CGame::Process pre-step (object pool pass): creates the missing render targets of `object` (once)
-/// and returns (slot, texture).
-pub fn ensure(object: u32) -> Vec<(usize, u32)> {
+/// From the CGame::Process pre-step (object pool pass): creates the missing render targets of `object` (once each).
+pub fn ensure(object: u32) {
     let todo: Vec<TextSpec> =
         with(|s| s.objects.get(&object).map(|v| v.iter().filter(|e| !e.tried).map(|e| e.spec.clone()).collect()))
             .flatten()
@@ -153,15 +171,14 @@ pub fn ensure(object: u32) -> Vec<(usize, u32)> {
             }
         });
     }
-    textures(object)
 }
 
-/// The render targets of `object` (no creation).
-pub fn textures(object: u32) -> Vec<(usize, u32)> {
+/// The substitutions of `object`: (2x2 slot D3D texture, render target), no creation.
+pub fn textures(object: u32) -> Vec<(u32, u32)> {
     with(|s| {
         s.objects
             .get(&object)
-            .map(|v| v.iter().filter(|e| e.texture != 0).map(|e| (e.spec.slot, e.texture)).collect())
+            .map(|v| v.iter().filter(|e| e.texture != 0 && e.spec.key != 0).map(|e| (e.spec.key, e.texture)).collect())
             .unwrap_or_default()
     })
     .unwrap_or_default()
@@ -183,31 +200,94 @@ fn substitute(tex: *mut c_void) -> *mut c_void {
 }
 
 const D3DUSAGE_RENDERTARGET: u32 = 1;
+const D3DFMT_A8R8G8B8: u32 = 21;
 const D3DFMT_X8R8G8B8: u32 = 22;
 const D3DFMT_D16: u32 = 80;
 const D3DPOOL_DEFAULT: u32 = 0;
 /// `D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER` (TRACE-7: Clear(TARGET|ZBUFFER, background, 0.0)).
 const CLEAR_TARGET_ZBUFFER: u32 = 3;
+/// `D3DRS_DESTBLEND` / `D3DBLEND_BLENDFACTOR`: set after `sprite.Begin` when the background is 0 (B 0x10070A7C).
+const D3DRS_DESTBLEND: u32 = 20;
+const D3DBLEND_BLENDFACTOR: u32 = 14;
+
+/// Render-target format: with a zero background the target keeps an alpha channel (B 0x1007090B).
+pub fn target_format(background: u32) -> u32 {
+    if background == 0 { D3DFMT_A8R8G8B8 } else { D3DFMT_X8R8G8B8 }
+}
+
+/// DrawText format per alignment (B 0x100709B7): 1 centre (DT_CENTER | DT_VCENTER), 2 right (DT_RIGHT), anything
+/// else left / top; always DT_NOCLIP.
+pub fn draw_format(alignment: u8) -> u32 {
+    let a = match alignment {
+        1 => dt::CENTER | dt::VCENTER,
+        2 => 0x2,
+        _ => 0,
+    };
+    a | dt::NOCLIP
+}
+
+/// samp's sign-text renderer keeps one sprite for every fill (renderer object +4, used by B 0x100708E0); ours is
+/// created before the first fill and kept (released only with the process), reset around device loss.
+static SPRITE: AtomicU32 = AtomicU32::new(0);
+static SPRITE_LOST: AtomicBool = AtomicBool::new(false);
+
+fn shared_sprite(d3dx: &D3dx) -> Result<u32, String> {
+    let p = SPRITE.load(Ordering::SeqCst);
+    if p != 0 {
+        if SPRITE_LOST.swap(false, Ordering::SeqCst) {
+            std::mem::ManuallyDrop::new(Sprite { ptr: p as usize as *mut c_void }).on_reset();
+        }
+        return Ok(p);
+    }
+    let sprite = std::mem::ManuallyDrop::new(Sprite::create(d3dx)?);
+    let p = sprite.ptr as u32;
+    SPRITE.store(p, Ordering::SeqCst);
+    Ok(p)
+}
 
 /// Creates and fills one render target (see the module header).
 fn render(spec: &TextSpec) -> Result<u32, String> {
     let (w, h) = material_size(spec.size).ok_or("unknown material size")?;
-    let (w, h) = (w * 2, h * 2);
     let dev = d3d::real_device();
     if dev.is_null() {
         return Err("no device".into());
     }
     let d3dx = D3dx::load()?;
+    let sprite_ptr = shared_sprite(&d3dx)?;
+    // SAFETY: IDirect3DDevice9::GetDisplayMode (slot 8) into a local D3DDISPLAYMODE (samp's first call; unused).
+    unsafe {
+        let get_mode: extern "system" fn(*mut c_void, u32, *mut [u32; 4]) -> d3d::HResult = d3d::vfn(dev, 8);
+        let mut mode = [0u32; 4];
+        get_mode(dev, 0, &mut mode);
+    }
     let mut tex = std::ptr::null_mut();
-    let hr = (d3dx.create_texture)(dev, w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT, &mut tex);
+    let fmt = target_format(spec.background);
+    let hr = (d3dx.create_texture)(dev, w, h, 1, D3DUSAGE_RENDERTARGET, fmt, D3DPOOL_DEFAULT, &mut tex);
     if hr < 0 || tex.is_null() {
         return Err(format!("D3DXCreateTexture failed {hr:#x}"));
     }
+    // SAFETY: IDirect3DTexture9::GetSurfaceLevel (slot 18), IDirect3DSurface9::GetDesc (slot 12) on our texture.
+    let (surf, desc) = unsafe {
+        let get_level: extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> d3d::HResult = d3d::vfn(tex, 18);
+        let mut surf = std::ptr::null_mut();
+        let mut desc = [fmt, 0, 0, 0, 0, 0, w, h];
+        if get_level(tex, 0, &mut surf) >= 0 && !surf.is_null() {
+            let get_desc: extern "system" fn(*mut c_void, *mut [u32; 8]) -> d3d::HResult = d3d::vfn(surf, 12);
+            get_desc(surf, &mut desc);
+        }
+        (surf, desc)
+    };
     let mut rts = std::ptr::null_mut();
-    let hr = (d3dx.create_render_to_surface)(dev, w, h, D3DFMT_X8R8G8B8, 1, D3DFMT_D16, &mut rts);
+    // D3DSURFACE_DESC: Format +0, Width +0x18, Height +0x1C.
+    let hr = (d3dx.create_render_to_surface)(dev, desc[6], desc[7], desc[0], 1, D3DFMT_D16, &mut rts);
     if hr < 0 || rts.is_null() {
-        // SAFETY: we own `tex`.
-        unsafe { d3d::release(tex) };
+        // SAFETY: we own `tex` and `surf`.
+        unsafe {
+            if !surf.is_null() {
+                d3d::release(surf);
+            }
+            d3d::release(tex);
+        }
         return Err(format!("D3DXCreateRenderToSurface failed {hr:#x}"));
     }
     let font = Font::create(
@@ -225,13 +305,11 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
         // B 0x100708E0: a debug chat line naming the face (FEAT-B, A17).
         super::glue::print_debug_later(format!("SignText: Can't create font {}", String::from_utf8_lossy(&spec.font)));
     })?;
-    let sprite = Sprite::create(&d3dx)?;
-    // SAFETY: COM calls on objects created above: IDirect3DTexture9::GetSurfaceLevel (slot 18),
-    // ID3DXRenderToSurface::BeginScene (slot 5) / EndScene (slot 6), IDirect3DDevice9::Clear.
+    let sprite = std::mem::ManuallyDrop::new(Sprite { ptr: sprite_ptr as usize as *mut c_void });
+    // SAFETY: COM calls on objects created above: ID3DXRenderToSurface::BeginScene (slot 5) / EndScene (slot 6),
+    // IDirect3DDevice9::Clear / SetRenderState.
     unsafe {
-        let get_level: extern "system" fn(*mut c_void, u32, *mut *mut c_void) -> d3d::HResult = d3d::vfn(tex, 18);
-        let mut surf = std::ptr::null_mut();
-        if get_level(tex, 0, &mut surf) >= 0 && !surf.is_null() {
+        if !surf.is_null() {
             let begin: extern "system" fn(*mut c_void, *mut c_void, *const c_void) -> d3d::HResult = d3d::vfn(rts, 5);
             let end: extern "system" fn(*mut c_void, u32) -> d3d::HResult = d3d::vfn(rts, 6);
             // Runs from the CGame::Process pre-step, between the previous Present and RenderWare's BeginScene
@@ -242,21 +320,19 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
             } else {
                 d3d::devcall::clear(CLEAR_TARGET_ZBUFFER, spec.background, 0.0, 0);
                 sprite.begin(d3d::sprite::ALPHABLEND);
+                if spec.background == 0 {
+                    d3d::devcall::set_render_state(D3DRS_DESTBLEND, D3DBLEND_BLENDFACTOR);
+                }
                 let stripped = colour::strip_codes(&spec.text);
                 let glyphs: Vec<u32> =
                     colour::glyph_colours(&spec.text, spec.font_colour).iter().map(|g| g.colour).collect();
-                let align = match spec.alignment {
-                    1 => dt::CENTER,
-                    2 => 0x2,
-                    _ => 0,
-                };
                 let mut r = Rect { left: 0, top: 0, right: w as i32, bottom: h as i32 };
                 d3d::draw_glyph_coloured(
                     &font,
                     &sprite,
                     &stripped,
                     &mut r,
-                    align | dt::VCENTER | dt::NOCLIP,
+                    draw_format(spec.alignment),
                     spec.font_colour,
                     glyphs,
                 );
@@ -267,7 +343,6 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
         }
         d3d::release(rts);
     }
-    drop(sprite);
     drop(font);
     Ok(tex as u32)
 }
@@ -297,6 +372,18 @@ mod tests {
     fn sizes() {
         assert_eq!(material_size(90), Some((256, 128)));
         assert_eq!(material_size(140), Some((512, 512)));
+        assert_eq!(material_size(130), Some((512, 256)));
         assert_eq!(material_size(5), None);
+    }
+
+    #[test]
+    fn format_and_alignment() {
+        assert_eq!(target_format(0), D3DFMT_A8R8G8B8);
+        assert_eq!(target_format(0xFF00_0000), D3DFMT_X8R8G8B8);
+        assert_eq!(target_format(0x00FF_FFFF), D3DFMT_X8R8G8B8);
+        assert_eq!(draw_format(0), 0x100);
+        assert_eq!(draw_format(1), 0x105);
+        assert_eq!(draw_format(2), 0x102);
+        assert_eq!(draw_format(3), 0x100);
     }
 }

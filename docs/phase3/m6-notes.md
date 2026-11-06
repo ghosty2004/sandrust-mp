@@ -14,7 +14,7 @@ address in the code.
 | `crates/samp-client/src/entities.rs` | pickups (95/63, 131 poll), actors (171–178, 177 events), checkpoints (107/37/38/39), gang zones (108/120/121/85), map icons (56/144), 3D labels (36/58: placement, LOS, projection) |
 | `crates/samp-client/src/worldhooks.rs` | CSV rows: byte rows and hooks, shared state for the hooks, material pre/post pass, samp's own render passes |
 | `crates/samp-client/src/ui/render.rs` | label drawing in the Present pass (small font, 4-way outline moving only left/top, fmt 0x101) |
-| `crates/samp-client/src/ui/mattext.rs`, `ui/d3d.rs` | material text: render target per text slot (2× material size, D3DX font, colour codes per glyph), `SetTexture` substitution in the device proxy while the object renders |
+| `crates/samp-client/src/ui/mattext.rs`, `ui/d3d.rs` | material text: render target per text slot (exactly the material size, A8R8G8B8 for background 0, D3DX font, colour codes per glyph), `SetTexture` substitution of the slot's 2×2 RW texture in the device proxy while the object renders |
 | `client.rs`, `dll.rs`, `control.rs`, `vehicles.rs`, `lib.rs` | wiring: RPC routing, CGame::Process pre-step (object process), `world` control command, vehicle handle accessors |
 | `tools/e2e/m6.sh`, `m6scen.sh`, `m6parity.sh` | acceptance test, shared scenario, parity runner (original in the trace lane, ours in lane veh) |
 
@@ -70,9 +70,22 @@ Not applied (with reason):
 ## Deviations and open items (TODO-unknown unless marked)
 
 * **Material text**: TRACE-6 batch 3 + TRACE-7: rendered once per slot from the CGame::Process pre-step (between
-  the previous Present and RenderWare's BeginScene, like samp's wrapper B 0x100A2670): D3DXCreateTexture (2× size,
-  RENDERTARGET, X8R8G8B8) + CreateRenderToSurface (D16) + font (face, h = size, wt 700 if bold, cs 1, q 0);
-  Clear(TARGET|ZBUFFER, background, 0.0), sprite Begin(0x10), DrawText fmt 0x105 for centre (left/right inferred).
+  the previous Present and RenderWare's BeginScene, like samp's wrapper B 0x100A2670): D3DXCreateTexture (the
+  material size itself, RENDERTARGET, A8R8G8B8 when the background is 0 else X8R8G8B8) + CreateRenderToSurface
+  (the surface's size / format, D16) + font (face, h = size, wt 700 if bold else 400, cs 1, q 0);
+  Clear(TARGET|ZBUFFER, background, 0.0), sprite Begin(0x10), background 0 → SetRenderState(DESTBLEND,
+  BLENDFACTOR), DrawText fmt 0x105 centre / 0x102 right / 0x100 left (static B 0x100708E0). The record (B
+  0x100A86C0) makes a fresh 2×2 RW texture the slot texture (replacing a kind-1 texture, colour cleared); the
+  device proxy swaps exactly that texture for the render target. A later kind-1 record on the slot hides the text.
+  **MATTEXT-1 (2026-11-06, user report "Romania Super Stunt" board on samp.rss-ro.com)**: ours rendered into
+  2× targets (text half size), always X8R8G8B8 (background 0 → opaque black instead of transparent), added
+  DT_VCENTER to left/right, substituted the model's original texture and sampled the text with point filtering
+  (samp raises the 2×2 texture's RW filter mode to LINEAR: MIN/MAGFILTER 2 on the text draws); all fixed.
+  Verified with the F4 elements `mattext` (every render-target fill, all frames) and `mattextw` (render
+  targets bound + sampler filters while the wall of 14 boards is drawn) from `tools/diff/visual-scenario.sh`
+  `visual_mattext` / m8afs `mtscene` + `mtmat` (RPC 44 and 84): empty diffs, screenshots identical apart from
+  the chat line naming the server port. Every material record is
+  logged (`rpc 44|84 material: object … slot … text size … font … back colour … text …`) in `samp-rs.log`.
   Not recreated after a device reset.
 * **Blank texture** (material model 0, TRACE-7): `SAMP\blanktex.txd` (loose file of the SA:MP install) loaded into
   TXD slot "blanktex" on first use, texture "blanktex" cached and never released. samp loads it 4 frames after the
