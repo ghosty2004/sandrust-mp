@@ -852,7 +852,7 @@ Quads are written as `x0,y0–x1,y1` and come from the decoded vertices of the a
 | U-CONNECT-TIMING | "Connecting to …" 3.00 s after "Started" (chat created at frame 33, first drawn frame 37); server down: every ~6.05 s "The server didn't respond. Retrying.." then a new "Connecting to …" |
 | U-HUD-STEP9 | Present writes 0xBA6769=1 / 0xBAA3FB=0 every frame from the 2nd Present on (connecting screen, class selection, spawned); F7 mode 0 → 0/1 from the next frame |
 | U-LOCK-INIT | an input-lock restore runs at start-up (a poked NOP at 0x541DF5 was restored within the first 36 frames); class selection then locks until spawn |
-| U-SAVE-HEADING | /save heading = ped heading in degrees (`AddPlayerClass(0,x,y,z,123.0000,0,0,0,0,0,0); // comment`); /rs writes `x,y,z,heading ; comment` where x,y,z is **not** the ped position (camera position) |
+| U-SAVE-HEADING | /save heading = ped heading in degrees (`AddPlayerClass(0,x,y,z,123.0000,0,0,0,0,0,0); // comment`); /rs writes `x,y,z,heading ; comment` with the same values as /save: x,y,z = the ped's matrix position, heading = `GET_CHAR_HEADING` (0x0172); in a vehicle the vehicle's matrix position and `GET_CAR_HEADING` (0x0174) (corrected by GAP-UI 2026-11-06, see "Audit gaps") |
 | font sizes (RE-5 §3.2) | confirmed at W 864 and 1280; `/fontsize` also rebuilds the GUI fonts immediately |
 | D3D cursor | `CreateOffscreenPlainSurface(32,32,A8R8G8B8,SYSTEMMEM)`, `D3DXLoadSurfaceFromFileA("mouse.png", filter 1)`, `SetCursorProperties(0,0,…)`; `ShowCursor(TRUE)` every frame while the input is open; one FALSE on close |
 | game text (RPC 73) | `0x00BE` then `CMessages::AddBigMessage(text, time, style)` in the same frame, unchanged values, the same static samp buffer every time |
@@ -990,8 +990,8 @@ GUI 24/22 (all recreated at once).
   * In a vehicle: `AddStaticVehicle(model,x,y,z,vehHeading,c1,c2); // comment`.
   * Chat lines `-> OnFoot position saved` / `-> InCar position saved`.
 * **/rs**:
-  * On foot: `<user files>\SAMP\rawpositions.txt` gets `x,y,z,heading ; comment` (x,y,z not the
-    ped position).
+  * On foot: `<user files>\SAMP\rawpositions.txt` gets `x,y,z,heading ; comment` (x,y,z = the ped's
+    matrix position, like /save; the earlier "not the ped position" reading was wrong, GAP-UI 2026-11-06).
   * In a vehicle: `rawvehicles.txt` **in the game directory** gets
     `model,x,y,z,heading,c1,c2 ; comment`.
   * Chat `-> OnFoot pos saved` / `-> InCar pos saved`.
@@ -1974,3 +1974,40 @@ lost connection), `orig-20261105-011721` (no-server start, full, kick; own serve
 * The original client once crashed ("SA:MP An exception occured", EIP in a Wine module) after
   xdotool's Insert key switched the input layout and 140 chars were typed into the chat input.
   Not reproduced.
+
+## Audit gaps A1 / A10 / A11 / A12 (GAP-UI, 2026-11-06)
+
+Scenario `tools/diff/gapscen.sh` through `tools/diff/network.sh` (NET_SCEN): original = trace lane
+(`orig-20261106-233517`, cursor-only rerun `orig-20261106-234125`), ours = lane ui with samp-tracer.dll pre-loaded
+(`ours-20261106-233715`, cursor-only rerun after the lost-device fix `ours-20261106-235059`; directories under the
+worktree's target/netdiff). Identical input on both: join, three class arrows, RPC 92 / 150, /save + /rs on foot and in
+an ambulance, two forced device losses (TestCooperativeLevel stub as `objmap_devreset`) read with `tools/e2e/xcursor.py`.
+
+* **A1 class-selection sounds** (static A 0x10005ff0 / 0x10006080): each arrow press reads the ped matrix (A 0x1009eb70),
+  plays 1052 (Right) / 1053 (Left) through the game audio object's play routine (A 0x100a2300 — the RPC 16 path, i.e.
+  `0x018C ADD_ONE_OFF_SOUND` at the ped's matrix position for ids 1000–1999), then sends RPC 128 (A 0x100058d0), all
+  in the same call. Measured: one `0x018c [1958.378,1343.157,15.375,1052|1052|1053]` one frame after each key mark,
+  identical in both clients.
+* **A12 RPC 92 / 150**: open.mp has no sender; `tools/diff/lossproxy.py` rule `rpc-sc ID` renames the server's RPC 35
+  (SetPlayerDrunkLevel, same u32 payload) to 92 / 150. Measured: `0x052c [0,4321]` and `0x03fd [0,8765]` 3–4 frames
+  after the server command, identical in both clients (2 rewrites logged by the proxy each run). A truncated payload
+  (fewer than 32 bits) makes samp run the opcode with an uninitialised value; ours drops the RPC (not reachable from a
+  conforming server).
+* **A11 /save and /rs**: static A 0x10068a00 / 0x10068b80; both commands read the same values — on foot the ped's
+  matrix position (`ped+0x14` → +0x30) and `0x0172 GET_CHAR_HEADING`; in a vehicle (ped flags bit 8) the vehicle's
+  matrix position, `0x0174 GET_CAR_HEADING`, model +0x22, colours +0x434 / +0x435. Measured on the original:
+  `1600.0000,-2493.0000,13.5547,270.0000 ; gapfoot` (= peeked ped matrix position, heading 270 = −π/2 rad) and
+  `416,1600.0005,-2495.4983,13.6710,237.5002,1,3 ; gapcar` (= peeked vehicle matrix position). Ours now runs the same
+  two opcodes (scm records identical: `0x0172 → l0=1132920832` both); the car's own rest position / heading differs in
+  the third decimal between runs (physics), not by method.
+* **A10 device loss and the cursor** (static A 0x100c3f90 lost, A 0x100c41f0 reset): lost = renderer OnLost calls,
+  **closes an open chat input (A 0x10069580: cursor mode 0 immediate) and an open scoreboard (A 0x1006e9e0(1): mode 0
+  delayed)**, releases the cursor surface, re-arms the WM_SETCURSOR "SetCursor(NULL) once" flag (A 0x100c419b) and
+  0x10113ad8; reset = `SetCursor(NULL)`, OnReset calls, cursor surface from mouse.png + SetCursorProperties, and —
+  only when the GTA menu is not active (dword 0xBA67A4) — mode 2, mode 0 immediate, restore at once. D3D stream of the
+  original per Reset: `Reset, SetCursorProperties, ShowCursor(1), ShowCursor(0), ShowCursor(0)`; X cursor with the chat
+  input open → hidden at once and it stays hidden (the input is closed; the following Escape opens GTA's pause menu,
+  so the second loss runs no mode sequence and `t` opens nothing). Ours now gives the identical X-cursor readings at
+  all ten measuring points and the same per-Reset call block (17 vs 18 Resets per 0.3 s stub window: RenderWare's
+  retry timing).
+

@@ -17,6 +17,9 @@ CONTROL_FILE holds one rule line, re-read when it changes:
     mix-sc N                server→client chaos: every N-th datagram is dropped, every N-th
                             (offset by N/2) is held back and sent after the next two datagrams
                             (reordering), every 7th is sent twice (duplicates)
+    rpc-sc ID               rewrites the RPC id of every server→client RPC 35 (SetPlayerDrunkLevel, a u32
+                            payload) to ID, so RPCs without an open.mp sender with the same payload
+                            (92, 150) can be driven from Pawn (SetPlayerDrunkLevel); each rewrite is logged
 Every drop is logged to LOG_FILE as JSON: {"t": epoch, "dir": "C>S", "nums": [...], "len": n}.
 No root, no tc: plain sockets.
 """
@@ -51,6 +54,22 @@ def reliable_nums(body):
     except (EOFError, ValueError):
         return []
     return [m["num"] for m in msgs if m["rel"] in (8, 9, 10)]
+
+
+def rewrite_rpc(data, old_id, new_id, log, client):
+    """S→C datagram with every unsplit RPC `old_id` renamed to `new_id` (same payload)."""
+    try:
+        _, msgs = netcap.decode_datagram(data)
+    except (EOFError, ValueError):
+        return data
+    out = bytearray(data)
+    for m in msgs:
+        d = bytes.fromhex(m["data"])
+        if m["split"] is None and len(d) >= 2 and d[0] == 0x14 and d[1] == old_id:
+            out[m["off"] + 1] = new_id
+            log.write(json.dumps({"t": time.time(), "dir": "S>C", "cport": client[1], "rpc": [old_id, new_id],
+                                  "data": m["data"]}) + "\n")
+    return bytes(out)
 
 
 def main():
@@ -124,6 +143,8 @@ def main():
                     up[client] = u
                     back[u.fileno()] = client
                 u.send(data)
+            elif rule[0] == "rpc-sc" and 0 < rule[1] < 256:
+                lsock.sendto(rewrite_rpc(data, 35, rule[1], log, client), client)
             elif rule[0] == "mix-sc" and rule[1] > 1:
                 mixn += 1
                 if mixn % rule[1] == 0:

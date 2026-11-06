@@ -151,11 +151,13 @@ def decode_datagram(body):
         if r.bit():
             split = (r.u16(), r.compressed(4), r.compressed(4))
         nbits = r.compressed(2)
+        r.align()
+        off = r.p >> 3
         data = r.aligned_bytes((nbits + 7) // 8)
         kind, rpc_bits = kind_of(data, nbits) if split is None or split[1] == 0 else ("split", None)
         msgs.append({
             "num": num, "rel": rel, "ch": ch, "idx": idx, "split": split,
-            "bits": nbits, "kind": kind, "rpc_bits": rpc_bits, "data": data.hex(),
+            "bits": nbits, "kind": kind, "rpc_bits": rpc_bits, "data": data.hex(), "off": off,
         })
     return acks, msgs
 

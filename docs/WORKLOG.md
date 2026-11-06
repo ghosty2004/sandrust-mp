@@ -833,3 +833,23 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   naming the server port. cargo test --workspace ok, clippy host + i686 clean, tools/e2e/m6.sh PASS (lane veh),
   full `tools/diff/visual.sh --orig` exit 0 (32 elements OK incl. mattext / mattextw; captures in the worktree's
   target/visual — the main checkout needs `--orig` once for the new elements).
+
+## 2026-11-06 — GAP-UI: class sounds, device-loss cursor, /save + /rs, RPC 92 / 150
+- Static (samp.dll A, objdump): arrows A 0x10005ff0 / 0x10006080 (ped matrix → sound 1052/1053 via A 0x100a2300 →
+  RPC 128), /save A 0x10068a00 and /rs A 0x10068b80 (same values: matrix position + 0x0172 / 0x0174), lost A 0x100c3f90
+  (closes chat input and scoreboard, re-arms the WM_SETCURSOR flag), reset A 0x100c41f0 (SetCursor(NULL) … mode 2 → 0 +
+  restore unless 0xBA67A4), RPC 92 / 150 A 0x10018c50 / 0x10018d00.
+- Harness: `tools/diff/gapscen.sh` (NET_SCEN for network.sh; GAP_ONLY=cursor), `lossproxy.py` rule `rpc-sc ID`
+  (renames S→C RPC 35 so 92 / 150 can be driven from Pawn), `netcap.decode_datagram` reports each message's byte offset.
+- Fix: `classsel.rs` (ChangeClass action with the sound), `client.rs` (sound then RPC 128; RPC 92 / 150 handlers),
+  `script.rs` (0x03FD const), `ui/glue.rs` (`LiveGame::position` via GET_CHAR/CAR_HEADING; reset hook: lost-device closes
+  + flag re-arm, reset-device SetCursor(NULL) and mode 2 → 0 + restore), `ui/wndproc.rs` (on_lost_device /
+  on_reset_device), `vehicles.rs` (`pool_ref` pub(crate)).
+- Measured both clients (trace lane / lane ui with the tracer pre-loaded): class-sound scm, 0x052C/0x03FD, saved lines,
+  heading opcodes and all ten X-cursor readings identical; our first run still showed the cursor after
+  the loss (chat input not closed) — fixed and re-measured. Corrected trace-notes (/rs on foot = ped position).
+- ROADMAP decisions: GAP-UI residuals, CDSTREAM-1 (our CdStreamSync lost-wakeup fix, an addition samp lacks).
+- Verified: cargo test --workspace ok; clippy host + i686 clean; tools/e2e/m8a.sh PASS and tools/e2e/m10.sh PASS (lane ui,
+  under the lock). `tools/diff/rpc-coverage.sh` cannot run from a git worktree (it takes wine/ and the lane game dir
+  from the checkout root, not SAMP_RS_ROOT); it has no RPC 128 / arrow step and lists 92 / 150 as untriggerable, so the
+  per-RPC evidence for these items is the gap scenario's tracer scm comparison above.

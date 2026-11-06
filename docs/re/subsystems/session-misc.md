@@ -291,6 +291,9 @@ raw-RPC hook table), but the client must still parse them.
 - A 0x10018d00 / B 0x10018cb0. Same shape as 92: u32 value → opcode **0x03FD**
   (descriptor A 0x100e6234, "ii") with (player 0, value) if the local player exists.
 - Meaning: public RPC lists call 150 "set player drunk handling" — **unverified**.
+- Measured for both 92 and 150 (GAP-UI, RPC 35 renamed by a proxy, docs/phase3/trace-notes.md
+  "Audit gaps"): one script command `0x052C [0, value]` / `0x03FD [0, value]` 3–4 frames after the
+  server call, nothing else.
 
 ### 98 (S→C) — vehicle tyre status
 - A 0x10018b70 / B 0x10018b20.

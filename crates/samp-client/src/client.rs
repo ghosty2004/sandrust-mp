@@ -754,6 +754,18 @@ impl Client {
             Incoming::Session(samp_proto::rpcs::session::Incoming::ClientCheckRequest(c)) => {
                 self.behaviour.client_check(&mut self.net, &mut self.runner, &c)
             }
+            // RPC 92 / 150 (A 0x10018c50 / 0x10018d00): opcode 0x052C / 0x03FD with (player 0, value)
+            // when the local player object exists (session-misc.md).
+            Incoming::Session(samp_proto::rpcs::session::Incoming::SetPlayerDrunkVisuals(v)) => {
+                if self.ped() != 0 {
+                    self.runner.run(op::SET_PLAYER_DRUNKENNESS, &[Arg::Int(0), Arg::Int(v.value as i32)]);
+                }
+            }
+            Incoming::Session(samp_proto::rpcs::session::Incoming::SetPlayerDrunkHandling(v)) => {
+                if self.ped() != 0 {
+                    self.runner.run(op::RPC150_PLAYER_COMMAND, &[Arg::Int(0), Arg::Int(v.value as i32)]);
+                }
+            }
             Incoming::Session(samp_proto::rpcs::session::Incoming::SetVehicleTyreStatus(t)) => {
                 self.vehicles.on_tyres(t.vehicle_id, t.tyres)
             }
@@ -1055,6 +1067,14 @@ impl Client {
             Some(classsel::Action::RequestClass(i)) => {
                 crate::log!("client: requesting class {i}");
                 self.net.send_rpc(&player::PlayerRequestClass { class_index: i }, Reliability::Reliable);
+            }
+            Some(classsel::Action::ChangeClass { index, sound }) => {
+                // A 0x10005ff0 / 0x10006080: the sound at the ped's matrix position through the
+                // game audio object (A 0x100a2300, the RPC 16 path), then RPC 128, same tick.
+                let pos = entity_pos(self.ped()).unwrap_or([0.0; 3]);
+                crate::audio::play_sound(&mut self.runner, sound, pos);
+                crate::log!("client: requesting class {index} (sound {sound})");
+                self.net.send_rpc(&player::PlayerRequestClass { class_index: index }, Reliability::Reliable);
             }
             Some(classsel::Action::RequestSpawn) => {
                 crate::log!("client: requesting spawn");

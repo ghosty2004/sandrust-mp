@@ -44,6 +44,9 @@ const MEMORY_COUNTER: u32 = 0x8A5A80;
 /// Script opcodes (gta-reversed `eScriptCommands.h`).
 const OP_CLEAR_PRINTS: u16 = 0x00BE;
 const OP_GET_AREA_VISIBLE: u16 = 0x077E;
+/// `GET_CHAR_HEADING` / `GET_CAR_HEADING` of `/save` and `/rs` (descriptors A 0x100e9dc0 / 0x100e9d98).
+const OP_GET_CHAR_HEADING: u16 = 0x0172;
+const OP_GET_CAR_HEADING: u16 = 0x0174;
 /// `CPed::m_pVehicle`, vehicle colours (gta-reversed `Ped.h` / `Vehicle.h`).
 const PED_VEHICLE: u32 = 0x58C;
 const VEHICLE_COLOUR1: u32 = 0x434;
@@ -464,40 +467,38 @@ impl GameInfo for LiveGame {
         r.run(OP_GET_AREA_VISIBLE, &[Arg::Local(0)]);
         r.local_i32(0) as u32
     }
+    /// `/save` and `/rs` (A 0x10068a00 / 0x10068b80): in a vehicle (ped flags bit 8) the vehicle's
+    /// matrix position, `GET_CAR_HEADING` (0x0174), model and colours +0x434/+0x435; on foot the
+    /// ped's matrix position and `GET_CHAR_HEADING` (0x0172). Both commands read the same values.
     fn position(&self) -> Option<PlayerPosition> {
         let mem = ProcessMemory;
         let p = game::read_player(&mem).ok().flatten()?;
         let in_vehicle = mem.read_u32(p.ptr + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0;
         let veh = mem.read_u32(p.ptr + PED_VEHICLE).unwrap_or(0);
-        // TODO-unknown (U-SAVE-HEADING): heading source and units of /save; here the
-        // ped heading (radians) as degrees in [0, 360).
-        let deg = |r: f32| r.to_degrees().rem_euclid(360.0);
+        let mut r = Runner::new();
         if in_vehicle && veh != 0 {
             let m = mem.read_u32(veh + off::PLACEABLE_MATRIX).unwrap_or(0);
             let rd = |a: u32| mem.read_f32(a).unwrap_or(0.0);
-            let (pos, fwd) = if m != 0 {
-                ([rd(m + 0x30), rd(m + 0x34), rd(m + 0x38)], (rd(m + 0x10), rd(m + 0x14)))
-            } else {
-                (p.pos, (0.0, 1.0))
-            };
-            // TODO-unknown (U-SAVE-HEADING): vehicle heading from the forward vector.
-            let heading = (-fwd.0).atan2(fwd.1).to_degrees().rem_euclid(360.0);
+            let pos = if m != 0 { [rd(m + 0x30), rd(m + 0x34), rd(m + 0x38)] } else { p.pos };
+            r.run(OP_GET_CAR_HEADING, &[Arg::Int(crate::vehicles::pool_ref(veh)), Arg::Local(0)]);
             return Some(PlayerPosition::InCar {
                 model: u32::from(mem.read_u16(veh + off::ENTITY_MODEL).unwrap_or(0)),
                 x: pos[0],
                 y: pos[1],
                 z: pos[2],
-                heading,
+                heading: r.local_f32(0),
                 colour1: u32::from(mem.read_u8(veh + VEHICLE_COLOUR1).unwrap_or(0)),
                 colour2: u32::from(mem.read_u8(veh + VEHICLE_COLOUR2).unwrap_or(0)),
             });
         }
+        let handle = game::ped_handle(&mem, p.ptr).ok().flatten().unwrap_or(-1);
+        r.run(OP_GET_CHAR_HEADING, &[Arg::Int(handle), Arg::Local(0)]);
         Some(PlayerPosition::OnFoot {
             skin: u32::from(mem.read_u16(p.ptr + off::ENTITY_MODEL).unwrap_or(0)),
             x: p.pos[0],
             y: p.pos[1],
             z: p.pos[2],
-            heading: deg(p.heading),
+            heading: r.local_f32(0),
         })
     }
 }
@@ -776,12 +777,29 @@ extern "system" fn present_hook(
 
 extern "system" fn reset_hook(_this: *mut std::ffi::c_void, params: *mut std::ffi::c_void) -> HResult {
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        try_with_ui(|st| {
+        let ops = try_with_ui(|st| {
             if let Some(r) = st.renderer.as_mut() {
                 r.on_lost();
             }
             crate::plates::on_lost();
+            // Lost device (A 0x100c3f90): an open chat input is closed (A 0x10069580: cursor mode 0,
+            // immediate) and an open scoreboard too (A 0x1006e9e0(1): cursor mode 0, delayed).
+            let mut ops = Vec::new();
+            if st.core.input.is_open() {
+                st.core.input.close();
+                ops.extend(st.lock.request_mode0(true));
+            }
+            if st.core.scoreboard.is_open() {
+                st.core.scoreboard.close();
+                ops.extend(st.lock.request_mode0(false));
+            }
+            ops
         });
+        if let Some(ops) = ops {
+            exec_ops(ops);
+        }
+        // Then the "SetCursor(NULL) once" flag of WM_SETCURSOR is re-armed (store at A 0x100c419b).
+        super::wndproc::on_lost_device();
         crate::ui::mattext::on_lost();
     }));
     let hr = d3d::call_reset(params);
@@ -789,7 +807,8 @@ extern "system" fn reset_hook(_this: *mut std::ffi::c_void, params: *mut std::ff
     crate::log!("ui: device Reset -> {hr:#x}");
     if hr >= 0 {
         let _ = catch_unwind(AssertUnwindSafe(|| {
-            try_with_ui(|st| {
+            super::wndproc::on_reset_device();
+            let ops = try_with_ui(|st| {
                 crate::plates::on_reset();
                 if let Some(r) = st.renderer.as_mut() {
                     r.on_reset();
@@ -798,7 +817,19 @@ extern "system" fn reset_hook(_this: *mut std::ffi::c_void, params: *mut std::ff
                         st.core.print_debug(DIRECT_MODE_LINE.as_bytes());
                     }
                 }
-            })
+                // Last step of A 0x100c41f0: unless the GTA menu is active, cursor mode 2, then mode 0
+                // (immediate) with the input restore run at once (A 0x100c43ff..0x100c4431).
+                if ProcessMemory.read_u32(GTA_MENU_ACTIVE).unwrap_or(0) == 0 {
+                    let mut ops = st.lock.set_mode(2, false);
+                    ops.extend(st.lock.restore_now(true));
+                    ops
+                } else {
+                    Vec::new()
+                }
+            });
+            if let Some(ops) = ops {
+                exec_ops(ops);
+            }
         }));
     }
     hr

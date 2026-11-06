@@ -49,6 +49,18 @@ pub fn install() -> Result<(), String> {
     Ok(())
 }
 
+/// Lost device (A 0x100c3f90, store at A 0x100c419b): the "SetCursor(NULL) once" flag of the
+/// `WM_SETCURSOR` answer is re-armed, so the next `WM_SETCURSOR` hides the Windows cursor again.
+pub fn on_lost_device() {
+    CURSOR_HIDDEN.store(false, Ordering::SeqCst);
+}
+
+/// Reset device (A 0x100c41f0): its first call is `SetCursor(NULL)`.
+pub fn on_reset_device() {
+    // SAFETY: plain Win32 call.
+    unsafe { SetCursor(std::ptr::null_mut()) };
+}
+
 /// B 0x10061EF4.
 const WINDOW_TITLE: &[u8] = b"GTA:SA:MP\0";
 

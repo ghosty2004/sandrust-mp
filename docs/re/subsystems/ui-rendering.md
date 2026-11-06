@@ -92,6 +92,12 @@ Objects from 0x1026ea00 to 0x1026e9f0 are only created when the client is a netw
 - The draw functions call the real device directly (A 0x1026e9b8), never the proxy.
 
 ### 2.2 On lost / reset device (A 0x100c41f0) [O]
+On lost device (A 0x100c3f90, before the real Reset): OnLost of the same objects, then an open
+chat input is closed (A 0x10069580, cursor mode 0 immediate) and an open scoreboard too
+(A 0x1006e9e0 with 1: cursor mode 0, delayed restore); the cursor surface is released and the
+WM_SETCURSOR "once" flag is re-armed (§5). Measured (GAP-UI, docs/phase3/trace-notes.md "Audit
+gaps"): with the chat input open a device loss hides the cursor and closes the input.
+On reset device:
 `SetCursor(NULL)`, then: GUI resource manager reset, nametag state block, font renderer
 fonts (`OnResetDevice`), plate painter, 3D-text painter, death-window fonts and sprite,
 object-editor fonts, chat render-to-texture rebuild (§7.6) and chat sprites. Then the cursor

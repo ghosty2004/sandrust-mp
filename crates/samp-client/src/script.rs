@@ -24,6 +24,9 @@ pub mod op {
     pub const SET_CHAR_DROPS_WEAPONS_WHEN_DEAD: u16 = 0x087E;
     // Parity pass: local per-frame polls (TRACE-1 "Walking") and special actions.
     pub const SET_PLAYER_DRUNKENNESS: u16 = 0x052C;
+    /// RPC 150's player command (descriptor A 0x100e6234: 0x03FD, "ii"; public lists call the RPC
+    /// "set player drunk handling", the opcode's name is unverified).
+    pub const RPC150_PLAYER_COMMAND: u16 = 0x03FD;
     pub const GET_CURRENT_CHAR_WEAPON: u16 = 0x0470;
     pub const GET_AREA_VISIBLE: u16 = 0x077E;
     pub const TASK_HANDS_UP: u16 = 0x05C4;

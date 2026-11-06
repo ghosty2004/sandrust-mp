@@ -1983,7 +1983,7 @@ fn add_component(runner: &mut Runner, handle: i32, component: i32) {
 }
 
 /// `CPool::GetRef` for a vehicle pointer (A 0x100B3C40 → GTA 0x424160).
-fn pool_ref(ptr: u32) -> i32 {
+pub(crate) fn pool_ref(ptr: u32) -> i32 {
     let pool: u32 = rd(g::VEHICLE_POOL);
     if pool == 0 {
         return -1;

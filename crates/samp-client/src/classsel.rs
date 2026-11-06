@@ -7,8 +7,9 @@
 //! * Left/Right arrows are ignored for 2000 ms after entering, need ≥ 250 ms
 //!   between presses and only work once the server answered the last request
 //!   with "selectable"; Right wraps to 0 after the last class, Left wraps to
-//!   `count − 1` before 0; each press clears "class info received" and sends
-//!   RPC 128;
+//!   `count − 1` before 0; each press clears "class info received", plays
+//!   sound 1052 (Right) / 1053 (Left) at the ped and then sends RPC 128
+//!   (A 0x10005ff0 / 0x10006080);
 //! * Shift sends RPC 129 once 2000 ms have passed, class info was received
 //!   and no spawn request is pending; it sets "request pending";
 //! * RPC 129 response 2, or any non-zero response while a request is
@@ -18,6 +19,10 @@ use std::time::{Duration, Instant};
 
 pub const ARROW_GUARD: Duration = Duration::from_millis(2000);
 pub const ARROW_REPEAT: Duration = Duration::from_millis(250);
+/// Sound of the Right arrow (next class), A 0x1000605e `push 0x41c`.
+pub const SOUND_NEXT: i32 = 1052;
+/// Sound of the Left arrow (previous class), A 0x100060e1 `push 0x41d`.
+pub const SOUND_PREVIOUS: i32 = 1053;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Keys {
@@ -28,8 +33,11 @@ pub struct Keys {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// Send RPC 128 with this class index (u32 on the wire).
+    /// Send RPC 128 with this class index (u32 on the wire): the first tick.
     RequestClass(u32),
+    /// An arrow press: play `sound` at the ped's position (the game audio
+    /// object's PlayerPlaySound path, A 0x100a2300), then send RPC 128 with `index`.
+    ChangeClass { index: u32, sound: i32 },
     /// Send RPC 129.
     RequestSpawn,
 }
@@ -126,13 +134,13 @@ impl ClassSelection {
                 self.last_arrow = now;
                 self.index = if self.index == 0 { self.count - 1 } else { self.index - 1 };
                 self.info_received = false;
-                return Some(Action::RequestClass(self.index));
+                return Some(Action::ChangeClass { index: self.index, sound: SOUND_PREVIOUS });
             }
             if keys.right {
                 self.last_arrow = now;
                 self.index = if self.index + 1 >= self.count { 0 } else { self.index + 1 };
                 self.info_received = false;
-                return Some(Action::RequestClass(self.index));
+                return Some(Action::ChangeClass { index: self.index, sound: SOUND_NEXT });
             }
         }
         None
@@ -211,14 +219,14 @@ mod tests {
         c.enter(t0, 3);
         c.tick(t0, NONE);
         c.on_class_response(true);
-        assert_eq!(c.tick(ms(t0, 2500), LEFT), Some(Action::RequestClass(2)));
+        assert_eq!(c.tick(ms(t0, 2500), LEFT), Some(Action::ChangeClass { index: 2, sound: 1053 }));
         // Blocked until the server answers.
         assert_eq!(c.tick(ms(t0, 2900), LEFT), None);
         c.on_class_response(true);
         assert_eq!(c.tick(ms(t0, 2700), RIGHT), None, "250 ms repeat");
-        assert_eq!(c.tick(ms(t0, 2751), RIGHT), Some(Action::RequestClass(0)));
+        assert_eq!(c.tick(ms(t0, 2751), RIGHT), Some(Action::ChangeClass { index: 0, sound: 1052 }));
         c.on_class_response(true);
-        assert_eq!(c.tick(ms(t0, 3100), RIGHT), Some(Action::RequestClass(1)));
+        assert_eq!(c.tick(ms(t0, 3100), RIGHT), Some(Action::ChangeClass { index: 1, sound: 1052 }));
     }
 
     #[test]
