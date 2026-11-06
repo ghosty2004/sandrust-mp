@@ -646,3 +646,15 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - joinburst.sh: JOIN-P assertions (server-side dialog state + ms since the response, client-leg capture order and
   delta ≤ JB_CLASS_MAX_MS), JB_LANE=ui. Ours: 2/2 (plain + mix-sc:8), 0 ms, same datagram. m1, m2, m8a pass;
   607 tests; clippy 0 host + i686.
+
+## 2026-11-06 — SOAK-3 derby 2 h, original vs ours (worktree soak3, branch soak-final)
+- Parallel 2 h derby soaks (original: lane trace, ours: lane veh), same harness, all five cases on both.
+- Harness fixes (no threshold changed): seated players compared via their car (server position of a seated
+  player is the vehicle's; Bus/Dune seats sit metres from the origin), veh_hp bracketed by two server dumps,
+  memory judged from 900 s after a fresh launch (late streaming warm-up on both clients), original's chat read
+  from chatlog.txt so it runs the same cases.
+- Final: original PASS (remote_pos 99.78 %, judged memory 13.6 / 22.7 MB/h); ours PASS (remote_pos 99.57 %,
+  veh_pos 99.64 %, veh_hp 100 %, judged memory 6.0 / 8.4 MB/h, fps 52.4, 0 crashes, all cases OK).
+- Found: after the 15 s netloss drop ours opens a reconnect socket at +10.1 s and another at +16.1 s; the
+  original one socket at +12.2 s. Once ours reached the server before it had timed the old player out →
+  "Unacceptable NickName" → relaunch. Parity task NET-R started (reconnect timeline vs the original).
