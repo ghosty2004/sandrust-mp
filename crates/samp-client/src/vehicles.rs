@@ -491,8 +491,11 @@ impl Vehicles {
         let model = s.model as i32;
         let handle;
         if let Some(train) = vm::train_type(s.model) {
-            for m in vm::RAIL_MODELS {
-                busy_load(runner, m as i32);
+            // Every rail model is waited for (samp: five loops); one that never loads means no train.
+            let loaded = vm::RAIL_MODELS.iter().all(|&m| busy_load(runner, m as i32));
+            if !loaded {
+                crate::ui::print_debug(&format!("Warning: couldn't create vehicle type: {}", s.model));
+                return;
             }
             let dir = i32::from(s.angle > 180.0);
             runner.run(
@@ -501,7 +504,10 @@ impl Vehicles {
             );
             handle = runner.local_i32(0);
         } else {
-            busy_load(runner, model);
+            if !busy_load(runner, model) {
+                crate::ui::print_debug(&format!("Warning: couldn't create vehicle type: {}", s.model));
+                return;
+            }
             runner.run(op::CREATE_CAR, &[Arg::Int(model), Arg::Float(x), Arg::Float(y), Arg::Float(z), Arg::Local(0)]);
             handle = runner.local_i32(0);
             runner.run(op::SET_CAR_HEADING, &[Arg::Int(handle), Arg::Float(s.angle)]);
@@ -1887,7 +1893,10 @@ fn warp_into(runner: &mut Runner, ped_handle: i32, v: &Veh, seat: u8) {
 /// a pool entry. Returns (script handle, CVehicle*).
 pub fn create_detached(runner: &mut Runner, model: u16, colour: u8) -> Option<(i32, u32)> {
     let (x, y, z) = (0.0f32, 0.0f32, 0.0f32);
-    busy_load(runner, i32::from(model));
+    if !busy_load(runner, i32::from(model)) {
+        crate::log!("Warning: couldn't create vehicle type: {model}");
+        return None;
+    }
     runner.run(op::CREATE_CAR, &[Arg::Int(i32::from(model)), Arg::Float(x), Arg::Float(y), Arg::Float(z), Arg::Local(0)]);
     let handle = runner.local_i32(0);
     runner.run(op::SET_CAR_HEADING, &[Arg::Int(handle), Arg::Float(0.0)]);
@@ -1934,10 +1943,12 @@ fn camera_behind(runner: &mut Runner) {
 }
 
 /// Model load before CREATE_CAR (TRACE-4 §1.1): HAS_MODEL_LOADED; if missing REQUEST_MODEL + LOAD_ALL_MODELS_NOW and
-/// busy-wait on HAS_MODEL_LOADED with Sleep(0). samp waits without limit; we stop after 10 s and log.
-fn busy_load(runner: &mut Runner, model: i32) {
+/// busy-wait on HAS_MODEL_LOADED with Sleep(0). samp waits without limit (B 0x100B8474..0x100B84B6, a hang if the
+/// model never loads); we stop after 10 s, log, and return false: the caller then creates nothing (CREATE_CAR on a
+/// model that is not loaded faults in GTA and leaves a dead handle for the next opcodes; ROADMAP decision).
+fn busy_load(runner: &mut Runner, model: i32) -> bool {
     if runner.run(op::HAS_MODEL_LOADED, &[Arg::Int(model)]) {
-        return;
+        return true;
     }
     runner.run(op::REQUEST_MODEL, &[Arg::Int(model)]);
     runner.run(op::LOAD_ALL_MODELS_NOW, &[]);
@@ -1945,10 +1956,11 @@ fn busy_load(runner: &mut Runner, model: i32) {
     while !runner.run(op::HAS_MODEL_LOADED, &[Arg::Int(model)]) {
         if t0.elapsed() > Duration::from_secs(10) {
             crate::log!("vehicles: model {model} still not loaded after 10 s");
-            return;
+            return false;
         }
         std::thread::sleep(Duration::ZERO);
     }
+    true
 }
 
 /// Add-component (vehicle method B 0x100B7FD0, used by RPC 65 and SCM event 2): not loaded → `REQUEST_MODEL`,

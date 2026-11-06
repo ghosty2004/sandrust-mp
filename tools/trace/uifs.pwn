@@ -53,7 +53,7 @@
 //   plabel|P|text|RRGGBBAA|x|y|z|dist|attplayer|attveh|los    CreatePlayer3DTextLabel
 //   rmb|P|model|x|y|z|radius               RemoveBuildingForPlayer
 //   team|P|team  skill|P|skill|level  explode|x|y|z|type|radius  armed|P|weapon  ammo|P|weapon|ammo
-//   resetw|P  forceclass|P  special|P|action  kill|P (health 0)
+//   resetw|P  forceclass|P  special|P|action  kill|P (health 0)  pskin|P|skin (SetPlayerSkin)
 //   wdata|P|slot (GetPlayerWeaponData: the server's view of the client's 204 slot records; M7)  kick|P (Kick)
 // TRACE-7: explodeN|x|y|z|type|radius|n (n explosions at once)  specoff|P (TogglePlayerSpectating off)
 //   findz|P|x|y|z (SetPlayerPosFindZ)
@@ -617,6 +617,7 @@ Run(seq, const line[])
     else if (!strcmp(cmd, "forceclass")) ForceClassSelection(pl(line, 1));
     else if (!strcmp(cmd, "special")) SetPlayerSpecialAction(pl(line, 1), SPECIAL_ACTION:in(line, 2));
     else if (!strcmp(cmd, "kill")) SetPlayerHealth(pl(line, 1), 0.0);
+    else if (!strcmp(cmd, "pskin")) SetPlayerSkin(pl(line, 1), in(line, 2));
     else if (!strcmp(cmd, "bounds")) SetPlayerWorldBounds(pl(line, 1), fl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5));
     else if (!strcmp(cmd, "gravity")) SetPlayerGravity(pl(line, 1), fl(line, 2));
     else if (!strcmp(cmd, "ggravity")) SetGravity(fl(line, 1));

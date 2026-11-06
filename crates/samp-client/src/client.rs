@@ -1871,6 +1871,8 @@ pub(crate) fn set_ped_skin(runner: &mut Runner, ped: u32, skin: u32) {
     ) else {
         return;
     };
+    // Animations the ped's tasks still hold survive the clump (the original's tasks keep pointing at them).
+    crate::pedanims::keep_before_delete(ped);
     // SAFETY: the ped's own virtuals and the game's speech-entity init (thiscall), main thread.
     unsafe {
         let f: extern "thiscall" fn(u32) = std::mem::transmute(delete_rw as usize);

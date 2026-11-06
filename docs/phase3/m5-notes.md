@@ -153,3 +153,44 @@ first 200 (`warps_in=1`); car B's in-game position is 0.3–1.8 m from the serve
 MR-a passengers (G edge vs RPC 26, task opcode/args, 211 rate, exit packets, 203), MR-b locked cars (F and G),
 MR-c enter refusal internals, MR-d 209 ownership / 106 / 136 / 15 s delete, MR-e trailers, trains, bikes,
 heli/plane, MR-f per-frame opcodes while a passenger.
+
+## CRASH-F3: crash during the F3 truck/trailer steps (2026-11-06)
+Report: run `xclient-20261106-161806`, our client, +251 s, read of 0x38C at gta_sa.exe 0x6D321C.
+* **The faulting call**: `CVehicle::ClearVehicleUpgradeFlags` (0x6D3210, `this` = NULL) from
+  `AddVehicleUpgrade` (0x6DF930) from the handler of opcode 0x07FF (SET_CAR_HYDRAULICS, 0x4732F7); our side
+  `Vehicles::on_rpc` → `stream_in` → `Runner::run` (DLL +0x30473 / +0x50980 in that build). The vehicle handle was
+  dead because `busy_load` gave up after 10 s on model 403 / 435, CREATE_CAR (0x00A5) faulted on the unloaded model
+  and the next opcodes ran on its leftover handle; the 11th guarded fault of the process is not caught any more (samp's
+  filter handles 10), so 0x07FF became the crash. Not a trailer RPC: 148/149 match the original (B 0x1001AE00: both
+  slots must hold a vehicle, then the cab's trailer pointer and opcode 0x0893 via B 0x100B7C20; 149 detaches only if
+  the cab has one).
+* **Why the models never loaded**: 10 s earlier `CGame::Process` had faulted inside the streaming eviction of a
+  random traffic model (`CStreaming::RemoveModel` 0x4089A0 → `CClumpModelInfo::DeleteRwObject` 0x4C4E70 →
+  `RpClumpDestroy` → `RpGeometryDestroy` → `RpMaterialDestroy` 0x74DA25, material pointer 1 / 0xC47A0000); the half
+  evicted model left the streaming state broken (later faults in `RpClumpDestroy` 0x74A336 and 0x73485D).
+* **Root cause** (found with temporary per-frame checks of every loaded model's material lists, of every ped's
+  animation list and task fields, and a quarantine of freed `CAnimBlendAssociation`s, vtable 0x85C6D0):
+  `handsup` → `handsup_off` → `skin` leaves the hands-up task (vtable 0x85A29C) holding the association of the old
+  clump, which the skin change frees; at `combat_death_A` (RPC 166 → EXPLODE_CHAR_HEAD) and at the local death GTA
+  aborts the task and writes +0x1C / +0x30..+0x38 into that freed block. When the block had been reused for a traffic
+  model's material list, evicting that model (when the trucks' models were loaded) faulted. The original keeps the
+  same dangling pointer (trace lane, hold session `orig-20261106-175618`: task kept, pointer no longer listed, block
+  intact) — its heap simply did not reuse the block in our runs.
+* **Fix**: `pedanims.rs` — before the skin change's `DeleteRwObject`, associations that one of the ped's tasks
+  (task-manager slots + sub-task chains) points at are unlinked from the clump's list, so they survive with the same
+  contents the original's tasks see; the later writes land in live memory (leak: one 0x3C block + node array per
+  skin change while an animation task runs). `busy_load` now reports failure and stream-in / PlayCrimeReport create
+  nothing for a model that never loads (the original would wait forever) instead of running CREATE_CAR on it.
+  Guarded faults log registers and return-address candidates (`swap::last_fault_details`).
+* **Reproduction**: `tools/e2e/skin-death-trailers.sh [ours|orig] [ROUNDS]` (trace lane): hands up/off, skin change,
+  probe, health 0, trailer attach before the trailer streams in, attach + destroy, model churn. Results: ours 3/3 and
+  4/4 rounds PASS (association kept: vtable 0x85C6D0, not listed; 0 guarded faults; `pedanims: kept` per round);
+  original 3/3 PASS (game alive) and its probe shows the use-after-free directly: after the skin change the task's
+  pointer read vtable 0x1 in round 1 (block already reused) and, in round 2, pointed at an association of the *new*
+  clump (the freed block reused for it).
+* **The original hits the same failure**: in run `xclient-20261106-183028` (after the fix, 53/66) it was the
+  ORIGINAL that broke at `veh_trucks`: its trace (`A-trace.jsonl` of that run) shows it polling
+  `HAS_MODEL_LOADED(403)` from B 0x100B84B6 (the vehicle constructor's endless wait) every frame from t = 230.9 s
+  until the harness killed it at 313 s (frame 11492 never advanced) — the model never loaded, i.e. the same broken
+  streaming state, where ours used to time out and crash. Our client logged no fault in that run. The
+  "game still running 8 s after quit" lines of the original in earlier runs (161806, 163843, 165212) fit the same hang.

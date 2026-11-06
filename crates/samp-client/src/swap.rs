@@ -219,6 +219,59 @@ pub(crate) fn last_fault_address() -> u32 {
     FAULT_ADDRESS.load(Ordering::SeqCst)
 }
 
+/// Diagnostics of the last handled fault: return-address candidates on its stack (gta_sa.exe code and this DLL's
+/// code) and the general registers, written lock-free by [`seh_handler`], read by [`last_fault_details`].
+const FAULT_STACK_LEN: usize = 24;
+static FAULT_STACK: [AtomicU32; FAULT_STACK_LEN] = [const { AtomicU32::new(0) }; FAULT_STACK_LEN];
+static FAULT_REGS: [AtomicU32; 7] = [const { AtomicU32::new(0) }; 7];
+
+/// "regs edi=.. ...; stack 0x.. 0x.." for the log line of a guarded fault.
+pub(crate) fn last_fault_details() -> String {
+    let names = ["edi", "esi", "ebx", "edx", "ecx", "eax", "esp"];
+    let mut out = String::from("regs");
+    for (n, r) in names.iter().zip(FAULT_REGS.iter()) {
+        out += &format!(" {n}={:#x}", r.load(Ordering::SeqCst));
+    }
+    out += "; stack";
+    for a in FAULT_STACK.iter().map(|a| a.load(Ordering::SeqCst)).take_while(|&a| a != 0) {
+        out += &format!(" {a:#x}");
+    }
+    out
+}
+
+/// Records the registers and the return-address candidates (gta_sa.exe code, our own image) of a fault context.
+///
+/// # Safety
+/// `context` is the dispatcher's x86 `CONTEXT` of a fault on the current thread.
+unsafe fn record_fault_context(context: *const u8) {
+    const GTA_TEXT: std::ops::Range<u32> = 0x401000..0x857000;
+    let own_base = crate::dll::module_base();
+    let own = own_base..own_base.wrapping_add(0x0030_0000);
+    // SAFETY: CONTEXT offsets per winnt.h (Edi..Eax at 0x9C..0xB0, Esp at 0xC4); the stack words are read only
+    // between the faulting ESP and the thread's stack base from the TIB.
+    unsafe {
+        for (i, off) in [0x9Cusize, 0xA0, 0xA4, 0xA8, 0xAC, 0xB0, ctx::ESP].into_iter().enumerate() {
+            FAULT_REGS[i].store(std::ptr::read_unaligned(context.add(off).cast::<u32>()), Ordering::SeqCst);
+        }
+        let esp: u32 = std::ptr::read_unaligned(context.add(ctx::ESP).cast());
+        let stack_base: u32;
+        std::arch::asm!("mov {}, dword ptr fs:[4]", out(reg) stack_base, options(nostack, readonly, preserves_flags));
+        let mut n = 0;
+        let mut at = esp & !3;
+        while at < stack_base.saturating_sub(4) && at < esp.saturating_add(0x1000) && n < FAULT_STACK_LEN {
+            let w: u32 = std::ptr::read_unaligned(at as *const u32);
+            if GTA_TEXT.contains(&w) || own.contains(&w) {
+                FAULT_STACK[n].store(w, Ordering::SeqCst);
+                n += 1;
+            }
+            at += 4;
+        }
+        for slot in FAULT_STACK.iter().skip(n) {
+            slot.store(0, Ordering::SeqCst);
+        }
+    }
+}
+
 /// Chat lines of guarded faults outside the remote ped's ProcessControl (script commands, the game-process call),
 /// printed by the client tick: the guard itself may run inside UI code.
 static FAULT_LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -334,6 +387,7 @@ unsafe extern "C" fn seh_handler(rec: *mut u8, frame: *mut u32, context: *mut u8
         let code: u32 = std::ptr::read_unaligned(rec.add(ctx::REC_CODE).cast());
         let address: u32 = std::ptr::read_unaligned(rec.add(ctx::REC_ADDRESS).cast());
         FAULT_ADDRESS.store(address, Ordering::SeqCst);
+        record_fault_context(context);
         let saved_ebp = *frame.add(2);
         std::ptr::write_unaligned(context.add(ctx::EAX).cast::<u32>(), code.max(1));
         std::ptr::write_unaligned(context.add(ctx::EBP).cast::<u32>(), saved_ebp);

@@ -649,7 +649,7 @@ extern "C" fn game_process_hook() {
         let code = unsafe { crate::swap::guarded_thiscall(orig, 0) };
         if code != 0 {
             let at = crate::swap::last_fault_address();
-            crate::log!("main: CGame::Process faulted: {code:#x} at {at:#x}");
+            crate::log!("main: CGame::Process faulted: {code:#x} at {at:#x} ({})", crate::swap::last_fault_details());
             crate::swap::push_fault(crate::swap::FaultSite::Named("s007"), code, at);
         }
     }

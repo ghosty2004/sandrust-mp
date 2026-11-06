@@ -309,6 +309,13 @@ variables are my best identification; anything not certain is marked "(inferred)
   - If the model is not a valid ped model (0x100b3e10), the client logs "Warning: SetPlayerSkin %d isn't a valid ped model." and stops.
   - Otherwise it applies the model to the local ped, or to a remote player's ped if it is streamed in.
   - Model change (ped method 0x100aff90): invalid models fall back to 0. The client patches GTA 0x5A82C0 with `ret` (0xC3), calls 0x100ae060, sets the model with streaming (0x1009efb0) and calls GTA 0x4E68D0 on the ped (inferred: rebuilds ped data after the model change).
+  - Only the IK secondary task is deleted first (0x100ae060); every other task stays. A task that runs an
+    animation keeps its pointer to the old clump's association, which the model change frees. Measured on the
+    original (trace lane, 2026-11-06, hold session `orig-20261106-175618`): SetPlayerSpecialAction 10 then 0 (the
+    hands-up task, vtable 0x85A29C, stays the primary task), then SetPlayerSkin → the task's +0x8 still points at
+    the old association (contents intact, no longer in the new clump's list). Aborting that task later (death,
+    any event) writes into the freed block (+0x1C blend delta, +0x30..+0x38 finish callback). Our client keeps such
+    associations alive instead (`pedanims.rs`, ROADMAP decision "CRASH-F3").
 - open.mp writes u16+u32+u32 only for DL clients; the non-DL path (u32 ID, u32 skin) matches the client.
 
 ### 11 SetPlayerName (S→C)

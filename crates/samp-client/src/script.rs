@@ -262,7 +262,10 @@ mod runner {
                     _ => None,
                 };
                 let address = crate::swap::last_fault_address();
-                crate::log!("script: opcode {opcode:#06x} faulted: {code:#x} at {address:#x}");
+                crate::log!(
+                    "script: opcode {opcode:#06x} faulted: {code:#x} at {address:#x} ({})",
+                    crate::swap::last_fault_details()
+                );
                 crate::swap::push_fault(crate::swap::FaultSite::Opcode { opcode, component }, code, address);
                 return false;
             }

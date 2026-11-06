@@ -25,6 +25,7 @@ pub mod objedit;
 pub mod patch;
 pub mod patches;
 pub mod pe;
+pub mod pedanims;
 pub mod pedhooks;
 pub mod remote;
 pub mod saafs;

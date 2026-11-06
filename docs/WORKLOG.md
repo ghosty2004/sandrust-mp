@@ -780,3 +780,28 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   +0.43…+0.52 (check PASS 5/5). X differs with the car's lateral rocking (ROADMAP decision VEHTAG).
 - Cost: 3 original runs (one wasted on a wrong bot id, one on the ortho projection), 4 ours runs (one lost to a
   gamescope/Xwayland restart under memory pressure).
+
+## 2026-11-06 — CRASH-F3: our client crashed in the F3 truck/trailer steps (heap corruption from a skin change)
+- Crash of run `xclient-20261106-161806` (+251 s, read of 0x38C at gta_sa.exe 0x6D321C): mapped with the same
+  DLL's symbols to `Vehicles::stream_in` → `Runner::run` → opcode 0x07FF → `AddVehicleUpgrade` 0x6DF930 →
+  `ClearVehicleUpgradeFlags` 0x6D3210 on a NULL vehicle; it was the 11th guarded fault (samp's filter handles 10).
+  The cascade started 20 s earlier with a guarded fault in `CGame::Process` (streaming eviction → `RpMaterialDestroy`
+  0x74DA25 on a garbage material pointer); afterwards no model loaded, `busy_load` timed out and CREATE_CAR / the
+  following opcodes ran on an unloaded model. Trailer RPCs 148/149 match the original (B 0x1001AE00 / 0x100B7C20).
+- Root cause (temporary per-frame RW / anim checks and a quarantine of freed `CAnimBlendAssociation`s, removed
+  again): `handsup` → `handsup_off` → `skin` leaves the hands-up task holding the old clump's association that the
+  skin change frees; the death later writes into the freed block. Measured on the original in the trace lane: the
+  same dangling pointer exists there (task kept, association intact, no longer listed). Details:
+  docs/phase3/m5-notes.md "CRASH-F3", spec docs/re/subsystems/player-state.md RPC 153.
+- Fix: `pedanims.rs` (task-held associations are unlinked from the clump list before `DeleteRwObject`, so they stay
+  valid; 4 unit tests), `busy_load` failure → no vehicle created (stream-in, PlayCrimeReport), guarded faults log
+  registers + return-address candidates. ROADMAP decision "CRASH-F3". `tools/trace/uifs.pwn`: `pskin|P|skin`.
+  New reproduction `tools/e2e/skin-death-trailers.sh [ours|orig] [ROUNDS]` (trace lane).
+- Verified: cargo test --workspace (all ok, +4 pedanims tests), clippy host --all-targets + i686 clean;
+  `tools/e2e/m5.sh` (lane veh) PASS; `tools/e2e/skin-death-trailers.sh ours` PASS 3/3 and 4/4 rounds (0 faults),
+  `… orig 3` PASS (its probe shows the dangling pointer reused); `tools/diff/cross-client.sh` with the final build:
+  66/66 exit 0 in `xclient-20261106-182119` and `-184745`; the other runs failed through the ORIGINAL only — its
+  respawn flake (`-183649`), physics/sender variance (`-181604`, 63/66) and twice (`-183028`, `-184221`) the
+  original froze in its endless wait for model 403 at `veh_trucks`, i.e. the same corruption hitting samp.dll.
+  Suggestion for main: run `skin` before `handsup` in xclient.py (needs new calibration runs) so the scenario stops
+  triggering samp's own use-after-free. Cost: ~5 h wall, ~25 cross-client runs, 4 trace-lane sessions.
