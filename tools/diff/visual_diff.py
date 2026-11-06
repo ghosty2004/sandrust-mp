@@ -124,31 +124,37 @@ def normalise(tool, kind, opts, frame):
             if n["fn"] == "sprite.Draw" and "file:" not in str((n.get("args") or {}).get("tex")):
                 continue
             n = degeo(n)
-        if atlas_draw(n) and out and atlas_draw(json.loads(out[-1])):
-            # D3DX flushes a glyph batch when its 256x256 atlas texture fills up mid-string, so
-            # the same text can arrive as one draw or as two consecutive draws of the same atlas
-            # with the same state (depends on what was drawn before). Merge consecutive atlas
-            # draws: identical totals mean identical geometry on screen.
+        if d3dx_draw(n) and "v" in (n.get("vertices") or {}):
+            n["vertices"].pop("hash", None)  # the decoded list is compared instead (merging below)
+        if d3dx_draw(n) and out and d3dx_draw(json.loads(out[-1])):
+            # D3DX (ID3DXFont glyph atlas, ID3DXSprite) flushes a batch when its dynamic vertex buffer or
+            # 256x256 glyph atlas fills up, so the same sprite.Draw / DrawText calls can arrive as one draw
+            # or as two consecutive draws with the same state (depends on what was drawn before). Merge
+            # consecutive D3DX draws with identical state: the joined vertex lists are still compared
+            # vertex by vertex (the tracer decodes up to 1024 per draw), so only the split point is ignored.
             prev = json.loads(out[-1])
             if same_but_counts(prev, n):
                 for k in ("num_vertices", "prims"):
                     prev["args"][k] = (prev["args"].get(k) or 0) + (n["args"].get(k) or 0)
-                if "vertices" in prev and "vertices" in n:
-                    prev["vertices"]["n"] = (prev["vertices"].get("n") or 0) + (n["vertices"].get("n") or 0)
+                pv, nv = prev.get("vertices"), n.get("vertices")
+                if pv is not None and nv is not None:
+                    pv["n"] = (pv.get("n") or 0) + (nv.get("n") or 0)
+                    if "v" in pv and "v" in nv:
+                        pv["v"] = pv["v"] + nv["v"]
+                    pv.pop("hash", None)
                 out[-1] = json.dumps(prev, sort_keys=True)
                 continue
         out.append(json.dumps(n, sort_keys=True))
     return out
 
 
-def atlas_draw(n):
-    """A DrawIndexedPrimitive of D3DX's dynamic 256x256 glyph atlas (not a file texture)."""
-    return (n.get("fn") == "dev.DrawIndexedPrimitive" and "256x256" in str(n.get("tex0"))
-            and "file:" not in str(n.get("tex0")))
+def d3dx_draw(n):
+    """A DrawIndexedPrimitive issued by D3DX itself (ID3DXSprite / ID3DXFont batches)."""
+    return n.get("fn") == "dev.DrawIndexedPrimitive" and n.get("by") == "d3dx9_25.dll"
 
 
 def same_but_counts(a, b):
-    """Two atlas draws that differ only in their vertex / primitive counts."""
+    """Two D3DX draws that differ only in their vertex / primitive counts."""
     def strip(n):
         n = json.loads(json.dumps(n))
         for k in ("num_vertices", "prims"):
