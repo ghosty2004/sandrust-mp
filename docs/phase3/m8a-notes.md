@@ -94,8 +94,9 @@ Changes outside `ui/`: `dll.rs` (frame order, game-frame hook calls the RT updat
 
 ## Deviations / TODO-unknown
 
-* Sprite textdraws (font 4) follow samp's loader and match the original's draw; `mdlNNN` sprites and
-  model previews (font 5, A 0x100b34e0: 256×256 RT quad measured) are not drawn (TODO).
+* Sprite textdraws (font 4) follow samp's loader and match the original's draw; `mdlNNN` sprites take the
+  generic TXD path (no custom-model store in R4; F4 element `mdl`). Model previews (font 5): done 2026-11-07,
+  see "Model previews (M8A-PREVIEW)" below.
 * Nametags of drivers: resolved 2026-11-06, see "Remote driver nametag (MR-M8A-5)" below.
 * Resolved: the 1-px glyph difference of GUI font 0 (`a` of "Cancel") came from the missing
   class-selection panel — the original caches `a` first through its `Spawn` button; with the panel
@@ -137,3 +138,44 @@ every remote in samp state 0x13 (driver) at the vehicle's matrix position.
   The old `vehtag` element of visual-scenario.sh is a geo element whose tag is off-screen (X ≈ 1700 at
   W 1280) — it never compared a position.
 * Not measured: an RC driver's tag (vehicle path) — from static analysis only.
+
+## Model previews (M8A-PREVIEW) and the class-selection panel with a dialog (2026-11-07)
+
+User report (samp.rss-ro.com, class selection with the server's language dialog open): the original renders a
+model-preview textdraw (a pumpkin) bottom left, ours drew nothing; ours drew the class-selection buttons over the
+dialog, the original did not.
+
+* Static (A build; spec UR §14.3a and §4.2): previews are rendered once per textdraw object from the game-frame hook
+  after `CGame::Process` (A 0x100a27e6 → 0x1001e870 → 0x100b34e0) into a new 256×256 camera-texture raster:
+  peds A 0x1006c140 (samp's ped constructor, player slot 0xD0), vehicles A 0x1006c3c0 (samp's vehicle
+  constructor), objects / weapons / unknown ids A 0x1006c9b0 (an RW instance, 18631 fallback); the camera set
+  is built in the first-frame pass (A 0x1006be40). Until its texture exists a preview takes the text path
+  (A 0x100b34c0). Freed with the textdraw and on device loss (A 0x100c41e5).
+  The class-selection step A 0x10006100 shows the panel (and sends the first RPC 128, A 0x100058d0) on its
+  first frame without an open dialog and does nothing while one is open; Present always renders the GUI
+  dialog (DXUT skips it while invisible).
+* Implementation: `crates/samp-client/src/ui/preview.rs` (camera set, per-textdraw textures keyed by the
+  textdraw's creation serial, renders, lost-device release), `textdraws.rs` (sprite path with the preview
+  texture, else the text path), `glue.rs` (camera set at the first-frame UI construction, `generate` from
+  `game_frame`, release in the Reset hook; class panel latch `class_panel_shown`), `players.rs`
+  (`create_preview_ped` / `destroy_preview_ped`), `vehicles.rs` (`create_at`, `delete_handle`, `samp_type`),
+  `worldhooks.rs` (samp's FOGENABLE render-state hook semantics for one call, the vehicle-preview fog flag
+  A 0x1026ea58), `ui/d3d.rs` (plate substitution in `SetTexture` now tail-jumps into the real call like samp,
+  B 0x10074C3E), `client.rs` (RPC 124 spectating off with the class-selection flag set → class selection,
+  B 0x100041A0; before, ours spawned), `samp-ui` `TextDraw::serial`.
+* Measurement: `tools/diff/visual-scenario.sh` `visual_previews` / `visual_classdlg` (m8afs `tdprev`, `tdprot`,
+  `tdpmodel`, `tddel`, `ptdprev`, `ptddel`, `unspec`; tracer `d3d devreset N` forces a device loss on both
+  clients). Elements `pvped` `pvveh` `pvobj` `pvmany` `pvrot` `pvmodel` `pvreset` (kind `pvrt`: raster creation,
+  every render-target pass, the frame's preview draws), `mdlpreview` `mdlpvupd` `mdlpvreset` `mdlpvdel` (kind
+  `preview`: the preview quads), `classdlg` `classpanel` `classdlg2` (kind `ui`).
+* Original findings: the render pass is RW camera begin (SetRenderTarget 256×256 + Z, viewport, Clear(3, bg
+  colour), VIEW/PROJECTION through samp's proxy), BeginScene, samp's fog triple, the model's draws, the switch
+  back; the texture is drawn in the same frame (one `DrawPrimitive` fan, letter colour); a model id of 20000
+  crashed samp (reads past GTA's model table); 315 is never rendered; re-sent RPC 134 renders again; a device
+  loss re-renders every preview in the next frame. With the dialog open when the class selection begins, no
+  panel and no RPC 128 until the dialog is answered; a dialog opened over the panel leaves it shown.
+* Found by the device-loss step of the full F4 run: after a Reset ours set the chat GUI dialog (0x1026ea9c) back
+  to the full video size, the original keeps the input-box size it got when the chat input was first opened
+  (samp's reset pass A 0x100c41f0 does not touch that dialog). Fixed in `render.rs` `on_reset`.
+* Residual (ROADMAP decision): in the full scenario the 411 preview's light materials toggle SPECULARENABLE in the
+  original and not in ours — state left by the earlier in-world Infernus renders (0 lines without them).

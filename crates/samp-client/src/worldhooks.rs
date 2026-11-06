@@ -255,8 +255,25 @@ fn d3d_render_state(state: u32, value: u32) {
     }
 }
 
-/// samp's fog setter (A 0x100c3d70): FOGENABLE := on, FOGTABLEMODE := NONE, FOGVERTEXMODE := LINEAR.
+/// samp's vehicle-preview flag (A 0x1026ea58): set around the vehicle draw of a model-preview render
+/// (A 0x1006c608); the fog setter then always writes FOGENABLE 0.
+static PREVIEW_VEHICLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// One `RwRenderStateSet(FOGENABLE, on)` the way samp's RenderWare render-state hook (A 0x100c3dc0) turns it into
+/// D3D calls: samp's fog setter with the value, then RenderWare itself gets FALSE.
+pub(crate) fn samp_fog_render_state(on: bool) {
+    set_fog(on);
+    rw_render_state(14, 0);
+}
+
+pub(crate) fn set_preview_vehicle(on: bool) {
+    PREVIEW_VEHICLE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// samp's fog setter (A 0x100c3d70): FOGENABLE := on (0 while a preview vehicle is drawn), FOGTABLEMODE := NONE,
+/// FOGVERTEXMODE := LINEAR.
 fn set_fog(on: bool) {
+    let on = on && !PREVIEW_VEHICLE.load(std::sync::atomic::Ordering::Relaxed);
     d3d_render_state(28, u32::from(on));
     d3d_render_state(35, 0);
     d3d_render_state(140, 3);

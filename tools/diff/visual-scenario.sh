@@ -117,6 +117,8 @@ visual_scenario() {
     cap testdw ui
     visual_labels
     visual_mattext
+    visual_previews
+    visual_classdlg
 }
 
 # Object material text (RPC 44 + 84, user report "Romania Super Stunt"): m8afs `mtscene` creates 14 sign / board
@@ -148,6 +150,93 @@ visual_mattext() {
     shot mattext2
     fs 'camera|L'
     fs 'togglecontrol|L|1'
+}
+
+# Model-preview textdraws (font 5, A 0x100b34e0 from the game-frame hook after CGame::Process): one off-screen
+# RenderWare render per textdraw into its own 256x256 camera-texture raster, then the sprite path draws that texture.
+# pv* captures log every call (`all`) of the frames around one creation (the render-target pass); mdlpreview /
+# mdlpvupd / mdlpvreset / mdlpvdel are the steady display (kind `preview`: the textured quads). Ped (skin 7), vehicle
+# (411, colours 3/6), SAMP.img object (19320 pumpkin, transparent background), a box with zoom 2, a weapon with zoom
+# 0.6 and a letter colour, a negative model (-5: samp's 18631 fallback, turned 180 degrees; an id of 20000 reads past
+# GTA's model table and crashes samp), a model outside the ped, vehicle and object ranges (315: never rendered, stays
+# on the text path), a player textdraw (skin 162: its own height); then a rotation update and a model change while
+# shown (re-sent RPC 134), a device loss, then destroy / hide.
+visual_previews() {
+    fs 'pos|L|1700.0|-2600.0|13.5|90.0'
+    sleep 2
+    cap_start pvped all 48
+    fs 'tdprev|4|20.0|160.0|90.0|110.0|7|-10.0|0.0|-20.0|1.0|336699FF|-1|-1'
+    cap_end pvped; shot pvped
+    cap_start pvveh all 48
+    fs 'tdprev|5|120.0|160.0|120.0|90.0|411|-15.0|0.0|-40.0|1.0|202020FF|3|6'
+    cap_end pvveh; shot pvveh
+    cap_start pvobj all 48
+    fs 'tdprev|6|250.0|160.0|80.0|80.0|19320|0.0|0.0|30.0|1.0|00000000|-1|-1'
+    cap_end pvobj; shot pvobj
+    # One render per frame: a pause after each show, so the RPCs never arrive in the same frame (two renders in one
+    # frame share one scene; the split depends on network timing).
+    cap_start pvmany all 400
+    fs 'tdprev|7|340.0|160.0|70.0|70.0|1220|20.0|10.0|45.0|2.0|AA3300C0|-1|-1'; sleep 0.6
+    fs 'tdprev|8|420.0|160.0|70.0|70.0|348|0.0|0.0|90.0|0.6|FFFFFF40|-1|-1|FF8080FF'; sleep 0.6
+    fs 'tdprev|9|500.0|160.0|70.0|70.0|-5|0.0|0.0|0.0|1.0|000000FF|-1|-1'; sleep 0.6
+    fs 'tdprev|3|500.0|260.0|70.0|70.0|315|0.0|0.0|0.0|1.0|000000FF|-1|-1'; sleep 0.6
+    fs 'ptdprev|20.0|300.0|60.0|80.0|162|0.0|0.0|180.0|1.0|404040FF'
+    cap_end pvmany
+    sleep 1; cap mdlpreview all
+    cap_start pvrot all 48
+    fs 'tdprot|5|-15.0|0.0|140.0|1.5'
+    cap_end pvrot
+    cap_start pvmodel all 48
+    fs 'tdpmodel|4|162'
+    cap_end pvmodel
+    sleep 1; cap mdlpvupd all
+    # Device loss + Reset (tracer `d3d devreset`): samp frees every preview texture in its lost-device pass and the
+    # next game frame renders them again.
+    cap_start pvreset all 150
+    tctl "d3d devreset 15" > /dev/null
+    cap_end pvreset
+    sleep 1; cap mdlpvreset all
+    fs 'tddel|5'
+    fs 'tdhide|6'
+    fs 'ptddel'
+    sleep 1; cap mdlpvdel all
+    local i
+    for i in 3 4 7 8 9; do fs "tddel|$i"; done
+    sleep 0.5
+}
+
+# Class selection with a dialog (samp A 0x10006100, run from the netgame tick while selecting a class): the
+# class-selection panel (GUI dialog 0x1026eaa4) is made visible on the first such frame WITHOUT an open dialog
+# (dialog +0x28); while a dialog is open nothing happens, so a dialog that is already open when the class selection
+# starts keeps the panel away until it closes. A dialog opened over a shown panel does not hide it.
+visual_classdlg() {
+    fs 'dialog|60|0|Language|Choose your language:\nEnglish / Romana|OK|Cancel'
+    sleep 1
+    fs 'forceclass|L'
+    # The gamemode (gungame) spectates the dead player; leaving spectating with the force flag set goes to the class
+    # selection (with the dialog still open).
+    fs 'kill|L'
+    sleep 4
+    fs 'unspec|L'
+    # The first RPC 128 waits for the dialog too (it is sent on the panel's first frame, A 0x100058d0).
+    sleep 4
+    cap classdlg ui
+    key Escape; waitlog 'id 60 response 0' 5
+    waitlog '\[e2e\] class id=' 10
+    sleep 2
+    cap classpanel ui
+    fs 'dialog|61|0|Second|Opened over the panel|OK|'
+    sleep 1
+    cap classdlg2 ui
+    key Return; waitlog 'id 61 response 1' 5
+    sleep 0.5
+    local i
+    for i in 1 2 3; do
+        mark_log
+        key shift
+        waitlog "\[e2e\] spawn id=" 8 && break
+    done
+    sleep 2
 }
 
 # 3D text labels (RPC 36) and chat bubbles with `{RRGGBB}` codes: the pool pass A 0x10001350 and the bubble pass

@@ -8,6 +8,9 @@
 //   menu|title|x|y|w1|w2|item;item…  CreateMenu (1 or 2 columns: w2 > 0) + items
 //   menushow   menuhide             ShowMenuForPlayer / HideMenuForPlayer (L)
 //   tdsize|ID|x|y   tdmodel|ID|model    TextDrawTextSize / model preview (font 5), re-shown
+//   tdprev|ID|x|y|w|h|model|rx|ry|rz|zoom|BG|c1|c2[|LETTER]   model preview textdraw (font 5), shown
+//   tdprot|ID|rx|ry|rz|zoom   tdpmodel|ID|model   preview rotation / model changed, re-shown
+//   tddel|ID   ptdprev|x|y|w|h|model|rx|ry|rz|zoom|BG   ptddel   TextDrawDestroy / player preview textdraw
 // Original header:
 // TRACE-3/TRACE-5 filterscript (trace lane only): server-side actions on demand.
 // tools/trace/ui.sh appends lines "SEQ CMD|ARG|ARG|..." to scriptfiles/uicmd.txt; every
@@ -65,7 +68,7 @@
 //   plabel|P|text|RRGGBBAA|x|y|z|dist|attplayer|attveh|los    CreatePlayer3DTextLabel
 //   rmb|P|model|x|y|z|radius               RemoveBuildingForPlayer
 //   team|P|team  skill|P|skill|level  explode|x|y|z|type|radius  armed|P|weapon  ammo|P|weapon|ammo
-//   resetw|P  forceclass|P  special|P|action  kill|P (health 0)
+//   resetw|P  forceclass|P  special|P|action  kill|P (health 0)  unspec|P (spectating off)
 #define FILTERSCRIPT
 #pragma dynamic 65536
 #include <open.mp>
@@ -79,6 +82,7 @@ new gCdId = -1, gCdStyle, gCdDelay, gCdVia;
 new gChFrom = -1, gChTo, gChStyle;
 new Text:gTd[10] = { Text:INVALID_TEXT_DRAW, ... };
 new Menu:gMenu = Menu:INVALID_MENU;
+new PlayerText:gPtd = PlayerText:INVALID_PLAYER_TEXT_DRAW;
 
 public OnFilterScriptInit()
 {
@@ -103,7 +107,7 @@ public OnPlayerConnect(playerid)
 
 public OnPlayerDisconnect(playerid, reason)
 {
-    if (playerid == gLocal) gLocal = INVALID_PLAYER_ID;
+    if (playerid == gLocal) { gLocal = INVALID_PLAYER_ID; gPtd = PlayerText:INVALID_PLAYER_TEXT_DRAW; }
     printf("[ui-fs] disconnect %d %d", playerid, reason);
     return 1;
 }
@@ -554,6 +558,7 @@ Run(seq, const line[])
         TogglePlayerSpectating(pl(line, 1), true);
         PlayerSpectatePlayer(pl(line, 1), pl(line, 2));
     }
+    else if (!strcmp(cmd, "unspec")) TogglePlayerSpectating(pl(line, 1), false);
     else if (!strcmp(cmd, "attachtrailer")) AttachTrailerToVehicle(in(line, 1), in(line, 2));
     else if (!strcmp(cmd, "manual")) ManualVehicleEngineAndLights();
     else if (!strcmp(cmd, "stats"))
@@ -705,6 +710,60 @@ Run(seq, const line[])
         TextDrawSetPreviewRot(gTd[id], -16.0, 0.0, -55.0, 1.0);
         TextDrawBackgroundColour(gTd[id], 0x00000044);
         TextDrawShowForPlayer(gLocal, gTd[id]);
+    }
+    else if (!strcmp(cmd, "tdprev"))
+    {
+        // Model preview (font 5): tdprev|ID|x|y|w|h|model|rx|ry|rz|zoom|BGRRGGBBAA|c1|c2|LETTERRRGGBBAA
+        new id = in(line, 1);
+        if (gTd[id] != Text:INVALID_TEXT_DRAW) TextDrawDestroy(gTd[id]);
+        gTd[id] = TextDrawCreate(fl(line, 2), fl(line, 3), "_");
+        TextDrawFont(gTd[id], TEXT_DRAW_FONT_MODEL_PREVIEW);
+        TextDrawTextSize(gTd[id], fl(line, 4), fl(line, 5));
+        TextDrawSetPreviewModel(gTd[id], in(line, 6));
+        TextDrawSetPreviewRot(gTd[id], fl(line, 7), fl(line, 8), fl(line, 9), fl(line, 10));
+        TextDrawBackgroundColour(gTd[id], colour(line, 11));
+        TextDrawSetPreviewVehicleColours(gTd[id], in(line, 12), in(line, 13));
+        field(line, 14, c);
+        TextDrawColour(gTd[id], c[0] ? hexval(c) : 0xFFFFFFFF);
+        TextDrawShowForPlayer(gLocal, gTd[id]);
+        printf("[ui-fs] %d tdprev %d = %d", seq, id, _:gTd[id]);
+    }
+    else if (!strcmp(cmd, "tdprot"))
+    {
+        // tdprot|ID|rx|ry|rz|zoom: TextDrawSetPreviewRot, re-shown (the update path while shown).
+        new id = in(line, 1);
+        TextDrawSetPreviewRot(gTd[id], fl(line, 2), fl(line, 3), fl(line, 4), fl(line, 5));
+        TextDrawShowForPlayer(gLocal, gTd[id]);
+    }
+    else if (!strcmp(cmd, "tdpmodel"))
+    {
+        // tdpmodel|ID|model: TextDrawSetPreviewModel, re-shown.
+        new id = in(line, 1);
+        TextDrawSetPreviewModel(gTd[id], in(line, 2));
+        TextDrawShowForPlayer(gLocal, gTd[id]);
+    }
+    else if (!strcmp(cmd, "tddel"))
+    {
+        new id = in(line, 1);
+        if (gTd[id] != Text:INVALID_TEXT_DRAW) TextDrawDestroy(gTd[id]);
+        gTd[id] = Text:INVALID_TEXT_DRAW;
+    }
+    else if (!strcmp(cmd, "ptdprev"))
+    {
+        // Player textdraw (client ids 2048+) model preview: ptdprev|x|y|w|h|model|rx|ry|rz|zoom|BG
+        if (gPtd != PlayerText:INVALID_PLAYER_TEXT_DRAW) PlayerTextDrawDestroy(gLocal, gPtd);
+        gPtd = CreatePlayerTextDraw(gLocal, fl(line, 1), fl(line, 2), "_");
+        PlayerTextDrawFont(gLocal, gPtd, TEXT_DRAW_FONT_MODEL_PREVIEW);
+        PlayerTextDrawTextSize(gLocal, gPtd, fl(line, 3), fl(line, 4));
+        PlayerTextDrawSetPreviewModel(gLocal, gPtd, in(line, 5));
+        PlayerTextDrawSetPreviewRot(gLocal, gPtd, fl(line, 6), fl(line, 7), fl(line, 8), fl(line, 9));
+        PlayerTextDrawBackgroundColour(gLocal, gPtd, colour(line, 10));
+        PlayerTextDrawShow(gLocal, gPtd);
+    }
+    else if (!strcmp(cmd, "ptddel"))
+    {
+        if (gPtd != PlayerText:INVALID_PLAYER_TEXT_DRAW) PlayerTextDrawDestroy(gLocal, gPtd);
+        gPtd = PlayerText:INVALID_PLAYER_TEXT_DRAW;
     }
     else if (!strcmp(cmd, "tdhide")) TextDrawHideForPlayer(gLocal, gTd[in(line, 1)]);
     else if (!strcmp(cmd, "select")) { field(line, 1, c); SelectTextDraw(gLocal, hexval(c)); }

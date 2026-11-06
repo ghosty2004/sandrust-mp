@@ -76,6 +76,9 @@ struct State {
     menu_pad: (bool, bool),
     /// Class-selection panel buttons (`<<`, `>>`, `Spawn`) drawn this frame.
     class_buttons: Option<[samp_ui::Rect; 3]>,
+    /// The class-selection panel (GUI dialog 0x1026eaa4, visible flag +0x13) was made visible: samp's class-selection
+    /// step (A 0x10006100) does it on the first frame without an open dialog and keeps it until the spawn.
+    class_panel_shown: bool,
     /// Last click on a dialog list row (double-click detection).
     last_list_click: Option<(usize, std::time::Instant)>,
     /// Last scoreboard row click (double-click detection).
@@ -537,6 +540,7 @@ fn ensure(g: &mut Option<State>, debug_mode: bool) -> &mut State {
             last_list_click: None,
             last_scoreboard_click: None,
             class_buttons: None,
+            class_panel_shown: false,
             spawn_release: false,
             netgame_object: false,
             net_stats: super::core::NetStats::default(),
@@ -631,6 +635,8 @@ fn frame_entry_inner(debug_mode: bool) {
                     st.core.print_debug(DIRECT_MODE_LINE.as_bytes());
                 }
                 st.renderer = Some(r);
+                // The model-preview camera set (A 0x1006ccc0, created in the same first-frame pass).
+                super::preview::init_env();
                 boot_settings(st);
             }
             Err(e) => {
@@ -650,6 +656,13 @@ fn frame_entry_inner(debug_mode: bool) {
     // from samp's game-frame code, inside GTA's scene).
     if st.core.class_selection && !st.core.scoreboard.is_open() {
         exec_ops(st.lock.request_mode2());
+    }
+    // A 0x10006100: while a dialog is open (dialog +0x28) nothing else happens; otherwise the first such frame makes
+    // the panel visible. It stays visible when a dialog opens later and goes with the class selection (A 0x10003c20).
+    if !st.core.class_selection {
+        st.class_panel_shown = false;
+    } else if !st.core.dialogs.is_open() {
+        st.class_panel_shown = true;
     }
     menu_work(st);
     // Scoreboard: rows rebuilt on open / count change, RPC 155 every 3000 ms (UR §15.3).
@@ -691,17 +704,22 @@ pub fn frame_after_2d() {
 
 /// From the `CGame::Process` hook: the chat render-target update (UR §7.6).
 pub fn game_frame() {
+    let mut previews = Vec::new();
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let Ok(mut g) = UI.try_lock() else { return };
         let Some(st) = g.as_mut() else { return };
-        if st.core.settings.direct_mode {
-            return;
-        }
         let menu = gta_menu_active();
-        if let Some(r) = st.renderer.as_mut() {
+        if !st.core.settings.direct_mode
+            && let Some(r) = st.renderer.as_mut()
+        {
             r.update_chat_rt(&mut st.core.chat, menu);
         }
+        // Model previews after CGame::Process (A 0x100a27d0 → A 0x1001e870): netgame and textdraw pool present.
+        if st.core.netgame {
+            previews = super::preview::pending(&st.core.textdraws, super::textdraws::sprite_count());
+        }
     }));
+    let _ = catch_unwind(AssertUnwindSafe(|| super::preview::render_pending(previews)));
 }
 
 /// Menus: build/delete requests and the selection poll (UCA §77/§78, §132/§140).
@@ -801,6 +819,8 @@ extern "system" fn reset_hook(_this: *mut std::ffi::c_void, params: *mut std::ff
         // Then the "SetCursor(NULL) once" flag of WM_SETCURSOR is re-armed (store at A 0x100c419b).
         super::wndproc::on_lost_device();
         crate::ui::mattext::on_lost();
+        // Last in samp's lost-device pass (A 0x100c41e5): the model-preview textures.
+        super::preview::on_lost();
     }));
     let hr = d3d::call_reset(params);
     crate::crash::note(crate::crash::crumb::DEVICE_RESET, 0, hr as u32);
@@ -1141,7 +1161,7 @@ fn present_pass() {
     });
     // Step 12: the class-selection GUI dialog after the chat GUI dialog (UR §2.3, §4.2),
     // with cursor mode 2 while it is shown (TRACE-3: class selection locks input).
-    if st.core.class_selection && !sb_open {
+    if st.core.class_selection && st.class_panel_shown && !sb_open {
         st.class_buttons = Some(r.class_panel(cursor));
     } else {
         st.class_buttons = None;

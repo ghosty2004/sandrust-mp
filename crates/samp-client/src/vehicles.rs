@@ -1962,7 +1962,24 @@ fn warp_into(runner: &mut Runner, ped_handle: i32, v: &Veh, seat: u8) {
 /// with heading 0, then colours (colour, 0xFF) and CWorld::Remove): the stream-in creation sequence without
 /// a pool entry. Returns (script handle, CVehicle*).
 pub fn create_detached(runner: &mut Runner, model: u16, colour: u8) -> Option<(i32, u32)> {
-    let (x, y, z) = (0.0f32, 0.0f32, 0.0f32);
+    let (handle, ptr) = create_at(runner, model, [0.0, 0.0, 0.0])?;
+    poke(ptr + g::VEH_PRIMARY_COLOUR, colour);
+    poke(ptr + g::VEH_SECONDARY_COLOUR, 0xFFu8);
+    if crate::client::ped_in_world(ptr) {
+        // SAFETY: CWorld::Remove(CEntity*) (cdecl) on a live vehicle, main thread.
+        unsafe {
+            let f: extern "C" fn(u32) = std::mem::transmute(0x563280usize);
+            f(ptr);
+        }
+    }
+    Some((handle, ptr))
+}
+
+/// samp's vehicle constructor (B 0x100B83E0, A 0x100B8410) for a non-train model at `pos`, heading 0: busy model load,
+/// CREATE_CAR, 0175 heading, 09C4/07FF/053F, door lock and dirt 0, matrix z + 0.25 (not bikes / BMX). Returns
+/// (script handle, CVehicle*).
+pub fn create_at(runner: &mut Runner, model: u16, pos: [f32; 3]) -> Option<(i32, u32)> {
+    let [x, y, z] = pos;
     if !busy_load(runner, i32::from(model)) {
         crate::log!("Warning: couldn't create vehicle type: {model}");
         return None;
@@ -1985,16 +2002,27 @@ pub fn create_detached(runner: &mut Runner, model: u16, colour: u8) -> Option<(i
         let dz = if matches!(kind_of(ptr), Kind::Bike | Kind::Bmx) { 0.0 } else { vm::CREATE_Z_OFFSET };
         put_v3(m + off::MATRIX_POS, [x, y, z + dz]);
     }
-    poke(ptr + g::VEH_PRIMARY_COLOUR, colour);
-    poke(ptr + g::VEH_SECONDARY_COLOUR, 0xFFu8);
-    if crate::client::ped_in_world(ptr) {
-        // SAFETY: CWorld::Remove(CEntity*) (cdecl) on a live vehicle, main thread.
-        unsafe {
-            let f: extern "C" fn(u32) = std::mem::transmute(0x563280usize);
-            f(ptr);
-        }
-    }
     Some((handle, ptr))
+}
+
+/// samp's vehicle destructor (A 0x100B8930) for a vehicle made by [`create_at`]: DELETE_CAR (the model release over
+/// 80 loaded vehicle models is not reproduced, MR-5.9).
+pub fn delete_handle(runner: &mut Runner, handle: i32) {
+    runner.run(op::DELETE_CAR, &[Arg::Int(handle)]);
+}
+
+/// samp's vehicle-type code (A 0x100B6220) from the CVehicle vtable: 4 = vtable 0x8721A0.
+pub fn samp_type(ptr: u32) -> u8 {
+    match rd::<u32>(ptr) {
+        0x871120 => 1,
+        0x8721A0 => 4,
+        0x871360 => 2,
+        0x871948 => 5,
+        0x871680 => 3,
+        0x871528 => 6,
+        0x872370 => 7,
+        _ => 0,
+    }
 }
 
 /// WARP_CHAR_FROM_CAR_TO_COORD to the ped's own current position (TRACE-4 §3).

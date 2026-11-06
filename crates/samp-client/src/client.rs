@@ -703,7 +703,19 @@ impl Client {
                     R::PlayerJoin(j) => self.behaviour.forget_remote(j.player_id),
                     R::PlayerQuit(q) => self.behaviour.forget_remote(q.player_id),
                     R::TogglePlayerSpectating(t) => {
-                        if self.behaviour.toggle_spectating(t.enable != 0) {
+                        // B 0x100041A0: spectating off with the class-selection flag (RPC 74 / F4) set leaves the
+                        // spawned state for the class selection (+0xf0 := 0, the local tick then enters it and
+                        // clears the flag); without the flag, leaving spectating spawns.
+                        let off = t.enable == 0;
+                        let spawn = self.behaviour.toggle_spectating(!off);
+                        if off && self.force_class_selection {
+                            crate::log!("client: spectating off with the class-selection flag -> class selection");
+                            self.spawned = false;
+                            self.dead = false;
+                            let count = self.class_count;
+                            self.enter_class_selection(Instant::now(), count);
+                            self.force_class_selection = false;
+                        } else if spawn {
                             self.spawn();
                         }
                     }

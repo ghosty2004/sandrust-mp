@@ -8,8 +8,10 @@
 //! `models\txd\<txd>.txd` (`hud` used as is, `samaps` → `SAMP\samaps.txd`, `vehicleprev` →
 //! `SAMP\vehicles128.txd`), the texture is taken with `CSprite2d::SetTexture` inside
 //! Push/Set/PopCurrentTxd, and drawn with `RwRenderStateSet(TEXTUREFILTER, LINEAR)` +
-//! `CSprite2d::Draw(rect, colour)`. TODO-unknown: `mdlNNN` sprites and model previews
-//! (font 5, A 0x100b34e0) are not drawn.
+//! `CSprite2d::Draw(rect, colour)`. `mdlNNN` names take the generic TXD path (no custom-model
+//! store in R4). Model previews (font 5): `preview.rs` renders their textures; with a texture they
+//! take the sprite path, without one (the frame their RPC 134 arrived, or a model samp never
+//! renders) the text path, like samp's dispatch A 0x100b34c0.
 
 use samp_ui::textdraw::{self, FontParams, TextDraws};
 
@@ -164,19 +166,26 @@ fn sync_sprites(pool: &TextDraws) {
     });
 }
 
-/// The sprite path (A 0x100b30d0): textured quad, then the hit rect.
-fn draw_sprite(id: u16, t: &mut samp_ui::textdraw::TextDraw, hover: u32, w: i32, h: i32, ux: f32, uy: f32) {
-    let tex = {
-        let mut g = SPRITES.lock().unwrap_or_else(|e| e.into_inner());
-        match g.iter().find(|(i, _, _)| *i == id) {
-            Some((_, _, tex)) => *tex,
-            None => {
-                let tex = load_sprite(&t.text);
-                g.push((id, t.text.clone(), tex));
-                tex
-            }
+/// Number of sprite textdraw textures held (they share samp's 200 texture slots with previews).
+pub fn sprite_count() -> usize {
+    SPRITES.lock().unwrap_or_else(|e| e.into_inner()).len()
+}
+
+/// The texture of sprite textdraw `id`, loaded on first use.
+fn sprite_texture(id: u16, t: &samp_ui::textdraw::TextDraw) -> u32 {
+    let mut g = SPRITES.lock().unwrap_or_else(|e| e.into_inner());
+    match g.iter().find(|(i, _, _)| *i == id) {
+        Some((_, _, tex)) => *tex,
+        None => {
+            let tex = load_sprite(&t.text);
+            g.push((id, t.text.clone(), tex));
+            tex
         }
-    };
+    }
+}
+
+/// The sprite path (A 0x100b30d0): textured quad, then the hit rect.
+fn draw_sprite(tex: u32, t: &mut samp_ui::textdraw::TextDraw, hover: u32, w: i32, h: i32, ux: f32, uy: f32) {
     let r = textdraw::sprite_rect(&t.data, w, h, ux, uy);
     if tex != 0 {
         // CRect as samp builds it: left, bottom, right, top.
@@ -267,10 +276,14 @@ pub fn draw_all(pool: &mut TextDraws) {
     for id in ids {
         let Some(t) = pool.get_mut(id) else { continue };
         if t.data.style == textdraw::FONT_SPRITE {
-            draw_sprite(id, t, hover, w, h, ux, uy);
+            let tex = sprite_texture(id, t);
+            draw_sprite(tex, t, hover, w, h, ux, uy);
             continue;
         }
-        if t.data.style == textdraw::FONT_PREVIEW {
+        if t.data.style == textdraw::FONT_PREVIEW
+            && let Some(tex) = super::preview::texture(id, t.serial)
+        {
+            draw_sprite(tex, t, hover, w, h, ux, uy);
             continue;
         }
         if t.text.is_empty() {

@@ -187,7 +187,7 @@ pub fn install_device_proxy(present: PresentFn, reset: ResetFn) -> Result<(), St
             (dev::RESET, reset),
             (dev::SET_TRANSFORM, proxy_set_transform as *const () as usize),
             (dev::END_SCENE, proxy_end_scene as *const () as usize),
-            (dev::SET_TEXTURE, proxy_set_texture as *const () as usize),
+            (dev::SET_TEXTURE, set_texture_stub()),
             (dev::CREATE_VERTEX_BUFFER, proxy_create_vertex_buffer as *const () as usize),
             (dev::TEST_COOPERATIVE_LEVEL, proxy_test_cooperative_level as *const () as usize),
         ],
@@ -207,6 +207,64 @@ pub static SET_TEXTURE_FILTER: AtomicU32 = AtomicU32::new(0);
 
 type SetTextureFn = extern "system" fn(*mut c_void, u32, *mut c_void) -> HResult;
 
+/// The plate step of the proxy `SetTexture` (B 0x10074BC3): the shared plate raster's texture → the rendered
+/// vehicle's plate (or the default plate), 0 = no substitution. cdecl, called by [`set_texture_stub_code`].
+extern "C" fn plate_texture(tex: u32) -> u32 {
+    if SET_TEXTURE_FILTER.load(Ordering::Relaxed) != 0 {
+        return 0;
+    }
+    std::panic::catch_unwind(|| crate::plates::substitute(tex)).ok().flatten().unwrap_or(0)
+}
+
+/// Machine code of the proxy `SetTexture` entry: a plate substitution replaces the texture argument and `this`
+/// and tail-jumps into the real `SetTexture` (samp B 0x10074C3E / 0x10074C9x: the real call keeps GTA as its
+/// caller); everything else jumps to [`proxy_set_texture`] with the stack unchanged.
+fn set_texture_stub_code(plate_fn: u32, real_cell: u32, rust_fn: u32) -> Vec<u8> {
+    let mut c = Vec::new();
+    c.extend_from_slice(&[0xFF, 0x74, 0x24, 0x0C]); // push dword [esp+0xC] (texture)
+    c.push(0xB8); // mov eax, imm32
+    c.extend_from_slice(&plate_fn.to_le_bytes());
+    c.extend_from_slice(&[0xFF, 0xD0]); // call eax
+    c.extend_from_slice(&[0x83, 0xC4, 0x04]); // add esp, 4
+    c.extend_from_slice(&[0x85, 0xC0]); // test eax, eax
+    c.extend_from_slice(&[0x74, 0x15]); // jz normal (+21)
+    c.extend_from_slice(&[0x89, 0x44, 0x24, 0x0C]); // mov [esp+0xC], eax
+    c.push(0xA1); // mov eax, [real_cell]
+    c.extend_from_slice(&real_cell.to_le_bytes());
+    c.extend_from_slice(&[0x89, 0x44, 0x24, 0x04]); // mov [esp+4], eax
+    c.extend_from_slice(&[0x8B, 0x00]); // mov eax, [eax]
+    c.extend_from_slice(&[0xFF, 0xA0]); // jmp [eax+disp32]
+    c.extend_from_slice(&((dev::SET_TEXTURE * 4) as u32).to_le_bytes());
+    // normal:
+    c.push(0xB8); // mov eax, imm32
+    c.extend_from_slice(&rust_fn.to_le_bytes());
+    c.extend_from_slice(&[0xFF, 0xE0]); // jmp eax
+    c
+}
+
+/// The generated `SetTexture` entry (created once).
+fn set_texture_stub() -> usize {
+    static STUB: AtomicU32 = AtomicU32::new(0);
+    let p = STUB.load(Ordering::SeqCst);
+    if p != 0 {
+        return p as usize;
+    }
+    let code = set_texture_stub_code(
+        plate_texture as *const () as usize as u32,
+        REAL_DEVICE.as_ptr() as u32,
+        proxy_set_texture as *const () as usize as u32,
+    );
+    // SAFETY: fresh RWX allocation for the generated thunk.
+    let mem = unsafe { VirtualAlloc(std::ptr::null(), code.len(), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE) };
+    if mem.is_null() {
+        return proxy_set_texture as *const () as usize;
+    }
+    // SAFETY: `mem` has room for the code.
+    unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), mem as *mut u8, code.len()) };
+    STUB.store(mem as u32, Ordering::SeqCst);
+    mem as usize
+}
+
 /// Proxy `IDirect3DDevice9::SetTexture`: runs [`SET_TEXTURE_FILTER`] (if set) on the texture, then the real call.
 extern "system" fn proxy_set_texture(_this: *mut c_void, stage: u32, tex: *mut c_void) -> HResult {
     let filter = SET_TEXTURE_FILTER.load(Ordering::Relaxed);
@@ -217,8 +275,12 @@ extern "system" fn proxy_set_texture(_this: *mut c_void, stage: u32, tex: *mut c
     } else {
         tex
     };
-    // Number plates (B 0x10074BC3): the shared plate raster's texture → the rendered vehicle's plate.
-    let tex = crate::plates::substitute(tex as u32).map(|t| t as usize as *mut c_void).unwrap_or(tex);
+    // Number plates while a material filter is active (the stub handles the other plate draws).
+    let tex = if filter != 0 {
+        crate::plates::substitute(tex as u32).map(|t| t as usize as *mut c_void).unwrap_or(tex)
+    } else {
+        tex
+    };
     let dev = real_device();
     // SAFETY: the real device's SetTexture.
     let f: SetTextureFn = unsafe { vfn(dev, dev::SET_TEXTURE) };

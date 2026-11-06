@@ -189,12 +189,15 @@ pub struct TextDraw {
     pub hovered: bool,
     /// Rectangle of the last draw (selection hit test).
     pub hit: Option<Rect>,
+    /// Creation number: every RPC 134 makes a new textdraw object in samp (A 0x100b3720), even with the same id
+    /// and data; per-object resources (model-preview textures) follow it.
+    pub serial: u64,
 }
 
 impl TextDraw {
     pub fn new(data: TextDrawData, text: &[u8]) -> Self {
         let r = set_text(text);
-        Self { data, text: r.text, has_keys: r.has_keys, hovered: false, hit: None }
+        Self { data, text: r.text, has_keys: r.has_keys, hovered: false, hit: None, serial: 0 }
     }
 
     pub fn set_text(&mut self, text: &[u8]) {
@@ -228,11 +231,13 @@ pub struct Selection {
 pub struct TextDraws {
     slots: Vec<Option<TextDraw>>,
     pub selection: Selection,
+    /// Serial of the next created textdraw.
+    next_serial: u64,
 }
 
 impl Default for TextDraws {
     fn default() -> Self {
-        Self { slots: vec![None; POOL_SIZE], selection: Selection::default() }
+        Self { slots: vec![None; POOL_SIZE], selection: Selection::default(), next_serial: 1 }
     }
 }
 
@@ -246,7 +251,10 @@ impl TextDraws {
     /// by the RPC handler (debug "Warning: ignoring large TextDraw size=%u").
     pub fn show(&mut self, id: u16, data: TextDrawData, text: &[u8]) -> bool {
         let Some(slot) = self.slots.get_mut(usize::from(id)) else { return false };
-        *slot = Some(TextDraw::new(data, text));
+        let mut t = TextDraw::new(data, text);
+        t.serial = self.next_serial;
+        self.next_serial += 1;
+        *slot = Some(t);
         true
     }
 
@@ -418,5 +426,22 @@ mod tests {
         assert!(!t.selection.active && !t.get(5).unwrap().hovered);
         t.hide(5);
         assert_eq!(t.count(), 1);
+    }
+
+    #[test]
+    fn every_show_is_a_new_object() {
+        let mut t = TextDraws::new();
+        let d = data(flags::LEFT, (0.0, 0.0), (100.0, 10.0));
+        t.show(3, d, b"_");
+        let first = t.get(3).unwrap().serial;
+        // Same id, same data: still a new textdraw (samp deletes and re-creates it).
+        t.show(3, d, b"_");
+        let second = t.get(3).unwrap().serial;
+        assert!(first != 0 && second > first);
+        t.set_string(3, b"x");
+        assert_eq!(t.get(3).unwrap().serial, second);
+        t.clear();
+        t.show(3, d, b"_");
+        assert!(t.get(3).unwrap().serial > second);
     }
 }

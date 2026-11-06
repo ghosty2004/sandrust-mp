@@ -673,7 +673,8 @@ impl Renderer {
         // SAFETY: we own the old surface.
         unsafe { d3d::release(self.cursor) };
         self.cursor = d3d::create_cursor(&self.d3dx, b"mouse.png").unwrap_or(std::ptr::null_mut());
-        self.host_size = (video_width(), video_height());
+        // The chat GUI dialog (0x1026ea9c) keeps its size: samp's reset pass (A 0x100c41f0) does not touch it
+        // (measured: after a device loss it stays at the input-box size once the input was opened).
     }
 
     // ---- font renderer -----------------------------------------------------------------

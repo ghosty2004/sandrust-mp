@@ -23,6 +23,12 @@ labels numbered in order of use, floats to 2 decimals):
 - `rtuse` (material text in the world): the multiset of render-target textures bound with
   `SetTexture` and the number of draws made with one bound (with sampler 0's filters and address
   modes), in the element's frame.
+- `pvrt` (model previews, captured with `all` over many frames): every frame that sets a 256x256 render target
+  contributes its preview raster creations (CreateTexture 256x256 render-target usage), each render-target pass
+  (SetRenderTarget to the 256x256 surface up to the switch back) and that frame's draws of preview textures;
+- `preview` (model previews on screen, `all`): only the draws of preview textures (256x256 render-target
+  textures) of the compared frame, with their vertices (screen rectangle, colour, texel coordinates);
+  dynamic vertex-buffer offsets and SetStreamSource offsets (RenderWare vertex-buffer arenas) dropped.
 Lines matching a row of the decisions TSV (element, regex, ROADMAP decision) are reported as
 covered. Exit 0 when every element has no uncovered difference and every element exists on
 both sides.
@@ -58,7 +64,52 @@ ELEMENTS = {
     # Object material text (visual_mattext): render-target creation + fill for the m8afs `mtscene` set, then the
     # render targets bound while the board objects are drawn (fixed camera).
     "mattext": ("rt", {}), "mattextw": ("rtuse", {}),
+    # Model-preview textdraws (font 5; end of the scenario): the render-target passes of ped / vehicle / object /
+    # several / rotation update / model change / device reset, then the on-screen draws (shown, updated, after the
+    # reset, after destroy/hide).
+    "pvped": ("pvrt", {}), "pvveh": ("pvrt", {}), "pvobj": ("pvrt", {}), "pvmany": ("pvrt", {}),
+    "pvrot": ("pvrt", {}), "pvmodel": ("pvrt", {}), "pvreset": ("pvrt", {}),
+    "mdlpreview": ("preview", {}), "mdlpvupd": ("preview", {}), "mdlpvreset": ("preview", {}),
+    "mdlpvdel": ("preview", {}),
+    # Class selection with a dialog open from before it started (no panel), after the dialog (panel), and a dialog
+    # opened over the shown panel (both).
+    "classdlg": ("ui", {}), "classpanel": ("ui", {}), "classdlg2": ("ui", {}),
 }
+
+# A RenderWare camera-texture raster of a model preview (D3DX textures carry a `d3dx-tex` suffix).
+PREVIEW_TEX = "tex 256x256 f21 u0x1 p0"
+
+
+def preview_draw(r):
+    return r.get("fn", "").startswith("dev.Draw") and str(r.get("tex0")) == PREVIEW_TEX
+
+
+def rt_records(frames):
+    """`pvrt` kind: per frame with a 256x256 render-target pass, the preview raster creations, the passes and the
+    frame's preview-texture draws. Only RenderWare's own render targets count (caller gta_sa.exe): D3DX
+    render-to-surface targets (material text, plates) are not previews."""
+    out = []
+    for fr in frames:
+        on, recs, passes = False, [], 0
+        for r in fr:
+            fn = r.get("fn", "")
+            a = r.get("args") or {}
+            rw = str(r.get("by", "")).startswith("gta_sa.exe")
+            if fn == "dev.CreateTexture" and a.get("w") == 256 and a.get("h") == 256 and a.get("usage") == "0x1" \
+                    and rw:
+                recs.append(r)
+                continue
+            if fn == "dev.SetRenderTarget" and (rw or on):
+                was, on = on, rw and "256x256" in str(a.get("surface"))
+                if on or was:
+                    recs.append(r)
+                passes += on
+                continue
+            if on or preview_draw(r):
+                recs.append(r)
+        if passes:
+            out.extend(recs)
+    return out
 
 
 def load_mod(name, path):
@@ -121,6 +172,18 @@ def degeo(n):
 def normalise(tool, kind, opts, frame):
     sprites = {}
     out = []
+    if kind == "preview":
+        frame = [r for r in frame if preview_draw(r)]
+    if kind in ("pvrt", "preview"):
+        res = []
+        for r in frame:
+            n = common(tool, r, sprites)
+            (n.get("args") or {}).pop("start", None)
+            if n["fn"] == "dev.SetStreamSource":
+                # Offsets into RenderWare's shared vertex-buffer arenas depend on when a model was instanced.
+                (n.get("args") or {}).pop("offset", None)
+            res.append(json.dumps(n, sort_keys=True))
+        return res
     if kind == "ui":
         start = next((i for i, r in enumerate(frame) if r.get("fn", "").startswith("sprite.")), 0)
         frame = frame[start:]
@@ -277,6 +340,8 @@ def main():
                     print("== %-10s the original filled no render target" % name)
                     bad += 1
                     continue
+            if kind == "pvrt":
+                fo, fg = [rt_records(fo)], [rt_records(fg)]
             k = min(args.frame, len(fo) - 1, len(fg) - 1)
             if k < 0:
                 rows.append((name, "NO FRAMES", 0, 0))

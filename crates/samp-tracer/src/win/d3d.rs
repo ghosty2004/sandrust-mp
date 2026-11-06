@@ -248,8 +248,49 @@ fn base_rec(name: &str) -> Val {
 
 // ------------------------------------------------------------------ control ---------------
 
+/// `d3d devreset N`: the real device's `TestCooperativeLevel` (slot 3) reports D3DERR_DEVICENOTRESET for the next N
+/// calls, so RenderWare (and the client's device proxy in front of it) goes through a device loss and `Reset` —
+/// the same input for the original client and ours.
+static FORCE_LOST: AtomicU32 = AtomicU32::new(0);
+static ORIG_TEST_COOP: AtomicU32 = AtomicU32::new(0);
+
+extern "system" fn test_cooperative_level(this: u32) -> i32 {
+    if FORCE_LOST.load(Ordering::Relaxed) > 0 {
+        FORCE_LOST.fetch_sub(1, Ordering::Relaxed);
+        return 0x8876_0869_u32 as i32;
+    }
+    let f = ORIG_TEST_COOP.load(Ordering::Relaxed);
+    // SAFETY: the real IDirect3DDevice9::TestCooperativeLevel saved from the vtable.
+    let f: extern "system" fn(u32) -> i32 = unsafe { std::mem::transmute(f as usize) };
+    f(this)
+}
+
+fn devreset(n: u32) -> String {
+    let dev = REAL_DEV.load(Ordering::SeqCst);
+    if dev == 0 {
+        return "error d3d hooks not installed".into();
+    }
+    if ORIG_TEST_COOP.load(Ordering::SeqCst) == 0 {
+        let Some(vt) = ProcMem.u32(dev) else { return "error device unreadable".into() };
+        let Some(orig) = ProcMem.u32(vt + 4 * 3) else { return "error vtable unreadable".into() };
+        ORIG_TEST_COOP.store(orig, Ordering::SeqCst);
+        if !write_u32(vt + 4 * 3, test_cooperative_level as extern "system" fn(u32) -> i32 as usize as u32) {
+            return "error VirtualProtect failed".into();
+        }
+    }
+    FORCE_LOST.store(n, Ordering::SeqCst);
+    format!("ok device reports lost for {n} checks")
+}
+
 /// `d3d …` control command.
 pub fn command(args: &str) -> String {
+    if let Some(n) = args.strip_prefix("devreset") {
+        let n = n.trim();
+        return match if n.is_empty() { Ok(15) } else { n.parse::<u32>() } {
+            Ok(n) => devreset(n.min(600)),
+            Err(_) => "error usage: d3d devreset [CHECKS]".into(),
+        };
+    }
     let Some((m, frames)) = dd::parse_cmd(args) else {
         return "error usage: d3d off | d3d on|ui|all|text [FRAMES]".into();
     };

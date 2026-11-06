@@ -878,3 +878,34 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   (`xclient-20261107-005834`) 66/66 MATCH, exit 0. Cost: ~2.5 h wall, 6 combatveh rounds (original + ours), 1 m7,
   2 m5 (first failed on the worktree auth-table path), 1 cross-client.
 
+## 2026-11-07 — M8A-PREVIEW: model-preview textdraws; class-selection panel with a dialog
+- User report (real server, class selection with a language dialog): the original draws a model-preview
+  textdraw (font 5), ours nothing; ours draws the `<<` `>>` `Spawn` panel over the dialog, the original not.
+- Static (REA/objdump, A build): preview dispatch A 0x100b34c0/0x100b34e0, renderers A 0x1006c140 (ped),
+  0x1006c3c0 (vehicle), 0x1006c9b0 (object), camera set A 0x1006be40, frees A 0x100b2f90 / lost device
+  A 0x100c41e5; class step A 0x10006100 (panel + first RPC 128 only on a frame without a dialog), RPC 124
+  B 0x100041A0. Spec: UR §14.3a, §4.2.
+- Dynamic (trace lane, original; lane ui, ours; `tools/diff/visual.sh` with a subset scenario): ped / vehicle /
+  object / several (incl. a player textdraw, a never-rendered id, the 18631 fallback) / rotation update / model
+  change / device reset (new tracer `d3d devreset N`) / destroy-hide; class selection entered with a dialog open
+  (m8afs `unspec`). Found on the way: model id 20000 crashes the original; ours spawned instead of entering the
+  class selection on RPC 124 off with the class-selection flag; plate `SetTexture` must tail-jump like samp; our
+  Reset hook could not release the UI resources while a preview render held the UI lock (device reset failed).
+- Implemented: `ui/preview.rs` (new), `ui/textdraws.rs`, `ui/glue.rs`, `ui/d3d.rs`, `players.rs`, `vehicles.rs`,
+  `worldhooks.rs`, `client.rs`, `samp-ui` textdraw serial (+1 test), tracer `d3d devreset`, m8afs commands,
+  F4 elements pv*/mdlpv*/classdlg* (`visual_diff.py` kinds `pvrt`, `preview`). Notes: docs/phase3/m8a-notes.md;
+  decisions in ROADMAP.
+- Verified: subset F4 (pv*, mdlpv*, classdlg*) 0 differing lines on all 14 elements; preview screen regions
+  pixel-identical to the original; cargo test --workspace ok; clippy host + i686 clean; full F4 and m8a below.
+- Full F4 (`tools/diff/visual.sh --orig`) found two more: the chat GUI dialog size after a device Reset (ours reset
+  it to the video size; fixed, `render.rs`) and SPECULARENABLE toggles in the 411 preview after earlier world
+  Infernus renders (ROADMAP decision + `visual-decisions.tsv` rows for pvveh/pvrot/pvreset); `pvmany` now spaces its
+  RPCs (two previews in one frame share one scene, network-timing dependent).
+- Final: `tools/diff/visual.sh --orig` rc=0 (44 elements OK; pvveh/pvrot/pvreset 4 lines each covered by the
+  specular decision, dl 2 by the glyph-atlas decision); `tools/e2e/m8a.sh` PASS (lane ui); cargo test --workspace
+  615 passed; clippy host --all-targets and i686 --workspace clean. Cost: ~6 h wall, 6 original + 5 own game runs.
+- Rebased onto ed04dcc (with 244cb98 material text, ebf77bf, ed04dcc): the preview kind is now `pvrt` (main's `rt`
+  is the material-text kind) and only counts RenderWare render targets / non-D3DX 256x256 textures; scenario order
+  visual_mattext → visual_previews → visual_classdlg. On the rebased tree: `tools/diff/visual.sh --orig` rc=0, all
+  46 elements OK (dl 2 lines covered; the 411 specular lines no longer occur); m8a PASS; cargo test 620 passed;
+  clippy host + i686 clean.

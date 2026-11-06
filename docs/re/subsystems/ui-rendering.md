@@ -304,7 +304,12 @@ by samp:
 | 0x1026eaac | 500×160 | 0xDC050505 | no | slider panel |
 | 0x1026eab0 | 500×160 | 0xDC050505 | no | download progress |
 
-The class-selection panel is centred horizontally at `y = clientHeight − 40 − 50`. Shift spawns
+The class-selection panel is centred horizontally at `y = clientHeight − 40 − 50`. It is made visible
+(+0x13 := 1, position taken from `GetClientRect`) by the class-selection step A 0x10006100 on its first
+frame without an open dialog (dialog +0x28); that frame also sends the first RPC 128 (A 0x100058d0). While a
+dialog is open the step does nothing, so a dialog that is open when the class selection starts keeps the
+panel hidden until it closes; a dialog opened later does not hide it (measured). The panel is hidden again at
+the spawn (A 0x10003c20). Present renders the GUI dialog every frame; DXUT skips it while invisible. Shift spawns
 and Left/Right cycle classes, with a 250 ms repeat guard and a 2 s lock-out after a spawn
 request (A 0x10006100, player-state scope).
 
@@ -689,7 +694,47 @@ no dirty tracking.
 Used when the texture slot (+0x9a3) ≠ −1 (font 4 sprite or font 5 preview). Rect =
 `(x·W·ux, y·H·uy) – ((x + textSizeX)·W·ux, (y + textSizeY)·H·uy)`. Drawn at once with the
 loaded texture (array A 0x1026b3e0) in letter or hover colour (A 0x100b2ce0, a `CSprite2d`-style
-quad). The hit rect is the same rectangle. How model-preview textures are rendered [U].
+quad). The hit rect is the same rectangle.
+
+### 14.3a Model previews (font 5) [O + measured, M8A-PREVIEW]
+- Dispatch per textdraw (A 0x100b34c0): texture slot +0x9a3 ≠ −1 → sprite path, else the text path. A
+  preview therefore goes through `CFont` (its text, usually `_`, font style 5) until its texture exists.
+- Camera set, built once in the first-frame UI pass (A 0x100c4d97 → A 0x1006ccc0 → A 0x1006be40): ambient
+  light `RpLightCreate(2)` colour (1,1,1,1); `RwRasterCreate(256,256,0,0x505)` + `RwTextureCreate` (never
+  used afterwards); Z raster `RwRasterCreate(256,256,0,1)`; `RwCameraCreate`, `RwFrameCreate`, frame
+  translated (0,0,50) then rotated 90° about X (pre-concat); camera raster/Z raster, frame, far 300, near
+  0.01, view window (0.5,0.5), perspective, `RpWorldAddCamera(Scene.m_pRpWorld)`.
+- Rendering: the 0x53E981 hook calls A 0x1001e870 after `CGame::Process` (A 0x100a27e6): for every textdraw
+  of style 5 with slot −1 (A 0x100b34e0), by model id (signed 16-bit +0x9a8): ped model (model-info vtable
+  0x85BDC0) → A 0x1006c140; 400..611 → A 0x1006c3c0 (569/570 → 537/538); 321..373 or ≥ 615 → A 0x1006c9b0
+  (no model info → 18631); < 0 → A 0x1006c9b0 with 18631 (no custom-model table in R4); anything else is
+  never rendered. Ids ≥ 20000 read past GTA's model table: id 20000 crashed the original (measured).
+  A non-zero texture gets a slot (A 0x100b2b60, 200 slots shared with sprite textdraws).
+- Every render: a NEW `RwRasterCreate(256,256,0,0x505)` + `RwTextureCreate`; camera raster := it, Z raster
+  := the shared one; `CVisibilityPlugins::SetRenderWareCamera`; `RwCameraClear(cam, &bg, 3)` with the
+  textdraw's background colour (+0x97f) as `RwRGBA`; `RwCameraBeginUpdate`; `RpWorldAddLight`; render states
+  ZTEST 1, ZWRITE 1, SHADEMODE 2, (objects: ALPHATESTFUNCTION 0, CULLMODE 0), FOG 0; draw;
+  `RwCameraEndUpdate`; `RpWorldRemoveLight`.
+  - Ped: samp's ped constructor with player slot 0xD0, skin 0 at (0,0,0) (the remote-ped script sequence),
+    then position (0, −2.25·zoom, 50.05) (skin 162: 50.15), skin := model, entity flags |= 0x80000002 then
+    bit 0 cleared, matrix rotated (`RwMatrixRotate` pre-concat about X, Y, Z for each non-zero angle) and
+    written back (Remove, rows, `CMatrix::UpdateRW`, `UpdateRwFrame`, Add); after the camera begin: added to
+    the world when not in the moving list, `RpAnimBlendClumpUpdateAnimations(clump, 100, 1)`, `PreRender`,
+    `CRenderer::RenderOneNonRoad`; destroyed; model marked no longer needed when its reference count is 0.
+  - Vehicle: samp's vehicle constructor at (0,0,50) heading 0; flags as above; y = (−1 − 2r)·zoom with r =
+    collision sphere radius (vtable 0x8721A0: −5.5 − 2.5r, zoom ignored); position (0, y, 50); colours 1/2
+    written when both ≠ −1; rotation as for peds; `SetupVehicleVariables`, `PreRender`, `RenderOneNonRoad`
+    with samp's flag A 0x1026ea58 set (its fog setter writes FOGENABLE 0); `DELETE_CAR`.
+  - Object: models 1373, 3118, 3552, 3553 → 18631; loaded on demand (request, load-all, `Sleep(1)` until
+    loaded); `CreateInstance()` (no instance → the uncleared texture is kept); the instance frame translated
+    by (−cx, (−0.1 − 2.25r)·zoom, 50 − cz) (collision sphere centre / radius) and rotated pre-concat about
+    X, Y, Z (18631: Z 180° only); atomic render callback or `RpClumpRender`; atomic and frame destroyed; the
+    model marked no longer needed if it was requested here.
+- The new texture is drawn by the sprite path in the same frame (measured: one `DrawPrimitive` triangle fan
+  with the 256×256 render-target texture, the letter colour, the sprite rectangle).
+- Freed: with the textdraw (A 0x100b2f90) and in the lost-device pass (A 0x100c41e5 → A 0x1001e8a0), so it is
+  rendered again on the next game frame. A re-sent RPC 134 (e.g. after `TextDrawSetPreviewRot`) is a new
+  textdraw and renders again.
 
 ### 14.4 Selection mode (A 0x10071470 per frame, 0x100715d0 mouse) [O]
 UCA §83 has the protocol. Rendering: while active, cursor mode 2 (D3D cursor `mouse.png`). The

@@ -27,6 +27,8 @@ mod glue;
 #[cfg(windows)]
 pub mod mattext;
 #[cfg(windows)]
+mod preview;
+#[cfg(windows)]
 mod render;
 #[cfg(windows)]
 mod wndproc;

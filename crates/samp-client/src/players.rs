@@ -53,6 +53,77 @@ const ENTITY_FLAGS: u32 = 0x1C;
 const IK_LOOK_AT: u32 = 0x618970;
 const IK_CHAIN_MANAGER: u32 = 0xC15448;
 
+/// The server's death-drop amount (InitGame), for peds made outside the pool (the preview ped).
+static DEATH_DROP_MONEY: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Player slot of samp's model-preview ped (A 0x1006c1a5: the ped constructor with slot 0xD0).
+pub(crate) const PREVIEW_PED_SLOT: u8 = 0xD0;
+
+/// samp's ped constructor (A 0x100b0d20) as the model-preview render uses it (A 0x1006c1a0: slot 0xD0, skin 0,
+/// position (0, 0, 0), heading 0): the same script sequence as a remote player's ped (CREATE_PLAYER → GET_PLAYER_CHAR
+/// → 087E, 02AB, 0446, 03FE ×2), skin 0, the slot's swap entry bound (A 0x100b4360), matrix z + 0.15. Returns the ped,
+/// `None` when the slot is held by a remote player (samp would overwrite that player's slot; we render nothing).
+pub(crate) fn create_preview_ped(runner: &mut Runner) -> Option<u32> {
+    let death_drop_money = DEATH_DROP_MONEY.load(std::sync::atomic::Ordering::Relaxed);
+    if !crate::dll::REMOTE_PEDS_READY.load(std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
+    let slot = PREVIEW_PED_SLOT;
+    if swap::with_table(|t| t.peds[usize::from(slot)]) != 0 {
+        crate::log!("players: preview ped slot {slot} is held by a remote player; no preview");
+        return None;
+    }
+    let info = game::CWORLD_PLAYERS + u32::from(slot) * PLAYER_INFO_SIZE;
+    runner.set_local_i32(0, i32::from(slot));
+    runner.run(op::CREATE_PLAYER, &[Arg::Local(0), Arg::Float(0.0), Arg::Float(0.0), Arg::Float(0.0), Arg::Local(1)]);
+    runner.run(op::GET_PLAYER_CHAR, &[Arg::Local(0), Arg::Local(1)]);
+    let handle = runner.local_i32(1);
+    let mem = ProcessMemory;
+    let ped = mem.read_u32(info + off::PLAYER_INFO_PED).unwrap_or(0);
+    if ped == 0 || game::ped_handle(&mem, ped).ok().flatten() != Some(handle) {
+        crate::log!("players: preview CREATE_PLAYER({slot}) gave no ped");
+        return None;
+    }
+    let h = Arg::Int(handle);
+    runner.run(op::SET_CHAR_DROPS_WEAPONS_WHEN_DEAD, &[h, Arg::Int(1)]);
+    runner.run(op::SET_CHAR_PROOFS, &[h, Arg::Int(0), Arg::Int(0), Arg::Int(1), Arg::Int(0), Arg::Int(0)]);
+    runner.run(op::SET_CHAR_SUFFERS_CRITICAL_HITS, &[h, Arg::Int(0)]);
+    runner.run(op::SET_CHAR_MONEY, &[h, Arg::Int(0)]);
+    runner.run(op::SET_CHAR_MONEY, &[h, Arg::Int(death_drop_money)]);
+    crate::client::set_ped_skin(runner, ped, 0);
+    poke(ped + off::PED_HEADING, 0.0f32);
+    poke(ped + off::PED_HEADING_GOAL, 0.0f32);
+    let matrix = mem.read_u32(ped + off::PLACEABLE_MATRIX).unwrap_or(0);
+    if matrix != 0 {
+        put_v3(matrix + off::MATRIX_POS, [0.0, 0.0, remote::CREATE_Z_OFFSET]);
+    }
+    swap::with_table(|t| t.bind(slot, ped, [0.0; SKILLS]));
+    Some(ped)
+}
+
+/// samp's ped destructor (A 0x100b0fe0) for the preview ped: swap entry released, the player-data anim-block field
+/// cleared, the ped's scalar deleting destructor; `CWorld::Players[slot].m_pPed` cleared like for remote peds.
+pub(crate) fn destroy_preview_ped(ped: u32) {
+    let slot = PREVIEW_PED_SLOT;
+    swap::with_table(|t| t.unbind(slot));
+    let mem = ProcessMemory;
+    let vtbl = mem.read_u32(ped + off::VTABLE).unwrap_or(0);
+    if ped != 0 && vtbl != 0 && vtbl != VTBL_CPLACEABLE {
+        let data = mem.read_u32(ped + PLAYER_PED_DATA).unwrap_or(0);
+        if data != 0 {
+            poke(data + PLAYER_DATA_ANIM_BLOCK, 0u32);
+        }
+        if let Ok(dtor) = mem.read_u32(vtbl) {
+            // SAFETY: the ped's own virtual destructor, main thread.
+            unsafe {
+                let f: extern "thiscall" fn(u32, u32) -> u32 = std::mem::transmute(dtor as usize);
+                f(ped, 1);
+            }
+        }
+    }
+    poke(game::CWORLD_PLAYERS + u32::from(slot) * PLAYER_INFO_SIZE + off::PLAYER_INFO_PED, 0u32);
+}
+
 /// `g_ikChainMan.LookAt("FollowPedSA", ped, nullptr, time_ms, bone −1, &pos, false, 0.1, 500, 3, false)`
 /// (onfoot §5.2: remotes 1000 ms; the local player 2000 ms, A 0x10002fa0).
 pub(crate) fn look_at(ped: u32, time_ms: u32, pos: &mut [f32; 3]) {
@@ -99,6 +170,7 @@ impl Players {
     pub fn set_init_game(&mut self, local_id: u16, death_drop_money: u32, marker_mode: u32) {
         self.local_id = Some(local_id);
         self.death_drop_money = death_drop_money.min(i32::MAX as u32) as i32;
+        DEATH_DROP_MONEY.store(self.death_drop_money, std::sync::atomic::Ordering::Relaxed);
         self.marker_mode = marker_mode;
     }
 
