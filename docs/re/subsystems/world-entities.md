@@ -671,14 +671,21 @@ All four match open.mp (open.mp writes the id as a signed 16-bit value; the bits
 
 - Behaviour: requires the label pool. Fields are read and the text decoded before the id check. Then
   0x100011d0 replaces any existing label in the slot and keeps a heap copy of the text. If the text is
-  shorter than 400 chars, it is post-processed by 0x100b6140 (limit 399; inferred colour-code/filter pass).
+  shorter than 400 chars, it is post-processed by 0x100b6140 with limit 399. [O] That helper is the `~k~`
+  key-name filter, not a colour pass: it acts only when the text is shorter than 400 chars and contains
+  `~k~`; it runs GTA's `CMessages::InsertPlayerControlKeysInString` (0x69E160) on a 2 KiB copy and writes
+  the result back only if its length is ≤ the limit (signed `>` test). Colour codes are stored unchanged.
 - Rendering (0x10001350, per frame, entries of 0x1D = 29 bytes):
   - Player attachment is checked first. The player (id < 1004) must exist with a ped. The position is
     head-bone (bone 8) position + offset, and z gets an extra + 0.05 × camera distance.
   - Otherwise vehicle attachment: the vehicle must exist. The offset is transformed by the vehicle matrix.
   - Otherwise the label is drawn at the absolute position.
   - It is drawn only when camera distance ≤ draw distance, via 0x1006bc90 with (pos, text, colour,
-    "alpha = 0xFF" flag, test-LOS flag).
+    "alpha = 0xFF" flag, test-LOS flag). [O] The alpha flag is the painter's **outline** flag: a label whose
+    colour alpha is not FF gets no black outline passes. The painter hands the raw text (codes included) to
+    the font renderer's small draw (B 0x1006b4a0), whose main pass goes through the colour-code wrapper
+    (ui-rendering.md §3.3), so `{RRGGBB}` codes colour the following glyphs (alpha forced to FF after the
+    first code). Measured: tools/diff/visual.sh elements `label3d` / `bubblecol` (WORKLOG 2026-11-06).
 - Matches open.mp.
 
 ### 58 PlayerHideTextLabel (S→C)

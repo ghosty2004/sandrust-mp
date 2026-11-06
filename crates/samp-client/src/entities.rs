@@ -10,8 +10,9 @@
 //!   blip / DELETE_CHECKPOINT / CREATE_CHECKPOINT order;
 //! * gang zones: drawn by the radar hooks (worldhooks rows 41/42) from the records kept here;
 //! * map icons: blip opcode by style, colour + scale for type 0 (scale rule: unsigned colour < 1004 → 2);
-//! * 3D labels: small font, 4-way black outline, rect [x, y, x+1, y+1], format 0x101, colour RGBA → ARGB, draw
-//!   distance, LOS test IS_LINE_OF_SIGHT_CLEAR(label → camera, 1, 0, 0, 1, 0).
+//! * 3D labels: small font, 4-way black outline only when the colour's alpha is FF, main pass through the colour-code
+//!   wrapper (per-glyph `{RRGGBB}`), rect [x, y, x+1, y+1], format 0x101, colour RGBA → ARGB, draw distance, LOS test
+//!   IS_LINE_OF_SIGHT_CLEAR(label → camera, 1, 0, 0, 1, 0).
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -422,7 +423,14 @@ impl Entities {
                             los: l.test_los != 0,
                             player: l.attached_player_id,
                             vehicle: l.attached_vehicle_id,
-                            text: l.text,
+                            // A 0x100011d0: stored as received (colour codes kept for the painter's colour
+                            // wrapper); a text shorter than 400 chars with `~k~` gets GTA's key-name
+                            // expansion (A 0x100b6140), kept if it fits in 399 chars.
+                            text: samp_ui::text::expand_key_names_limit(
+                                &l.text,
+                                &crate::ui::GameExpander,
+                                samp_ui::text::LABEL_KEY_EXPANSION_MAX_OUTPUT,
+                            ),
                         },
                     );
                 }

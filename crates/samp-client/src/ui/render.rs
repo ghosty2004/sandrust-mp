@@ -916,44 +916,42 @@ impl Renderer {
         s.end();
     }
 
-    /// Chat bubbles (UR §11): small font, outline, `DT_CENTER|DT_NOCLIP` on [x, y, x+1, y+2].
+    /// The 3D text painter (A 0x1006bc90 / B 0x1006bc50, UR §18) shared by labels and chat bubbles: project
+    /// with samp's view/projection copies, skip when z > 1, truncate to a rect [x, y, x+1, y+1], then the font
+    /// renderer's small draw (B 0x1006b4a0) with format 0x101: when `outline` is set, four black passes of the
+    /// stripped text (offsets move only left/top), then the main pass of the RAW text through the colour-code
+    /// wrapper (per-glyph `{RRGGBB}` colours, the base alpha only up to the first code).
+    fn text3d(&self, s: &Sprite, pos: [f32; 3], text: &[u8], argb: u32, outline: bool) {
+        let p = self.project(pos);
+        if p[2] > 1.0 {
+            return;
+        }
+        let (x, y) = (p[0] as i32, p[1] as i32);
+        let rect = Rect { left: x, top: y, right: x + 1, bottom: y + 1 };
+        let passes: &[(i32, i32)] = if outline { &fonts::OUTLINE_4 } else { &[] };
+        Self::outlined(s, &self.fonts.small, &self.fonts.small_outline, text, rect, dt::CENTER, argb, passes);
+    }
+
+    /// Chat bubbles (UR §11, A 0x10066ed0): the 3D text painter with the outline always on and no LOS test
+    /// (measured rect [x, y, x+1, y+1]).
     fn bubbles(&self, bubbles: &[BubbleDraw]) {
         let s = &self.sprites.text3d;
         s.begin(d3d::sprite::ALPHABLEND);
         for b in bubbles {
-            let p = self.project(b.anchor);
-            if p[2] > 1.0 {
-                continue;
-            }
-            let (x, y) = (p[0] as i32, p[1] as i32);
-            let rect = Rect { left: x, top: y, right: x + 1, bottom: y + 2 };
-            Self::outlined(s, &self.fonts.small, &self.fonts.small_outline, &b.text, rect, dt::CENTER, b.colour, &fonts::OUTLINE_4);
+            self.text3d(s, b.anchor, &b.text, b.colour, true);
         }
         s.end();
     }
 
-    /// 3D text labels (UR §2.3 step 10, §18; TRACE-6 d3d capture), one batch on the 3D-text sprite: projected
-    /// like the bubbles (skipped when z > 1), small font, the text without `{RRGGBB}` codes, four black outline
-    /// draws whose offsets move only the left/top edge (up, down, left, right), then the main draw in the label
-    /// colour; rect [x, y, x+1, y+1], format 0x101. Placement, draw distance and LOS come from `entities.rs` (M6).
+    /// 3D text labels (UR §2.3 step 10, §18; pool pass A 0x10001350), one batch on the 3D-text sprite through the
+    /// 3D text painter. The pool pass sets the outline flag only when the label colour's alpha is FF (A 0x100013bc);
+    /// the text keeps its `{RRGGBB}` codes for the colour wrapper. Placement, draw distance and LOS come from
+    /// `entities.rs` (M6).
     fn labels(&self) {
-        const OUTLINE: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
         let s = &self.sprites.text3d;
         s.begin(d3d::sprite::ALPHABLEND);
         for l in crate::entities::label_draws() {
-            let p = self.project(l.pos);
-            if p[2] > 1.0 {
-                continue;
-            }
-            let (x, y) = (p[0] as i32, p[1] as i32);
-            let text = colour::strip_codes(&l.text);
-            let font = &self.fonts.small;
-            for (dx, dy) in OUTLINE {
-                let mut r = Rect { left: x + dx, top: y + dy, right: x + 1, bottom: y + 1 };
-                font.draw(s.ptr, &text, &mut r, dt::CENTER | dt::NOCLIP, colour::OUTLINE);
-            }
-            let mut r = Rect { left: x, top: y, right: x + 1, bottom: y + 1 };
-            font.draw(s.ptr, &text, &mut r, dt::CENTER | dt::NOCLIP, l.argb);
+            self.text3d(s, l.pos, &l.text, l.argb, l.argb & 0xFF00_0000 == 0xFF00_0000);
         }
         s.end();
     }

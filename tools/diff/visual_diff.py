@@ -13,7 +13,9 @@ labels numbered in order of use, floats to 2 decimals):
   text/font/format (the original passes an uninitialised rect and a stale colour);
 - `all2d` elements (textdraws, sprites, menus: drawn by GTA inside its scene): only the
   pre-transformed (XYZRHW) draws, with texture, vertices and FVF, plus D3DX sprite/font calls;
-- `geo` elements depend on where players stand / pings: coordinates and digits dropped;
+- `geo` elements depend on where players stand / pings: coordinates and digits dropped (glyph
+  sprite.Draw calls too, unless the element sets `glyphs`: then they stay without positions, so the
+  per-glyph colours of the colour-code wrapper are compared);
 - `boot` (UX-1): tools/diff/boot_diff.py on d3d-full.jsonl.
 Lines matching a row of the decisions TSV (element, regex, ROADMAP decision) are reported as
 covered. Exit 0 when every element has no uncovered difference and every element exists on
@@ -44,6 +46,9 @@ ELEMENTS = {
     "vehtag": ("ui", {"geo": True}), "input": ("ui", {}),
     # FEAT-B (end of tools/diff/visual-scenario.sh): /dl labels, /dl off, /testdw rows.
     "dl": ("ui", {"geo": True}), "dloff": ("ui", {}), "testdw": ("ui", {}),
+    # 3D text with colour codes (end of the scenario): world labels, a coloured bubble + a player-attached label.
+    # `glyphs`: geo, but the per-glyph sprite.Draw calls stay (without positions) so their colours are compared.
+    "label3d": ("ui", {"geo": True, "glyphs": True}), "bubblecol": ("ui", {"geo": True, "glyphs": True}),
 }
 
 
@@ -121,7 +126,8 @@ def normalise(tool, kind, opts, frame):
         n = common(tool, r, sprites)
         calc = calc_ret(n, calc)
         if opts.get("geo"):
-            if n["fn"] == "sprite.Draw" and "file:" not in str((n.get("args") or {}).get("tex")):
+            if n["fn"] == "sprite.Draw" and "file:" not in str((n.get("args") or {}).get("tex")) \
+                    and not opts.get("glyphs"):
                 continue
             n = degeo(n)
         if d3dx_draw(n) and "v" in (n.get("vertices") or {}):
@@ -135,7 +141,10 @@ def normalise(tool, kind, opts, frame):
             prev = json.loads(out[-1])
             if same_but_counts(prev, n):
                 for k in ("num_vertices", "prims"):
-                    prev["args"][k] = (prev["args"].get(k) or 0) + (n["args"].get(k) or 0)
+                    # `geo` elements drop the counts (degeo): do not bring them back as 0 here, or the
+                    # split point would show up again as a count-key difference.
+                    if k in prev["args"] or k in n["args"]:
+                        prev["args"][k] = (prev["args"].get(k) or 0) + (n["args"].get(k) or 0)
                 pv, nv = prev.get("vertices"), n.get("vertices")
                 if pv is not None and nv is not None:
                     pv["n"] = (pv.get("n") or 0) + (nv.get("n") or 0)

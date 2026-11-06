@@ -746,3 +746,21 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
 - Verified: cargo test --workspace ok; clippy host + i686-pc-windows-gnu clean; tools/e2e/m8a.sh PASS;
   tools/diff/visual.sh (ours vs the main checkout's original capture) every element OK incl. dlg0–5, input,
   paste, scoreboard. Residuals (device-reset cursor details) in ROADMAP decisions.
+
+## 2026-11-06 — LBL-COL: colour codes in 3D labels and chat bubbles (user report)
+- Report: labels with `{RRGGBB}` codes showed in one colour. Static (A build, objdump): the label pool pass
+  A 0x10001350 calls the 3D text painter A 0x1006bc90 with the raw text and an outline flag = (alpha == FF);
+  the painter's small draw (B 0x1006b4a0) draws the outlines from the stripped text and the main pass from the
+  raw text through the colour-code wrapper. Bubbles use the same painter (outline 1, LOS 0). A 0x100b6140 on
+  RPC 36 is the `~k~` key-name filter (< 400 chars, kept if ≤ 399), not a colour pass.
+- Fix (samp-client `ui/render.rs`): shared `text3d` painter for labels and bubbles (raw text through the
+  wrapper, outline only for alpha FF labels, bubble rect bottom y+1); `entities.rs` runs the label `~k~`
+  expansion (`samp_ui::text::expand_key_names_limit`, limit 399; `GameExpander` now crate-visible).
+- Harness (F4): scenario `visual_labels` (7 world labels: several colours, code at start / mid-word, invalid
+  `{GGGGGG}` / `{12345}`, lower-case hex, double code, alpha 80 / 60 with and without codes, `~k~`, a 465-char
+  label; then a bot with a coloured alpha-80 bubble and a player-attached label); elements `label3d`,
+  `bubblecol` (geo + new `glyphs` option: per-glyph colours compared); `BOTCOUNT` for the bot index; geo merge
+  fix (D3DX draw counts not re-added as 0).
+- Verified: `tools/diff/visual.sh --orig` (fresh original capture) then `tools/diff/visual.sh`: exit 0, 30/30
+  elements OK (dl: 2 lines covered by the glyph-atlas decision); cargo test --workspace; clippy host + i686
+  clean; tools/e2e/m6.sh in lane ui. Notes: docs/phase3/diff-notes.md "DIFF-4: 3D labels and bubbles".

@@ -242,6 +242,31 @@ What the harness does now:
   RPC 120, a player textdraw not drawn (screenshot of the previous step), SetPlayerPos landing 1 m off
   (two quanta) — every case turns the step from MATCH into DIFF / NOT-IMPLEMENTED.
 
+## DIFF-4: 3D labels and bubbles with colour codes (2026-11-06)
+
+Reported from a real server: labels like `{FF0000}red {FFFFFF}white` were one colour in our client.
+* Static (A build): the label pool pass (A 0x10001350) calls the 3D text painter A 0x1006bc90 with
+  (pos, raw text, ARGB, `alpha == FF`, LOS). The painter projects, builds [x, y, x+1, y+1] and calls the
+  font renderer's small draw (B 0x1006b4a0) with 0x101: with the outline flag, four black passes of the
+  stripped text (outline font), then the raw text through the colour-code wrapper font (§3.3 of
+  ui-rendering.md). Bubbles (A 0x10066ed0) call the same painter with outline 1 and LOS 0. The RPC 36
+  "post-processing" A 0x100b6140 is the `~k~` key-name filter (only < 400 chars with `~k~`, GTA
+  0x69E160, kept if ≤ 399), not a colour pass; codes are stored unchanged.
+* Measured (visual.sh elements `label3d`, `bubblecol`; original run target/visual/orig in the LBL-COL
+  worktree): per-glyph colours of the wrapper pass, e.g. `{FF0000}red {00FF00}green {0000FF}blue
+  {FFFFFF}white` on FFFF00FF → 3 glyphs FFFF0000, 5 FF00FF00, 4 FF0000FF, 5 FFFFFFFF; `plain
+  yel{FF00FF}low` → 8 FFFFFF00 then 11 FFFF00FF; `{GGGGGG}` / `{12345}s` print literally, `{ff8800}`
+  (lower case) is a code, two adjacent codes → the second wins; FFFFFF80 base → 9 glyphs 80FFFFFF then
+  FFFF0000 after the code; labels with alpha ≠ FF have **no** outline passes; `press ~k~~PED_FIREWEAPON~`
+  → `press LMB now`; a 465-char label keeps its literal `~k~` and all its colours; the bubble's RGBA
+  alpha 80 is FF in the bubble store; a per-player label attached to a bot draws like a world label.
+* Before the fix ours stripped the codes and drew labels in one colour with outlines always (and the
+  bubble rect bottom was y+2). After: both elements 0 differing lines.
+* Harness: `glyphs` option for geo elements (glyph sprite.Draw kept without positions, so colours are
+  compared; verified sensitive: recolouring the FF0000 glyphs in a copy of ours gives 154 lines); the
+  scenario's bot index comes from `BOTCOUNT` (m8afs numbers bots by connection order); merging split
+  D3DX draws no longer re-adds the counts geo mode dropped.
+
 ## Open problems
 
 * Some entities are placed outside the camera view (actor at +6/+3, car at +7/+6 relative

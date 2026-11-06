@@ -115,4 +115,38 @@ visual_scenario() {
     cap dloff ui
     key t; typ "/testdw"; key Return; sleep 1
     cap testdw ui
+    visual_labels
+}
+
+# 3D text labels (RPC 36) and chat bubbles with `{RRGGBB}` codes: the pool pass A 0x10001350 and the bubble pass
+# A 0x10066ed0 both draw through the 3D text painter A 0x1006bc90 (outline passes of the stripped text, then the raw
+# text through the colour-code wrapper). label3d: world labels in front of the local player (several colours, a code
+# at the start and mid-word, invalid codes, lower-case hex, base alpha < FF with and without codes, a 432-char text
+# with a literal `~k~`, a short `~k~` text that is expanded). bubblecol: a bot with a coloured bubble (alpha 80)
+# and a per-player label attached to it.
+visual_labels() {
+    local long="" i cols=(FF0000 00FF00 0000FF FFFF00 FF00FF 00FFFF FFFFFF)
+    for ((i = 0; i < 9; i++)); do long+="{${cols[i % 7]}}line $i of the long label, colour ${cols[i % 7]}\\n"; done
+    long+="~k~~PED_FIREWEAPON~ stays literal"
+    fs 'pos|L|1700.0|-2600.0|13.5|90.0'
+    sleep 2
+    fs 'label|{FF0000}red {00FF00}green {0000FF}blue {FFFFFF}white|FFFF00FF|1692.0|-2600.0|14.6|50.0|0'
+    fs 'label|plain yel{FF00FF}low mid-word|FFFF00FF|1692.0|-2597.0|14.1|50.0|0'
+    fs 'label|bad {GGGGGG}code {12345}short {ff8800}lower {00FF00}{0000FF}double|00FFFFFF|1692.0|-2603.0|14.1|50.0|0'
+    fs 'label|half alpha {FF0000}then red|FFFFFF80|1692.0|-2600.0|13.6|50.0|0'
+    fs 'label|alpha without codes|00FF0060|1692.0|-2602.0|13.1|50.0|0'
+    fs 'label|press ~k~~PED_FIREWEAPON~ {FF0000}now|FFFFFFFF|1692.0|-2598.0|13.1|50.0|0'
+    fs "label|$long|FFFFFFFF|1680.0|-2600.0|19.0|80.0|0"
+    sleep 1.5
+    cap label3d ui
+    bot Bot3 --seconds 120
+    waitlog 'connect [0-9]+ Bot3' 30
+    sleep 3
+    local b="B$BOTCOUNT"
+    fs "pos|$b|1696.0|-2600.0|13.5|270.0"
+    fs "bubble|$b|FFFF0080|50.0|30000|{FF0000}Red {00FF00}green {FFFFFF}white bubble"
+    fs "plabel|L|attached {00FFFF}cyan {FF8800}orange|FFFFFFFF|0.0|0.0|0.6|50.0|$b|-|0"
+    sleep 2
+    cap bubblecol ui
+    killbots
 }

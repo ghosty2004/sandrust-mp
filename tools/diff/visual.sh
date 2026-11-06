@@ -132,8 +132,11 @@ cap_end() {
 cap() { cap_start "$1" "$2" "${3:-3}"; cap_end "$1"; shot "$1"; }
 BOTS=()
 BOTNAMES=()
+# Bots started so far in this session: m8afs.pwn names the n-th connected bot `Bn`.
+BOTCOUNT=0
 bot() {
     local name="$1"; shift
+    BOTCOUNT=$((BOTCOUNT + 1))
     mark_log
     ( cd "$SAMP_RS_ROOT" && exec "$TB/debug/samp-bot" "127.0.0.1:$PORT" --name "$name" "$@" ) > "$OUT/bot-$name.out" 2>&1 &
     BOTS+=($!)

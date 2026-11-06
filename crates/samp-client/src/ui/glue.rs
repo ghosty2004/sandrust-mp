@@ -428,7 +428,7 @@ fn gta_menu_active() -> bool {
 }
 
 /// GTA's `~k~` substitution on a private buffer.
-struct GameExpander;
+pub(crate) struct GameExpander;
 
 impl KeyNameExpander for GameExpander {
     fn expand(&self, text: &[u8]) -> Vec<u8> {

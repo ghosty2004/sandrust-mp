@@ -75,16 +75,24 @@ impl KeyNameExpander for NoExpansion {
 /// Texts this long or longer are never expanded (UCA "Key-name expansion").
 pub const KEY_EXPANSION_MAX_INPUT: usize = 400;
 /// The expanded text is kept only if it fits in this many characters.
-/// Unknown (notes U-KEXP): whether "fits in 255" means `<= 255` or `< 255`.
+/// Kept when its length is `<= 255`: A 0x100b6140 rejects with a signed `>` against the
+/// caller's limit (the chat caller A 0x10068190 passes 255).
 pub const KEY_EXPANSION_MAX_OUTPUT: usize = 255;
+/// 3D text labels (RPC 36 store, A 0x100011d0) pass 399 as the limit.
+pub const LABEL_KEY_EXPANSION_MAX_OUTPUT: usize = 399;
 
 /// Runs `~k~` expansion like A 0x100b6140: only if the text contains `~k~` and is
 /// shorter than 400 chars; the result is kept only if it fits in 255 chars.
 pub fn expand_key_names(text: &[u8], expander: &dyn KeyNameExpander) -> Vec<u8> {
+    expand_key_names_limit(text, expander, KEY_EXPANSION_MAX_OUTPUT)
+}
+
+/// [`expand_key_names`] with the caller's output limit (`max_out`: chat 255, labels 399).
+pub fn expand_key_names_limit(text: &[u8], expander: &dyn KeyNameExpander, max_out: usize) -> Vec<u8> {
     let has_k = text.windows(3).any(|w| w == b"~k~");
     if has_k && text.len() < KEY_EXPANSION_MAX_INPUT {
         let r = expander.expand(text);
-        if r.len() <= KEY_EXPANSION_MAX_OUTPUT {
+        if r.len() <= max_out {
             return r;
         }
     }
@@ -206,6 +214,20 @@ mod tests {
         let mut t = vec![b'a'; 397];
         t.extend_from_slice(b"~k~");
         assert_eq!(expand_key_names(&t, &NoExpansion), t);
+    }
+
+    #[test]
+    fn label_key_expansion_limit_399() {
+        // 397 + "!!" = 399 fits the label limit, 398 + "!!" does not.
+        let mut t = vec![b'a'; 394];
+        t.extend_from_slice(b"~k~");
+        let r = expand_key_names_limit(&t, &Upper, LABEL_KEY_EXPANSION_MAX_OUTPUT);
+        assert_eq!(r.len(), 399);
+        let mut t = vec![b'a'; 395];
+        t.extend_from_slice(b"~k~");
+        assert_eq!(expand_key_names_limit(&t, &Upper, LABEL_KEY_EXPANSION_MAX_OUTPUT), t);
+        // Colour codes pass through the filter untouched.
+        assert_eq!(expand_key_names_limit(b"{FF0000}red", &Upper, 399), b"{FF0000}red");
     }
 
     #[test]

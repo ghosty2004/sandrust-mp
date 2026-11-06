@@ -821,7 +821,12 @@ no texture, no Z [I from the set calls]. Health `hp` = remote +0x1b0, armour `ar
   download/upload rates. Main font, white, outline, one draw per line. [U: exact origin;
   TRACE]
 - **3D text labels** (pool, A 0x10001350) and bubbles share the 3D text painter (A 0x1006bc90):
-  project, test z ≤ 1, optional LOS test, small font centred (0x101) with outline.
+  project, test z ≤ 1, optional LOS test, rect [x, y, x+1, y+1] (truncated), then the font renderer's
+  small draw (B 0x1006b4a0) with 0x101: if the painter's outline flag is set, four black passes of the
+  **stripped** text with the outline font, then the **raw** text through the colour wrapper (§3.3), so
+  `{RRGGBB}` codes colour labels and bubbles per glyph. Outline flag: labels pass `alpha == FF`
+  (A 0x100013bc; a translucent label has no outline), bubbles always 1 (A 0x1006702f); LOS flag:
+  the label's, bubbles 0. [O, measured by the DIFF-4 elements `label3d` / `bubblecol`]
 - **Number plates**: the plate painter renders the plate string into a 128×32 render target
   with the Arial 38/10/bold font, clear colour 0xFFBEB6A8 and text 0xEE444470 (A 0x1006d880),
   then copies it into a 64×32 texture [I]. Vehicles scope.

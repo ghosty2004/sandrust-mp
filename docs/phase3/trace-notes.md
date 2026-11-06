@@ -981,7 +981,9 @@ GUI 24/22 (all recreated at once).
   * Victim name at x 1099; with no killer, the victim takes the killer slot.
   * Names use the death font (Arial 14 q0) with a 4-way outline.
 * **Chat bubble**: the pre-wrapped text (with `\n`), 4-way outline + main, small font, rect
-  [px, py, px+1, py+2], fmt 0x101, colour = bubble RGBA → ARGB.
+  [px, py, px+1, py+2], fmt 0x101, colour = bubble RGBA → ARGB. (Corrected 2026-11-06: the logged rects are
+  [px, py, px+1, py+1], as the painter builds them; the main pass goes through the colour-code wrapper, so
+  `{RRGGBB}` codes colour the bubble per glyph — DIFF-4 element `bubblecol`.)
 * **/save**:
   * On foot: `AddPlayerClass(0,x,y,z,heading,0,0,0,0,0,0); // comment` with the ped heading in
     degrees.
@@ -1239,6 +1241,8 @@ frames/s. The server is open.mp 1.6.7, which never sends RPC 84; see 44 below.
 * Drawn in samp's Present pass with the small font (Arial 14, wt700, q4):
   * 4-way outline (0,−1), (0,+1), (−1,0), (+1,0) in 0xFF000000, then the main pass;
   * the text is stripped of `{RRGGBB}` codes; rect [x, y, x+1, y+1], fmt 0x101 (centre, no clip);
+    (corrected 2026-11-06: the stripped text is what the colour wrapper hands to the real font; the main
+    pass's glyphs carry the code colours, and labels with alpha ≠ FF have no outline — DIFF-4 `label3d`)
   * colour = label RGBA → ARGB.
 * Beyond the draw distance (48 m for 30) the label is not drawn.
 * **LOS flag**: a label behind an object is not drawn; the same position without the flag is drawn.

@@ -45,7 +45,7 @@ Every item below is a named constant or a commented code path tagged with the sa
 | U-ROUND | `lib.rs round_i` | layout `round()` = half away from zero |
 | U-HEXCASE | `colour::parse_code` | hex digits in `{RRGGBB}` accepted in both cases |
 | U-STRIP | `colour::strip_codes` | in-place removal; scan resumes at the same index (a code formed by a removal there is removed too) |
-| U-KEXP | `text::KEY_EXPANSION_MAX_OUTPUT` | expanded `~k~` text kept if `len <= 255` |
+| U-KEXP | `text::KEY_EXPANSION_MAX_OUTPUT` | **resolved (2026-11-06, static)**: kept if `len <= limit` (A 0x100b61ce `cmp`/`jg`); chat passes 255 (A 0x10068190), 3D labels 399 (A 0x10001283) |
 | U-PAGESIZE-SCROLL | `chat::PAGESIZE_CHANGE_SCROLLS_TO_BOTTOM` | a page-size change scrolls to the bottom (alternative: only clamps) |
 | U-CHATBOTTOM | `chat::ChatWindow::bottom` | **resolved (M4)**: `10 + (pageSize + 1)·(h + 1)`, every page line counts (A 0x10067940 loop; screenshot of the original) |
 | U-CHATLOG-NAME | `chat::ChatEntry::chatlog_line` | **confirmed (M4)**: the original logged `<OrigClient> hello world` |
