@@ -126,7 +126,8 @@ impl Client {
         let auth = AuthTable::parse(&text).map_err(|e| format!("auth table {path}: parse error at line {}", e.line))?;
         let server = crate::netclient::resolve(&host, port).map_err(|e| format!("resolve {host}:{port}: {e}"))?;
         crate::log!("client: connecting to {server} as {name:?} (auth table {path}, {} entries)", auth.len());
-        let net = NetClient::new(server, &name, auth).map_err(|e| format!("udp socket: {e}"))?;
+        let mut net = NetClient::new(server, &name, auth).map_err(|e| format!("udp socket: {e}"))?;
+        net.set_password(args.password.as_deref().unwrap_or(""));
         // "Started"; the connect tick starts the session more than 3000 ms after the netgame constructor
         // (lifecycle.rs).
         crate::ui::on_netgame_start(&host, port, &name);

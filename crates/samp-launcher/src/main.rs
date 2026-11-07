@@ -1,8 +1,9 @@
 //! samp-launcher: starts gta_sa.exe suspended with the original launcher's
-//! command-line convention (`-c -n NAME -h HOST -p PORT`), loads our client
+//! command-line convention (`-c -n NAME -h HOST -p PORT [-z PASSWORD]`), loads our client
 //! DLL into it with a remote `LoadLibraryW` thread, then resumes the game.
 //!
-//! Usage: samp-launcher [--gta PATH] [--dll PATH]... [--name NAME] [--host HOST] [--port PORT] [--no-wait]
+//! Usage: samp-launcher [--gta PATH] [--dll PATH]... [--name NAME] [--host HOST] [--port PORT] [--password PASS]
+//!        [--no-wait]
 //!
 //! `--dll` may be given several times; the DLLs are loaded in that order
 //! (e.g. `--dll samp-tracer.dll --dll samp.dll`) before the game resumes.
@@ -15,6 +16,8 @@ struct Options {
     name: String,
     host: String,
     port: u16,
+    /// Server password, passed as `-z` only when given.
+    password: Option<String>,
     wait: bool,
 }
 
@@ -25,6 +28,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, String
         name: "Player".into(),
         host: "127.0.0.1".into(),
         port: 7777,
+        password: None,
         wait: true,
     };
     let mut it = args.into_iter();
@@ -36,6 +40,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, String
             "--name" => o.name = val("--name")?,
             "--host" => o.host = val("--host")?,
             "--port" => o.port = val("--port")?.parse().map_err(|_| "--port must be 1..65535".to_string())?,
+            "--password" => o.password = Some(val("--password")?),
             "--no-wait" => o.wait = false,
             "--help" | "-?" => return Err(USAGE.into()),
             other => return Err(format!("unknown argument {other:?}\n{USAGE}")),
@@ -44,11 +49,32 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Options, String
     if o.name.is_empty() || o.name.contains(char::is_whitespace) {
         return Err("--name must be non-empty without spaces".into());
     }
+    if let Some(p) = &o.password {
+        check_password(p)?;
+    }
     Ok(o)
 }
 
-const USAGE: &str =
-    "usage: samp-launcher [--gta PATH] [--dll PATH]... [--name NAME] [--host HOST] [--port PORT] [--no-wait]";
+const USAGE: &str = "usage: samp-launcher [--gta PATH] [--dll PATH]... [--name NAME] [--host HOST] [--port PORT] \
+     [--password PASS] [--no-wait]";
+
+/// The client reads `-z` as one word of the raw command line (docs/re/handshake.md, "Command line"): it ends at
+/// a space, `-` or `/`, quotes are not removed, and past 254 characters the bytes sent no longer match the
+/// server's copy (which keeps the terminator). Such a password could never be sent as given.
+fn check_password(p: &str) -> Result<(), String> {
+    if p.is_empty() {
+        return Err("--password must not be empty (leave it out for no password)".into());
+    }
+    if let Some(c) = p.chars().find(|c| !c.is_ascii_graphic() || matches!(c, '-' | '/' | '"')) {
+        return Err(format!(
+            "--password cannot contain {c:?}: SA:MP's -z switch takes printable ASCII without '-', '/', '\"' or spaces"
+        ));
+    }
+    if p.len() > 254 {
+        return Err("--password is longer than 254 characters".into());
+    }
+    Ok(())
+}
 
 /// Quotes one argument for a Windows command line (CommandLineToArgvW rules).
 fn quote_arg(a: &str) -> String {
@@ -85,7 +111,12 @@ fn command_line(o: &Options) -> String {
 
 /// Same convention as the original SA:MP launcher (see samp-client `cmdline`).
 fn samp_client_args(o: &Options) -> Vec<String> {
-    ["-c", "-n", &o.name, "-h", &o.host, "-p", &o.port.to_string()].iter().map(|s| s.to_string()).collect()
+    let mut args: Vec<String> =
+        ["-c", "-n", &o.name, "-h", &o.host, "-p", &o.port.to_string()].iter().map(|s| s.to_string()).collect();
+    if let Some(p) = &o.password {
+        args.extend(["-z".to_string(), p.clone()]);
+    }
+    args
 }
 
 fn main() {
@@ -324,6 +355,23 @@ mod tests {
         assert!(!o.wait);
         assert_eq!(o.dlls, vec!["x.dll".to_string()]);
         assert_eq!(command_line(&o), "\"C:\\Games\\GTA San Andreas\\gta_sa.exe\" -c -n Rusty -h 10.0.0.2 -p 7778");
+    }
+
+    #[test]
+    fn password_goes_last_as_z_switch() {
+        let o = parse_args(s(&["--gta", "gta_sa.exe", "--name", "Rusty", "--password", "s3cret.Pw_1"])).unwrap();
+        assert_eq!(command_line(&o), "gta_sa.exe -c -n Rusty -h 127.0.0.1 -p 7777 -z s3cret.Pw_1");
+        assert_eq!(parse_args(s(&[])).unwrap().password, None);
+    }
+
+    #[test]
+    fn rejects_passwords_the_z_switch_cannot_carry() {
+        for bad in ["", "a b", "a-b", "a/b", "a\"b", "caf\u{e9}"] {
+            assert!(parse_args(s(&["--password", bad])).is_err(), "{bad:?}");
+        }
+        assert!(parse_args(s(&["--password", &"a".repeat(254)])).is_ok());
+        assert!(parse_args(s(&["--password", &"a".repeat(255)])).is_err());
+        assert!(parse_args(s(&["--password"])).is_err());
     }
 
     #[test]

@@ -17,7 +17,7 @@ use samp_proto::auth::{self, AuthTable};
 use samp_proto::bitstream::BitWriter;
 use samp_proto::cipher::{self, CipherKey};
 use samp_proto::connection::{Connection, Delivered, priority};
-use samp_proto::raknet::{Reliability, id, strip_timestamp};
+use samp_proto::raknet::{Reliability, connection_request, id, strip_timestamp};
 use samp_proto::rpc;
 use samp_proto::rpcs::{self, Incoming, RpcPayload};
 use samp_proto::session::{self, InitGame};
@@ -159,6 +159,8 @@ struct Core {
     server: SocketAddrV4,
     key: CipherKey,
     name: String,
+    /// The server password as RakClient stores it (see [`NetClient::set_password`]).
+    password: Vec<u8>,
     auth: AuthTable,
     phase: Phase,
     open_attempts: u32,
@@ -204,6 +206,7 @@ impl NetClient {
             server,
             key: CipherKey::from_port(server.port()),
             name: name.to_string(),
+            password: Vec::new(),
             auth,
             phase: Phase::Idle,
             open_attempts: 0,
@@ -218,6 +221,12 @@ impl NetClient {
             accepted_challenge: None,
         };
         Ok(Self { core: Arc::new(Mutex::new(core)), worker: None, threaded: !cfg!(test), rak_running: false })
+    }
+
+    /// RakClient `SetPassword`, called once by the netgame constructor with the `-z` value: every later
+    /// connection request carries it; empty means no password. Mirrors samp.dll 0x10034220.
+    pub fn set_password(&mut self, password: &str) {
+        self.core().password = password.as_bytes().to_vec();
     }
 
     fn core(&self) -> MutexGuard<'_, Core> {
@@ -544,7 +553,8 @@ impl Core {
                 Some(ServerReply::Accepted) => {
                     crate::log!("net: open-connection accepted after {} request(s)", self.open_attempts);
                     let mut conn = Connection::connecting(now);
-                    conn.send_with(&[id::CONNECTION_REQUEST], 8, Reliability::Reliable, 0, priority::SYSTEM);
+                    let req = connection_request(&self.password);
+                    conn.send_with(&req, req.len() * 8, Reliability::Reliable, 0, priority::SYSTEM);
                     self.conn = Some(conn);
                     self.phase = Phase::Connecting;
                 }
@@ -853,6 +863,47 @@ mod tests {
             c.tick(Instant::now());
             let (n, _) = server.recv_from(&mut buf).unwrap();
             assert_eq!(open_request_cookie(&buf[..n], addr.port()), Some(0x1234), "fresh session: {fresh}");
+            c.disconnect_silent();
+        }
+    }
+
+    /// The open-connection reply is answered with a reliable `0x0b` carrying the password set by the netgame
+    /// constructor (with its terminator), on every attempt.
+    #[test]
+    fn connection_request_carries_the_password() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let addr = match server.local_addr().unwrap() {
+            std::net::SocketAddr::V4(a) => a,
+            _ => unreachable!(),
+        };
+        let mut c = NetClient::new(addr, "Tester", AuthTable::parse("").unwrap()).unwrap();
+        c.set_password("pw1");
+        let mut buf = [0u8; 600];
+        for _ in 0..2 {
+            c.connect().unwrap();
+            c.tick(Instant::now());
+            let (_, peer) = server.recv_from(&mut buf).unwrap();
+            server.send_to(&[0x19, 0x00], peer).unwrap();
+            let mut request = None;
+            for _ in 0..200 {
+                c.tick(Instant::now());
+                server.set_nonblocking(true).unwrap();
+                while let Ok((n, _)) = server.recv_from(&mut buf) {
+                    let mut plain = Vec::new();
+                    cipher::decrypt(&buf[..n], CipherKey::from_port(addr.port()), &mut plain).unwrap();
+                    let Ok(dg) = samp_proto::raknet::Datagram::decode(&plain) else { continue };
+                    request = request.or(dg.messages.into_iter().find(|m| m.data.first() == Some(&0x0b)));
+                }
+                server.set_nonblocking(false).unwrap();
+                if request.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let m = request.expect("no connection request");
+            assert_eq!(m.data, b"\x0bpw1\0");
+            assert_eq!(m.reliability, Reliability::Reliable);
             c.disconnect_silent();
         }
     }

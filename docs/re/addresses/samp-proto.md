@@ -33,6 +33,13 @@ recorded; see docs/re/build-diff-r4.md for the offset pattern). The code cites a
 | `Connection::is_dead` (ack timer) | 0x10045b70 | — | ack timer start on first reliable send | m10-notes.md |
 | `Connection::handle_datagram` (ack timer) | 0x10049390 | — | every acked number moves the ack timer | m10-notes.md |
 
+## RakNet messages (`raknet.rs`)
+
+| our item | samp.dll A | samp.dll B | what it is | spec section |
+|---|---|---|---|---|
+| `connection_request` | 0x10034220 | 0x100341d0 | RakClient::SetPassword: a non-empty password is stored with its terminator, an empty one as nothing | handshake.md §1 "Command line and server password" |
+| `MAX_PASSWORD_BYTES` | 0x10040581 | 0x10040531 | RakPeer::Connect cuts the password data to 255 bytes | handshake.md §1 "Command line and server password" |
+
 ## Session, strings, sync
 
 | our item | samp.dll A | samp.dll B | what it is | spec section |

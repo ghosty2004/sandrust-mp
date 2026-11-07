@@ -222,6 +222,23 @@ pub fn ack_ranges(numbers: &mut Vec<u16>) -> Vec<AckRange> {
     out
 }
 
+/// Most password bytes a connection request carries (terminator included); RakPeer::Connect cuts longer
+/// passwords. Mirrors samp.dll 0x10040581.
+pub const MAX_PASSWORD_BYTES: usize = 255;
+
+/// The connection request (`0x0b`) sent after the open-connection reply. RakClient keeps a non-empty password
+/// as its bytes plus the terminating NUL and RakPeer::Connect cuts that to [`MAX_PASSWORD_BYTES`]; an empty
+/// password sends the id alone (docs/re/handshake.md, "Server password"). Mirrors samp.dll 0x10034220.
+pub fn connection_request(password: &[u8]) -> Vec<u8> {
+    let mut msg = vec![id::CONNECTION_REQUEST];
+    if !password.is_empty() {
+        msg.extend_from_slice(password);
+        msg.push(0);
+        msg.truncate(1 + MAX_PASSWORD_BYTES);
+    }
+    msg
+}
+
 /// Strip an optional `0x28 + u32` timestamp prefix; returns (timestamp, rest).
 pub fn strip_timestamp(data: &[u8]) -> (Option<u32>, &[u8]) {
     match data {
@@ -233,6 +250,19 @@ pub fn strip_timestamp(data: &[u8]) -> (Option<u32>, &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_request_carries_the_password_with_its_terminator() {
+        assert_eq!(connection_request(b""), vec![0x0b]);
+        assert_eq!(connection_request(b"pw"), vec![0x0b, b'p', b'w', 0]);
+        // 254 characters still fit with the NUL; longer ones lose it and are cut to 255 bytes.
+        let p = vec![b'a'; 254];
+        let m = connection_request(&p);
+        assert_eq!((m.len(), m[254], m[255]), (256, b'a', 0));
+        let m = connection_request(&[b'a'; 300]);
+        assert_eq!(m.len(), 1 + MAX_PASSWORD_BYTES);
+        assert!(m[1..].iter().all(|&b| b == b'a'));
+    }
 
     fn msg(number: u16, reliability: Reliability, data: &[u8]) -> Message {
         Message {

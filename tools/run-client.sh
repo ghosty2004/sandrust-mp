@@ -4,6 +4,7 @@
 # samp_client.dll and resumes it, inside a Wine virtual desktop.
 #   tools/run-client.sh [HOST:PORT] [NAME]       (default 127.0.0.1:7777 RustClient)
 # GTA_RES=WxH sets the desktop size (default 1280x720). SKIP_BUILD=1 skips cargo.
+# SAMP_PASSWORD=PASS joins a passworded server (passed as --password, i.e. gta_sa.exe -z PASS).
 # Logs: wine/gta-sa/samp-rs.log (DLL), wine/gta-sa/samp-rs-launcher.log.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -39,8 +40,10 @@ cd "$GTA_DIR"
 # D3D call-stream logs of our client).
 pre=()
 [[ -n "${SAMP_RS_PRE_DLL:-}" ]] && pre=(--dll "$(winepath -w "$SAMP_RS_PRE_DLL")")
+pw=()
+[[ -n "${SAMP_PASSWORD:-}" ]] && pw=(--password "$SAMP_PASSWORD")
 rc=0
 wine_launch samp-rs "$GTA_DIR/samp-rs-launcher.exe" \
     --gta "$(winepath -w "$GTA_DIR/gta_sa.exe")" "${pre[@]}" --dll "$(winepath -w "$GTA_DIR/samp_client.dll")" \
-    --name "$NAME" --host "$HOST" --port "$PORT" || rc=$?
+    --name "$NAME" --host "$HOST" --port "$PORT" "${pw[@]}" || rc=$?
 exit "$rc"

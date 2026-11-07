@@ -25,3 +25,5 @@ recorded for the other build. Code comments cite at most one of these per item.
 | `Core::on_message` (auth key) | 0x10041C16 |  | RakNet answers the auth key itself while connecting | docs/re/handshake.md, "Post-connect auth key" |
 | `Core::send_player_connect` | 0x1000AD80 |  | packet handler on `0x22`: PlayerConnect (RPC 25) | docs/re/handshake.md, "Join" |
 | `SERIAL_INPUT`, `client_serial` | 0x1005FFA0 | 0x1005FF50 | client serial (gpci), called with game address 0x00C9236C | docs/re/handshake.md, "Client serial" |
+| `NetClient::set_password` | 0x10034220 | 0x100341D0 | RakClient::SetPassword (vtable +0x10, called by the netgame constructor with the `-z` buffer) | docs/re/handshake.md, "Command line and server password" |
+| `Core::on_datagram` (connection request) | 0x10034130 |  | RakClient::Connect hands the stored password bytes to RakPeer::Connect | docs/re/handshake.md, "Command line and server password" |

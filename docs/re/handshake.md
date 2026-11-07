@@ -112,6 +112,45 @@ Each line is one or more logical messages; every C→S datagram is additionally 
 
 Note that a `0x1a` reply consumes one of the 6 attempts; the client never resets the global cookie between servers.
 
+### Command line and server password (observed, static; A addresses, B in docs/re/addresses/cmdline.md)
+
+**Command line.** At game start samp.dll (A 0x100C45F0) takes the raw `GetCommandLineA` string, zeroes its
+argument block (A 0x1026DE60, 0x511 bytes) and walks the string one character at a time. Wherever it meets
+`-` or `/` followed by one of `c d h l n p z` it handles a switch: `c` sets "connect mode", `d` "debug mode",
+`h` / `n` / `p` / `z` copy a value into fixed 0x101-byte buffers (host 0x1026DF6D, name 0x1026E16F, port text
+0x1026E06E, **password 0x1026DE6C**), `l` copies a double-quoted value into a fifth buffer. Other letters
+are ignored. The walk does not skip over a value it has copied, so it also scans inside values (and the exe path).
+
+The value copy (A 0x100C3F00) starts right after the switch letter (`-zPASS` and `-z PASS` both work), skips
+leading spaces, then copies characters up to the first **space, `-` or `/`** (or the end), and terminates the
+buffer. It has no length check. Consequences: a password cannot contain a space, `-` or `/` (it is cut
+there, and a `-x` / `/x` inside it is read as another switch); quotes are not removed (`-z "a b"` gives `"a`);
+`-z` followed directly by another switch gives an empty password; without `-z` the buffer stays empty.
+The string is the ANSI command line, so bytes are those of the system code page.
+
+**Into RakNet.** The game-init routine (A 0x100C47D0) constructs the netgame with host, `atol(port)`, name and
+the password buffer; the netgame constructor calls RakClient::SetPassword (vtable +0x10, A 0x10034220) once.
+SetPassword resets its password bitstream; if the string is non-empty it writes `strlen + 1` bytes, i.e.
+**the password with its terminating NUL**; an empty (or null) password leaves the bitstream empty.
+Every RakClient::Connect (A 0x10034130; also each reconnect) passes `(bits + 7) / 8` bytes of that bitstream to
+RakPeer::Connect (A 0x10040550), which cuts the length to **255 bytes** (so for passwords of 255+ characters
+the NUL and the tail are lost) and copies the bytes into the pending-request record. On the server's
+open-connection reply `0x19` the client sends, reliably (rel 8, system priority, channel 0):
+
+| case | `0x0b` message |
+|---|---|
+| no `-z` / empty | `0b` |
+| `-z pw1` | `0b 70 77 31 00` |
+| 300 × `a` | `0b` + 255 × `61` (no NUL) |
+
+The server side (open.mp's RakNet fork, rakserver.cpp `SetPassword`) also stores `strlen + 1` bytes, and its
+connection-request handler accepts only if the length and all bytes match; otherwise it sends `0x25`
+(ID_INVALID_PASSWORD, reliable, system priority) and drops the connection silently. A server without a
+password stores length 0, so a client that sends any password there is refused the same way.
+
+**Wrong password on the client.** RakNet hands `0x25` to the packet handler (A 0x1000B260), which prints
+"Wrong server password." and calls RakClient::Disconnect; there is no retry path from this handler.
+
 **Differential capture (2026-11-04, original client under Wine vs open.mp 1.6.7):** right after
 `0x22` the original client sends, in this order and in one burst: `1e`+ip+port (rel 8), `06`+time
 (rel 6), **`29` with no payload (rel 8, RakNet static data — missing from the static analysis
