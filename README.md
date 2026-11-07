@@ -21,7 +21,8 @@ A clean-room reimplementation of the **SA:MP 0.3.7-R4 client** in Rust. It joins
   <img src="docs/img/scoreboard.jpg" width="49%" alt="The scoreboard">
 </p>
 
-<sub>Screenshots of this client, taken on an isolated test display during the visual-parity runs.</sub>
+<sub>Screenshots of this client, taken on an isolated test display during the test runs. More than a hundred
+more, by feature, in the [gallery](docs/GALLERY.md).</sub>
 
 ## What it does
 
