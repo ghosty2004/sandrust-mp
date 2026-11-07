@@ -42,8 +42,12 @@ samp.dll for the same input. For every system you implement or change:
 Report the final diff results (commands + outputs) in your final reply.
 
 ## Layout
-- `crates/samp-proto` — version-independent wire protocol (cipher, unconnected
-  handshake; RakNet layer, RPCs to come).
+- `crates/samp-proto` — version-independent wire protocol: cipher, handshake, RakNet reliability layer,
+  typed codecs for every RPC and sync packet.
+- `crates/samp-client` — the in-game client: i686 Windows DLL injected into gta_sa.exe 1.0 US
+  (`samp-launcher` starts the game and injects it). `crates/samp-ui` — renderer-independent UI logic.
+- `crates/samp-saa` — samp.saa reader. `crates/samp-tracer` — measurement DLL for the original client
+  (hooks, D3D logger, effect tracer). `crates/samp-dump` — capture decoder.
 - `crates/samp-bot` — headless test client. `cargo run -p samp-bot -- 127.0.0.1:7777`
 - `docs/re/` — protocol specs; start at `docs/re/README.md` (index + ID→file
   coverage + open questions). `handshake.md` (§1 connect, §2 cipher, §3 RakNet,
@@ -78,24 +82,10 @@ REA MCP server (`rea`, Ghidra provider) — open a DLL with `open_binary`
 (+ `snapshot_path` from `re/snapshots/` to skip re-analysis).
 
 ## Status / roadmap
-1. Headless network client — **done for on-foot**: cipher, cookie exchange,
-   RakNet reliability (`connection.rs`, sans-IO), auth key, `0x22`,
-   PlayerConnect (25), InitGame (139), class selection (128), spawn (129→52)
-   and on-foot sync (207). Verified live: the server sees the bot spawned,
-   state ONFOOT, walking a circle (probe filterscript logging GetPlayerPos).
-   - `samp-proto::rpcs::{player,remote,vehicle,world,ui,session}`: typed
-     codecs for all 160 RPC ids; `rpcs::decode` dispatches S→C ids.
-     `samp-proto::sync`: all sync packets (200–212) + `policy` consts.
-     `samp-proto::strcomp`: Huffman strings (verified against live open.mp).
-   - Heading ↔ quaternion: h ↔ (cos h/2, 0, 0, −sin h/2) (verified live).
-   - Next: vehicle driving in the bot, remaining C→S behaviour, then phase 3.
-   - Auth: servers check the `0x0c` answer against a fixed 256-entry table
-     (open.mp `SAMPRakNet.cpp`). It's third-party data: generate
-     `data/auth_table.txt` with `tools/extract_auth_table.py` (gitignored), never commit it.
-   - Our server copy has `announce: false` so tests don't hit the public list.
-2. Full sync packets / RPC coverage.
-3. i686 Windows DLL hooking gta_sa.exe 1.0 US (planned on Windows). Specs:
-   `docs/re/subsystems/gta-patches.md` (+ annotated CSV) and
-   `remote-control-{onfoot,vehicles,combat}.md`. Open decision: SA:MP's own
-   assets (`SAMP/` folder: SAMP.img etc.) can't be redistributed — load them
-   from an existing SA:MP install or another legal source.
+See `docs/ROADMAP.md` (task board, decisions) and `docs/PLAN.md` (definition of done F1–F9). F1–F7 are met
+on main (proof scripts under `tools/diff/` and `tools/e2e/soak.sh`); open: other client versions (needs
+their binaries), Windows validation, the code cleanup and the rename to sandrust-mp.
+Auth: servers check the `0x0c` answer against a fixed 256-entry table (open.mp `SAMPRakNet.cpp`). It is
+third-party data: generate `data/auth_table.txt` with `tools/extract_auth_table.py` (gitignored), never
+commit it. Our server copy has `announce: false` so tests don't hit the public list. SA:MP's own assets
+are read at runtime from the user's SA:MP install (samp.saa, bass.dll), never redistributed.
