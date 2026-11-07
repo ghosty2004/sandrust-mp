@@ -1,19 +1,11 @@
 //! Model-preview textdraws (font 5, `TEXT_DRAW_FONT_MODEL_PREVIEW`). Windows only.
 //!
-//! samp (static analysis, A = 2021 build; measured on the original with `tools/diff/visual.sh`, elements `pv*`):
-//! * Once, at the first-frame UI construction (A 0x100c47d0 → A 0x1006ccc0 / 0x1006be40): an ambient light
-//!   (`RpLightCreate(2)`, colour 1,1,1,1), a 256×256 camera-texture raster (`0x505`) + its texture (both unused by the
-//!   renders) and a 256×256 Z raster, an `RwCamera` on a frame translated to (0, 0, 50) and turned 90° about X,
-//!   far 300, near 0.01, view window 0.5 × 0.5, perspective, added to `Scene.m_pRpWorld`.
-//! * Every game frame after `CGame::Process` (the 0x53E981 hook, A 0x100a27e6 → A 0x1001e870): every textdraw of
-//!   style 5 without a texture (A 0x100b34e0) gets one off-screen render into a NEW 256×256 camera-texture raster:
-//!   peds (A 0x1006c140), vehicles 400..611 (A 0x1006c3c0), objects / weapons 321..373 and ≥ 615, negative ids
-//!   (A 0x1006c9b0; unknown models become 18631); every other id is never rendered. The texture goes into a
-//!   200-entry slot table (A 0x100b2b60).
-//! * Drawing (A 0x100b34c0): with a texture the sprite path (A 0x100b30d0), otherwise the text path — a preview is
-//!   drawn as text (its `_`) on the frame its RPC 134 arrived, before the next game frame renders it.
-//! * Textures are freed with the textdraw (A 0x100b2f90 → A 0x100b2b90 → `CSprite2d` delete) and on device loss
-//!   (A 0x100c41e5 → A 0x1001e8a0 → A 0x100b36f0), so the next game frame renders them again.
+//! A camera set is built once on the first frame (`init_env`). After every `CGame::Process`, each preview
+//! textdraw without a texture is rendered once off-screen into its own 256×256 texture (`pending` +
+//! `render_pending`): a ped, a vehicle or an object, by model id. Until then the textdraw is drawn as text.
+//! Textures are freed with their textdraw and on device loss (`on_lost`), so they are rendered again.
+//! Spec: docs/re/subsystems/ui-rendering.md, "14.3a Model previews (font 5)"; addresses in
+//! docs/re/addresses/ui-preview.md.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -55,14 +47,14 @@ mod g {
     pub const RP_CLUMP_RENDER: usize = 0x749B20;
     pub const RP_ATOMIC_DESTROY: usize = 0x749DC0;
     pub const RW_FRAME_DESTROY: usize = 0x7F05A0;
-    /// `CSprite2d::Delete` on a one-pointer sprite = `RwTextureDestroy` (samp A 0x100b39a0).
+    /// `CSprite2d::Delete`; on a one-pointer sprite this is `RwTextureDestroy`.
     pub const SPRITE_DELETE: usize = 0x7281E0;
     /// `Scene.m_pRpWorld`.
     pub const SCENE_WORLD: u32 = 0xC17038;
     /// `RwEngineInstance` (+0x20 `fpRenderStateSet`).
     pub const RW_ENGINE: u32 = 0xC97B24;
     pub const MODEL_INFO_PTRS: u32 = 0xA9B0C8;
-    /// `CPedModelInfo` vtable (samp's ped-model test A 0x100b3e10).
+    /// `CPedModelInfo` vtable (how samp tells a ped model apart).
     pub const VT_PED_MODEL_INFO: u32 = 0x85BDC0;
     pub const VT_CPLACEABLE: u32 = 0x863C40;
 }
@@ -86,14 +78,14 @@ mod e {
 const SIZE: i32 = 256;
 const RASTER_CAMERA_TEXTURE: i32 = 0x505;
 const RASTER_ZBUFFER: i32 = 0x1;
-/// samp's texture slot table (A 0x1026b3e0 / 0x1026b700): 200 entries for sprites and previews together.
+/// Size of samp's texture slot table, shared by sprite textdraws and previews.
 const TEXTURE_SLOTS: usize = 200;
-/// samp's "unknown model" object (A 0x100b3592 / 0x100b365c / 0x1006c709).
+/// The object samp renders for an unknown model.
 const FALLBACK_OBJECT: i32 = 18631;
-/// Skin rendered 0.1 higher (A 0x1006c1d7: z 50.15 instead of 50.05).
+/// The one skin samp renders 0.1 higher (z 50.15 instead of 50.05).
 const TALL_SKIN: i32 = 162;
 
-/// The preview camera set (A 0x1006be40): +0 camera, +4 frame, +8 light, +0xc texture, +0x10 raster, +0x14 Z raster.
+/// The parts of samp's preview camera set we use again after construction. Mirrors samp.dll 0x1006BE40.
 #[derive(Clone, Copy, Default)]
 struct Env {
     camera: u32,
@@ -153,7 +145,7 @@ fn vcall0(this: u32, slot: u32) {
     thiscall0(rd(vt + slot), this);
 }
 
-/// `RwRenderStateSet` through `RwEngineInstance` (samp A 0x100c3e60).
+/// `RwRenderStateSet` through `RwEngineInstance`.
 fn render_state(state: u32, value: u32) {
     let engine: u32 = rd(g::RW_ENGINE);
     let f: u32 = rd(engine + 0x20);
@@ -176,7 +168,8 @@ fn is_ped_model(model: i32) -> bool {
     mi != 0 && rd::<u32>(mi) == g::VT_PED_MODEL_INFO
 }
 
-/// `CSprite2d` delete on a temporary (samp A 0x100b39a0): `RwTextureDestroy`, which releases the raster too.
+/// `CSprite2d` delete on a temporary sprite: `RwTextureDestroy`, which releases the raster too.
+/// Mirrors samp.dll 0x100B39A0.
 fn destroy_texture(tex: u32) {
     if tex != 0 {
         let mut s = tex;
@@ -187,7 +180,8 @@ fn destroy_texture(tex: u32) {
 
 // ---- environment ---------------------------------------------------------------------------------------------------
 
-/// First-frame construction of the preview camera set (A 0x1006be40); once.
+/// Builds the preview camera set once, on the first frame: an ambient white light, a camera at (0, 0, 50)
+/// turned 90° about X (far 300, near 0.01, view window 0.5 × 0.5, perspective) with a 256×256 Z raster.
 pub fn init_env() {
     if with(|s| s.env.is_some()) {
         return;
@@ -220,7 +214,7 @@ pub fn init_env() {
     if world != 0 {
         c2(g::RP_WORLD_ADD_CAMERA, world, camera);
     }
-    // The camera set's own texture (+0xc) is created and never used.
+    // samp also creates a texture for the camera set's raster and never uses it; done for parity.
     c1(g::RW_TEXTURE_CREATE, raster);
     with(|s| s.env = Some(Env { camera, light, zraster }));
     crate::log!("preview: camera set ready (camera {camera:#x})");
@@ -233,7 +227,7 @@ fn create_raster(flags: i32) -> u32 {
     }
 }
 
-/// `RwCameraSetRaster` / `RwCameraSetZRaster` (samp A 0x100b19f0 writes +0x60 / +0x64).
+/// `RwCameraSetRaster` / `RwCameraSetZRaster`: samp writes the camera's +0x60 / +0x64 fields directly.
 fn set_camera_rasters(camera: u32, raster: u32, zraster: u32) {
     wr(camera + 0x60, raster);
     wr(camera + 0x64, zraster);
@@ -261,7 +255,8 @@ fn sync(pool: &TextDraws) -> Vec<u32> {
     })
 }
 
-/// Device lost (A 0x1001e8a0): every preview texture is released; the next game frame renders them again.
+/// Device lost: every preview texture is released; the next game frame renders them again.
+/// Mirrors samp.dll 0x1001E8A0.
 pub fn on_lost() {
     let all: Vec<u32> = with(|s| std::mem::take(&mut s.textures).into_values().map(|(_, t)| t).collect());
     for t in &all {
@@ -272,9 +267,9 @@ pub fn on_lost() {
     }
 }
 
-/// From the game-frame hook after `CGame::Process` (A 0x1001e870): every model preview that has no texture, in id
-/// order (textures of gone textdraws are freed first). `sprites` = textures held by sprite textdraws (they share
-/// samp's 200 slots).
+/// Called from the game-frame hook after `CGame::Process`: every model preview that has no texture, in id order
+/// (textures of gone textdraws are freed first). `sprites` is the number of textures held by sprite textdraws,
+/// which share samp's 200 slots. Mirrors samp.dll 0x1001E870.
 pub fn pending(pool: &TextDraws, sprites: usize) -> Vec<Pending> {
     for t in sync(pool) {
         destroy_texture(t);
@@ -300,8 +295,8 @@ pub fn pending(pool: &TextDraws, sprites: usize) -> Vec<Pending> {
         .collect()
 }
 
-/// A preview to render (taken under the UI lock, rendered without it: a device loss inside the render runs the
-/// Reset hook, which needs the UI state).
+/// A preview to render. Collected under the UI lock and rendered without it, because a device loss inside the
+/// render runs the Reset hook, which needs the UI state.
 pub struct Pending {
     id: u16,
     serial: u64,
@@ -329,14 +324,16 @@ pub fn render_pending(list: Vec<Pending>) {
 
 struct Request {
     model: i32,
-    /// `RwRGBA` bytes of the textdraw's background colour (+0x97f as received).
+    /// `RwRGBA` bytes of the textdraw's background colour, as received.
     background: [u8; 4],
     rot: [f32; 3],
     zoom: f32,
     colours: (i32, i32),
 }
 
-/// A 0x100b34e0: which renderer, with samp's model substitutions. 0 = nothing rendered (stays on the text path).
+/// Picks the renderer by model id (ped, vehicle 400..611, object / weapon 321..373 or ≥ 615, negative ids),
+/// with samp's model substitutions. Returns 0 when nothing was rendered; the textdraw then stays on the text
+/// path. Mirrors samp.dll 0x100B34E0.
 fn render(runner: &mut Runner, env: &Env, r: &Request) -> u32 {
     let model = r.model;
     if is_ped_model(model) {
@@ -348,7 +345,7 @@ fn render(runner: &mut Runner, env: &Env, r: &Request) -> u32 {
     let object = if (321..=373).contains(&model) || model >= 615 {
         if model_info(model) != 0 { model } else { FALLBACK_OBJECT }
     } else if model < 0 {
-        // A 0x100b45b0: no custom-model table in R4 → unknown.
+        // 0.3.7-R4 has no custom-model table, so a negative id is always unknown.
         FALLBACK_OBJECT
     } else {
         return 0;
@@ -363,8 +360,8 @@ fn new_target() -> (u32, u32) {
     (raster, tex)
 }
 
-/// Camera on the new raster, cleared to the background colour, update begun, light added, then samp's render states
-/// (A 0x1006c2c6..0x1006c325): ZTEST 1, ZWRITE 1, SHADEMODE 2, then `extra`, then FOG 0.
+/// Camera on the new raster, cleared to the background colour, update begun, light added, then samp's render
+/// states: ZTEST 1, ZWRITE 1, SHADEMODE 2, then `extra`, then FOG 0.
 fn begin(env: &Env, raster: u32, bg: &[u8; 4], extra: &[(u32, u32)]) {
     set_camera_rasters(env.camera, raster, env.zraster);
     c1(g::SET_RENDERWARE_CAMERA, env.camera);
@@ -380,7 +377,7 @@ fn begin(env: &Env, raster: u32, bg: &[u8; 4], extra: &[(u32, u32)]) {
     for &(s, v) in extra {
         render_state(s, v);
     }
-    // FOG 0 through samp's render-state hook (A 0x100c3dc0): its D3D fog setter, RenderWare gets FALSE.
+    // FOG 0 goes through samp's render-state hook: it sets D3D fog itself and passes FALSE to RenderWare.
     crate::worldhooks::samp_fog_render_state(false);
 }
 
@@ -392,7 +389,7 @@ fn end(env: &Env) {
     }
 }
 
-/// Entity-wrapper position set (A 0x1009f0a0): `Teleport(x, y, z, false)`.
+/// samp's entity-wrapper position set: `Teleport(x, y, z, false)`.
 fn set_position(ent: u32, pos: [f32; 3]) {
     let vt: u32 = rd(ent);
     if vt == 0 || vt == g::VT_CPLACEABLE {
@@ -403,7 +400,7 @@ fn set_position(ent: u32, pos: [f32; 3]) {
     unsafe { std::mem::transmute::<usize, extern "thiscall" fn(u32, f32, f32, f32, u32)>(f as usize)(ent, pos[0], pos[1], pos[2], 0) };
 }
 
-/// A 0x1009f6e0(0) and A 0x1009f690(0): entity flags |= 0x80000002, then bit 0 cleared.
+/// The flags samp gives a preview entity: |= 0x80000002, then bit 0 cleared.
 fn preview_flags(ent: u32) {
     let f: u32 = rd(ent + e::FLAGS);
     wr(ent + e::FLAGS, f | 0x8000_0002);
@@ -411,8 +408,8 @@ fn preview_flags(ent: u32) {
     wr(ent + e::FLAGS, f & !1);
 }
 
-/// The entity's matrix turned by `rot` (A 0x1009eb70 copy into a zeroed RwMatrix, `RwMatrixRotate` pre-concat per
-/// non-zero axis), written back like A 0x1009fd60: Remove, rows, `CMatrix::UpdateRW`, `UpdateRwFrame`, Add.
+/// Turns the entity's matrix by `rot`: copied into a zeroed RwMatrix, `RwMatrixRotate` pre-concat for each
+/// non-zero axis, then written back the way samp does it (Remove, rows, `CMatrix::UpdateRW`, `UpdateRwFrame`, Add).
 fn rotate_entity(ent: u32, rot: [f32; 3]) {
     let m: u32 = rd(ent + e::MATRIX);
     if m == 0 {
@@ -445,8 +442,8 @@ fn rotate_entity(ent: u32, rot: [f32; 3]) {
     vcall0(ent, e::VT_ADD);
 }
 
-/// Entity-wrapper "add" (A 0x1009f360): outside the moving list → speeds zeroed, `CWorld::Add`, teleported to its
-/// own position.
+/// samp's entity-wrapper "add": an entity outside the moving list gets its speeds zeroed, `CWorld::Add`, and is
+/// teleported to its own position.
 fn add_to_world(ent: u32) {
     let vt: u32 = rd(ent);
     if vt == 0 || vt == g::VT_CPLACEABLE || rd::<u32>(ent + e::MOVING_LIST) != 0 {
@@ -462,8 +459,8 @@ fn add_to_world(ent: u32) {
     }
 }
 
-/// A 0x1009fb80: vehicles `SetupVehicleVariables`, then `PreRender`, then `RenderOneNonRoad` when the entity has an
-/// RW object.
+/// Renders one entity: `SetupVehicleVariables` for vehicles, then `PreRender`, then `RenderOneNonRoad` when the
+/// entity has an RW object.
 fn render_entity(ent: u32) {
     let rw: u32 = rd(ent + e::RW_OBJECT);
     let model: u16 = rd(ent + e::MODEL);
@@ -476,20 +473,21 @@ fn render_entity(ent: u32) {
     }
 }
 
-/// A 0x100a0a00(model, 0): `MARK_MODEL_AS_NO_LONGER_NEEDED` when it is loaded.
+/// `MARK_MODEL_AS_NO_LONGER_NEEDED` when the model is loaded.
 fn release_model(runner: &mut Runner, model: i32) {
     if (0..20000).contains(&model) && runner.run(op::HAS_MODEL_LOADED, &[Arg::Int(model)]) {
         runner.run(op::MARK_MODEL_AS_NO_LONGER_NEEDED, &[Arg::Int(model)]);
     }
 }
 
-/// Model-info reference count (+8, samp A 0x100b4740).
+/// Model-info reference count (+8); 1 when the model has no info.
 fn model_refs(model: i32) -> u16 {
     let mi = model_info(model);
     if mi != 0 { rd(mi + 8) } else { 1 }
 }
 
-/// Ped preview (A 0x1006c140).
+/// Ped preview: a temporary ped with the skin, placed at (0, −2.25·zoom, 50.05), rotated, rendered and destroyed.
+/// Mirrors samp.dll 0x1006C140.
 fn render_ped(runner: &mut Runner, env: &Env, r: &Request, model: i32) -> u32 {
     let (raster, tex) = new_target();
     let ped = crate::players::create_preview_ped(runner);
@@ -517,8 +515,9 @@ fn render_ped(runner: &mut Runner, env: &Env, r: &Request, model: i32) -> u32 {
     tex
 }
 
-/// Vehicle preview (A 0x1006c3c0). Trains (449, 537/538 and samp's 569/570 → 537/538) take samp's mission-train
-/// constructor, which is not reproduced: no preview.
+/// Vehicle preview, at a distance from the collision radius and zoom. Trains (449, 537/538 and 569/570, which
+/// samp maps to 537/538) need samp's mission-train constructor, which we do not reproduce: they get no preview.
+/// Mirrors samp.dll 0x1006C3C0.
 fn render_vehicle(runner: &mut Runner, env: &Env, r: &Request, model: i32) -> u32 {
     let model = match model {
         570 => 538,
@@ -533,7 +532,7 @@ fn render_vehicle(runner: &mut Runner, env: &Env, r: &Request, model: i32) -> u3
     let made = crate::vehicles::create_at(runner, model as u16, [0.0, 0.0, 50.0]);
     let Some((handle, veh)) = made.filter(|_| raster != 0 && tex != 0) else { return 0 };
     preview_flags(veh);
-    // x87 arithmetic in samp (80-bit, one rounding at the store): f64 is exact here.
+    // samp computes this in x87 80-bit precision with one rounding at the store; f64 gives the same result.
     let radius = f64::from(col_radius(model));
     let mut y = ((-1.0 - (radius + radius)) * f64::from(r.zoom)) as f32;
     if crate::vehicles::samp_type(veh) == 4 {
@@ -555,7 +554,7 @@ fn render_vehicle(runner: &mut Runner, env: &Env, r: &Request, model: i32) -> u3
     tex
 }
 
-/// Collision-model bounding sphere (model info +0x14 → +0x18 centre, +0x24 radius; samp A 0x100b6450 / 0x100b63a0).
+/// Collision-model bounding sphere: model info +0x14 is the collision model, its +0x18 the centre, +0x24 the radius.
 fn col_sphere(model: i32) -> Option<([f32; 3], f32)> {
     let mi = model_info(model);
     let col: u32 = if mi != 0 { rd(mi + 0x14) } else { 0 };
@@ -566,7 +565,7 @@ fn col_radius(model: i32) -> f32 {
     col_sphere(model).map_or(0.0, |(_, r)| r)
 }
 
-/// Object / weapon preview (A 0x1006c9b0): an RW instance of the model, no entity.
+/// Object / weapon preview: an RW instance of the model, no entity. Mirrors samp.dll 0x1006C9B0.
 fn render_object(runner: &mut Runner, env: &Env, r: &Request, model: i32) -> u32 {
     let (raster, tex) = new_target();
     if raster == 0 || tex == 0 {

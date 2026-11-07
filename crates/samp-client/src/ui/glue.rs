@@ -1,8 +1,10 @@
 //! Global UI state and the entry points used by `dll` and `client` (Windows only).
 //!
-//! Everything runs on the game's main thread (per-frame entry, Present, the
-//! window procedure, the network session), except the control channel, which may
-//! be serviced from the background thread: it only reads state or queues work.
+//! Entry points: `frame_entry` / `frame_after_2d` / `game_frame` (game-frame hooks), the Present and Reset
+//! wrappers, window messages, and the network-session hooks (`on_rpc`, `net_tick`, …). Everything runs on the
+//! game's main thread except the control channel, which may run on the background thread: it only reads state
+//! or queues work. Spec: docs/re/subsystems/ui-rendering.md and ui-chat-audio.md; addresses in
+//! docs/re/addresses/ui-glue.md.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
@@ -33,18 +35,18 @@ use crate::script::{Arg, Runner};
 
 /// GTA user files directory (`InitUserDirectories`), a C string.
 const GTA_USER_DIR: u32 = 0xC92368;
-/// `FrontEndMenuManager.m_bMenuActive` (UR §2.3 step 3).
+/// `FrontEndMenuManager.m_bMenuActive`: while set, samp draws no UI.
 const GTA_MENU_ACTIVE: u32 = 0xBA67A4;
-/// `CMessages::AddBigMessage(text, time, style)` (UCA §73, A 0x100a0d40 → 0x69F2B0).
+/// `CMessages::AddBigMessage(text, time, style)`, used for game text.
 const ADD_BIG_MESSAGE: u32 = 0x69F2B0;
-/// `CMessages::InsertPlayerControlKeysInString` (UCA chat model, `~k~`).
+/// `CMessages::InsertPlayerControlKeysInString` (expands `~k~` key names).
 const INSERT_PLAYER_CONTROL_KEYS: u32 = 0x69E160;
-/// `/mem` counter (UCA local commands).
+/// The memory counter shown by the `/mem` local command.
 const MEMORY_COUNTER: u32 = 0x8A5A80;
 /// Script opcodes (gta-reversed `eScriptCommands.h`).
 const OP_CLEAR_PRINTS: u16 = 0x00BE;
 const OP_GET_AREA_VISIBLE: u16 = 0x077E;
-/// `GET_CHAR_HEADING` / `GET_CAR_HEADING` of `/save` and `/rs` (descriptors A 0x100e9dc0 / 0x100e9d98).
+/// `GET_CHAR_HEADING` / `GET_CAR_HEADING`, used by `/save` and `/rs`.
 const OP_GET_CHAR_HEADING: u16 = 0x0172;
 const OP_GET_CAR_HEADING: u16 = 0x0174;
 /// `CPed::m_pVehicle`, vehicle colours (gta-reversed `Ped.h` / `Vehicle.h`).
@@ -58,7 +60,7 @@ struct State {
     renderer_failed: bool,
     lock: InputLock,
     runner: Runner,
-    /// samp's 512-byte static game-text buffer (UCA §73).
+    /// samp's 512-byte game-text buffer; GTA keeps the pointer, so it must outlive the message.
     game_text: Box<[u8; 512]>,
     say_queue: Vec<Vec<u8>>,
     device_proxy: bool,
@@ -76,30 +78,29 @@ struct State {
     menu_pad: (bool, bool),
     /// Class-selection panel buttons (`<<`, `>>`, `Spawn`) drawn this frame.
     class_buttons: Option<[samp_ui::Rect; 3]>,
-    /// The class-selection panel (GUI dialog 0x1026eaa4, visible flag +0x13) was made visible: samp's class-selection
-    /// step (A 0x10006100) does it on the first frame without an open dialog and keeps it until the spawn.
+    /// The class-selection panel was made visible. samp's class-selection step shows it on the first frame without
+    /// an open dialog and keeps it until the spawn.
     class_panel_shown: bool,
     /// Last click on a dialog list row (double-click detection).
     last_list_click: Option<(usize, std::time::Instant)>,
     /// Last scoreboard row click (double-click detection).
     last_scoreboard_click: Option<(usize, std::time::Instant)>,
-    /// The spawn ends class selection: its mode-0 request restores input only after
-    /// 10 frames (A 0x10003c20 → 0x100a0750(0, 0); measured: 0x541DF5 restored 10
-    /// frames after the spawn frame, docs/phase3/parity-notes.md).
+    /// The spawn ends class selection: its mode-0 request restores input only after 10 frames
+    /// (docs/phase3/parity-notes.md).
     spawn_release: bool,
     /// samp's netgame object exists (from the game frame after the UI construction).
     netgame_object: bool,
-    /// F5 counters published by the session tick (`net_tick`).
+    /// F5 network-statistics counters published by the session tick (`net_tick`).
     net_stats: super::core::NetStats,
     /// Wire byte totals (sent, received) published by the session tick.
     net_bytes: (u64, u64),
-    /// The F5 rate sampler (samp's overlay object): totals and deltas of the last sample.
+    /// The F5 rate sampler: totals and deltas of the last sample.
     rates: RateSampler,
 }
 
-/// The F5 download/upload rates (A 0x10060d20): while the overlay draws, once more than 1000 ms
-/// have passed since the last sample, the byte deltas since that sample are taken; each rate is
-/// the stored delta / 1024 (KB per sample) until the next sample.
+/// The F5 download/upload rates: while the overlay draws, once more than 1000 ms have passed since the last
+/// sample, the byte deltas since that sample are taken; each rate is the stored delta / 1024 (KB per sample)
+/// until the next sample. Mirrors samp.dll 0x10060D20.
 #[derive(Default)]
 struct RateSampler {
     last: Option<std::time::Instant>,
@@ -122,8 +123,7 @@ impl RateSampler {
     }
 }
 
-// SAFETY: the raw D3D pointers inside are only used on the game's main thread;
-// other threads only touch plain data under the mutex.
+// SAFETY: the raw D3D pointers inside are used only on the main thread; other threads touch plain data under the mutex.
 unsafe impl Send for State {}
 
 static UI: Mutex<Option<State>> = Mutex::new(None);
@@ -132,8 +132,8 @@ fn user_dir() -> Option<PathBuf> {
     let mut buf = [0u8; 260];
     let _ = ProcessMemory.read(GTA_USER_DIR, &mut buf);
     let n = buf.iter().position(|&b| b == 0).unwrap_or(0);
-    // A 0x100c3cb0: the current directory when GTA has no user directory; otherwise
-    // `<user files>\SAMP`, created with its `screens` folder if missing.
+    // Like samp: the current directory when GTA has no user directory, otherwise `<user files>\SAMP`,
+    // created with its `screens` folder if missing.
     if n == 0 {
         return std::env::current_dir().ok();
     }
@@ -143,7 +143,8 @@ fn user_dir() -> Option<PathBuf> {
     Some(dir)
 }
 
-/// Writes a byte value into game data/code for the input lock.
+/// Carries out the input lock's operations: memory writes, CPad helper calls, cursor visibility and the mouse
+/// redirect.
 fn exec_ops(ops: Vec<Op>) {
     let mut mem = ProcessMemory;
     for op in ops {
@@ -172,30 +173,30 @@ fn exec_ops(ops: Vec<Op>) {
     }
 }
 
-/// Mode 4's dummy mouse store (samp: A 0x101501a8); GTA writes floats into it.
+/// Input-lock mode 4 points GTA's mouse writes here instead of the real mouse state; GTA writes floats into it.
 static mut MOUSE_SINK: [u32; 4] = [0; 4];
 
-/// samp's input-lock setter (A 0x100a0750) for other subsystems (object editing/selection):
-/// `mode` 0–4, `flag` = immediate restore for mode 0. Runs the operations at once (main thread).
+/// samp's input-lock setter for other subsystems (object editing / selection): `mode` 0–4, `flag` = immediate
+/// restore for mode 0. Runs the operations at once (main thread). Mirrors samp.dll 0x100A0750.
 pub fn set_input_mode(mode: u8, flag: bool) {
     if let Some(ops) = with_ui(|st| st.lock.set_mode(mode, flag)) {
         exec_ops(ops);
     }
 }
 
-/// Editor start (A 0x10072480): mode 0 and the restore at once.
+/// Object-editor start: input-lock mode 0 with the restore run at once.
 pub fn restore_input_now(flag: bool) {
     if let Some(ops) = with_ui(|st| st.lock.restore_now(flag)) {
         exec_ops(ops);
     }
 }
 
-/// The plate painter (B 0x1006D840) for the vehicle pool pass; 0 when the renderer is not up.
+/// Paints a number-plate texture for the vehicle pool pass; 0 when the renderer is not up.
 pub fn paint_plate(text: &[u8]) -> u32 {
     with_ui(|st| st.renderer.as_mut().map(|r| r.paint_plate(text))).flatten().unwrap_or(0)
 }
 
-/// RPC 27 / 117 (B 0x1000E880 / 0x10011880): textdraw selection off when it is active (B 0x10071550).
+/// RPC 27 / 117: turns textdraw selection off when it is active.
 pub fn cancel_textdraw_selection() {
     with_ui(|st| {
         if st.core.textdraws.selection.active {
@@ -204,7 +205,7 @@ pub fn cancel_textdraw_selection() {
     });
 }
 
-/// The chat input closed when the editor or selection ends (B 0x10069540 / 0x10069440).
+/// Closes the chat input when the object editor or object selection ends.
 pub fn close_chat_input() {
     with_ui(|st| {
         if st.core.input.is_open() {
@@ -213,9 +214,9 @@ pub fn close_chat_input() {
     });
 }
 
-// ---- object editor and selection (Present step 12, window messages) ------------------------------------------
+// ---- object editor and selection (end of the Present pass, window messages) ----------------------------------
 
-/// Pad 0 `Cross` (the sprint key; samp tests key bit 8 of its on-foot key word, B 0x100AF5E0).
+/// Pad 0 `Cross`, the sprint key (samp tests the sprint bit of its on-foot key word).
 fn sprint_held() -> bool {
     crate::worldhooks::rd::<i16>(crate::game::PAD0 + 0x20) != 0
 }
@@ -230,7 +231,7 @@ fn camera_distance(p: [f32; 3]) -> f32 {
     dist(p, camera_pos())
 }
 
-/// The cursor ray of the selection pick (B 0x10073F70) from samp's copies of WORLD, VIEW and PROJECTION.
+/// The cursor ray of the object-selection pick, from our copies of the WORLD, VIEW and PROJECTION transforms.
 fn pick_ray(cursor: (i32, i32)) -> Option<([f32; 3], [f32; 3])> {
     let lock = |m: &Mutex<[f32; 16]>| *m.lock().unwrap_or_else(|e| e.into_inner());
     let (world, view, proj) = (lock(&d3d::WORLD), lock(&d3d::VIEW), lock(&d3d::PROJECTION));
@@ -239,7 +240,7 @@ fn pick_ray(cursor: (i32, i32)) -> Option<([f32; 3], [f32; 3])> {
     Some(objedit::pick_ray(cursor, size, &proj, &inv))
 }
 
-/// Editor per-frame (B 0x100737B0) then selection per-frame (B 0x1006DBC0).
+/// Per-frame work of the object editor (gizmo, hover), then of object selection (pick and highlight).
 fn editor_pass(lock: &mut InputLock, r: &Renderer) {
     let sprint = sprint_held();
     let cursor = render::cursor_pos();
@@ -296,8 +297,8 @@ fn editor_pass(lock: &mut InputLock, r: &Renderer) {
     });
 }
 
-/// Editor / selection window messages (B 0x10073580, 0x1006DE00, and the ESC `WM_CHAR` checks of samp's window
-/// procedure B 0x100618A1 / 0x100618FA). Returns whether the message is consumed.
+/// Window messages for the object editor and object selection, including ESC (`WM_CHAR` 0x1B), which ends
+/// either. Returns whether the message is consumed.
 pub(super) fn editor_message(msg: u32, w: usize) -> bool {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
@@ -371,7 +372,7 @@ pub(super) fn editor_message(msg: u32, w: usize) -> bool {
     consumed
 }
 
-/// GTA 1.0 US: `CStreaming::ms_aInfoForModel` (20-byte entries, load state at +0x10).
+/// `CStreaming::ms_aInfoForModel` (20-byte entries, load state at +0x10).
 const STREAMING_INFO: u32 = 0x8E4CC0;
 /// `CModelInfo::ms_modelInfoPtrs` (20000 entries).
 const MODEL_INFO_PTRS: u32 = 0xA9B0C8;
@@ -387,7 +388,7 @@ fn net_stats_values(base: &super::core::NetStats) -> super::core::NetStats {
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
     let mut s = base.clone();
     let m = ProcessMemory;
-    // CStreaming::ms_memoryUsed / ms_memoryAvailable (1.0 US).
+    // CStreaming::ms_memoryUsed / ms_memoryAvailable.
     s.streaming_mb = m.read_u32(0x8E4CB4).unwrap_or(0) / (1024 * 1024);
     s.streaming_total_mb = m.read_u32(0x8A5A80).unwrap_or(0) / (1024 * 1024);
     let mut info = vec![0u8; 211 * 20];
@@ -422,7 +423,7 @@ fn key_polled(vk: i32) -> bool {
     unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(vk) != 0 }
 }
 
-/// UR §2.3 "HUD off/on": menu HUD flag and the script radar flag.
+/// HUD on/off as samp's Present pass does it: the menu HUD flag and the script radar flag.
 fn set_hud(on: bool) {
     let mut m = ProcessMemory;
     let _ = m.write(game::MENU_HUD_ON, &[u8::from(on)]);
@@ -441,8 +442,7 @@ impl KeyNameExpander for GameExpander {
         let mut buf = vec![0u8; 2048];
         let n = text.len().min(1000);
         buf[..n].copy_from_slice(&text[..n]);
-        // SAFETY: cdecl `void(char*)` editing a NUL-terminated buffer in place;
-        // the input is < 400 chars (caller) and the buffer leaves room to grow.
+        // SAFETY: cdecl `void(char*)` editing a NUL-terminated buffer in place; at most 1000 input bytes in a 2048-byte buffer.
         unsafe {
             let f: extern "C" fn(*mut u8) = std::mem::transmute(INSERT_PLAYER_CONTROL_KEYS as usize);
             f(buf.as_mut_ptr());
@@ -470,9 +470,9 @@ impl GameInfo for LiveGame {
         r.run(OP_GET_AREA_VISIBLE, &[Arg::Local(0)]);
         r.local_i32(0) as u32
     }
-    /// `/save` and `/rs` (A 0x10068a00 / 0x10068b80): in a vehicle (ped flags bit 8) the vehicle's
-    /// matrix position, `GET_CAR_HEADING` (0x0174), model and colours +0x434/+0x435; on foot the
-    /// ped's matrix position and `GET_CHAR_HEADING` (0x0172). Both commands read the same values.
+    /// `/save` and `/rs`: in a vehicle (ped flags bit 8) the vehicle's matrix position, `GET_CAR_HEADING`,
+    /// model and colours; on foot the ped's matrix position and `GET_CHAR_HEADING`. Both commands read the
+    /// same values.
     fn position(&self) -> Option<PlayerPosition> {
         let mem = ProcessMemory;
         let p = game::read_player(&mem).ok().flatten()?;
@@ -512,7 +512,7 @@ fn ensure(g: &mut Option<State>, debug_mode: bool) -> &mut State {
         let dir = user_dir();
         crate::log!("ui: user files directory {:?}", dir);
         let core = UiCore::new(dir, debug_mode);
-        // samp clears the HUD scale fix flag only for `nohudscalefix` exactly 1 (A 0x100C49DD).
+        // samp turns the HUD scale fix off only when `nohudscalefix` is exactly 1.
         crate::mainhooks::set_enabled(core.cfg.get_int("nohudscalefix") != Some(1));
         crate::log!(
             "ui: sa-mp.cfg page_size={} fontsize={} timestamp={}",
@@ -571,12 +571,12 @@ pub fn preload() {
     d3d::add_font_resources();
 }
 
-/// B 0x100e9d64, type 8 (B 0x100680b0).
+/// The debug-colour chat line samp prints in `directmode`.
 const DIRECT_MODE_LINE: &str = "ChatWindow: Using direct drawing mode.";
 
-/// The rest of samp's first-frame boot routine after the UI objects (B 0x100c4e2c..0x100c4efa):
-/// `multicore` = 0 → process affinity mask 1; the audio object and BASS start-up
-/// (`audioproxyoff`). `fpslimit` and `disableheadmove` are read from the settings directly.
+/// The rest of samp's first-frame boot routine after the UI objects: `multicore` = 0 sets the process affinity
+/// mask to 1; then the audio object and BASS start-up (`audioproxyoff`). `fpslimit` and `disableheadmove` are
+/// read from the settings where they are used.
 fn boot_settings(st: &mut State) {
     if !st.core.settings.multicore {
         use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessAffinityMask};
@@ -588,7 +588,8 @@ fn boot_settings(st: &mut State) {
     crate::audio::init(|| core.audio_proxy_key());
 }
 
-/// Before `Render2dStuff` (samp's pre-step A 0x100c4fb0, after the netgame tick).
+/// Per-frame entry before `Render2dStuff`, after the netgame tick: hooks, first-frame UI construction, queued
+/// work, class-selection input lock, menus and the scoreboard. Mirrors samp.dll 0x100C4FB0.
 pub fn frame_entry(debug_mode: bool) {
     let _ = catch_unwind(AssertUnwindSafe(|| frame_entry_inner(debug_mode)));
 }
@@ -617,11 +618,11 @@ fn frame_entry_inner(debug_mode: bool) {
             Err(e) => crate::log!("ui: device proxy not installed yet: {e}"),
         }
     }
-    // samp creates its netgame object on the game frame after the UI objects (A 0x100c47d0).
+    // samp creates its netgame object on the game frame after the UI objects.
     if st.renderer.is_some() {
         st.netgame_object = true;
     }
-    // First-frame UI construction (A 0x100c47d0), inside GTA's scene like samp's.
+    // First-frame UI construction, inside GTA's scene like samp's.
     if st.device_proxy && st.renderer.is_none() && !st.renderer_failed {
         let face =
             st.core.settings.font_face.clone().unwrap_or_else(|| samp_ui::fonts::DEFAULT_FACE.into()).into_bytes();
@@ -629,13 +630,13 @@ fn frame_entry_inner(debug_mode: bool) {
         let direct = st.core.settings.direct_mode;
         match Renderer::new(&face, weight, st.core.settings.font_size, direct) {
             Ok(r) => {
-                // Chat construction (B 0x10068190): `directmode` prints its line instead of
-                // creating the render target, before the netgame's "Started".
+                // Chat construction: in `directmode` samp prints this line instead of creating the
+                // render target, before the netgame's "Started" line.
                 if direct {
                     st.core.print_debug(DIRECT_MODE_LINE.as_bytes());
                 }
                 st.renderer = Some(r);
-                // The model-preview camera set (A 0x1006ccc0, created in the same first-frame pass).
+                // The model-preview camera set is created in the same first-frame pass.
                 super::preview::init_env();
                 boot_settings(st);
             }
@@ -652,22 +653,22 @@ fn frame_entry_inner(debug_mode: bool) {
     if let Some((style, time, text)) = st.core.requests.game_text.take() {
         show_game_text(st, style, time, &text);
     }
-    // Class selection locks input from the game frame (measured: its mode-2 requests come
-    // from samp's game-frame code, inside GTA's scene).
+    // Class selection locks input from the game frame: samp's mode-2 requests for it come from its
+    // game-frame code, inside GTA's scene.
     if st.core.class_selection && !st.core.scoreboard.is_open() {
         exec_ops(st.lock.request_mode2());
     }
-    // A 0x10006100: while a dialog is open (dialog +0x28) nothing else happens; otherwise the first such frame makes
-    // the panel visible. It stays visible when a dialog opens later and goes with the class selection (A 0x10003c20).
+    // While a dialog is open the class-selection step does nothing; otherwise its first frame makes the panel
+    // visible. It stays visible when a dialog opens later and goes away with the class selection.
     if !st.core.class_selection {
         st.class_panel_shown = false;
     } else if !st.core.dialogs.is_open() {
         st.class_panel_shown = true;
     }
     menu_work(st);
-    // Scoreboard: rows rebuilt on open / count change, RPC 155 every 3000 ms (UR §15.3).
+    // Scoreboard: rows rebuilt on open and when the player count changes; RPC 155 on the opening frame, then
+    // every 3000 ms (docs/re/subsystems/ui-rendering.md, "15.3 Behaviour").
     let count = st.core.remote_ids().count();
-    // TRACE-3 U-SB-FIRST-REQUEST: RPC 155 on the opening frame, then every 3000 ms.
     let (rebuild, send) = st.core.scoreboard.frame(u64::from(super::core::tick_ms()), count);
     if rebuild {
         st.core.rebuild_scoreboard();
@@ -684,7 +685,8 @@ fn frame_entry_inner(debug_mode: bool) {
     }
 }
 
-/// After `Render2dStuff` (UR §2.4 steps 3–4): textdraws, then the input-restore step.
+/// After `Render2dStuff`: textdraws, then the input-restore step
+/// (docs/re/subsystems/ui-rendering.md, "2.4 Per-frame game entry").
 pub fn frame_after_2d() {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let Ok(mut g) = UI.try_lock() else { return };
@@ -702,7 +704,8 @@ pub fn frame_after_2d() {
     }));
 }
 
-/// From the `CGame::Process` hook: the chat render-target update (UR §7.6).
+/// From the `CGame::Process` hook: the chat render-target update, then the model previews still to render
+/// (docs/re/subsystems/ui-rendering.md, "7.6 Render-to-texture cache" and "14.3a Model previews (font 5)").
 pub fn game_frame() {
     let mut previews = Vec::new();
     let _ = catch_unwind(AssertUnwindSafe(|| {
@@ -714,7 +717,7 @@ pub fn game_frame() {
         {
             r.update_chat_rt(&mut st.core.chat, menu);
         }
-        // Model previews after CGame::Process (A 0x100a27d0 → A 0x1001e870): netgame and textdraw pool present.
+        // Model previews after CGame::Process, only once the netgame (and so the textdraw pool) exists.
         if st.core.netgame {
             previews = super::preview::pending(&st.core.textdraws, super::textdraws::sprite_count());
         }
@@ -722,7 +725,8 @@ pub fn game_frame() {
     let _ = catch_unwind(AssertUnwindSafe(|| super::preview::render_pending(previews)));
 }
 
-/// Menus: build/delete requests and the selection poll (UCA §77/§78, §132/§140).
+/// Menus: build / delete requests and the selection poll (docs/re/subsystems/ui-chat-audio.md, RPCs 77, 78,
+/// 132 and 140).
 fn menu_work(st: &mut State) {
     use samp_ui::menu::PollAction;
     for req in std::mem::take(&mut st.core.requests.menus) {
@@ -765,14 +769,13 @@ fn menu_work(st: &mut State) {
     }
 }
 
-/// RPC 73 (UCA §73): clear prints, copy into the static buffer, AddBigMessage.
+/// RPC 73 SendGameText: clear prints, copy into the long-lived buffer, `AddBigMessage`.
 fn show_game_text(st: &mut State, style: u8, time: u32, text: &[u8]) {
     st.runner.run(OP_CLEAR_PRINTS, &[]);
     let n = text.len().min(st.game_text.len() - 1);
     st.game_text[..n].copy_from_slice(&text[..n]);
     st.game_text[n] = 0;
-    // SAFETY: GTA's cdecl `CMessages::AddBigMessage(char*, uint32, uint16)`; the
-    // buffer is static (it keeps the pointer).
+    // SAFETY: GTA's cdecl `CMessages::AddBigMessage(char*, uint32, uint16)`; the buffer lives in the UI state, which GTA's kept pointer needs.
     unsafe {
         let f: extern "C" fn(*const u8, u32, u32) = std::mem::transmute(ADD_BIG_MESSAGE as usize);
         f(st.game_text.as_ptr(), time, u32::from(style));
@@ -800,8 +803,8 @@ extern "system" fn reset_hook(_this: *mut std::ffi::c_void, params: *mut std::ff
                 r.on_lost();
             }
             crate::plates::on_lost();
-            // Lost device (A 0x100c3f90): an open chat input is closed (A 0x10069580: cursor mode 0,
-            // immediate) and an open scoreboard too (A 0x1006e9e0(1): cursor mode 0, delayed).
+            // Lost device: an open chat input is closed (cursor mode 0, immediate restore) and so is an open
+            // scoreboard (cursor mode 0, delayed restore).
             let mut ops = Vec::new();
             if st.core.input.is_open() {
                 st.core.input.close();
@@ -816,10 +819,10 @@ extern "system" fn reset_hook(_this: *mut std::ffi::c_void, params: *mut std::ff
         if let Some(ops) = ops {
             exec_ops(ops);
         }
-        // Then the "SetCursor(NULL) once" flag of WM_SETCURSOR is re-armed (store at A 0x100c419b).
+        // Then the "SetCursor(NULL) once" flag of WM_SETCURSOR is re-armed.
         super::wndproc::on_lost_device();
         crate::ui::mattext::on_lost();
-        // Last in samp's lost-device pass (A 0x100c41e5): the model-preview textures.
+        // Last in samp's lost-device pass: the model-preview textures.
         super::preview::on_lost();
     }));
     let hr = d3d::call_reset(params);
@@ -832,13 +835,14 @@ extern "system" fn reset_hook(_this: *mut std::ffi::c_void, params: *mut std::ff
                 crate::plates::on_reset();
                 if let Some(r) = st.renderer.as_mut() {
                     r.on_reset();
-                    // The chat render target is re-created through the same routine (B 0x10068190).
+                    // samp re-creates the chat render target through its construction routine, which prints
+                    // the direct-mode line again.
                     if st.core.settings.direct_mode {
                         st.core.print_debug(DIRECT_MODE_LINE.as_bytes());
                     }
                 }
-                // Last step of A 0x100c41f0: unless the GTA menu is active, cursor mode 2, then mode 0
-                // (immediate) with the input restore run at once (A 0x100c43ff..0x100c4431).
+                // Last step of samp's reset handling: unless the GTA menu is active, cursor mode 2, then mode 0
+                // (immediate) with the input restore run at once.
                 if ProcessMemory.read_u32(GTA_MENU_ACTIVE).unwrap_or(0) == 0 {
                     let mut ops = st.lock.set_mode(2, false);
                     ops.extend(st.lock.restore_now(true));
@@ -855,11 +859,11 @@ extern "system" fn reset_hook(_this: *mut std::ffi::c_void, params: *mut std::ff
     hr
 }
 
-/// Camera position (TheCamera, read by samp's distance helper A 0x1009f1f0).
+/// Camera position (`TheCamera`), as samp's distance helper reads it.
 const CAMERA_POS: u32 = 0xB6F9CC;
 /// `CPed::GetBonePosition(RwV3d&, uint32 bone, bool)` (thiscall).
 const PED_GET_BONE_POSITION: u32 = 0x5E4280;
-/// `IS_LINE_OF_SIGHT_CLEAR` (0x06BD), the name-tag LOS test.
+/// `IS_LINE_OF_SIGHT_CLEAR`, the name-tag line-of-sight test.
 const OP_IS_LINE_OF_SIGHT_CLEAR: u16 = 0x06BD;
 const OP_DELETE_MENU: u16 = 0x08DA;
 const OP_GET_MENU_ITEM_SELECTED: u16 = 0x08D7;
@@ -897,7 +901,7 @@ fn ped_valid(ped: u32) -> bool {
     ped != 0 && ProcessMemory.read_u32(ped).is_ok_and(|v| v != VTBL_CPLACEABLE)
 }
 
-/// Nametags to draw this frame (UR §16.1).
+/// Nametags to draw this frame (docs/re/subsystems/ui-rendering.md, "16.1 Who gets one").
 fn nametags(st: &mut State) -> Vec<TagDraw> {
     let core = &st.core;
     if !core.show_name_tags {
@@ -914,10 +918,9 @@ fn nametags(st: &mut State) -> Vec<TagDraw> {
         if d >= core.name_tag_distance {
             continue;
         }
-        // A 0x10074270: only the driver (samp state 0x13) of an RC vehicle (A 0x100b7e40: valid
-        // pool handle and model 441/464/465/501/564/594) is anchored at the vehicle's matrix
-        // position; every other player, drivers of ordinary cars included, needs to be in the
-        // moving list (A 0x1009f430, `CPhysical` +0xB4 ≠ 0) and is anchored at bone 8 (head).
+        // Only the driver of an RC vehicle (models 441/464/465/501/564/594) is anchored at the vehicle's
+        // matrix position; every other player, drivers of ordinary cars included, must be in the moving
+        // list (`CPhysical` +0xB4 ≠ 0) and is anchored at bone 8 (head).
         let vehicle = if r.state == crate::vehicle::state::DRIVER {
             let v = ProcessMemory.read_u32(r.ped + PED_VEHICLE).unwrap_or(0);
             let model = ped_valid(v)
@@ -944,7 +947,7 @@ fn nametags(st: &mut State) -> Vec<TagDraw> {
                 let args: Vec<Arg> = a.into_iter().chain(flags).collect();
                 run.run(OP_IS_LINE_OF_SIGHT_CLEAR, &args)
             };
-            // Tested once per pass (bars and names) like the original.
+            // Tested twice, once per samp pass (bars, then names).
             let a = los(&mut st.runner);
             let b = los(&mut st.runner);
             if !(a && b) {
@@ -967,7 +970,7 @@ fn nametags(st: &mut State) -> Vec<TagDraw> {
     out
 }
 
-/// Chat bubbles to draw (UR §11).
+/// Chat bubbles to draw (docs/re/subsystems/ui-rendering.md, "11. Chat bubbles").
 fn bubbles(st: &State) -> Vec<BubbleDraw> {
     let local = game::read_player(&ProcessMemory).ok().flatten();
     let cam = camera_pos();
@@ -989,11 +992,11 @@ fn bubbles(st: &State) -> Vec<BubbleDraw> {
     out
 }
 
-/// Pause-menu map right-click (B 0x10075B7B, session-misc.md "119"): with the map page shown (0xBA6774), the
-/// right button's "pressed since the last call" bit set and 0xBA8298 clear, the radar-trace entries 1..=175
-/// (0xBA86F0, stride 0x28) are scanned for the u16 0x1203 at +0x25 (the waypoint; the last match wins) and its x/y
-/// go out with z = `CWorld::FindGroundZForCoord(x, y)` + 2. samp sends uninitialised x/y without a waypoint;
-/// we send nothing then (ROADMAP decision, feata-notes.md).
+/// Pause-menu map right-click (docs/re/subsystems/session-misc.md, "119 OnPlayerClickMap"): with the map page
+/// shown, the right button's "pressed since the last call" bit set and the map not blocked, the radar-trace
+/// entries are scanned for the waypoint (the last match wins); its x/y go out with
+/// z = `CWorld::FindGroundZForCoord(x, y)` + 2. samp sends uninitialised x/y when there is no waypoint; we send
+/// nothing then (docs/phase3/feata-notes.md). Mirrors samp.dll B 0x10075B7B.
 fn map_click() -> Option<[f32; 3]> {
     use crate::worldhooks::rd;
     if rd::<u32>(MENU_MAP_PAGE) == 0 {
@@ -1020,25 +1023,33 @@ fn map_click() -> Option<[f32; 3]> {
     Some([x, y, z + 2.0])
 }
 
+/// Non-zero while the pause menu shows the map page.
 const MENU_MAP_PAGE: u32 = 0xBA6774;
+/// Non-zero when the map click must be ignored.
 const MENU_MAP_BLOCK: u32 = 0xBA8298;
+/// GTA's radar-trace (blip) array.
 const RADAR_TRACE: u32 = 0xBA86F0;
+/// Size of one radar-trace entry.
 const RADAR_TRACE_STRIDE: u32 = 0x28;
+/// Last radar-trace entry samp scans (from entry 1).
 const RADAR_TRACE_SCAN: usize = 175;
+/// The u16 at +0x25 that marks the waypoint entry.
 const WAYPOINT_TAG: u16 = 0x1203;
+/// `CWorld::FindGroundZForCoord(x, y)`.
 const FIND_GROUND_Z_FOR_COORD: u32 = 0x569660;
 
-/// UR §2.3: menu check, HUD flags, then the drawing steps.
+/// samp's per-frame Present pass: screenshot, menu check, HUD flags, then the drawing steps in samp's order
+/// (docs/re/subsystems/ui-rendering.md, "2.3 Present: per-frame draw order"; steps below use its numbering).
 fn present_pass() {
     let Ok(mut g) = UI.try_lock() else { return };
     let Some(st) = g.as_mut() else { return };
-    // Step 1: F8 screenshot (A 0x10075620), before anything of this frame is drawn.
+    // Step 1: F8 screenshot, before anything of this frame is drawn.
     if std::mem::take(&mut st.core.requests.screenshot) {
         let (path, index) = st.core.screenshot_target();
         let ok = d3d::screenshot(path.to_string_lossy().as_bytes(), render::hwnd());
         st.core.screenshot_done(ok.then_some(index));
     }
-    // Step 3: GTA pause menu → no samp UI; only the map right-click (B 0x10075B7B).
+    // Step 3: GTA pause menu → no samp UI; only the map right-click.
     if gta_menu_active() {
         if st.core.netgame
             && let Some(p) = map_click()
@@ -1061,7 +1072,7 @@ fn present_pass() {
         };
         exec_ops(ops);
     }
-    // Steps 5–8 (A 0x10075790): scoreboard, else F5 (connected) / F10 held → HUD off and
+    // Steps 5–8: scoreboard, else F5 (connected) / F10 held → HUD off and
     // only the nametag passes; else F1 held opens the help dialog. Keys are polled with
     // GetAsyncKeyState (any bit set), each only when the earlier ones did not apply.
     let sb_open = st.core.scoreboard.is_open();
@@ -1075,13 +1086,13 @@ fn present_pass() {
             st.core.open_help();
         }
     }
-    // Step 5/9 HUD (TRACE-3 U-HUD-STEP9: written every Present).
+    // Steps 5 / 9: the HUD flags are written on every Present.
     set_hud(!sb_open && overlay.is_none() && st.core.chat.mode() != DisplayMode::Hidden);
     let scoreboard_shown = sb_open;
     let sb_open = sb_open || overlay.is_some();
     let tags = nametags(st);
     let bubbles = if sb_open { Vec::new() } else { bubbles(st) };
-    // Step 4b: the audio stream title line (B 0x10066a70), when the netgame exists.
+    // Step 4b: the audio stream title line, when the netgame exists.
     let audio_title = if st.core.netgame { crate::audio::title_text() } else { None };
     let net_stats = (overlay == Some(Overlay::NetStats)).then(|| {
         let (sent, received) = st.net_bytes;
@@ -1159,26 +1170,25 @@ fn present_pass() {
     r.frame(&frame, &mut |req| match req {
         CursorReq::Mode2 => exec_ops(lock.request_mode2()),
     });
-    // Step 12: the class-selection GUI dialog after the chat GUI dialog (UR §2.3, §4.2),
-    // with cursor mode 2 while it is shown (TRACE-3: class selection locks input).
+    // Step 12: the class-selection GUI dialog after the chat GUI dialog (spec "4.2 GUI dialogs created by
+    // samp"); class selection holds cursor mode 2 meanwhile.
     if st.core.class_selection && st.class_panel_shown && !sb_open {
         st.class_buttons = Some(r.class_panel(cursor));
     } else {
         st.class_buttons = None;
     }
-    // Step 12: object editor and object selection (B 0x100737B0, 0x1006DBC0).
+    // Step 12: object editor and object selection.
     if !sb_open {
         editor_pass(&mut st.lock, r);
     }
-    // Step 12 end: textdraw selection per-frame logic (UR §14.4).
+    // End of step 12: textdraw selection per frame (spec "14.4 Selection mode").
     if st.core.textdraws.selection.active && !sb_open {
-        // A 0x10071470: cursor mode 2, HUD off (measured: HUD flags 0/1 while selecting),
-        // then the hover test.
+        // Cursor mode 2, HUD off, then the hover test.
         exec_ops(st.lock.request_mode2());
         set_hud(false);
         st.core.textdraws.hover(cursor.0, cursor.1);
     }
-    // Leaving a mode-2 UI: back to mode 0 with an immediate restore (UR §8).
+    // Leaving a mode-2 UI: back to mode 0 with an immediate restore, except after the spawn (delayed restore).
     let wants2 = st.core.input.is_open()
         || st.core.class_selection
         || st.core.dialogs.is_open()
@@ -1272,7 +1282,7 @@ fn mouse_up(st: &mut State, x: i32, y: i32) -> bool {
     if st.core.textdraws.selection.active
         && let Some(id) = st.core.textdraws.selection.hovered
     {
-        // UCA §83: the hovered id is sent; selection stays on.
+        // RPC 83 OnPlayerSelectTextDraw with the hovered id; selection stays on.
         st.core.push_outgoing(Outgoing::SelectTextDraw(id));
         return true;
     }
@@ -1300,10 +1310,8 @@ fn mouse_up(st: &mut State, x: i32, y: i32) -> bool {
     }
     if let (Some(list), Some(d)) = (l.list, st.core.dialogs.current_mut()) {
         if let Some(row) = d.row_at(&list, l.list_row_h, x, y) {
-            // Measured on the original (MR-M8A-3): a click selects; a double click
-            // activates (response 1); a second single click 1.5 s later does nothing.
-            // DXUT's list box reacts to WM_LBUTTONDBLCLK: two clicks within the
-            // system double-click time on the same row.
+            // A click selects; a double click (two clicks on the same row within the system double-click
+            // time, DXUT's WM_LBUTTONDBLCLK) activates with response 1.
             let now = std::time::Instant::now();
             // SAFETY: plain Win32 query.
             let dbl = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() };
@@ -1323,9 +1331,9 @@ fn mouse_up(st: &mut State, x: i32, y: i32) -> bool {
     l.rect.contains(x, y)
 }
 
-/// A click on the scoreboard's list box (DXUT list box: a click selects the row, a double click on it activates
-/// it → the scoreboard's GUI callback, B 0x100C5590 on event 0x701, sends RPC 23 and closes; B 0x1006EBD0).
-/// Clicks outside the scoreboard fall through (they close it, keys.rs).
+/// A click on the scoreboard's list box: a click selects the row; a double click activates it, and the
+/// scoreboard's GUI callback sends RPC 23 OnPlayerClickPlayer and closes. Clicks outside the scoreboard fall
+/// through (they close it, see `samp_ui::keys`).
 fn scoreboard_click(st: &mut State, x: i32, y: i32) -> bool {
     let r = st.core.scoreboard_rect;
     if !r.contains(x, y) {
@@ -1388,8 +1396,7 @@ pub fn fps_limit() -> Option<u32> {
     try_with_ui(|st| st.core.settings.fps_limit).flatten()
 }
 
-/// Spawn (A 0x10003c20): the mode-0 request that ends class selection's input lock
-/// uses the delayed (10-frame) restore.
+/// Spawn: the mode-0 request that ends class selection's input lock uses the delayed (10-frame) restore.
 pub fn class_selection_release() {
     let _ = with_ui(|st| st.spawn_release = true);
 }
@@ -1400,9 +1407,10 @@ pub fn print_debug(text: &str) {
 }
 
 /// Debug chat lines raised while the UI state is locked (renderer construction, the object pre-step): printed
-/// at the end of the next frame entry, in order.
+/// at the start of the next frame entry, in order.
 static PENDING_DEBUG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// Queues a debug chat line for the next frame entry (safe while the UI state is locked).
 pub fn print_debug_later(text: String) {
     PENDING_DEBUG.lock().unwrap_or_else(|e| e.into_inner()).push(text);
 }
@@ -1414,13 +1422,12 @@ fn flush_pending_debug(st: &mut State) {
     }
 }
 
-/// A type-4 (info colour) chat line.
-/// `/ctd` is on (B flag 0x101189A8).
+/// Whether the `/ctd` camera-target debug labels are on.
 pub fn camera_target_labels_on() -> bool {
     try_with_ui(|st| st.core.settings.camera_target_labels).unwrap_or(false)
 }
 
-/// `/ctd` labels, drawn from the local tick inside GTA's scene like samp's (B 0x10004830).
+/// `/ctd` labels, drawn from the local tick inside GTA's scene like samp's.
 pub fn draw_camera_target_labels(items: &[([f32; 16], Vec<u8>)]) {
     let _ = try_with_ui(|st| {
         if st.core.settings.camera_target_labels
@@ -1431,6 +1438,7 @@ pub fn draw_camera_target_labels(items: &[([f32; 16], Vec<u8>)]) {
     });
 }
 
+/// A type-4 (info colour) chat line.
 pub fn print_info(text: &[u8]) {
     with_ui(|st| st.core.print_info(text));
 }
@@ -1440,12 +1448,12 @@ pub fn audio_messages_off() -> bool {
     with_ui(|st| st.core.settings.audio_messages_off).unwrap_or(false)
 }
 
-/// `disableheadmove` (sa-mp.cfg / `/headmove`): samp's Game+0x59 head-tracking flag is off.
-/// `/dl` vehicle debug labels on (samp's flag B 0x1026EA30).
+/// Whether the `/dl` vehicle debug labels are on.
 pub fn vehicle_labels_on() -> bool {
     try_with_ui(|st| st.core.settings.vehicle_labels).unwrap_or(false)
 }
 
+/// `disableheadmove` (sa-mp.cfg / `/headmove`): the player's head does not follow the camera.
 pub fn head_move_disabled() -> bool {
     try_with_ui(|st| st.core.settings.head_move_disabled).unwrap_or(false)
 }
@@ -1454,18 +1462,18 @@ pub fn head_move_disabled() -> bool {
 pub fn on_init_game(g: &samp_proto::session::InitGame) {
     with_ui(|st| {
         st.net_stats.send_rate = g.on_foot_rate;
-        // samp's lag-comp selector (A 0x10118990: InitGame 1 → 0, 2 → 1, else 2).
+        // samp's lag-compensation selector: InitGame value 1 → 0, 2 → 1, anything else → 2.
         st.net_stats.shot_comp_mode = u32::from(crate::combat::lag_comp_selector(g.lag_compensation));
         st.core.on_init_game(g)
     });
 }
 
-/// RPC 40 / lost connection reset (B 0x1000a530): pools and server settings.
+/// RPC 40 / lost-connection reset: pools and server settings.
 pub fn on_reset() {
     with_ui(|st| st.core.on_reset());
 }
 
-/// RPC 40 reset (A 0x100A72C0): the player colour table back to the defaults.
+/// RPC 40 reset: the player colour table back to the defaults. Mirrors samp.dll 0x100A72C0.
 pub fn reset_colours() {
     with_ui(|st| st.core.colours = super::colours::PlayerColours::new());
 }
@@ -1480,8 +1488,8 @@ pub fn on_rpc(r: &Incoming) {
     with_ui(|st| st.core.on_rpc(r, &GameExpander));
 }
 
-/// F5 pool block (A 0x10060d20), once per session tick: vehicles in the pool, distinct models
-/// among those with a GTA vehicle, remote ped slots in use, objects in the pool.
+/// The pool block of the F5 overlay, once per session tick: vehicles in the pool, distinct models among those
+/// with a GTA vehicle, remote ped slots in use, objects in the pool.
 pub fn set_pool_stats(vehicles: u32, vehicle_models: u32, ped_slots: u32, objects: u32) {
     let _ = try_with_ui(|st| {
         let s = &mut st.net_stats;
@@ -1502,13 +1510,12 @@ pub fn set_class_selection(active: bool) {
     let _ = try_with_ui(|st| st.core.class_selection = active);
 }
 
-/// A dialog is open (samp's dialog object +0x28, A 0x1026e9c8): class selection's tick does nothing
-/// while it is (A 0x10006100).
+/// A dialog is open; class selection's tick does nothing meanwhile.
 pub fn dialog_open() -> bool {
     with_ui(|st| st.core.dialogs.is_open()).unwrap_or(false)
 }
 
-/// The chat input is open (chat input object +0x14e0, A 0x1026e9fc): Shift does not request a spawn.
+/// The chat input is open; Shift then does not request a spawn.
 pub fn chat_input_open() -> bool {
     with_ui(|st| st.core.input.is_open()).unwrap_or(false)
 }
@@ -1634,7 +1641,7 @@ pub fn control_input() -> String {
     .unwrap_or_else(|| "error ui busy".into())
 }
 
-/// `bubbles`: the chat bubbles held per player (DIFF-3).
+/// `bubbles`: the chat bubbles held per player.
 pub fn control_bubbles() -> String {
     try_with_ui(|st| st.core.bubbles_report()).unwrap_or_else(|| "error ui busy".into())
 }

@@ -1,24 +1,9 @@
-//! Crash handler (FEAT-12): samp's unhandled-exception filter and crash dialog, without the upload.
-//!
-//! samp.dll build B (behaviour in our own words): at attach it installs a top-level exception filter (B 0x100C50E0 →
-//! B 0x10060920). On an unhandled exception the filter keeps the exception context, minimises the game window and
-//! shows the modal dialog resource 101 (B 0x10060820): caption "SA:MP An exception occured", a static text, a
-//! read-only multi-line edit (id 1000) holding the report, "Close" (id 1001, default, focused) and "Report Crash"
-//! (id 1002, uploads the report to a third-party site). The filter then returns EXCEPTION_EXECUTE_HANDLER, so the
-//! process ends. The report (B 0x10060560 with the module list off for the dialog) is: a header with the client
-//! version, the exception address, the client module base, the registers and EFLAGS; 0x280 bytes of stack from
-//! ESP as dwords, four per line (B 0x10060240); the last script opcode, whether a script command was running
-//! ("lDbg") and the model of the last entity samp's render hook saw; the game version; and, while the netgame
-//! exists, "State Information" with `PlayerInFocus` and a list of remote player entries. The module list
-//! (B 0x100603D0, "%s\tB: 0x%08X\tS: 0x%08X\t(%s)" per module from a ToolHelp snapshot) is only part of the
-//! uploaded report.
-//!
-//! Decisions (docs/phase3/featb-notes.md, ROADMAP "Decisions made autonomously"):
-//! * no "Report Crash" button and no upload of any kind; the full report (with the module list) is written to
-//!   `samp-rs-crash.txt` next to `samp-rs.log` instead, and the static text says so;
-//! * the header names this client ("samp-rs <version> (SA-MP 0.3.7-R4 compatible)");
-//! * "LastRendObj" is 0 (no render hook records entity models here) and the remote player entries are left out
-//!   (samp prints two fields of its remote-player object, +0x10A and +0x1E7, whose meaning is not identified).
+//! Crash handler: an unhandled-exception filter that writes a crash report and shows samp's crash dialog, but
+//! without samp's "Report Crash" upload. `install` sets the filter at attach; [`report`] builds the text
+//! (registers, stack dump, last script opcode, game state) and [`dialog_template`] the dialog. The full report,
+//! including the module list samp only uploads, goes to `samp-rs-crash.txt` next to `samp-rs.log`, and the
+//! dialog's static text says so. Original behaviour and the decisions behind the differences:
+//! docs/phase3/featb-notes.md, "Decisions" and "Crash handler of the original".
 
 /// Register values of the faulting context (x86 `CONTEXT`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +20,7 @@ pub struct Regs {
     pub eflags: u32,
 }
 
-/// Stack bytes dumped from ESP (B 0x10060596).
+/// Stack bytes dumped from ESP, as dwords four per line.
 pub const STACK_DUMP: usize = 0x280;
 
 /// What the report needs besides the registers.
@@ -314,7 +299,7 @@ mod imp {
     /// The dialog text, read by the dialog procedure.
     static TEXT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
-    /// At attach, like samp (B 0x100C5121).
+    /// Installs the unhandled-exception filter; called at attach, like samp.
     pub fn install() {
         // SAFETY: plain Win32 call; the filter is a valid `extern "system"` function for the process lifetime.
         unsafe { SetUnhandledExceptionFilter(Some(filter)) };

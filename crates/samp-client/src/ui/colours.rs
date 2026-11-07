@@ -1,18 +1,16 @@
-//! Player colour table used for chat names (UCA §101, player-state.md §72).
+//! Player colour table, used for player names in chat and for radar markers.
 //!
-//! samp keeps a u32 RGBA colour per player id (array A 0x101516a0, 4000 entries).
-//! At start-up its first 1000 entries are copied from a static table in samp .data
-//! (A 0x10113b48, 1000 × u32, copy routine A 0x100a72c0); that table repeats the
-//! 100 values below with period 100 (verified by reading both R4 builds' .data).
-//! Entries 1000..3999 start at 0. Setter A 0x100a7250 (`id < 4000`), getter
-//! A 0x100a7270 (ids 0x3EC/0x3ED/0x3EE return fixed colours, not used by chat).
+//! samp keeps one RGBA colour per player id (4000 slots). At start-up the first 1000 slots are filled from
+//! a 100-entry default palette repeated with period 100; the rest start at 0. The server overwrites entries
+//! with SetPlayerColor. Spec: docs/re/subsystems/player-state.md, "72 SetPlayerColor"; addresses in
+//! docs/re/addresses/ui-colours.md.
 
-/// Number of entries of the table (A 0x101516a0).
+/// Number of slots in the table. Mirrors samp.dll 0x101516A0.
 pub const TABLE_LEN: usize = 4000;
 /// Entries initialised from [`DEFAULT_COLOURS`] at start-up.
 pub const INITIALISED: usize = 1000;
 
-/// The 100 default colours (RGBA), samp .data A 0x10113b48.
+/// The 100 default colours (RGBA), copied from samp.dll's data section. Mirrors samp.dll 0x10113B48.
 pub const DEFAULT_COLOURS: [u32; 100] = [
     0xFF8C13FF, 0xC715FFFF, 0x20B2AAFF, 0xDC143CFF, 0x6495EDFF, 0xF0E68CFF, 0x778899FF, 0xFF1493FF, 0xF4A460FF,
     0xEE82EEFF, 0xFFD720FF, 0x8B4513FF, 0x4949A0FF, 0x148B8BFF, 0x14FF7FFF, 0x556B2FFF, 0x0FD9FAFF, 0x10DC29FF,
@@ -49,7 +47,7 @@ impl PlayerColours {
         Self { rgba }
     }
 
-    /// Setter A 0x100a7250: ignored for `id >= 4000`.
+    /// Sets the colour of `id`; ignored for `id >= 4000`. Mirrors samp.dll 0x100A7250.
     pub fn set(&mut self, id: u16, rgba: u32) {
         if let Some(c) = self.rgba.get_mut(usize::from(id)) {
             *c = rgba;
@@ -61,7 +59,8 @@ impl PlayerColours {
         self.rgba.get(usize::from(id)).copied().unwrap_or(0)
     }
 
-    /// Chat name colour: `(c >> 8) | 0xFF000000` (UCA §101).
+    /// Chat name colour: `(c >> 8) | 0xFF000000` (docs/re/subsystems/ui-chat-audio.md,
+    /// "101 PlayerChatMessage").
     pub fn chat_argb(&self, id: u16) -> u32 {
         samp_ui::colour::rgba_to_argb(self.rgba(id))
     }

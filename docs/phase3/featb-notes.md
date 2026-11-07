@@ -103,3 +103,17 @@ print.
 * FEAT-14 (`-d`): developer-only offline mode (vehicle selector, debug commands, DEBUGSCRIPT loader, a heightmap from
   a hard-coded developer path). Not done in this step (lowest priority, needs its own original measurement of an
   offline `-d` boot); the entry points are listed in feature-sweep.md A21.
+
+## Crash handler of the original (moved from crash.rs comments)
+
+Build B, in our words. At attach samp installs a top-level exception filter. On an unhandled exception the
+filter keeps the exception context, minimises the game window and shows the modal dialog resource 101: caption
+"SA:MP An exception occured", a static text, a read-only multi-line edit (id 1000) holding the report, "Close"
+(id 1001, default, focused) and "Report Crash" (id 1002, uploads the report to a third-party site). The filter then
+returns EXCEPTION_EXECUTE_HANDLER, so the process ends. The report (built with the module list off for the dialog)
+is: a header with the client version, the exception address, the client module base, the registers and EFLAGS;
+0x280 bytes of stack from ESP as dwords, four per line; the last script opcode, whether a script command was
+running ("lDbg") and the model of the last entity samp's render hook saw ("LastRendObj"); the game version; and,
+while the netgame exists, "State Information" with `PlayerInFocus` and a list of remote player entries. The module
+list (`%s\tB: 0x%08X\tS: 0x%08X\t(%s)` per module from a ToolHelp snapshot) is only part of the uploaded report.
+Addresses: docs/re/addresses/crash.md.

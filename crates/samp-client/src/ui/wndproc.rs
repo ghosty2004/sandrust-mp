@@ -1,12 +1,9 @@
-//! Window-procedure subclass (UR §6.1–6.3, Windows only).
+//! Subclass of the GTA window procedure (Windows only).
 //!
-//! The GTA window (`HWND` at 0xC97C1C) is subclassed with `SetWindowLongA`; every
-//! message is translated into a `samp_ui::keys::Event` and routed by the UI.
-//! Unconsumed messages go to GTA's procedure through `CallWindowProcA`.
-//!
-//! M4 subset: chat input keys, PageUp/PageDown, F7, the mouse wheel, clicks outside
-//! the input, focus loss and `WM_SETCURSOR`. Scoreboard, dialogs and the other
-//! modal UIs come with M8a.
+//! [`install`] replaces the game window's procedure with `SetWindowLongA`. Keyboard, mouse-wheel, click and
+//! focus messages are translated into `samp_ui::keys::Event`s and routed to the UI in `glue`; messages the
+//! UI does not consume go on to GTA's procedure. Spec: docs/re/subsystems/ui-rendering.md, "6. Window
+//! procedure and keys".
 
 use std::ffi::c_void;
 use std::panic::catch_unwind;
@@ -40,8 +37,8 @@ pub fn install() -> Result<(), String> {
             return Err("SetWindowLongA failed".into());
         }
         OLD_PROC.store(old as u32 as usize, Ordering::SeqCst);
-        // samp's window setup (B 0x10061EB0, FEAT-B): the class gets CS_DBLCLKS (the second click of a double
-        // click arrives as WM_LBUTTONDBLCLK) and the title becomes "GTA:SA:MP".
+        // Like samp's window setup: the class gets CS_DBLCLKS (the second click of a double click arrives as
+        // WM_LBUTTONDBLCLK) and the title becomes "GTA:SA:MP".
         let style = GetClassLongA(hwnd, GCL_STYLE);
         SetClassLongA(hwnd, GCL_STYLE, (style | CS_DBLCLKS) as i32);
         SetWindowTextA(hwnd, WINDOW_TITLE.as_ptr());
@@ -49,19 +46,20 @@ pub fn install() -> Result<(), String> {
     Ok(())
 }
 
-/// Lost device (A 0x100c3f90, store at A 0x100c419b): the "SetCursor(NULL) once" flag of the
-/// `WM_SETCURSOR` answer is re-armed, so the next `WM_SETCURSOR` hides the Windows cursor again.
+/// Called on device loss: re-arms the "SetCursor(NULL) once" flag of the `WM_SETCURSOR` answer, so the next
+/// `WM_SETCURSOR` hides the Windows cursor again. Mirrors samp.dll 0x100C3F90.
 pub fn on_lost_device() {
     CURSOR_HIDDEN.store(false, Ordering::SeqCst);
 }
 
-/// Reset device (A 0x100c41f0): its first call is `SetCursor(NULL)`.
+/// Called after a device reset; like samp's handler, its first action is `SetCursor(NULL)`.
+/// Mirrors samp.dll 0x100C41F0.
 pub fn on_reset_device() {
     // SAFETY: plain Win32 call.
     unsafe { SetCursor(std::ptr::null_mut()) };
 }
 
-/// B 0x10061EF4.
+/// Window title set at start-up (string at samp.dll B 0x10061EF4).
 const WINDOW_TITLE: &[u8] = b"GTA:SA:MP\0";
 
 fn key_down(vk: i32) -> bool {
@@ -92,7 +90,7 @@ fn edit_key(vk: u32) -> Option<EditKey> {
 /// Returns true if the UI consumed the message.
 fn translate(msg: u32, w: WPARAM, l: LPARAM) -> bool {
     let route = |ev| super::glue::on_window_event(ev, 0);
-    // Object editor / selection first (samp's window procedure checks them before the chat input, B 0x1006186A).
+    // Object editor / selection first: samp's window procedure checks them before the chat input.
     if matches!(msg, 0x200..=0x202 | WM_CHAR) && super::glue::editor_message(msg, w) {
         return true;
     }
@@ -101,7 +99,7 @@ fn translate(msg: u32, w: WPARAM, l: LPARAM) -> bool {
         WM_KEYDOWN => {
             if let Some(k) = edit_key(w as u32) {
                 let mods = Mods { shift: key_down(0x10), ctrl: key_down(0x11) };
-                // TODO-unknown (U-EDITKEY-CONSUME): whether samp passes these on to GTA.
+                // Not known whether samp also passes these keys on to GTA; we consume them when handled.
                 if super::glue::on_edit_key(k, mods) {
                     return true;
                 }
@@ -126,7 +124,8 @@ fn translate(msg: u32, w: WPARAM, l: LPARAM) -> bool {
 
 unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     if msg == WM_SETCURSOR {
-        // UR §5: hide the Windows cursor once, then always answer TRUE.
+        // Hide the Windows cursor once, then always answer TRUE (ui-rendering.md, "5. Cursor and
+        // input-lock modes").
         if !CURSOR_HIDDEN.swap(true, Ordering::SeqCst) {
             // SAFETY: plain Win32 call.
             unsafe { SetCursor(std::ptr::null_mut()) };

@@ -133,3 +133,8 @@ Not applied (with reason):
   original re-streamed the actor for SetActorInvulnerable (server timing of the input). Server events identical
   (2× OnObjectMoved, pickup 0 twice + pickup 2, checkpoint and race-checkpoint enter) except actor damage (unaimed
   shots hit on ours only).
+
+## Notes moved from code comments (ui/mattext.rs)
+
+* Material text and device loss (measured with a forced `Reset` on both clients): samp releases the material
+  render targets before `Reset` and re-creates them in the next object pass; ours does the same (`on_lost`).

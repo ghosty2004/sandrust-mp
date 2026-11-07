@@ -1,28 +1,13 @@
-//! Camera target reporting (RPC 170 → RPC 168) and the `/ctd` labels, samp B 0x100046E0 / 0x10004420 /
-//! 0x10004830 (player-state.md "170", "168"; docs/phase3/feata-notes.md "FEAT-2").
-//!
-//! Behaviour, in our words:
-//! * RPC 170 stores an "enabled" flag (netgame +0x233).
-//! * Every local tick while disabled, the four cached ids are reset to "none" and nothing is sent.
-//! * While enabled, at most once per >100 ms (GetTickCount), the targets are computed; RPC 168 (four u16 in one
-//!   8-byte block, reliability 9) goes out only when one of them differs from the cached set, which then becomes
-//!   the cache. The timer restarts after every computation.
-//! * The ray: camera front F and source S (`TheCamera.m_aCams[0]`, 0xB6F32C / 0xB6F338), from S + F to S + 70·F.
-//!   For each category the end is first shortened to the hit point of a `CWorld::ProcessLineOfSight` with that
-//!   category's flags (objects: buildings; vehicles: buildings + objects; players / actors: buildings + vehicles +
-//!   objects), then the category's pool is searched:
-//!   - objects (B 0x10012E40): the pool ray test with a 40 m start distance;
-//!   - vehicles (B 0x1001EEE0): live vehicles within 40 m of the camera position, not the one the local ped sits
-//!     in, whose bounding sphere (scale 1.0) the segment hits; nearest to the ray start wins;
-//!   - players (B 0x10013D50) and actors (B 0x10001770): live peds within 20 m of the camera, bounding sphere scale
-//!     1.5, nearest to the ray start (actors use the players' shortened ray).
-//! * `/ctd` (B 0x10004830, every local tick while the flag is on): for each cached id whose entity exists, the
-//!   object editor's axis cross on the entity matrix and the label `CAMERA_TARGET_TYPE_<KIND>: ID(<id>)` in
-//!   0xFFD47B75 at the matrix position (3D-text painter, outline on, no LOS test), inside one sprite begin/end.
+//! Camera target reporting: RPC 170 turns it on, then the client sends RPC 168 with the object, vehicle, player
+//! and actor ids under the camera ray whenever that set changes; the `/ctd` command labels the targets on screen.
+//! `CamTarget::tick` holds the enable flag, the rate limit and the change detection; `ray` and `nearest` are the
+//! geometry helpers. The line-of-sight tests and pool searches (each category's ray is first shortened by a world
+//! line-of-sight test, then the nearest entity whose bounding sphere it hits wins) run in game code.
+//! Spec: docs/re/subsystems/player-state.md, "170" and "168"; docs/phase3/feata-notes.md.
 
 /// "No target" id.
 pub const NONE: u16 = 0xFFFF;
-/// Minimum time between two computations (strictly more than this, B 0x10004702 `cmp 100`).
+/// Minimum time between two computations; a computation needs strictly more than this.
 pub const INTERVAL_MS: u32 = 100;
 /// Ray length along the camera front.
 pub const RAY_LENGTH: f32 = 70.0;
@@ -30,23 +15,23 @@ pub const RAY_LENGTH: f32 = 70.0;
 pub const OBJECT_RADIUS: f32 = 40.0;
 pub const VEHICLE_RADIUS: f32 = 40.0;
 pub const PED_RADIUS: f32 = 20.0;
-/// Bounding-sphere scales of the line test (B 0x100B65E0 argument).
+/// Bounding-sphere scales passed to samp's sphere/segment line test.
 pub const VEHICLE_SCALE: f32 = 1.0;
 pub const PED_SCALE: f32 = 1.5;
 /// `/ctd` label colour (ARGB).
 pub const LABEL_COLOUR: u32 = 0xFFD4_7B75;
 
-/// Label text per category (B strings "CAMERA_TARGET_TYPE_*").
+/// Label text per category (0 object, 1 vehicle, 2 player, 3 actor), as samp formats it.
 pub fn label(kind: usize, id: u16) -> String {
     let name = ["OBJECT", "VEHICLE", "PLAYER", "ACTOR"][kind.min(3)];
     format!("CAMERA_TARGET_TYPE_{name}: ID({id})")
 }
 
-/// The sender's state (local player +0x11F..+0x12A).
+/// The sender's state: enable flag, last ids sent and the time of the last computation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CamTarget {
     pub enabled: bool,
-    /// object, vehicle, player, actor.
+    /// Last ids sent, in the order object, vehicle, player, actor.
     pub cached: [u16; 4],
     pub last_ms: u32,
 }
@@ -58,7 +43,8 @@ impl Default for CamTarget {
 }
 
 impl CamTarget {
-    /// One local tick. `compute` is called when a computation is due; returns the set to send, if any.
+    /// One local tick. While disabled the cache is reset to [`NONE`]. Otherwise, when more than [`INTERVAL_MS`]
+    /// has passed, `compute` is called and its result returned (and cached) if it differs from the cache.
     pub fn tick(&mut self, now_ms: u32, compute: impl FnOnce() -> [u16; 4]) -> Option<[u16; 4]> {
         if !self.enabled {
             self.cached = [NONE; 4];
@@ -84,7 +70,8 @@ pub fn ray(f: [f32; 3], s: [f32; 3]) -> ([f32; 3], [f32; 3]) {
     (start, end)
 }
 
-/// Nearest candidate by distance to `start` among the hits (strictly nearer replaces; samp starts at 100000).
+/// Nearest candidate to `start` among the hits; only a strictly nearer hit replaces the current best, and hits
+/// 100000 units or farther away are ignored, as in samp.
 pub fn nearest(start: [f32; 3], hits: impl IntoIterator<Item = (u16, [f32; 3])>) -> u16 {
     let mut best = (100_000.0f32, NONE);
     for (id, p) in hits {

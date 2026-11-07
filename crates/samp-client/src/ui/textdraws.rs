@@ -1,17 +1,11 @@
-//! Textdraws drawn through GTA's `CFont` right after `Render2dStuff` (UR §2.4 step 3,
-//! §14.2; the call sequence of samp's text path A 0x100b31e0 — samp calls the same
-//! GTA functions through thin thunks, all checked: SetScale 0x719380 … PrintString
-//! 0x71A700). Windows only.
+//! Textdraws, drawn through GTA's `CFont` right after `Render2dStuff` (Windows only).
 //!
-//! Sprite textdraws (font 4, `txd:name`) follow samp's loader (A 0x100b2d10 / 0x100b2bd0 /
-//! 0x100b2ca0, static analysis): the TXD is found by name or added and loaded from
-//! `models\txd\<txd>.txd` (`hud` used as is, `samaps` → `SAMP\samaps.txd`, `vehicleprev` →
-//! `SAMP\vehicles128.txd`), the texture is taken with `CSprite2d::SetTexture` inside
-//! Push/Set/PopCurrentTxd, and drawn with `RwRenderStateSet(TEXTUREFILTER, LINEAR)` +
-//! `CSprite2d::Draw(rect, colour)`. `mdlNNN` names take the generic TXD path (no custom-model
-//! store in R4). Model previews (font 5): `preview.rs` renders their textures; with a texture they
-//! take the sprite path, without one (the frame their RPC 134 arrived, or a model samp never
-//! renders) the text path, like samp's dispatch A 0x100b34c0.
+//! Text textdraws make the same `CFont` calls in the same order as samp's text path. Sprite textdraws
+//! (font 4, `txd:name`) load the TXD like samp (by name, else from `models\txd`, with `samaps` and
+//! `vehicleprev` taken from the `SAMP` folder) and draw it with `CSprite2d::Draw`. Model previews (font 5)
+//! use the texture `preview.rs` renders, and fall back to the text path while they have none.
+//! Entry point: [`draw_all`]. Spec: docs/re/subsystems/ui-rendering.md, "14. Textdraws"; addresses in
+//! docs/re/addresses/ui-textdraws.md.
 
 use samp_ui::textdraw::{self, FontParams, TextDraws};
 
@@ -68,7 +62,7 @@ fn find_slot(name: &[u8]) -> i32 {
     f(cstr(name).as_ptr())
 }
 
-/// samp's "ensure loaded" (A 0x100b2bd0): add + load + AddRef when not present.
+/// samp's "ensure loaded": add + load + AddRef when not present. Mirrors samp.dll 0x100B2BD0.
 fn ensure_txd(key: &[u8], file: &[u8], samp_dir: bool) -> bool {
     if find_slot(key) != -1 {
         return true;
@@ -94,7 +88,7 @@ fn ensure_txd(key: &[u8], file: &[u8], samp_dir: bool) -> bool {
     true
 }
 
-/// Texture of `txd:name` (A 0x100b2d10 + 0x100b2ca0), 0 when unavailable.
+/// Texture of `txd:name`, 0 when unavailable. Mirrors samp.dll 0x100B2D10.
 fn load_sprite(text: &[u8]) -> u32 {
     let Some(i) = text.iter().position(|&b| b == b':') else { return 0 };
     if text.len() > 0x3F || text.contains(&b'\\') || text.contains(&b'/') {
@@ -115,9 +109,9 @@ fn load_sprite(text: &[u8]) -> u32 {
             }
             b"vehicleprev".to_vec()
         }
-        // `mdlNNN` names (A 0x100b2d10): samp only treats them specially when its custom-model
-        // store (A 0x1026ea10) exists, and only the dormant RPC 179 handler creates it; in R4 they
-        // take the generic TXD path below, like any other dictionary name.
+        // `mdlNNN` names: samp only treats them specially when its custom-model store exists, and only
+        // the unused RPC 179 handler creates it; in 0.3.7-R4 they take the generic TXD path below, like
+        // any other dictionary name.
         _ => {
             let k = t[..t.len().min(10)].to_vec();
             if !ensure_txd(&k, t, false) {
@@ -148,7 +142,7 @@ fn load_sprite(text: &[u8]) -> u32 {
 fn free_sprite(tex: u32) {
     if tex != 0 {
         let mut s = tex;
-        // SAFETY: CSprite2d destructor on a temporary holding the texture (A 0x100b39a0).
+        // SAFETY: CSprite2d destructor on a temporary holding the texture.
         let f: extern "thiscall" fn(*mut u32) = unsafe { std::mem::transmute(txd::SPRITE_DELETE) };
         f(&mut s);
     }
@@ -184,7 +178,7 @@ fn sprite_texture(id: u16, t: &samp_ui::textdraw::TextDraw) -> u32 {
     }
 }
 
-/// The sprite path (A 0x100b30d0): textured quad, then the hit rect.
+/// The sprite path: textured quad, then the hit rect. Mirrors samp.dll 0x100B30D0.
 fn draw_sprite(tex: u32, t: &mut samp_ui::textdraw::TextDraw, hover: u32, w: i32, h: i32, ux: f32, uy: f32) {
     let r = textdraw::sprite_rect(&t.data, w, h, ux, uy);
     if tex != 0 {
@@ -226,7 +220,7 @@ fn call_f(f: usize, a: f32) {
     f(a);
 }
 
-/// The CFont calls of one text textdraw (A 0x100b31e0 order).
+/// The CFont calls of one text textdraw, in samp's order. Mirrors samp.dll 0x100B31E0.
 fn print(p: &FontParams, buf: &mut [u8; WORK], has_keys: bool) {
     // SAFETY: GTA functions on the main thread; `buf` is NUL-terminated with room to grow.
     unsafe {

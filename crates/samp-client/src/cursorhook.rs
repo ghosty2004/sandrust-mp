@@ -1,28 +1,18 @@
-//! `user32!ShowCursor` neutralised for the game (UR §5, CURSOR-1).
+//! Keeps GTA from hiding the mouse cursor for good by neutralising `user32!ShowCursor`.
 //!
-//! samp replaces `ShowCursor` at start-up (A 0x10062970, B 0x10062930, called from
-//! B 0x100C5201) with a stub that leaves the display counter alone and answers
-//! 0 for "show" and −1 for "hide". GTA calls `ShowCursor(FALSE)` from its window
-//! procedure on every activation (0x747FE9) and every `WM_SETCURSOR` it sees
-//! (0x7481CD, also `SetCursor(NULL)`) and once at shutdown (0x748EAF). Without
-//! the stub the counter drops below zero before samp's window procedure is in
-//! place, and Windows (Wine included) then hides every cursor: the D3D hardware
-//! cursor that DXVK turns into a Win32 cursor (`CreateIconIndirect` +
-//! `SetCursor`) for chat input, dialogs and the scoreboard never shows.
-//! samp's own object editor reaches the real function through the saved
-//! original (B 0x10073610 / 0x10073684), as ours does (`ui::glue`).
-//!
-//! Deviation from samp: samp inline-hooks the user32 export (a 5-byte jump),
-//! which also catches other modules; we patch gta_sa.exe's import slot, the only
-//! caller besides the client itself (d3d9/DXVK and d3dx do not import
-//! `ShowCursor`). Measured under Wine 11 + DXVK 3.1.1 with `WINEDEBUG=+cursor`:
-//! the original makes no `NtUserShowCursor` call at all during boot and play.
+//! GTA calls `ShowCursor(FALSE)` on every window activation and `WM_SETCURSOR`, which drives the display counter
+//! below zero before our window procedure is installed; Windows (and Wine) then hide every cursor, including the
+//! D3D hardware cursor used for chat input, dialogs and the scoreboard. samp swaps in a stub that never touches
+//! the counter. We do the same, but patch gta_sa.exe's import slot instead of inline-hooking the user32 export
+//! (gta_sa.exe is its only other caller; d3d9 and d3dx do not import it). The object editor still calls the
+//! real function (`ui::glue`). Spec: docs/re/subsystems/ui-rendering.md, "5. Cursor and input-lock modes".
 
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 
 use crate::patch::{Memory, Patcher, ProcessMemory};
 
-/// samp's replacement (B 0x10062920): the counter is never changed.
+/// Replacement for `ShowCursor`: leaves the display counter alone and answers 0 for "show", −1 for "hide".
+/// Mirrors samp.dll 0x10062960.
 pub extern "system" fn show_cursor_stub(show: i32) -> i32 {
     if show != 0 { 0 } else { -1 }
 }

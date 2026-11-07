@@ -1,17 +1,8 @@
-//! The D3D UI pass (Windows only), drawn in the original's order and with its call
-//! pattern (UR §2.3; TRACE-3 D3D logs of the original at 1280×720, see
-//! docs/phase3/m8a-notes.md):
-//!
-//! 1. nametag bars (painter sprite `Begin(DONOTSAVESTATE)` + UI states + FVF 0x44 fans),
-//! 2. nametag names (painter sprite `Begin(ALPHABLEND)`: measure, 4 outlines, main,
-//!    AFK `C` measure and glyphs),
-//! 3. chat bubbles, 4. 3D labels (3D-text sprite, one Begin/End each),
-//! 5. scoreboard → stop (only the HUD flags change),
-//! 6. chat: blit of the 2048×1024 render target (sprite Begin/Draw/End), the target
-//!    being redrawn in the game frame only when dirty or scrolled (UR §7.6),
-//! 7. chat input (cursor mode 2), 8. death window (own sprite),
-//! 9. dialog (cursor mode 2, DXUT dialog, then body/headers via the font renderer),
-//! 10. the chat/input GUI dialog (full-screen DXUT dialog: scrollbar, edit box).
+//! The D3D UI pass (Windows only): the fonts, sprites and render targets samp creates on its first frame, and
+//! the per-Present draw of nametags, 3D labels, chat, dialogs, scoreboard and death window in samp's order and
+//! with its D3D call pattern (so the D3D call-stream diff against the original stays empty).
+//! Entry points: [`Renderer::new`], [`Renderer::update_chat_rt`] (game frame) and [`Renderer::frame`] (Present).
+//! Spec: docs/re/subsystems/ui-rendering.md; measured call order in docs/phase3/m8a-notes.md.
 
 use std::ffi::c_void;
 
@@ -28,30 +19,36 @@ use super::d3d::{self, D3dx, Font, FontArgs, Line, Rect, RenderTarget, Sprite, d
 use crate::objedit::{self, Editor};
 use super::dxut::{self, EditView, ScrollBar};
 
-/// `RsGlobal.maximumWidth` / `maximumHeight` (UR §3.2 `W`).
+/// `RsGlobal.maximumWidth`: the video mode width (the `W` the font sizes scale with).
 const RS_MAX_WIDTH: u32 = 0xC17044;
+/// `RsGlobal.maximumHeight`: the video mode height.
 const RS_MAX_HEIGHT: u32 = 0xC17048;
 /// GTA main window handle.
 const GTA_HWND: u32 = 0xC97C1C;
-/// Scoreboard texts / headers colours (UR §15.1).
+/// Scoreboard text colour (server name, player count).
 const SB_TEXT: u32 = 0xFFBE_BEBE;
+/// Scoreboard column header colour.
 const SB_HEADER: u32 = 0xFF95_B0D0;
+/// Scoreboard dialog background (also used by the class-selection panel).
 const SB_BACKGROUND: u32 = 0x960A_0A0A;
-/// Chat GUI dialog background (TRACE-3: drawn, fully transparent).
+/// Chat GUI dialog background: drawn like samp does, but fully transparent.
 const CHAT_GUI_BACKGROUND: u32 = 0x0000_0000;
-/// Dialog background (UR §13.1).
+/// Dialog background colour.
 const DIALOG_BACKGROUND: u32 = 0xDC05_0505;
 
+/// Video mode width in pixels.
 pub fn video_width() -> i32 {
     // SAFETY: RsGlobal field read on the main thread.
     unsafe { std::ptr::read_volatile(RS_MAX_WIDTH as usize as *const i32) }
 }
 
+/// Video mode height in pixels.
 pub fn video_height() -> i32 {
     // SAFETY: as above.
     unsafe { std::ptr::read_volatile(RS_MAX_HEIGHT as usize as *const i32) }
 }
 
+/// GTA's main window.
 pub fn hwnd() -> *mut c_void {
     // SAFETY: the game's HWND global.
     unsafe { std::ptr::read_volatile(GTA_HWND as usize as *const usize) as *mut c_void }
@@ -84,8 +81,8 @@ pub fn cursor_pos() -> (i32, i32) {
     (p.x, p.y)
 }
 
-/// Text width with the font's GDI DC (what DXUT's Uniscribe buffer measures; not a
-/// D3DX call, so it does not show in the call stream).
+/// Text width with the font's GDI DC, which is what DXUT's Uniscribe buffer measures. Not a D3DX call, so it
+/// does not show in the D3D call stream.
 fn gdi_width(font: &Font, text: &[u16]) -> i32 {
     use windows_sys::Win32::Foundation::SIZE;
     use windows_sys::Win32::Graphics::Gdi::GetTextExtentPoint32W;
@@ -114,6 +111,7 @@ pub fn to_wide(b: &[u8]) -> Vec<u16> {
     out
 }
 
+/// The fonts the UI draws with, plus the metrics samp measures once when it creates them.
 pub struct Fonts {
     main: Font,
     main_outline: Font,
@@ -124,12 +122,12 @@ pub struct Fonts {
     death_names: Font,
     death_icon: Font,
     death_backdrop: Font,
-    /// Height of "Y" in the main / small font (font renderer +0x20/+0x24).
+    /// Height of "Y" in the main / small font (samp keeps these in its font renderer at +0x20 / +0x24).
     pub main_h: i32,
     pub small_h: i32,
     pub gui0_height: i32,
     pub gui1_height: i32,
-    /// Death window metrics (+0x12b nick width, +0x12f/+0x133 glyph size).
+    /// Death window metrics: nick column width and weapon glyph size (death window object +0x12b, +0x12f/+0x133).
     nick_w: i32,
     icon_w: i32,
     icon_h: i32,
@@ -137,7 +135,8 @@ pub struct Fonts {
     timestamp_w: i32,
 }
 
-/// Builds the font-renderer, GUI and death-window fonts (UR §3.2 table, TRACE-3).
+/// Builds the font-renderer, GUI and death-window fonts for a video width and font size, after `/fontsize` or a
+/// mode change (ui-rendering.md, "Size and face settings").
 fn build_fonts(d3dx: &D3dx, video_w: i32, fs: i32, face: &[u8], weight: u32) -> Result<Fonts, String> {
     let main_h = fonts::main_height(video_w, fs);
     let small_h = fonts::small_height(video_w, fs);
@@ -241,7 +240,7 @@ impl TextMeasure for Fonts {
     }
 }
 
-/// The sprites samp keeps per painter (each a separate `ID3DXSprite`).
+/// The sprites samp keeps, one per painter (each a separate `ID3DXSprite`); the offsets are in samp's objects.
 struct Sprites {
     /// Font renderer (+0x14).
     text: Sprite,
@@ -268,7 +267,7 @@ impl Sprites {
 /// One nametag to consider this frame.
 #[derive(Clone, Debug)]
 pub struct TagDraw {
-    /// Head bone position (bone 8).
+    /// Head bone position (bone 8), world coordinates.
     pub anchor: [f32; 3],
     /// Distance to the camera.
     pub distance: f32,
@@ -315,28 +314,28 @@ pub struct Frame<'a> {
     pub death: Option<&'a DeathWindow>,
     pub dialog: Option<(&'a Dialog, &'a DialogLayout)>,
     pub cursor: (i32, i32),
-    /// F5 / F10 held (UR §2.3 steps 6–7): only the nametag passes are drawn.
+    /// F5 / F10 held: the passes after the nametags are skipped; F5 draws its net stats text instead.
     pub overlay: Option<samp_ui::keys::Overlay>,
     /// F5 text (`net_stats_text`) when the net stats overlay is shown.
     pub net_stats: Option<&'a [u8]>,
     /// samp's netgame object exists (created on the game frame after the UI objects): the
     /// bubble and 3D-label passes run.
     pub netgame_object: bool,
-    /// Netgame exists and the server's show-nametags setting is on (A 0x10074270 /
-    /// 0x10075390 guards): both nametag passes run, even with nobody to draw.
+    /// Netgame exists and the server's show-nametags setting is on (the guards of samp's bars and names
+    /// passes): both nametag passes run, even with nobody to draw.
     pub name_tag_passes: bool,
-    /// Audio stream title line (step 4b), when the netgame exists and a title is known.
+    /// Audio stream title line, when the netgame exists and a title is known.
     pub audio_title: Option<&'a [u8]>,
 }
 
-/// The renderer: D3DX objects created on the first Present.
+/// The renderer: the D3DX objects samp creates on the first game frame.
 pub struct Renderer {
     /// Nametag painter's state block (created on its first bars pass).
     tags_state_block: *mut c_void,
     pub d3dx: D3dx,
     sprites: Sprites,
     pub fonts: Fonts,
-    /// SAMPAUX3 20 / 22, created lazily on the first nametag frame (TRACE-3).
+    /// SAMPAUX3 20 / 22 (AFK icon), created lazily on the first frame with a nametag, like samp.
     aux: Option<(Font, Font)>,
     gui: *mut c_void,
     cursor: *mut c_void,
@@ -346,15 +345,16 @@ pub struct Renderer {
     direct_mode: bool,
     rt_scroll: u32,
     built_for: (i32, i32),
-    /// Size of the chat GUI dialog: the video mode, then `(w + 100) × (bottom + 50)`
-    /// once the input was opened (UR §8).
+    /// Size of the chat GUI dialog: the video mode, then `(w + 100) × (bottom + 50)` once the input was opened
+    /// (ui-rendering.md, "Chat input").
     host_size: (i32, i32),
-    /// Objects samp creates at start-up that nothing we reproduce draws with yet.
+    /// Start-up objects outside the main per-frame passes (plate painter, object editor, logo, spare sprites).
     unused: Unused,
 }
 
-/// Start-up objects without a reproduced user yet (kept for the call stream and lifetime;
-/// only the device-loss handling touches them).
+/// Start-up objects outside the main per-frame passes. The plate font and target and the editor line and fonts
+/// are drawn with by [`Renderer::paint_plate`], [`Renderer::editor_gizmo`] and friends; the logo and the two
+/// extra sprites are only created, reset and released, to keep the D3D call stream identical to samp's.
 #[allow(dead_code)]
 struct Unused {
     plate_font: Font,
@@ -366,10 +366,10 @@ struct Unused {
     extra: [Sprite; 2],
 }
 
-/// The SA-MP logo (`logo.png`, samp.saa hash 0xBADDEA6B) and the state block samp records
-/// with it (B 0x10070c20): the texture is (re)created from the archive bytes, then a state
-/// block is recorded with that texture on stage 0 and fixed blend / raster / stage states.
-/// samp runs this twice at start-up; nothing in R4 draws with it in the measured flows.
+/// The SA-MP logo (`logo.png`, samp.saa hash 0xBADDEA6B) and the state block samp records with it: the texture
+/// is (re)created from the archive bytes, then a state block is recorded with that texture on stage 0 and fixed
+/// blend / raster / stage states. samp builds it twice at start-up; nothing in 0.3.7-R4 is known to draw with it.
+/// Mirrors samp.dll B 0x10070C20.
 struct Logo {
     tex: *mut c_void,
     state_block: *mut c_void,
@@ -432,16 +432,11 @@ impl Drop for Logo {
 }
 
 impl Renderer {
-    /// samp's first-frame UI construction (A 0x100c47d0, UR §1.1), run from the game-frame
-    /// entry inside GTA's scene, in the measured order (UX-1, D3D log of the original's first
-    /// UI frame): cursor hidden; font renderer (4 fonts, sprite, the 38/10 plate font, "Y"
-    /// measures); chat window (2 sprites, render target, "Y" and timestamp measures); chat
-    /// input (GUI resource manager sprite + `OnResetDevice` + `D3DSBT_ALL` state block); death
-    /// window (sprite, names font + sample measure, two GTAWEAPON3 fonts + "G" measures);
-    /// logo texture from samp.saa with its recorded state block (twice); nametag and 3D-text
-    /// sprites; object-editor SAMPAUX3 fonts; plate render target; two more sprites (object
-    /// editing/selection); `sampgui.png` and the GUI fonts; the `mouse.png` cursor; cursor
-    /// hidden again.
+    /// samp's first-frame UI construction, run from the game-frame entry inside GTA's scene. Everything is
+    /// created in samp's order so the D3D call stream matches: font renderer, chat window, chat input, death
+    /// window, logo, nametag and 3D-text sprites, object editor, plate render target, two editor sprites, GUI
+    /// skin and fonts, `mouse.png` cursor (ui-rendering.md, "UI objects"; order in docs/phase3/ux1-notes.md).
+    /// Mirrors samp.dll 0x100C47D0.
     pub fn new(face: &[u8], weight: u32, font_size: i32, direct_mode: bool) -> Result<Self, String> {
         let d3dx = D3dx::load()?;
         let w = video_width();
@@ -454,7 +449,7 @@ impl Renderer {
             |height: i32, quality: u32| FontArgs { height, width: 0, weight, charset: 1, quality, face: face.to_vec() };
         let sym =
             |height: i32| FontArgs { height, width: 0, weight: 400, charset: 2, quality: 0, face: b"GTAWEAPON3".to_vec() };
-        // Font renderer (A 0x1006baf0).
+        // Font renderer: four fonts, its sprite, the 38/10 Arial plate font, "Y" measures.
         let main = Font::create(&d3dx, args(main_h, 4))?;
         let main_outline = Font::create(&d3dx, args(main_h, 4))?;
         let small = Font::create(&d3dx, args(small_h, 4))?;
@@ -466,11 +461,11 @@ impl Renderer {
         )?;
         let main_line = main.measure_z(b"Y", 0).1;
         let small_line = small.measure_z(b"Y", 0).1;
-        // Chat window (A 0x10068380): direct and blit sprites, render target, metrics.
+        // Chat window: direct and blit sprites, render target, metrics.
         let chat = Sprite::create(&d3dx)?;
         let blit = Sprite::create(&d3dx)?;
         let (rw, rh) = if w <= 1024 { (1024, 512) } else { (2048, 1024) };
-        // `directmode` (B 0x10068210): no render target, the chat draws directly.
+        // `directmode`: no render target, the chat draws directly.
         let rt = if direct_mode {
             None
         } else {
@@ -485,12 +480,12 @@ impl Renderer {
         };
         let _ = main.measure_z(b"Y", dt::SINGLELINE);
         let timestamp_w = main.measure_z(samp_ui::chat::TIMESTAMP_SAMPLE, dt::SINGLELINE).0;
-        // Chat input (A 0x100693d0): its GUI dialog brings up the resource manager's sprite,
-        // whose OnResetDevice is followed by the manager's state block.
+        // Chat input: its GUI dialog brings up the resource manager's sprite, whose OnResetDevice is followed by
+        // the manager's `D3DSBT_ALL` state block.
         let gui_sprite = Sprite::create(&d3dx)?;
         gui_sprite.on_reset();
         dxut::set_rm_state_block(d3d::devcall::create_state_block(1));
-        // Death window (A 0x1006a650).
+        // Death window: sprite, names font with its sample measure, two GTAWEAPON3 fonts with "G" measures.
         let death = Sprite::create(&d3dx)?;
         let death_names = Font::create(&d3dx, args(aux_h, 0))?;
         let nick_w = death_names.measure_z(deathwindow::NICK_SAMPLE, 0).0;
@@ -503,18 +498,18 @@ impl Renderer {
         };
         let (icon_w, icon_h) = glyph();
         let _ = glyph();
-        // The samp.saa logo texture and its state block (B 0x10070c20, run twice).
+        // The samp.saa logo texture and its state block (built twice, like samp).
         let logo = Logo::create(&d3dx);
         // Nametag painter and 3D-text painter sprites.
         let tags = Sprite::create(&d3dx)?;
         let text3d = Sprite::create(&d3dx)?;
-        // Object editor (B 0x10071b90): its line, then its two fonts.
+        // Object editor: its line, then its two SAMPAUX3 fonts.
         let editor_line = Line::create(&d3dx).ok();
         let aux_font = |h: i32| {
             Font::create(&d3dx, FontArgs { height: h, width: 0, weight: 400, charset: 2, quality: 0, face: b"SAMPAUX3".to_vec() })
         };
         let editor_fonts = (aux_font(22).ok(), aux_font(28).ok());
-        // Number-plate painter render target (A 0x1006d9b0).
+        // Number-plate painter render target.
         let plate_rt = RenderTarget::create(&d3dx, 128, 32, 22).ok();
         // Object editing / selection sprites.
         let extra = [Sprite::create(&d3dx)?, Sprite::create(&d3dx)?];
@@ -570,8 +565,8 @@ impl Renderer {
         })
     }
 
-    /// Chat render target: 1024×512 at an adapter width ≤ 1024, else 2048×1024
-    /// (UR §7.6); none with `directmode` (B 0x10068210).
+    /// Chat render target: 1024×512 at an adapter width ≤ 1024, else 2048×1024; none with `directmode`
+    /// (ui-rendering.md, "Render-to-texture cache").
     fn create_rt(&mut self) {
         if self.direct_mode {
             return;
@@ -587,8 +582,8 @@ impl Renderer {
         self.rt_valid = false;
     }
 
-    /// `/fontsize` or a video-mode change: rebuild all fonts (TRACE-3: the GUI fonts
-    /// are recreated at once too).
+    /// `/fontsize` or a video-mode change: rebuild all fonts (the GUI fonts are recreated at once too, like
+    /// samp).
     pub fn rebuild_fonts(&mut self, face: &[u8], weight: u32, font_size: i32) {
         let w = video_width();
         match build_fonts(&self.d3dx, w, font_size, face, weight) {
@@ -601,10 +596,12 @@ impl Renderer {
         }
     }
 
+    /// Whether the fonts were built for another video width or font size.
     pub fn needs_rebuild(&self, font_size: i32) -> bool {
         self.built_for != (video_width(), font_size)
     }
 
+    /// Device lost: every D3DX object's `OnLostDevice`; default-pool resources and state blocks are released.
     pub fn on_lost(&mut self) {
         for s in self.sprites.all() {
             s.on_lost();
@@ -643,6 +640,8 @@ impl Renderer {
         }
     }
 
+    /// Device reset: `OnResetDevice` on every D3DX object, then the released resources are re-created.
+    /// Mirrors samp.dll 0x100C41F0.
     pub fn on_reset(&mut self) {
         for s in self.sprites.all() {
             s.on_reset();
@@ -669,17 +668,17 @@ impl Renderer {
         }
         u.plate_rt = RenderTarget::create(&self.d3dx, 128, 32, 22).ok();
         u.logo.init(&self.d3dx);
-        // UR §2.2: the cursor surface is re-created after a reset.
+        // The cursor surface is re-created after a reset (ui-rendering.md, "On lost / reset device").
         // SAFETY: we own the old surface.
         unsafe { d3d::release(self.cursor) };
         self.cursor = d3d::create_cursor(&self.d3dx, b"mouse.png").unwrap_or(std::ptr::null_mut());
-        // The chat GUI dialog (0x1026ea9c) keeps its size: samp's reset pass (A 0x100c41f0) does not touch it
-        // (measured: after a device loss it stays at the input-box size once the input was opened).
+        // The chat GUI dialog keeps its size: samp's reset pass does not touch it, so after a device loss it stays
+        // at the input-box size once the input was opened.
     }
 
     // ---- font renderer -----------------------------------------------------------------
 
-    /// Outline passes + the main pass through the colour-code wrapper, all with `sprite`.
+    /// Outline passes, then the main pass through the colour-code wrapper, all with `sprite`.
     #[allow(clippy::too_many_arguments)]
     fn outlined(
         sprite: &Sprite,
@@ -692,8 +691,7 @@ impl Renderer {
         outline: &[(i32, i32)],
     ) {
         let stripped = colour::strip_codes(text);
-        // TRACE-3: the 4-way passes move only left/top; the 8-way chat passes (W > 1280)
-        // move the whole rect.
+        // As in samp, the 4-way passes move only left/top; the 8-way chat passes (W > 1280) move the whole rect.
         let whole = outline.len() > 4;
         for &(dx, dy) in outline {
             let (rx, ry) = if whole { (dx, dy) } else { (0, 0) };
@@ -706,8 +704,8 @@ impl Renderer {
         d3d::draw_glyph_coloured(font, sprite, &stripped, &mut r, flags | dt::NOCLIP, colour, glyphs);
     }
 
-    /// Font renderer small-font draw without the outline passes (B 0x1006b4a0 with outline 0):
-    /// its own Begin/End.
+    /// Font-renderer small-font draw without the outline passes, in its own sprite Begin/End.
+    /// Mirrors samp.dll 0x1006B4E0 with the outline off.
     fn small_text_plain(&self, text: &[u8], rect: Rect, flags: u32, colour: u32) {
         let s = &self.sprites.text;
         s.begin(d3d::sprite::ALPHABLEND);
@@ -718,14 +716,16 @@ impl Renderer {
         s.end();
     }
 
-    /// Audio stream title (B 0x10066a70, UR §18): small font at (15, H − 20)–(W, H + 10).
+    /// Audio stream title: small font at (15, H − 20)–(W, H + 10) (ui-rendering.md, "Smaller overlays").
+    /// Mirrors samp.dll 0x10066AB0.
     fn audio_title(&self, text: &[u8]) {
         let (w, h) = (video_width(), video_height());
         let rect = Rect { left: 15, top: h - 20, right: w, bottom: h + 10 };
         self.small_text_plain(text, rect, crate::audio::TITLE_FLAGS, crate::audio::TITLE_COLOUR);
     }
 
-    /// Font renderer small-font draw with outline (A 0x1006b4e0): its own Begin/End.
+    /// Font-renderer small-font draw with the 4-way outline, in its own sprite Begin/End.
+    /// Mirrors samp.dll 0x1006B4E0.
     fn small_text(&self, text: &[u8], rect: Rect, flags: u32, colour: u32) {
         let s = &self.sprites.text;
         s.begin(d3d::sprite::ALPHABLEND);
@@ -735,7 +735,7 @@ impl Renderer {
 
     // ---- chat ----------------------------------------------------------------------------
 
-    /// Draws the visible chat lines with `sprite` (UR §7.2).
+    /// Draws the visible chat lines with the chat sprite (ui-rendering.md, "Chat window", "Layout").
     fn chat_lines(&self, layout: &ChatLayout) {
         let s = &self.sprites.chat;
         for line in &layout.lines {
@@ -755,9 +755,8 @@ impl Renderer {
         }
     }
 
-    /// Render-target update, once per game frame from the `CGame::Process` hook
-    /// (A 0x10067ed0): invalid while the GTA menu is on; redrawn when the chat is dirty
-    /// or the scroll position changed.
+    /// Render-target update, once per game frame from the `CGame::Process` hook: invalid while the GTA menu is
+    /// on; redrawn when the chat is dirty or the scroll position changed. Mirrors samp.dll 0x10067ED0.
     pub fn update_chat_rt(&mut self, chat: &mut ChatWindow, menu: bool) {
         if menu {
             self.rt_valid = false;
@@ -777,7 +776,7 @@ impl Renderer {
         devcall::clear(3, 0, 0.0, 0);
         let s = &self.sprites.chat;
         s.begin(d3d::sprite::ALPHABLEND);
-        devcall::set_render_state(20, 14); // DESTBLEND (UR §7.6)
+        devcall::set_render_state(20, 14); // D3DRS_DESTBLEND = D3DBLEND_BLENDFACTOR, as samp sets it
         self.chat_lines(&layout);
         s.end();
         rt.end();
@@ -786,7 +785,8 @@ impl Renderer {
         chat.clear_dirty();
     }
 
-    /// Present step: the chat window (UR §7.5).
+    /// Present step: the chat window, a blit of the render target or a direct draw (ui-rendering.md,
+    /// "Draw path").
     fn chat(&self, chat: &ChatWindow) {
         if !chat.mode().chat_visible() {
             return;
@@ -807,6 +807,7 @@ impl Renderer {
 
     // ---- nametags, bubbles -------------------------------------------------------------
 
+    /// World point to screen `(x, y, z)` with samp's copies of the view and projection matrices.
     fn project(&self, p: [f32; 3]) -> [f32; 3] {
         let vp = devcall::viewport();
         let proj = *d3d::PROJECTION.lock().unwrap_or_else(|e| e.into_inner());
@@ -826,10 +827,9 @@ impl Renderer {
         (s[2] <= 1.0).then_some((s[0] as i32, s[1] as i32))
     }
 
-    /// Bars pass (A 0x10074270 / 0x1006d0a0).
-    /// Bars pass (A 0x10074270): the painter's begin (A 0x1006d6b0) creates its `D3DSBT_ALL`
-    /// state block on first use (after the sprite's `OnResetDevice`) and captures it; the end
-    /// (A 0x1006cd50) applies it after the sprite's `End`.
+    /// Nametag health / armour bars pass. The painter's begin creates its `D3DSBT_ALL` state block on first use
+    /// (after the sprite's `OnResetDevice`) and captures it; its end applies it after the sprite's `End`
+    /// (ui-rendering.md, "Bars"). Mirrors samp.dll 0x10074270.
     fn tag_bars(&mut self, tags: &[TagDraw]) {
         let s = &self.sprites.tags;
         if self.tags_state_block.is_null() {
@@ -852,10 +852,10 @@ impl Renderer {
         d3d::state_block_apply(self.tags_state_block);
     }
 
-    /// F5 overlay (A 0x10060d70): the whole text and "Y" measured (`DT_CALCRECT`, no sprite),
-    /// then the title `Client Network Stats` at (10, 10)–(W − 150, 10 + h) in 0xFF8888EE and
-    /// every `\n`-terminated line below it in white, each through the font renderer with its
-    /// 4-way outline and its own sprite Begin/End.
+    /// F5 overlay: the whole text and "Y" measured (`DT_CALCRECT`, no sprite), then the title
+    /// `Client Network Stats` at (10, 10)–(W − 150, 10 + h) in 0xFF8888EE and every `\n`-terminated line below
+    /// it in white, each through the font renderer with its 4-way outline and its own sprite Begin/End.
+    /// Mirrors samp.dll 0x10060D70.
     fn net_stats(&self, text: &[u8]) {
         let _ = self.fonts.main.measure_z(&colour::strip_codes(text), 0);
         let h = self.fonts.main.measure_z(b"Y", 0).1;
@@ -877,7 +877,7 @@ impl Renderer {
         }
     }
 
-    /// Names pass (A 0x10075390 / 0x1006cda0) incl. the AFK icon (UR §16.3).
+    /// Nametag names pass, including the AFK icon (ui-rendering.md, "Name text"). Mirrors samp.dll 0x10075390.
     fn tag_names(&mut self, tags: &[TagDraw], nametag_status: bool) {
         if !tags.is_empty() && self.aux.is_none() {
             let f = |h: i32| {
@@ -917,11 +917,11 @@ impl Renderer {
         s.end();
     }
 
-    /// The 3D text painter (A 0x1006bc90 / B 0x1006bc50, UR §18) shared by labels and chat bubbles: project
-    /// with samp's view/projection copies, skip when z > 1, truncate to a rect [x, y, x+1, y+1], then the font
-    /// renderer's small draw (B 0x1006b4a0) with format 0x101: when `outline` is set, four black passes of the
-    /// stripped text (offsets move only left/top), then the main pass of the RAW text through the colour-code
-    /// wrapper (per-glyph `{RRGGBB}` colours, the base alpha only up to the first code).
+    /// The 3D text painter shared by labels and chat bubbles: project with samp's view/projection copies, skip
+    /// when z > 1, truncate to a rect [x, y, x+1, y+1], then the font renderer's small draw with format 0x101:
+    /// when `outline` is set, four black passes of the stripped text (offsets move only left/top), then the main
+    /// pass of the raw text through the colour-code wrapper (per-glyph `{RRGGBB}` colours, the base alpha only
+    /// up to the first code). Mirrors samp.dll 0x1006BC90.
     fn text3d(&self, s: &Sprite, pos: [f32; 3], text: &[u8], argb: u32, outline: bool) {
         let p = self.project(pos);
         if p[2] > 1.0 {
@@ -933,8 +933,8 @@ impl Renderer {
         Self::outlined(s, &self.fonts.small, &self.fonts.small_outline, text, rect, dt::CENTER, argb, passes);
     }
 
-    /// Chat bubbles (UR §11, A 0x10066ed0): the 3D text painter with the outline always on and no LOS test
-    /// (measured rect [x, y, x+1, y+1]).
+    /// Chat bubbles (ui-rendering.md, "Chat bubbles"): the 3D text painter with the outline always on and no
+    /// line-of-sight test. Mirrors samp.dll 0x10066ED0.
     fn bubbles(&self, bubbles: &[BubbleDraw]) {
         let s = &self.sprites.text3d;
         s.begin(d3d::sprite::ALPHABLEND);
@@ -944,10 +944,10 @@ impl Renderer {
         s.end();
     }
 
-    /// 3D text labels (UR §2.3 step 10, §18; pool pass A 0x10001350), one batch on the 3D-text sprite through the
-    /// 3D text painter. The pool pass sets the outline flag only when the label colour's alpha is FF (A 0x100013bc);
-    /// the text keeps its `{RRGGBB}` codes for the colour wrapper. Placement, draw distance and LOS come from
-    /// `entities.rs` (M6).
+    /// 3D text labels: one batch on the 3D-text sprite through the 3D text painter. The outline is on only when
+    /// the label colour's alpha is FF; the text keeps its `{RRGGBB}` codes for the colour wrapper. Placement, draw
+    /// distance and line of sight come from `entities.rs` (ui-rendering.md, "Smaller overlays").
+    /// Mirrors samp.dll 0x10001350.
     fn labels(&self) {
         let s = &self.sprites.text3d;
         s.begin(d3d::sprite::ALPHABLEND);
@@ -957,8 +957,8 @@ impl Renderer {
         s.end();
     }
 
-    /// `/dl` labels (label painter B 0x1006BC50 → B 0x1006B4A0 with the outline flag): four black outline draws
-    /// of the stripped text, then the main draw in [`crate::vehlabels::LABEL_ARGB`] through the colour wrapper.
+    /// `/dl` vehicle labels on the 3D-text painter with the outline on: four black outline draws of the stripped
+    /// text, then the main draw in [`crate::vehlabels::LABEL_ARGB`] through the colour wrapper.
     fn vehicle_labels(&self, rows: &[([f32; 3], String)]) {
         const OUTLINE: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
         let s = &self.sprites.text3d;
@@ -975,7 +975,7 @@ impl Renderer {
                 let mut r = Rect { left: x + dx, top: y + dy, right: x + 1, bottom: y + 1 };
                 font.draw(s.ptr, &text, &mut r, dt::CENTER | dt::NOCLIP, colour::OUTLINE);
             }
-            // The main pass goes through the colour-code font wrapper (B 0x1006B5F7; measured: no sprite pointer).
+            // The main pass goes through the colour-code font wrapper, which samp calls without a sprite pointer.
             let mut r = Rect { left: x, top: y, right: x + 1, bottom: y + 1 };
             let argb = crate::vehlabels::LABEL_ARGB;
             let glyphs: Vec<u32> = colour::glyph_colours(&text, argb).iter().map(|g| g.colour).collect();
@@ -984,17 +984,18 @@ impl Renderer {
         s.end();
     }
 
-    /// The plate painter (B 0x1006D840): a 64×32 texture (default pool, the painter's format), the 128×32 render
-    /// target cleared to 0xFFBEB6A8 with the plate text drawn by the font renderer (B 0x1006B610: Arial 38/10 bold,
-    /// four 0xB4F0EEE4 outline passes at (0,−2)/(+2,0)/(0,+2)/(−2,0) around (0, 3), then 0xEE444470; rect right /
-    /// bottom 128 / 32, format 0x105, colour codes removed), then copied with a linear filter. 0 on failure.
+    /// The number-plate painter: the 128×32 render target is cleared to 0xFFBEB6A8 and the plate text drawn by the
+    /// font renderer (Arial 38/10 bold, four 0xB4F0EEE4 outline passes at (0,−2)/(+2,0)/(0,+2)/(−2,0) around
+    /// (0, 3), then 0xEE444470; rect right / bottom 128 / 32, format 0x105, colour codes removed), then copied with
+    /// a linear filter into a new 64×32 texture (default pool). Returns the texture, 0 on failure.
+    /// Mirrors samp.dll B 0x1006D840.
     pub fn paint_plate(&self, text: &[u8]) -> u32 {
         const FMT: u32 = 0x105;
         const OUTLINE: u32 = 0xB4F0_EEE4;
         const TEXT: u32 = 0xEE44_4470;
         let Some(rt) = &self.unused.plate_rt else { return 0 };
         let mut tex = std::ptr::null_mut();
-        // 22 = X8R8G8B8, the painter's format in the measured runs.
+        // 22 = D3DFMT_X8R8G8B8, the format samp's plate painter uses.
         let hr = (self.d3dx.create_texture)(d3d::real_device(), 64, 32, 1, 0, 22, 0, &mut tex);
         if hr < 0 || tex.is_null() {
             return 0;
@@ -1005,8 +1006,8 @@ impl Renderer {
         let s = &self.sprites.text;
         s.begin(d3d::sprite::ALPHABLEND);
         let font = &self.unused.plate_font;
-        // Every pass goes through the font renderer's colour proxy (measured: the DrawTexts carry a non-sprite
-        // pointer, the glyphs land on the renderer's sprite).
+        // Every pass goes through the font renderer's colour proxy, as in samp: the glyphs land on the renderer's
+        // sprite.
         for (dx, dy, argb) in [(0, -2, OUTLINE), (2, 0, OUTLINE), (0, 2, OUTLINE), (-2, 0, OUTLINE), (0, 0, TEXT)] {
             let mut r = Rect { left: dx, top: 3 + dy, right: 128, bottom: 32 };
             let glyphs: Vec<u32> = colour::glyph_colours(&stripped, argb).iter().map(|g| g.colour).collect();
@@ -1014,8 +1015,8 @@ impl Renderer {
         }
         s.end();
         rt.end();
-        // SAFETY: the new texture (IDirect3DBaseTexture9::SetAutoGenFilterType = 14, GetSurfaceLevel = 18), the
-        // surface's Release, D3DXLoadSurfaceFromSurface(dst, NULL, NULL, src, NULL, NULL, LINEAR, 0).
+        // SAFETY: `tex` is the live texture just created (slot 14 SetAutoGenFilterType, slot 18 GetSurfaceLevel);
+        // `surf` is checked for null and released after the copy.
         unsafe {
             let f: extern "system" fn(*mut c_void, u32) -> d3d::HResult = d3d::vfn(tex, 14);
             f(tex, 2);
@@ -1039,8 +1040,9 @@ impl Renderer {
         tex as u32
     }
 
-    /// One editor handle (B 0x10072570): background glyph (SAMPAUX3 28), then the handle glyph (SAMPAUX3 22), both
-    /// count 1 at the point, format 0x105; the hit rect is centred on the point.
+    /// One object-editor handle: the background glyph (SAMPAUX3 28), then the handle glyph (SAMPAUX3 22), one
+    /// character each at the point, format 0x105; the hit rect is centred on the point.
+    /// Mirrors samp.dll B 0x10072570.
     fn editor_handle(&self, ed: &mut Editor, index: i32, x: i32, y: i32) {
         let (Some(small), Some(big)) = (&self.unused.editor_fonts.0, &self.unused.editor_fonts.1) else { return };
         let mut r = Rect { left: x, top: y, right: x + 1, bottom: y + 1 };
@@ -1064,9 +1066,9 @@ impl Renderer {
         (b[2] <= 1.0).then_some((a, b))
     }
 
-    /// The editor gizmo (B 0x10072C60): glyph probe, antialiased line per axis (aborting at the first end point
-    /// behind the camera), axis handle at the + end; save / scale / rotate / translate buttons left of the − end of
-    /// Z. Returns whether all of it was drawn.
+    /// The object-editor gizmo: glyph probe, antialiased line per axis (aborting at the first end point behind the
+    /// camera), axis handle at the + end; save / scale / rotate / translate buttons left of the − end of Z.
+    /// Returns whether all of it was drawn. Mirrors samp.dll B 0x10072C60.
     pub fn editor_gizmo(&self, ed: &mut Editor, m: &[f32; 16], s: f32) -> bool {
         let Some(line) = &self.unused.editor_line else { return false };
         if let Some(big) = &self.unused.editor_fonts.1 {
@@ -1100,10 +1102,9 @@ impl Renderer {
         true
     }
 
-    /// Selection highlight (B 0x1006DA20): the object's axis cross (B 0x10071D50, length 1, one colour) and the
-    /// id / model / distance label through the 3D-text painter (B 0x1006BC50 with outline 1 and its LOS test off
-    /// — measured: no IS_LINE_OF_SIGHT_CLEAR while selecting; the font renderer's outlined small text, B 0x1006B4A0,
-    /// rect [x, y, x+1, y+1], format 0x101).
+    /// Selection highlight: the object's axis cross (length 1, one colour) and the id / model / distance label
+    /// through the 3D-text painter with the outline on and no line-of-sight test (outlined small text, rect
+    /// [x, y, x+1, y+1], format 0x101). Mirrors samp.dll B 0x1006DA20.
     pub fn select_highlight(&self, m: &[f32; 16], label: &[u8]) {
         if let Some(line) = &self.unused.editor_line {
             line.set_antialias(true);
@@ -1135,9 +1136,9 @@ impl Renderer {
         s.end();
     }
 
-    /// `/ctd` (B 0x10004830): one sprite begin; per camera target the editor's axis cross on the entity matrix
-    /// (B 0x10071D50, length 1) and its label at the matrix position (B 0x1006BC50, outline on, no LOS test);
-    /// one sprite end.
+    /// `/ctd`: one sprite begin; per camera target the editor's axis cross on the entity matrix (length 1) and its
+    /// label at the matrix position (3D-text painter, outline on, no line-of-sight test); one sprite end.
+    /// Mirrors samp.dll B 0x10004830.
     pub fn camera_target_labels(&self, items: &[([f32; 16], Vec<u8>)]) {
         let s = &self.sprites.text3d;
         s.begin(d3d::sprite::ALPHABLEND);
@@ -1170,7 +1171,7 @@ impl Renderer {
 
     // ---- scoreboard --------------------------------------------------------------------
 
-    /// Scoreboard (UR §15): DXUT dialog with the list box, then the texts.
+    /// Scoreboard: DXUT dialog with the list box, then the texts (ui-rendering.md, "Scoreboard").
     fn scoreboard(&self, sb: &ScoreboardDraw, cursor: (i32, i32)) {
         let (w, h) = (video_width(), video_height());
         let (sw, shh) = samp_ui::scoreboard::size(w);
@@ -1259,8 +1260,8 @@ impl Renderer {
 
     // ---- dialog ------------------------------------------------------------------------
 
-    /// Dialog (UR §13.3): DXUT dialog (caption, buttons, list/edit box focused last),
-    /// then the body or the style-5 headers through the font renderer.
+    /// Dialog: DXUT dialog (caption, buttons, list / edit box focused last), then the body or the style-5
+    /// headers through the font renderer (ui-rendering.md, "Dialogs", "Per-frame draw").
     fn dialog(&self, d: &Dialog, l: &DialogLayout, cursor: (i32, i32)) {
         let g = &self.sprites.gui;
         let rect = Rect { left: l.rect.left, top: l.rect.top, right: l.rect.right, bottom: l.rect.bottom };
@@ -1306,7 +1307,8 @@ impl Renderer {
 
     // ---- death window --------------------------------------------------------------------
 
-    /// Death window (A 0x1006a2e0): 5 slots from `ftol(0.3·H)`, newest at the bottom.
+    /// Death window: 5 slots from `ftol(0.3·H)`, newest at the bottom (ui-rendering.md, "Death window").
+    /// Mirrors samp.dll 0x1006A2E0.
     fn death_window(&self, dw: &DeathWindow) {
         let s = &self.sprites.death;
         let f = &self.fonts;
@@ -1347,7 +1349,7 @@ impl Renderer {
         s.end();
     }
 
-    /// Name with the 4-way outline, same font (A 0x10069c40).
+    /// Death window name with the 4-way outline in the same font. Mirrors samp.dll 0x10069C40.
     fn death_name(&self, text: &[u8], rect: Rect, colour: u32) {
         let s = &self.sprites.death;
         let f = &self.fonts.death_names;
@@ -1359,7 +1361,8 @@ impl Renderer {
         f.draw_n(s.ptr, text, -1, &mut r, dt::NOCLIP, colour);
     }
 
-    /// Icon box (A 0x10069d40): backdrop `G`, its measure into the rect, the glyph.
+    /// Death window icon box: backdrop `G`, its measure into the rect, the weapon glyph.
+    /// Mirrors samp.dll 0x10069D40.
     fn death_icon(&self, rect: Rect, reason: u8) {
         let s = &self.sprites.death;
         let mut r = Rect { top: rect.top - 5, ..rect };
@@ -1372,7 +1375,8 @@ impl Renderer {
 
     // ---- chat GUI dialog ---------------------------------------------------------------
 
-    /// The chat/input GUI dialog (0x1026ea9c): scrollbar and edit box (UR §7.4, §8).
+    /// The full-screen chat / input GUI dialog: the chat scrollbar and the input edit box (ui-rendering.md,
+    /// "Scrollbar and paging", "Chat input").
     fn chat_gui(&mut self, chat: &ChatWindow, inp: &ChatInput, first_visible: usize) {
         let bottom = chat.bottom(self.fonts.main_h);
         let (cw, _) = client_size();
@@ -1412,9 +1416,9 @@ impl Renderer {
         dxut::dialog_end(g);
     }
 
-    /// Class-selection panel (GUI dialog 0x1026eaa4, UR §4.2): 310×40, background
-    /// 0x960A0A0A, centred at `y = clientH − 40 − 50`; buttons `<<` (10,5), `>>` (110,5),
-    /// `Spawn` (210,5), 90×30. Returns the three button rects.
+    /// Class-selection panel (ui-rendering.md, "GUI dialogs created by samp"): 310×40 on the scoreboard
+    /// background, centred at `y = clientH − 40 − 50`; buttons `<<` (10,5), `>>` (110,5), `Spawn` (210,5), 90×30.
+    /// Returns the three button rects.
     pub fn class_panel(&self, cursor: (i32, i32)) -> [samp_ui::Rect; 3] {
         let (cw, ch) = client_size();
         let (x, y) = ((cw - 310) / 2, ch - 40 - 50);
@@ -1441,8 +1445,9 @@ impl Renderer {
 
     // ---- the pass ------------------------------------------------------------------------
 
-    /// The Present pass after the HUD decision (UR §2.3 steps 4–12). Returns early for
-    /// the scoreboard (steps 6–12 skipped).
+    /// The Present pass after the HUD decision, in samp's order: nametag bars and names, audio title, `/dl`
+    /// labels; then either the scoreboard or the F5 / F10 overlay (and stop), or chat bubbles, 3D labels, chat,
+    /// death window, dialog and the chat GUI dialog (ui-rendering.md, "Present: per-frame draw order").
     pub fn frame(&mut self, f: &Frame, cursor_req: &mut dyn FnMut(CursorReq)) {
         if f.name_tag_passes {
             self.tag_bars(f.tags);
@@ -1451,7 +1456,7 @@ impl Renderer {
         if let Some(t) = f.audio_title {
             self.audio_title(t);
         }
-        // `/dl` vehicle labels: their own batch on the 3D-text painter while the flag is on (B 0x100757E6).
+        // `/dl` vehicle labels: their own batch on the 3D-text painter while the flag is on.
         if let Some(rows) = crate::vehlabels::draws() {
             self.vehicle_labels(&rows);
         }
@@ -1502,8 +1507,8 @@ impl Drop for Renderer {
     }
 }
 
-/// The chat window's debug line when its render target cannot be made (B 0x10068190): the render-to-surface
-/// object and the texture have their own lines; both fall back to direct drawing.
+/// The chat window's debug line when its render target cannot be made: the render-to-surface object and the
+/// texture have their own lines; both fall back to direct drawing. Mirrors samp.dll 0x100681D0.
 fn chat_rt_failure_line(err: &str) -> &'static str {
     if err.contains("RenderToSurface") {
         "ChatWindow: Can't create a render to surface. Will use direct mode."

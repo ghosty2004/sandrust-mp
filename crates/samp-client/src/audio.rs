@@ -1,32 +1,10 @@
-//! Audio (milestone M9): the internet audio stream of RPC 41/42 played through the user's
-//! own `bass.dll`, its per-frame radio calls and title line, and PlayerPlaySound (RPC 16).
-//!
-//! Specs: `docs/re/subsystems/ui-chat-audio.md` §41/§42 (static), `docs/phase3/trace-notes.md`
-//! "Audio (TRACE-8)" (measured), `docs/phase3/m9-notes.md` (our notes and decisions).
-//!
-//! The original samp.dll imports bass.dll statically; so does this client (Windows build,
-//! `raw-dylib`), with the same argument values, from the same threads, in the same order:
-//! * boot (first frame with a D3D device, main thread): `BASS_Free`, `BASS_Init(-1, 44100, 0,
-//!   0, 0)` and, only if that succeeded, user agent `SA-MP/0.3`, stream volume radio × 7000,
-//!   playlists on, net timeout 10000, the `audioproxyoff` key (created with 0 when missing)
-//!   → proxy off, EAX off (B 0x10066440);
-//! * RPC 41 (main thread, B 0x10066920): stop the current stream and wait for its worker, stop
-//!   a leftover handle, nothing more while GTA's radio volume is not > 0, store URL (256 bytes),
-//!   position, distance and usePos, clear title / station, print `Audio stream: <url>` (type 4)
-//!   unless `audiomsgoff`, start the worker;
-//! * worker (B 0x100666c0): `StreamCreateURL(url, 0, BLOCK|STATUS|AUTOFREE)`, `ChannelPlay`,
-//!   station from the ICY (else HTTP) tags, title from META (else OGG) tags, META / OGG_CHANGE
-//!   syncs refreshing the title, then every 20 ms `StreamGetFilePosition(h, CONNECTED)` and the
-//!   stream volume ([`stream_volume`]) until stopped, then `ChannelStop`;
-//! * RPC 42 (B 0x100180a0 → 0x10066520 without waiting): raise the stop flag and free the
-//!   stream at once; lost connection / server closed: the same with waiting;
-//! * every frame while a stream "plays": `CAudioEngine::StartRadio(-1, 0)`, then
-//!   `StopRadio(NULL, 0)` (B 0x10066a40);
-//! * Present (B 0x10066a70): `"<title> - <station>"` in the small font at (15, H − 20)–(W,
-//!   H + 10), DT_NOCLIP, 0x99FFFFFF, no outline, when both are known.
-//!
-//! The BASS 3D functions samp imports are only referenced from dead code (B 0x10066B90) and are
-//! not imported here.
+//! Audio: the internet audio stream of RPC 41/42, played through the user's own `bass.dll`, with its per-frame
+//! radio calls and the "<title> - <station>" line, plus PlayerPlaySound (RPC 16) and its weather-sound mute.
+//! Like samp.dll we import bass.dll statically and make the same BASS calls with the same arguments, from the
+//! same threads, in the same order: `init` at boot, `play` / `stop` for the RPCs, a worker thread that opens
+//! the stream and drives its volume ([`stream_volume`]), and `frame` every frame.
+//! Spec: docs/re/subsystems/ui-chat-audio.md, "41 PlayAudioStreamForPlayer" and "42 StopAudioStreamForPlayer";
+//! measurements and decisions: docs/phase3/m9-notes.md and docs/phase3/trace-notes.md, "Audio".
 
 /// `BASS_CONFIG_*` options samp sets (public BASS 2.4 API).
 pub mod config {
@@ -50,24 +28,24 @@ pub const SYNC_META: u32 = 4;
 pub const SYNC_OGG_CHANGE: u32 = 12;
 /// `BASS_FILEPOS_CONNECTED`.
 pub const FILEPOS_CONNECTED: u32 = 4;
-/// `BASS_STREAM_BLOCK | BASS_STREAM_STATUS | BASS_STREAM_AUTOFREE` (measured 0x940000).
+/// `BASS_STREAM_BLOCK | BASS_STREAM_STATUS | BASS_STREAM_AUTOFREE`, the flags samp passes to `StreamCreateURL`.
 pub const STREAM_FLAGS: u32 = 0x0094_0000;
-/// User agent (B 0x101027c8).
+/// User agent samp sets for stream requests.
 pub const NET_AGENT: &[u8] = b"SA-MP/0.3\0";
 /// `BASS_Init` frequency.
 pub const INIT_FREQ: u32 = 44100;
 /// Net timeout set at boot (ms).
 pub const NET_TIMEOUT_MS: u32 = 10000;
-/// Worker volume loop period (B 0x100668e7 `Sleep(20)`; measured 479 iterations in 9.59 s).
+/// Period of the worker's volume loop.
 pub const VOLUME_TICK_MS: u64 = 20;
-/// Poll interval of the waiting stop (B 0x1006654b `Sleep(2)`).
+/// Poll interval while a stop waits for the worker to end.
 pub const STOP_WAIT_MS: u64 = 2;
-/// Stream volume scale without a position (B 0x100e9bb4) and with one (B 0x100e9be0).
+/// Stream volume scale without a position ([`GLOBAL_SCALE`]) and with one ([`POSITIONAL_SCALE`]).
 pub const GLOBAL_SCALE: f32 = 7000.0;
 pub const POSITIONAL_SCALE: f32 = 8000.0;
 /// samp's URL / title / station buffers: 256 characters (+ NUL).
 pub const TEXT_MAX: usize = 256;
-/// Title line colour and DrawText flags (B 0x10066b04).
+/// Title line colour and DrawText flags (`DT_NOCLIP`).
 pub const TITLE_COLOUR: u32 = 0x99FF_FFFF;
 pub const TITLE_FLAGS: u32 = 0x100;
 
@@ -79,23 +57,22 @@ fn ftol(v: f64) -> i32 {
 /// What the worker's volume step reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VolumeInputs {
-    /// GTA's pause menu is active (0xBA67A4 ≠ 0).
+    /// GTA's pause menu is active.
     pub menu_active: bool,
-    /// The game window (0xC97C1C) is the foreground window.
+    /// The game window is the foreground window.
     pub foreground: bool,
-    /// GTA's radio volume (float at 0xB5FCC8).
+    /// GTA's radio volume setting.
     pub radio_volume: f32,
     pub use_pos: bool,
     pub distance: f32,
-    /// Distance from the local ped to the stream position; `None` without a local ped matrix
-    /// (samp then reads uninitialised stack memory; decision in m9-notes: volume 0).
+    /// Distance from the local ped to the stream position; `None` without a local ped matrix (samp then reads
+    /// uninitialised stack memory; we use volume 0, see docs/phase3/m9-notes.md, "Decisions").
     pub ped_distance: Option<f32>,
 }
 
-/// The `BASS_CONFIG_GVOL_STREAM` value of one worker step (B 0x10066823..0x100668e2):
-/// 0 in the menu or without focus; usePos: `trunc(radio × 8000)` scaled by `1 − d/distance`
-/// inside `distance`, else 0 (measured 7945 at 0.33 m, 4799 at 20 m, 0 at 60 m of 50 m);
-/// otherwise `trunc(radio × 7000)` (measured 7000).
+/// The `BASS_CONFIG_GVOL_STREAM` value of one worker step: 0 in the menu or without focus; with a position,
+/// `trunc(radio × 8000)` scaled by `1 − d/distance` inside `distance`, else 0; without one,
+/// `trunc(radio × 7000)`.
 pub fn stream_volume(i: &VolumeInputs) -> u32 {
     if i.menu_active || !i.foreground {
         return 0;
@@ -120,9 +97,8 @@ fn has_prefix(s: &[u8], prefix: &[u8]) -> bool {
     s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
-/// Station name and URL from an ICY / HTTP header list (B 0x1006674a..0x100667c3): every line
-/// starting with `icy-name:` / `icy-url:` (case-insensitive) sets the value to the rest of the
-/// line, untrimmed; a later line wins.
+/// Station name and URL from an ICY / HTTP header list: every line starting with `icy-name:` / `icy-url:`
+/// (case-insensitive) sets the value to the rest of the line, untrimmed; a later line wins.
 pub fn station_from_headers<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
     let (mut name, mut url) = (None, None);
     for l in lines {
@@ -136,10 +112,9 @@ pub fn station_from_headers<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> (O
     (name, url)
 }
 
-/// Title from a META tag (B 0x10066580): the text after `StreamTitle='` up to (not including)
-/// the character before the first `;`. `None` if the tag has no `StreamTitle='`.
-/// Without any `;` samp writes before a null pointer (crash); we keep the whole rest
-/// (decision in m9-notes).
+/// Title from a META tag: the text after `StreamTitle='` up to (not including) the character before the first
+/// `;`. `None` if the tag has no `StreamTitle='`. Without any `;` samp writes through a null pointer and
+/// crashes; we keep the whole rest (docs/phase3/m9-notes.md, "Decisions").
 pub fn title_from_meta(meta: &[u8]) -> Option<Vec<u8>> {
     const KEY: &[u8] = b"StreamTitle='";
     let at = meta.windows(KEY.len()).position(|w| w == KEY)? + KEY.len();
@@ -148,9 +123,8 @@ pub fn title_from_meta(meta: &[u8]) -> Option<Vec<u8>> {
     Some(clip(&rest[..end]))
 }
 
-/// Title from OGG comments (B 0x100665f0..0x1006669f): the last `artist=` and `title=` values
-/// (case-insensitive keys); `"artist - title"` (MSVC prints `(null)` for a missing title),
-/// else the title alone, else nothing.
+/// Title from OGG comments: the last `artist=` and `title=` values (case-insensitive keys); `"artist - title"`
+/// (with `(null)` for a missing title, as MSVC's printf writes it), else the title alone, else nothing.
 pub fn title_from_ogg<'a>(comments: impl IntoIterator<Item = &'a [u8]>) -> Option<Vec<u8>> {
     let (mut artist, mut title): (Option<&[u8]>, Option<&[u8]>) = (None, None);
     for c in comments {
@@ -173,7 +147,7 @@ pub fn title_from_ogg<'a>(comments: impl IntoIterator<Item = &'a [u8]>) -> Optio
     }
 }
 
-/// The title line (B 0x10066a70): `"<title> - <station>"` when both are non-empty.
+/// The title line `"<title> - <station>"`, shown only when both are non-empty.
 pub fn title_line(title: &[u8], station: &[u8]) -> Option<Vec<u8>> {
     if title.is_empty() || station.is_empty() {
         return None;
@@ -196,8 +170,8 @@ pub fn split_tag_list(bytes: &[u8]) -> Vec<&[u8]> {
     out
 }
 
-/// PlayerPlaySound (RPC 16) on samp's game audio object (B 0x100a22d0) and its per-frame poll
-/// (B 0x100a21e0). Script commands for the host to run, in order.
+/// PlayerPlaySound (RPC 16) and its per-frame poll: script commands and game calls for the host to run, in
+/// order. Mirrors samp.dll 0x100a2300.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SoundCmd {
     /// `CAEAmbienceTrackManager::StopSpecialMissionAmbienceTrack()` (0x4D6D60).
@@ -219,8 +193,8 @@ pub enum SoundCmd {
     PlayMissionAudio,
 }
 
-/// samp's game audio object: mission-audio state (u32 +0: 0 idle, 1 loading, 2 played) and the
-/// flag byte +4 set by sound id 1 (read by the weather-audio hook, CSV row 95, A 0x100A5E70).
+/// samp's game audio object: the mission-audio state (0 idle, 1 loading, 2 played) and the flag set by sound
+/// id 1, which mutes weather sounds through the weather-audio hook.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MissionSound {
     pub state: u32,
@@ -228,7 +202,9 @@ pub struct MissionSound {
 }
 
 impl MissionSound {
-    /// RPC 16 / samp's own sounds (class selection 1052/1053).
+    /// Plays sound `id` at `pos` (RPC 16, and samp's own class-selection sounds 1052/1053). 0 stops the mission
+    /// track and sound, 1 only sets the flag, below 1000 a mission ambience track, below 2000 a one-off sound,
+    /// otherwise a positioned mission sound that loads over the next frames.
     pub fn play(&mut self, id: i32, pos: [f32; 3]) -> Vec<SoundCmd> {
         match id {
             0 => {
@@ -321,7 +297,7 @@ mod win {
         pub const AMBIENCE_TRACK_MANAGER: u32 = 0x8AC15C;
         pub const PLAY_MISSION_TRACK: u32 = 0x4D6D50;
         pub const STOP_MISSION_TRACK: u32 = 0x4D6D60;
-        /// Radio volume float read by samp's game wrapper (B 0x100a2290).
+        /// Radio volume setting (float) samp reads.
         pub const RADIO_VOLUME: u32 = 0xB5FCC8;
         /// `FrontEndMenuManager.m_bMenuActive`.
         pub const MENU_ACTIVE: u32 = 0xBA67A4;
@@ -338,16 +314,16 @@ mod win {
     const OP_SET_MISSION_AUDIO_POSITION: u16 = 0x03D7;
     const OP_CLEAR_MISSION_AUDIO: u16 = 0x040D;
 
-    /// The audio object exists and `BASS_Init` succeeded (B: object byte +0).
+    /// The audio object exists and `BASS_Init` succeeded.
     static READY: AtomicBool = AtomicBool::new(false);
-    /// A worker runs (B 0x1012e7b8).
+    /// A worker runs.
     static PLAYING: AtomicBool = AtomicBool::new(false);
-    /// Stop request for the worker (B 0x101027d2).
+    /// Stop request for the worker.
     static STOP: AtomicBool = AtomicBool::new(false);
-    /// The stream handle (B 0x1012e7b4).
+    /// The stream handle.
     static HANDLE: AtomicU32 = AtomicU32::new(0);
 
-    /// URL, position and the texts (B 0x1012e398.. buffers).
+    /// URL, position and the texts of the current stream.
     #[derive(Default)]
     struct Stream {
         url: Vec<u8>,
@@ -362,22 +338,22 @@ mod win {
     static STREAM: Mutex<Option<Stream>> = Mutex::new(None);
     static SOUND: Mutex<MissionSound> = Mutex::new(MissionSound { state: 0, flag: false });
 
-    /// The sound-id-1 flag (samp's audio object +4), read by the weather-audio hook.
+    /// The sound-id-1 flag, read by the weather-audio hook.
     static WEATHER_MUTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     /// `CGame::currArea` and the original `CAEWeatherAudioEntity::UpdateParameters`.
     const CURR_AREA: u32 = 0xB72914;
     const WEATHER_UPDATE_PARAMETERS: u32 = 0x505A00;
-    /// Slot 0 of the `CAEWeatherAudioEntity` vtable (CSV row 95).
+    /// Slot 0 of the `CAEWeatherAudioEntity` vtable, redirected to our stub.
     const WEATHER_VTABLE_SLOT: u32 = 0x872A74;
 
     extern "C" fn weather_muted() -> u32 {
         u32::from(WEATHER_MUTED.load(Ordering::Relaxed))
     }
 
-    /// CSV row 95 (A 0x100A5E70): `UpdateParameters(object, param)` (thiscall) runs with `currArea` forced to 1
-    /// while the sound-id-1 flag is set (GTA treats the player as inside an interior: no weather sounds), then
-    /// `currArea` is restored.
+    /// Replacement for `CAEWeatherAudioEntity::UpdateParameters(object, param)` (thiscall): runs the original with
+    /// `currArea` forced to 1 while the sound-id-1 flag is set (GTA then treats the player as inside an interior,
+    /// so no weather sounds), then restores `currArea`. Mirrors samp.dll 0x100A5E70.
     #[unsafe(naked)]
     unsafe extern "C" fn weather_update_parameters_stub() {
         core::arch::naked_asm!(
@@ -402,7 +378,8 @@ mod win {
         )
     }
 
-    /// Installs row 95 (init-main).
+    /// Points the weather-audio vtable slot at our stub; part of samp's main start-up patch set
+    /// (docs/re/subsystems/gta-patches.md, "10. Full table").
     pub fn install_weather_hook(
         patcher: &mut crate::patch::Patcher,
         mem: &mut ProcessMemory,
@@ -453,9 +430,9 @@ mod win {
         Some(out)
     }
 
-    /// Boot (A 0x10066480), main thread; returns whether BASS is ready. `proxy_key` runs only after
-    /// a successful `BASS_Init`: it creates `audioproxyoff` (0) in sa-mp.cfg when missing and returns
-    /// its value, like samp's set-up.
+    /// Boot (main thread, first frame with a D3D device); returns whether BASS is ready. `proxy_key` runs only
+    /// after a successful `BASS_Init`: it creates `audioproxyoff` (0) in sa-mp.cfg when missing and returns its
+    /// value, like samp's set-up. Mirrors samp.dll 0x10066480.
     pub fn init(proxy_key: impl FnOnce() -> bool) -> bool {
         HANDLE.store(0, Ordering::SeqCst);
         // SAFETY: plain BASS calls with the documented signatures and constant arguments.
@@ -483,7 +460,8 @@ mod win {
         READY.load(Ordering::SeqCst)
     }
 
-    /// Stop (B 0x10066520): stop flag, optionally wait for the worker, free the stream.
+    /// Stops the stream: raises the stop flag, optionally waits for the worker, frees the stream. RPC 42 does not
+    /// wait; a lost connection or a closed server does. Mirrors samp.dll 0x10066560.
     pub fn stop(wait: bool) -> bool {
         if !READY.load(Ordering::SeqCst) || !PLAYING.load(Ordering::SeqCst) {
             return false;
@@ -500,7 +478,8 @@ mod win {
         true
     }
 
-    /// RPC 41 (B 0x10066920). Returns the chat line to print (type 4), if any.
+    /// RPC 41: stops any current stream, then (only while GTA's radio volume is above 0) stores the stream and
+    /// starts the worker. Returns the chat line to print (type 4), if any. Mirrors samp.dll 0x10066960.
     pub fn play(url: &[u8], pos: [f32; 3], distance: f32, use_pos: bool, messages_off: bool) -> Option<Vec<u8>> {
         if !READY.load(Ordering::SeqCst) {
             return None;
@@ -532,7 +511,7 @@ mod win {
         line
     }
 
-    /// RPC 41 handler (B 0x1001d370): ignored without the audio object; the line goes to chat.
+    /// RPC 41 handler: ignored without the audio object; the line goes to chat. Mirrors samp.dll 0x1001d3c0.
     pub fn on_play_rpc(a: &samp_proto::rpcs::ui::PlayAudioStreamForPlayer) {
         let p = [a.position.x, a.position.y, a.position.z];
         crate::log!(
@@ -546,7 +525,7 @@ mod win {
         }
     }
 
-    /// Title refresh (B 0x10066580), worker thread and BASS sync callbacks.
+    /// Title refresh, called from the worker thread and the BASS META / OGG_CHANGE sync callbacks.
     fn update_title() {
         let h = HANDLE.load(Ordering::SeqCst);
         with_stream(|s| s.title.clear());
@@ -585,7 +564,8 @@ mod win {
         ProcessMemory.read_u32(gta::WINDOW).ok() == Some(fg)
     }
 
-    /// The stream thread (B 0x100666c0).
+    /// The stream thread: opens the URL, reads station and title, then sets the stream volume every
+    /// [`VOLUME_TICK_MS`] until stopped. Mirrors samp.dll 0x10066700.
     fn worker() {
         PLAYING.store(true, Ordering::SeqCst);
         let old = HANDLE.load(Ordering::SeqCst);
@@ -645,7 +625,7 @@ mod win {
         PLAYING.store(false, Ordering::SeqCst);
     }
 
-    /// Present step 4b (B 0x10066a70): the title line, if any.
+    /// The title line Present draws while a stream plays, if any. Mirrors samp.dll 0x10066ab0.
     pub fn title_text() -> Option<Vec<u8>> {
         if !READY.load(Ordering::SeqCst) || !PLAYING.load(Ordering::SeqCst) {
             return None;
@@ -730,8 +710,8 @@ mod win {
         });
     }
 
-    /// Per frame after the netgame tick (B 0x100c4ff0..0x100c500a): the radio calls while a
-    /// stream plays, then the mission-audio poll.
+    /// Per frame after the netgame tick: while a stream plays, `StartRadio(-1, 0)` then `StopRadio(NULL, 0)`, as
+    /// samp does, then the mission-audio poll.
     pub fn frame(runner: &mut Runner) {
         if READY.load(Ordering::SeqCst) && PLAYING.load(Ordering::SeqCst) {
             // SAFETY: CAudioEngine methods (thiscall) on the game's AudioEngine, main thread.
@@ -768,7 +748,7 @@ mod tests {
         })
     }
 
-    /// Measured values (trace-notes "Audio (TRACE-8)").
+    /// Expected values measured on the original (docs/phase3/trace-notes.md, "Audio").
     #[test]
     fn volume_matches_the_measured_values() {
         assert_eq!(vol(false, None), 7000);
@@ -816,7 +796,7 @@ mod tests {
         assert_eq!(clip(&[b'a'; 300]).len(), 256);
     }
 
-    /// Measured PlayerPlaySound command sequences (trace-notes "PlayerPlaySound (16)").
+    /// Command sequences measured on the original (docs/phase3/trace-notes.md, "PlayerPlaySound (16)").
     #[test]
     fn play_sound_sequences() {
         let p = [1.0, 2.0, 3.0];

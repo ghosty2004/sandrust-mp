@@ -179,3 +179,9 @@ dialog, the original did not.
   (samp's reset pass A 0x100c41f0 does not touch that dialog). Fixed in `render.rs` `on_reset`.
 * Residual (ROADMAP decision): in the full scenario the 411 preview's light materials toggle SPECULARENABLE in the
   original and not in ours — state left by the earlier in-world Infernus renders (0 lines without them).
+
+## Notes moved from code comments (ui/glue.rs)
+* Textdraw selection: while it is active the original writes the HUD flags as 0/1 (HUD off) every frame, after
+  cursor mode 2 and before the hover test.
+* Class selection: the original's input-lock mode-2 requests during class selection come from its game-frame code
+  (inside GTA's scene), not from the Present pass; ours requests mode 2 from `frame_entry` for that reason.

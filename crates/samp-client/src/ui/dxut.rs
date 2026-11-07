@@ -1,5 +1,5 @@
-//! The GUI layer drawn the way samp's statically linked DXUT does (UR §4), so that the
-//! Direct3D call stream matches the original's (TRACE-3 D3D logs, docs/phase3/m8a-notes.md):
+//! The GUI layer (dialogs, buttons, list boxes, scrollbars, edit boxes), drawn the way samp's statically
+//! linked DXUT does so that the Direct3D call stream matches the original's:
 //!
 //! - a dialog render is `sprite.Begin(DONOTSAVESTATE)`, the fixed render/texture-stage
 //!   states, the background fan (`DrawPrimitiveUP`, FVF 0x144, also when transparent),
@@ -11,8 +11,8 @@
 //! - solid rectangles (caret, selection) flush the sprite and draw a fan with the
 //!   texture stage set to "diffuse only", restoring the vertex declaration.
 //!
-//! Control internals follow the stock DXUT library (list box, scrollbar, edit box,
-//! button), with the colours and texture rects of samp's skin (UR §4.1).
+//! Control internals follow the stock DXUT library, with the colours and texture rects of samp's skin.
+//! Spec: docs/re/subsystems/ui-rendering.md, "4. GUI layer (DXUT-derived)".
 
 use std::ffi::c_void;
 
@@ -20,7 +20,7 @@ use samp_ui::colour;
 
 use super::d3d::{self, D3dx, Font, IDENTITY, Rect, Sprite, devcall};
 
-/// sampgui.png element rects (UR §4.1 table).
+/// sampgui.png element rects (ui-rendering.md, "4.1 Resource manager and skin").
 pub mod skin {
     use super::Rect;
     pub const fn r(l: i32, t: i32, rr: i32, b: i32) -> Rect {
@@ -49,7 +49,7 @@ pub mod skin {
     pub const LIST_SELECTION: Rect = r(17, 269, 241, 287);
 }
 
-/// Colours of samp's skin (UR §4.1, TRACE-3).
+/// Colours of samp's skin (ui-rendering.md, "4.1 Resource manager and skin").
 pub mod colours {
     pub const CAPTION_TEX: u32 = 0xC80A_0A0A;
     pub const CAPTION_TEXT: u32 = 0xFFD2_D2D2;
@@ -109,7 +109,7 @@ pub struct ColourVertex {
 }
 
 /// The render/texture-stage states DXUT sets at the start of a dialog render; the
-/// nametag bar pass sets the same list (TRACE-3).
+/// nametag bar pass sets the same list.
 pub fn ui_states() {
     devcall::set_render_state(27, 1); // ALPHABLENDENABLE
     devcall::set_render_state(19, 5); // SRCBLEND SRCALPHA
@@ -124,9 +124,8 @@ pub fn ui_states() {
     devcall::set_render_state(7, 0); // ZENABLE
 }
 
-/// The GUI resource manager's `D3DSBT_ALL` state block (created with its sprite's
-/// `OnResetDevice`, A 0x1008cbc0 path, measured: `CreateStateBlock(1)` right after the GUI
-/// sprite). Every dialog render captures it first and applies it last, so the states the
+/// The GUI resource manager's `D3DSBT_ALL` state block, created right after the GUI sprite's
+/// `OnResetDevice`. Every dialog render captures it first and applies it last, so the states the
 /// dialog sets (ZENABLE 0, blending, stage 0, shaders, FVF, texture, the sprite's transforms)
 /// do not leak into GTA's next frame (RenderWare caches its render states).
 static RM_STATE_BLOCK: std::sync::atomic::AtomicPtr<c_void> = std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
@@ -374,7 +373,7 @@ pub fn edit_box(sprite: &Sprite, tex: *mut c_void, font: &Font, rect: Rect, e: &
         }
     }
     if e.focused {
-        // TRACE-3: the caret does not blink.
+        // The caret does not blink (same as samp).
         let cx = area.left - x_first + caret_x;
         let mut r = Rect { left: cx - 1, top: area.top, right: cx + 1, bottom: area.bottom };
         if !e.insert_mode {

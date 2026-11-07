@@ -1,15 +1,11 @@
-//! Direct3D 9 plumbing for the UI pass (Windows only).
-//!
-//! - **Device proxy** (UR §2.1): on the first frame the RenderWare device pointer
-//!   `_RwD3DDevice` (0xC97C28) is saved and replaced by a pointer to a 4-byte object
-//!   whose 119-slot vtable forwards every `IDirect3DDevice9` method to the real
-//!   device, except Present (17) and Reset (16), which run our UI pass / lost-reset
-//!   handling around the real call. Our own drawing always uses the real device.
-//! - **Forwarding thunks** are generated machine code: each slot replaces the `this`
-//!   argument on the stack with the real object and jumps to the real method.
-//! - **D3DX** comes from `d3dx9_25.dll`, loaded dynamically like samp does.
-//! - **Proxy sprite** (UR §3.3): the colour-code wrapper draws the stripped text
-//!   through a proxy `ID3DXSprite` whose `Draw` recolours each glyph.
+//! Direct3D 9 plumbing for the UI pass (Windows only): the device proxy, D3DX loading and thin wrappers for
+//! fonts, sprites, lines, render targets and state blocks.
+//! On the first frame GTA's `_RwD3DDevice` pointer is replaced by a one-word object whose generated thunks
+//! forward every `IDirect3DDevice9` method to the real device (swapping `this`), except the few we intercept
+//! (Present, Reset, SetTransform, SetTexture, EndScene, ...). Our own drawing always uses the real device.
+//! The colour-code wrapper draws text through a proxy `ID3DXSprite` whose `Draw` recolours each glyph.
+//! D3DX comes from `d3dx9_25.dll`, loaded at run time like samp does.
+//! Spec: docs/re/subsystems/ui-rendering.md ("Device proxy", "Embedded colour codes").
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -18,6 +14,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
 use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc};
 
+/// A COM `HRESULT` (negative = failure).
 pub type HResult = i32;
 
 /// `_RwD3DDevice` in gta_sa.exe 1.0 US.
@@ -105,6 +102,7 @@ pub unsafe fn vfn<F: Copy>(obj: *mut c_void, slot: usize) -> F {
     }
 }
 
+/// Win32 `RECT`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Rect {
@@ -162,6 +160,7 @@ fn proxy_object(vtable: &'static [u32]) -> *mut c_void {
 /// The real `IDirect3DDevice9` (also the thunks' cell).
 static REAL_DEVICE: AtomicU32 = AtomicU32::new(0);
 
+/// The real device (null before the proxy is installed).
 pub fn real_device() -> *mut c_void {
     REAL_DEVICE.load(Ordering::Relaxed) as usize as *mut c_void
 }
@@ -169,8 +168,8 @@ pub fn real_device() -> *mut c_void {
 type PresentFn = extern "system" fn(*mut c_void, *const Rect, *const Rect, isize, *const c_void) -> HResult;
 type ResetFn = extern "system" fn(*mut c_void, *mut c_void) -> HResult;
 
-/// Installs the device proxy (first frame, UR §2.1). Returns false while the game
-/// has no device yet.
+/// Installs the device proxy on the first frame (ui-rendering.md, "Device proxy"). Fails while the game has no
+/// device yet.
 pub fn install_device_proxy(present: PresentFn, reset: ResetFn) -> Result<(), String> {
     let (present, reset) = (present as *const () as usize, reset as *const () as usize);
     // SAFETY: reading/writing a gta_sa.exe .bss pointer on the main thread.
@@ -200,15 +199,15 @@ pub fn install_device_proxy(present: PresentFn, reset: ResetFn) -> Result<(), St
     Ok(())
 }
 
-/// Texture substitution for `SetTexture` (M6 material text: samp's device proxy A 0x10074BB0 swaps a material
-/// slot's original texture for the slot's text render target while the object renders). Returns the texture to
-/// set instead, or the argument unchanged.
+/// Texture substitution for `SetTexture`, used for object material text: while an object renders, a material
+/// slot's original texture is swapped for the slot's text render target. The filter returns the texture to set
+/// instead, or the argument unchanged. Mirrors samp.dll 0x10074BB0 (its proxy `SetTexture`).
 pub static SET_TEXTURE_FILTER: AtomicU32 = AtomicU32::new(0);
 
 type SetTextureFn = extern "system" fn(*mut c_void, u32, *mut c_void) -> HResult;
 
-/// The plate step of the proxy `SetTexture` (B 0x10074BC3): the shared plate raster's texture → the rendered
-/// vehicle's plate (or the default plate), 0 = no substitution. cdecl, called by [`set_texture_stub_code`].
+/// The number-plate step of the proxy `SetTexture`: maps the shared plate raster's texture to the rendered
+/// vehicle's plate (or the default plate); 0 = no substitution. cdecl, called by [`set_texture_stub_code`].
 extern "C" fn plate_texture(tex: u32) -> u32 {
     if SET_TEXTURE_FILTER.load(Ordering::Relaxed) != 0 {
         return 0;
@@ -217,8 +216,8 @@ extern "C" fn plate_texture(tex: u32) -> u32 {
 }
 
 /// Machine code of the proxy `SetTexture` entry: a plate substitution replaces the texture argument and `this`
-/// and tail-jumps into the real `SetTexture` (samp B 0x10074C3E / 0x10074C9x: the real call keeps GTA as its
-/// caller); everything else jumps to [`proxy_set_texture`] with the stack unchanged.
+/// and tail-jumps into the real `SetTexture`, so the real call keeps GTA as its caller like in samp; everything
+/// else jumps to [`proxy_set_texture`] with the stack unchanged.
 fn set_texture_stub_code(plate_fn: u32, real_cell: u32, rust_fn: u32) -> Vec<u8> {
     let mut c = Vec::new();
     c.extend_from_slice(&[0xFF, 0x74, 0x24, 0x0C]); // push dword [esp+0xC] (texture)
@@ -311,8 +310,8 @@ extern "system" fn proxy_test_cooperative_level(_this: *mut c_void) -> HResult {
 
 static LAST_COOPERATIVE_LEVEL: AtomicU32 = AtomicU32::new(0);
 
-/// Failed `CreateVertexBuffer` calls seen through the proxy (diagnostics: RenderWare keeps a dynamic
-/// vertex buffer record without a buffer after a failed create, CRASH-1).
+/// Failed `CreateVertexBuffer` calls seen through the proxy (diagnostics: after a failed create RenderWare keeps
+/// a dynamic vertex buffer record without a buffer, which can crash later).
 pub static VB_CREATE_FAILURES: AtomicU32 = AtomicU32::new(0);
 
 type CreateVertexBufferFn = extern "system" fn(*mut c_void, u32, u32, u32, u32, *mut *mut c_void, *mut c_void) -> HResult;
@@ -371,15 +370,19 @@ extern "system" fn proxy_create_vertex_buffer(
     hr
 }
 
-/// samp's copies of the last VIEW / PROJECTION / WORLD matrices set through the proxy
-/// (A 0x10140be8 / 0x10140c28 / 0x10140c68, proxy slot 44 A 0x100748e0); the nametag,
-/// bubble and label projections use them.
+/// The last VIEW matrix set through the proxy; the nametag, bubble and label projections use it with
+/// [`PROJECTION`]. Mirrors samp.dll 0x10140BE8.
 pub static VIEW: std::sync::Mutex<[f32; 16]> = std::sync::Mutex::new(IDENTITY);
+/// The last PROJECTION matrix set through the proxy. Mirrors samp.dll 0x10140C28.
 pub static PROJECTION: std::sync::Mutex<[f32; 16]> = std::sync::Mutex::new(IDENTITY);
-/// WORLD (state 256; B 0x100748B0 keeps it at 0x10140C68): the selection pick ray uses world × view.
+/// The last WORLD matrix (transform state 256); the selection pick ray uses world × view.
+/// Mirrors samp.dll 0x10140C68.
 pub static WORLD: std::sync::Mutex<[f32; 16]> = std::sync::Mutex::new(IDENTITY);
+/// The 4×4 identity matrix.
 pub const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
+/// Proxy `SetTransform` (slot 44): keeps copies of VIEW, PROJECTION and WORLD, then the real call.
+/// Mirrors samp.dll 0x100748E0.
 extern "system" fn proxy_set_transform(_this: *mut c_void, state: u32, m: *const [f32; 16]) -> HResult {
     if !m.is_null() {
         // SAFETY: D3DMATRIX from the caller.
@@ -397,8 +400,8 @@ extern "system" fn proxy_set_transform(_this: *mut c_void, state: u32, m: *const
     f(d, state, m)
 }
 
-/// Proxy `EndScene` (slot 42): samp wraps the real call (between two integrity checks
-/// without visible effect, UR §2.1); the real call is made from the client.
+/// Proxy `EndScene` (slot 42): forwards to the real call. samp also runs two integrity checks around it, which
+/// have no visible effect and are not reproduced.
 extern "system" fn proxy_end_scene(_this: *mut c_void) -> HResult {
     let d = real_device();
     // SAFETY: real device, EndScene().
@@ -665,7 +668,7 @@ impl D3dx {
 
 // ---- fonts and sprites -----------------------------------------------------------------
 
-/// `D3DXCreateFontA` arguments (UR §3.2).
+/// `D3DXCreateFontA` arguments (ui-rendering.md, "Size and face settings").
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FontArgs {
     pub height: i32,
@@ -736,8 +739,7 @@ impl Font {
         f(self.ptr, sprite, t.as_ptr(), count, rect, flags, colour)
     }
 
-    /// `DT_CALCRECT` size of `text` (single line) as (w, h).
-    /// `DT_CALCRECT` with a NUL-terminated copy and count −1 (how samp measures its fixed
+    /// `DT_CALCRECT` size as (w, h) with a NUL-terminated copy and count −1 (how samp measures its fixed
     /// strings at start-up).
     pub fn measure_z(&self, text: &[u8], flags: u32) -> (i32, i32) {
         let mut r = Rect::default();
@@ -745,6 +747,7 @@ impl Font {
         (r.right - r.left, r.bottom - r.top)
     }
 
+    /// `DT_CALCRECT` size of `text` as (w, h), with count = length; (0, 0) for empty text.
     pub fn measure(&self, text: &[u8], flags: u32) -> (i32, i32) {
         if text.is_empty() {
             return (0, 0);
@@ -774,7 +777,7 @@ impl Drop for Font {
     }
 }
 
-/// An `ID3DXLine` (the object editor's, B 0x10071B90: `D3DXCreateLine` before its two fonts).
+/// An `ID3DXLine` (the object editor's; samp creates it just before the editor's two fonts).
 pub struct Line {
     pub ptr: *mut c_void,
 }
@@ -859,8 +862,8 @@ thread_local! {
     static GLYPHS: RefCell<GlyphState> = const { RefCell::new(GlyphState { colours: Vec::new(), next: 0, active: false }) };
 }
 
-/// The colour of the next glyph (UR §3.3 cursor walk); cdecl, called by the proxy's
-/// `Draw` thunk before it jumps to the real `Draw`.
+/// The colour of the next glyph, walking the per-glyph colour list; cdecl, called by the proxy's `Draw` thunk
+/// before it jumps to the real `Draw`.
 extern "C" fn next_glyph_colour(colour: u32) -> u32 {
     GLYPHS.with(|g| {
         let mut g = g.borrow_mut();
@@ -982,9 +985,9 @@ impl Drop for Sprite {
     }
 }
 
-/// The colour-code wrapper's `DrawTextA` (UR §3.3): draws `stripped` with `font`
-/// through the proxy in front of `sprite`, giving the visible glyphs `colours` in
-/// order. Returns how many glyph draws D3DX made (for verification).
+/// The colour-code wrapper's `DrawTextA` (ui-rendering.md, "Embedded colour codes"): draws `stripped` with
+/// `font` through the proxy in front of `sprite`, giving the visible glyphs `colours` in order. Returns how many
+/// glyph draws D3DX made (for verification).
 pub fn draw_glyph_coloured(
     font: &Font,
     sprite: &Sprite,
@@ -1009,7 +1012,7 @@ pub fn draw_glyph_coloured(
     })
 }
 
-/// Loads a texture file (DXUT-style: one mip level, managed pool).
+/// Loads a texture file (DXUT-style: full mip chain, managed pool).
 pub fn load_texture(d3dx: &D3dx, path: &[u8]) -> Result<*mut c_void, String> {
     let mut p = path.to_vec();
     p.push(0);
@@ -1020,7 +1023,7 @@ pub fn load_texture(d3dx: &D3dx, path: &[u8]) -> Result<*mut c_void, String> {
         p.as_ptr(),
         DEFAULT,
         DEFAULT,
-        DEFAULT, // full mip chain (measured: samp passes D3DX_DEFAULT levels for sampgui.png)
+        DEFAULT, // mip levels: D3DX_DEFAULT (full chain), as samp loads sampgui.png
         0,
         0, // D3DFMT_UNKNOWN
         1, // D3DPOOL_MANAGED
@@ -1037,9 +1040,9 @@ pub fn load_texture(d3dx: &D3dx, path: &[u8]) -> Result<*mut c_void, String> {
     Ok(out)
 }
 
-/// The chat render target (UR §7.6, TRACE-3): `D3DXCreateTexture(w, h, 1,
-/// RENDERTARGET, A8R8G8B8, DEFAULT)` + `D3DXCreateRenderToSurface(w, h, A8R8G8B8,
-/// depth, D16)`.
+/// A texture render target as samp makes the chat and plate targets: `D3DXCreateTexture(w, h, 1, RENDERTARGET,
+/// format, DEFAULT)`, `D3DXCreateRenderToSurface(w, h, format, depth, D16)` and the texture's level-0 surface
+/// (ui-rendering.md, "Render-to-texture cache").
 pub struct RenderTarget {
     pub tex: *mut c_void,
     pub rts: *mut c_void,
@@ -1074,7 +1077,7 @@ impl RenderTarget {
         f(self.rts, self.surface, std::ptr::null())
     }
 
-    /// `EndScene(D3DX_FILTER_NONE… 0)`.
+    /// `ID3DXRenderToSurface::EndScene(0)` (no mip filter).
     pub fn end(&self) -> HResult {
         // SAFETY: live ID3DXRenderToSurface, EndScene (6).
         let f: extern "system" fn(*mut c_void, u32) -> HResult = unsafe { vfn(self.rts, 6) };
@@ -1093,8 +1096,8 @@ impl Drop for RenderTarget {
     }
 }
 
-/// The D3D hardware cursor from `mouse.png` (UR §5): a 32×32 A8R8G8B8
-/// system-memory surface set with `SetCursorProperties(0, 0, surface)`.
+/// The D3D hardware cursor from `mouse.png`: a 32×32 A8R8G8B8 system-memory surface set with
+/// `SetCursorProperties(0, 0, surface)` (ui-rendering.md, "Cursor and input-lock modes").
 pub fn create_cursor(d3dx: &D3dx, path: &[u8]) -> Result<*mut c_void, String> {
     let dev = real_device();
     let mut surf = std::ptr::null_mut();
@@ -1115,7 +1118,7 @@ pub fn create_cursor(d3dx: &D3dx, path: &[u8]) -> Result<*mut c_void, String> {
         std::ptr::null(),
         p.as_ptr(),
         std::ptr::null(),
-        1, // D3DX_FILTER_NONE (TRACE-3)
+        1, // D3DX_FILTER_NONE, as samp
         0,
         std::ptr::null_mut(),
     );
@@ -1134,8 +1137,8 @@ pub fn create_cursor(d3dx: &D3dx, path: &[u8]) -> Result<*mut c_void, String> {
     Ok(surf)
 }
 
-/// Registers the SA:MP font files from the game directory (UR §3.1, A 0x100c5100):
-/// `AddFontResourceA("gtaweap3.ttf")`, `AddFontResourceA("sampaux3.ttf")`.
+/// Registers the SA:MP font files from the game directory (ui-rendering.md, "Font assets"):
+/// `AddFontResourceA("gtaweap3.ttf")`, `AddFontResourceA("sampaux3.ttf")`. Mirrors samp.dll 0x100C5100.
 pub fn add_font_resources() {
     use windows_sys::Win32::Graphics::Gdi::AddFontResourceA;
     for f in [&b"gtaweap3.ttf\0"[..], b"sampaux3.ttf\0"] {
@@ -1147,10 +1150,10 @@ pub fn add_font_resources() {
 
 // ---- F8 screenshot -----------------------------------------------------------------------
 
-/// F8 (A 0x10075620): a desktop-sized `A8R8G8B8` scratch surface, `GetFrontBufferData` (the
-/// previous frame with its UI), then the window's client rect in screen coordinates saved as
-/// PNG with `D3DXSaveSurfaceToFileA`. Returns false when the front buffer could not be read;
-/// the save result is not checked. Like samp, the surface is never released.
+/// F8 screenshot: a desktop-sized `A8R8G8B8` scratch surface, `GetFrontBufferData` (the previous frame with its
+/// UI), then the window's client rect in screen coordinates saved as PNG with `D3DXSaveSurfaceToFileA`. Returns
+/// false when the front buffer could not be read; the save result is not checked. Like samp, the surface is
+/// never released. Mirrors samp.dll 0x10075620.
 pub fn screenshot(path: &[u8], hwnd: *mut c_void) -> bool {
     use windows_sys::Win32::Foundation::{POINT, RECT};
     use windows_sys::Win32::Graphics::Gdi::ClientToScreen;

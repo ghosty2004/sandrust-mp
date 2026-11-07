@@ -1,14 +1,11 @@
-//! In-game UI (milestones M4/M8a): chat window, chat input, local commands, game
-//! text, client messages, dialogs, textdraws, menus, scoreboard, nametags, death
-//! window and chat bubbles.
+//! In-game UI: chat window and input, local commands, game text, client messages, dialogs, textdraws,
+//! menus, scoreboard, nametags, death window and chat bubbles.
 //!
-//! - [`core`]: platform-independent state on top of `samp-ui` (host-tested).
-//! - [`colours`]: the player colour table used for chat names.
-//! - Windows only: `d3d` (device proxy, Present/Reset wrappers, D3DX loading),
-//!   `render` (fonts and drawing), `wndproc` (window-procedure subclass),
-//!   `glue` (global state and the entry points called by `dll` and `client`).
-//!
-//! Notes and deviations: `docs/phase3/m4-notes.md`.
+//! [`core`] holds the platform-independent state on top of `samp-ui` (tested on the host); [`colours`] and
+//! [`inputlock`] are host-testable too. The Windows-only modules hook Direct3D (`d3d`, `dxut`), draw
+//! (`render`, `textdraws`, `menus`, `mattext`, `preview`), subclass the game window (`wndproc`) and expose
+//! the entry points used by `dll` and `client` (`glue`).
+//! Spec: docs/re/subsystems/ui-rendering.md and ui-chat-audio.md; notes in docs/phase3/m4-notes.md.
 
 pub mod colours;
 pub mod core;
@@ -36,8 +33,8 @@ mod wndproc;
 #[cfg(windows)]
 pub use glue::*;
 
-/// Test hook (control channel `devreset`): the device reports "lost, reset possible" for `checks`
-/// `TestCooperativeLevel` calls.
+/// Test hook for the control-channel command `devreset`: the device reports "lost, reset possible" for
+/// the next `checks` `TestCooperativeLevel` calls.
 #[cfg(windows)]
 pub fn force_device_lost(checks: u32) {
     d3d::FORCE_LOST.store(checks, std::sync::atomic::Ordering::SeqCst);

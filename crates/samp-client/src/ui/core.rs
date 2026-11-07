@@ -1,13 +1,10 @@
-//! Platform-independent UI state of the in-game client (milestone M4): the chat
-//! window, the chat input, local commands and `sa-mp.cfg`, built on `samp-ui`.
+//! Platform-independent UI state of the in-game client, built on `samp-ui`: chat window and input, local
+//! commands, `sa-mp.cfg`, dialogs, scoreboard, death window, bubbles, textdraws and menus.
 //!
-//! The Windows glue (`ui::glue`) owns one [`UiCore`], feeds it RPCs, window
-//! messages and control-channel requests, and drains what it asks the host to do
-//! ([`Outgoing`] network messages, [`HostRequests`]). Everything here is
-//! host-testable.
-//!
-//! Specs: `docs/re/subsystems/ui-rendering.md` (RE-5, "UR §n"),
-//! `docs/re/subsystems/ui-chat-audio.md` ("UCA"), `docs/phase3/m4-notes.md`.
+//! The Windows glue (`ui::glue`) owns one [`UiCore`], feeds it RPCs, window messages and control-channel
+//! requests, and drains what it asks the host to do ([`Outgoing`] network messages, [`HostRequests`]).
+//! Everything here is host-testable. Spec: docs/re/subsystems/ui-rendering.md and ui-chat-audio.md;
+//! addresses in docs/re/addresses/ui-core.md.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -32,28 +29,27 @@ use samp_ui::text::KeyNameExpander;
 
 use super::colours::PlayerColours;
 
-/// Client-local strings (samp.dll 2021 .rdata; all printed through the type-8
-/// helper A 0x100680f0, verified from the call after each string push).
+/// Client-local strings from samp.dll's read-only data, all printed as type-8 (debug) chat lines.
 pub mod msg {
-    /// A 0x100e596c, printed when the netgame object is created (A 0x1000bafe).
+    /// Printed when the netgame object is created.
     pub const STARTED: &str = "{FFFFFF}SA-MP {B9C9BF}0.3.7-R4 {FFFFFF}Started";
-    /// A 0x100e599c, the connect tick (A 0x1000896d).
+    /// Printed on each connect attempt.
     pub fn connecting(host: &str, port: u16) -> String {
         format!("Connecting to {host}:{port}...")
     }
-    /// A 0x100e5b98, on the `0x22` connection-accepted packet (A 0x1000ae70).
+    /// Printed on the `0x22` connection-accepted packet.
     pub const JOINING: &str = "Connected. Joining the game...";
-    /// A 0x100e6060 `Connected to {B9C9BF}%.64s`, on InitGame (A 0x10010a87).
+    /// `Connected to {B9C9BF}%.64s`, printed on InitGame.
     pub fn connected_to(server: &[u8]) -> Vec<u8> {
         let mut v = b"Connected to {B9C9BF}".to_vec();
         v.extend_from_slice(&server[..server.len().min(64)]);
         v
     }
-    /// A 0x100e5a80.
+    /// Printed when the server closes the connection.
     pub const SERVER_CLOSED: &str = "Server closed the connection.";
 }
 
-/// Chat scroll position set by Enter in the input (A 0x10067390).
+/// Chat scroll position set by Enter in the input. Mirrors samp.dll 0x10067390.
 const SUBMIT_SCROLL_POS: u32 = 90;
 /// `INVALID_PLAYER_ID`.
 const INVALID_PLAYER: u16 = 0xFFFF;
@@ -97,7 +93,8 @@ pub struct RemoteUi {
     pub ms_since_sync: u64,
 }
 
-/// Cursor/input-lock requests (UR §5) the host executes in order.
+/// Cursor / input-lock requests the host executes in order (ui-rendering.md, "5. Cursor and input-lock
+/// modes").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorRequest {
     /// Mode 0 with the 10-frame delay (dialog close) or immediately.
@@ -123,7 +120,7 @@ pub struct HostRequests {
     pub rebuild_fonts: bool,
     /// RPC 73 accepted: (style, time ms, text) for `CMessages::AddBigMessage`.
     pub game_text: Option<(u8, u32, Vec<u8>)>,
-    /// Focus loss: run the input-restore step (UR §6.3 `WM_KILLFOCUS`).
+    /// Focus loss: run the input-restore step (`WM_KILLFOCUS`, ui-rendering.md, "6.3 Key and mouse table").
     pub input_restore: bool,
     pub cursor: Vec<CursorRequest>,
     pub menus: Vec<MenuRequest>,
@@ -136,7 +133,7 @@ pub struct HostRequests {
     pub paste: bool,
 }
 
-/// Values of the F5 overlay (A 0x10060d70). Fields our client has no counter for stay 0.
+/// Values of the F5 network-statistics overlay. Fields our client has no counter for stay 0.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NetStats {
     pub download_kbs: f32,
@@ -171,9 +168,8 @@ pub struct NetStats {
     pub duplicate_acks_received: u32,
 }
 
-/// The F5 text, line by line as samp concatenates it (A 0x10060d70; the labels and their
-/// order measured on the original): rates, the pool block, the send rate, memory, then the
-/// network statistics block. Every line ends with `\n`.
+/// The F5 text, line by line as samp concatenates it: rates, the pool block, the send rate, memory, then
+/// the network statistics block. Every line ends with `\n`. Mirrors samp.dll 0x10060D70.
 pub fn net_stats_text(s: &NetStats) -> Vec<u8> {
     let mut t = format!("Download Rate: {:.2} KB/s\nUpload Rate: {:.2} KB/s\n", s.download_kbs, s.upload_kbs);
     t += &format!(
@@ -339,16 +335,15 @@ impl UiCore {
             if let Ok(bytes) = std::fs::read(dir.join(config::FILE_NAME)) {
                 cfg = SampCfg::parse(&bytes);
             }
-            // UR §9 / U-CFG-STARTUP: fpslimit and multicore are created if missing (audioproxyoff
-            // only after BASS started, `audio_proxy_key`).
+            // fpslimit and multicore are created if missing; audioproxyoff only after BASS has started
+            // (`audio_proxy_key`). See ui-rendering.md, "9. Local commands — UI effects and persistence".
             cfg_dirty = cfg.apply_startup_defaults();
         }
         let settings = UiSettings::from_cfg(&cfg);
         let mut chat = ChatWindow::new();
         chat.set_page_size(settings.page_size);
         chat.set_timestamps(settings.timestamps);
-        // UR §7.1: chatlog.txt is truncated (mode "w") at construction; logging is on
-        // if that succeeded.
+        // chatlog.txt is truncated (mode "w") at construction; logging is on if that succeeded.
         let chatlog = user_dir.as_ref().map(|d| d.join(samp_ui::chat::CHATLOG_FILE));
         let chatlog = chatlog.filter(|p| std::fs::File::create(p).is_ok());
         chat.set_logging(chatlog.is_some());
@@ -379,8 +374,7 @@ impl UiCore {
             textdraws: TextDraws::new(),
             menus: Menus::new(),
             hidden_tags: Default::default(),
-            // The netgame settings are zero until InitGame (measured: samp's nametag passes
-            // first run after RPC 139).
+            // The netgame settings are zero until InitGame; samp's nametag passes first run after it.
             show_name_tags: false,
             name_tag_distance: 70.0,
             name_tag_los: true,
@@ -405,8 +399,8 @@ impl UiCore {
         self.user_dir.as_ref().map(|d| d.join(config::FILE_NAME))
     }
 
-    /// After a successful `BASS_Init` (A 0x10066480): `audioproxyoff` is created with 0 when
-    /// missing (the file is rewritten), then read.
+    /// After a successful `BASS_Init`: `audioproxyoff` is created with 0 when missing (the file is
+    /// rewritten), then read. Mirrors samp.dll 0x10066480.
     pub fn audio_proxy_key(&mut self) -> bool {
         if self.user_dir.is_some() && self.cfg.ensure_audio_proxy_key() {
             self.write_config();
@@ -432,14 +426,14 @@ impl UiCore {
 
     // ---- printing --------------------------------------------------------------------
 
-    /// Type-4 line in the info colour (A 0x10068070).
+    /// Type-4 line in the info colour. Mirrors samp.dll 0x10068070.
     pub fn print_info(&mut self, text: &[u8]) {
         let l = self.chat.add_info(text, local_time_now());
         self.log_lines(l);
     }
 
-    /// F1 held (A 0x1006bb30): the local help dialog through the normal show path (A 0x10070010,
-    /// which closes an open chat input first), only when no dialog is open.
+    /// F1 held: the local help dialog through the normal dialog show path (which closes an open chat
+    /// input first), only when no dialog is open. Mirrors samp.dll 0x1006BB30.
     pub fn open_help(&mut self) -> bool {
         if !self.dialogs.open_help() {
             return false;
@@ -449,9 +443,9 @@ impl UiCore {
         true
     }
 
-    /// F8 file name (A 0x10062270): the first `<user dir>\screens\sa-mp-%03i.png` (index
-    /// 0..999) that does not exist. When all exist the loop ends at 1000 with the name of 999
-    /// still in the buffer, so the file 999 is overwritten and the message says 1000.
+    /// F8 file name: the first `<user dir>\screens\sa-mp-%03i.png` (index 0..999) that does not exist.
+    /// When all exist the loop ends at 1000 with the name of 999 still in the buffer, so the file 999 is
+    /// overwritten and the message says 1000. Mirrors samp.dll 0x10062270.
     pub fn screenshot_target(&self) -> (PathBuf, u32) {
         let dir = self.user_dir.clone().unwrap_or_default().join("screens");
         let name = |i: u32| dir.join(format!("sa-mp-{i:03}.png"));
@@ -468,8 +462,8 @@ impl UiCore {
         }
     }
 
-    /// F8 result line (A 0x10075620): type 4 on success, type 8 when the front buffer
-    /// could not be read (the save result itself is not checked).
+    /// F8 result line: type 4 on success, type 8 when the front buffer could not be read (the save
+    /// result itself is not checked). Mirrors samp.dll 0x10075620.
     pub fn screenshot_done(&mut self, index: Option<u32>) {
         match index {
             Some(i) => self.print_info(format!("Screenshot Taken - sa-mp-{i:03}.png").as_bytes()),
@@ -477,7 +471,7 @@ impl UiCore {
         }
     }
 
-    /// Type-8 line in the debug colour (A 0x100680f0).
+    /// Type-8 line in the debug colour. Mirrors samp.dll 0x100680F0.
     pub fn print_debug(&mut self, text: &[u8]) {
         let l = self.chat.add_debug(text, local_time_now());
         self.log_lines(l);
@@ -507,8 +501,8 @@ impl UiCore {
         self.local_id = Some(g.player_id);
         self.show_name_tags = g.show_name_tags;
         self.name_tag_distance = g.name_tag_distance;
-        // samp reads the bit into settings +0x2F and then stores 1 there unconditionally (B 0x10010778): the
-        // nametag LOS test always runs in R4 (measured: 0x06BD per pass with the bit 0 from open.mp).
+        // samp reads the bit into settings +0x2F and then stores 1 there unconditionally, so the nametag
+        // line-of-sight test always runs in 0.3.7-R4, whatever the server sends.
         self.name_tag_los = true;
         let _ = g.name_tag_los;
         self.server_name = g.server_name.as_bytes().to_vec();
@@ -531,9 +525,9 @@ impl UiCore {
         self.names.keys().copied()
     }
 
-    /// RPC 40 reset (B 0x1000a530): the netgame leaves state 5, the textdraw and menu pools
-    /// are recreated, the name-tag settings go back to samp's defaults (+0x1f shown = 1,
-    /// distance 60.0, LOS on). Dialogs, scoreboard and chat are untouched.
+    /// RPC 40 reset: the netgame leaves state 5, the textdraw and menu pools are recreated, the name-tag
+    /// settings go back to samp's defaults (shown, distance 60.0, LOS on). Dialogs, scoreboard and chat
+    /// are untouched. Mirrors samp.dll B 0x1000A530.
     pub fn on_reset(&mut self) {
         self.connected = false;
         self.textdraws.clear();
@@ -573,7 +567,8 @@ impl UiCore {
             Incoming::Remote(remote::Incoming::PlayerJoin(j)) => {
                 if j.name.len() <= samp_ui::chat::MAX_PREFIX_LEN && j.player_id < 1005 {
                     self.names.insert(j.player_id, j.name.clone());
-                    // remote-players-sync.md §137: colour != 0 and id < 1004 sets it.
+                    // A non-zero colour sets the table entry for ids < 1004 (remote-players-sync.md,
+                    // "137 PlayerJoin").
                     if j.colour != 0 && j.player_id < 1004 {
                         self.colours.set(j.player_id, j.colour);
                     }
@@ -653,7 +648,7 @@ impl UiCore {
                     *e = n.name.clone();
                 }
             }
-            // player-state.md §72: local id, or a remote id with an entry.
+            // Only for the local id or a known remote id (player-state.md, "72 SetPlayerColor").
             Incoming::Player(player::Incoming::SetPlayerColor(c))
                 if Some(c.player_id) == self.local_id || self.names.contains_key(&c.player_id) =>
             {
@@ -663,7 +658,7 @@ impl UiCore {
         }
     }
 
-    /// RPC 55 (player-state §55): names and colours of the ids; victim 0xFFFF drops it.
+    /// RPC 55 SendDeathMessage: names and colours of the ids; victim 0xFFFF drops it.
     fn on_death_message(&mut self, d: &player::SendDeathMessage) {
         if d.victim_id == INVALID_PLAYER {
             return;
@@ -679,8 +674,8 @@ impl UiCore {
         self.deaths.add(&kn, kc, &vn, vc, d.reason);
     }
 
-    /// The textdraw-selection disable path (UCA §83): mode off, cursor mode 0, chat
-    /// input closed, RPC 83 with 0xFFFF.
+    /// The textdraw-selection disable path: mode off, cursor mode 0, chat input closed, RPC 83 with
+    /// 0xFFFF (ui-chat-audio.md, "83 PlayerBeginTextDrawSelect").
     pub fn cancel_textdraw_select(&mut self) {
         self.textdraws.cancel_select();
         self.requests.cursor.push(CursorRequest::Mode0 { immediate: true });
@@ -688,7 +683,7 @@ impl UiCore {
         self.outgoing.push(Outgoing::SelectTextDraw(samp_ui::textdraw::NONE));
     }
 
-    /// Answers the open dialog (UCA §62) and closes it (cursor mode 0, 10-frame delay).
+    /// Answers the open dialog with RPC 62 and closes it (cursor mode 0, 10-frame delay).
     pub fn dialog_respond(&mut self, button: Button) {
         if !self.dialogs.is_open() {
             return;
@@ -709,14 +704,14 @@ impl UiCore {
         let local = info(self, self.local_id.unwrap_or(0), &self.local_name);
         let remotes: Vec<PlayerInfo> = self.names.iter().map(|(&id, n)| info(self, id, n)).collect();
         self.scoreboard.rebuild(&local, &remotes);
-        // TRACE-3: the first row is selected (selection bar on the local player's row).
+        // Like samp, the first row (the local player) starts selected.
         if self.scoreboard.selected().is_none() && !self.scoreboard.rows().is_empty() {
             self.scoreboard.set_selected(Some(0));
         }
     }
 
-    /// RPC 101 S→C (UCA §101): only in netgame state 5; local id → local name,
-    /// else an active remote slot (< 1005).
+    /// RPC 101 PlayerChatMessage: only in netgame state 5; the local id uses the local name, other ids
+    /// need an active remote slot (< 1005).
     fn on_player_chat(&mut self, id: u16, text: &[u8]) {
         if !self.connected {
             return;
@@ -752,7 +747,7 @@ impl UiCore {
             scoreboard_open: self.scoreboard.is_open(),
             scoreboard_rect: self.scoreboard_rect,
             class_selection_visible: false,
-            // Object edit / selection (UR §6.3): an ESC key-down is swallowed so GTA does not open its pause menu.
+            // Object edit / selection: an ESC key-down is swallowed so GTA does not open its pause menu.
             other_modal: crate::objedit::with(|sh| sh.editor.active || sh.selection.active),
             gta_menu,
             ime_composing: false,
@@ -789,7 +784,7 @@ impl UiCore {
                 Action::DialogChar(0x16) => self.requests.paste = true,
                 Action::DialogChar(c) => {
                     if let Some(d) = self.dialogs.current_mut() {
-                        // Enter in the edit box: response 1 (UCA §62).
+                        // Enter in the edit box answers with button 1.
                         match d.edit.char(c) {
                             CharResult::Enter => self.dialog_respond(Button::Ok),
                             CharResult::Copy(sel) => self.copy(sel),
@@ -904,7 +899,7 @@ impl UiCore {
     }
 
     /// `bubbles` control reply: header + one line per active bubble, ascending player id. Same format
-    /// as samp-tracer's `bubbles` for the original (DIFF-3).
+    /// as samp-tracer's `bubbles` for the original client, so the two can be diffed.
     pub fn bubbles_report(&self) -> String {
         let mut lines = Vec::new();
         for id in 0..samp_ui::bubbles::SLOTS as u16 {
@@ -934,12 +929,12 @@ impl UiCore {
         r.consumed
     }
 
-    /// Enter in the chat input (UCA "Local chat input").
+    /// Enter in the chat input (ui-chat-audio.md, "Local chat input and built-in commands").
     pub fn submit(&mut self, game: &dyn GameInfo) {
         let was_open = self.input.is_open();
         let r = self.input.submit(self.netgame, self.debug_mode);
         if was_open {
-            // A 0x10067390: chat scroll position 90, clamped by the scrollbar.
+            // Chat scroll position 90, clamped by the scrollbar.
             self.chat.scroll_to(SUBMIT_SCROLL_POS);
         }
         match r {
@@ -970,9 +965,8 @@ impl UiCore {
             Effect::Quit { disconnect } => self.requests.quit = Some(disconnect),
             Effect::SendRcon(t) => self.outgoing.push(Outgoing::Rcon(t)),
             Effect::AppendFile { file, line, ok, ok_kind, failed } => {
-                // TRACE-8: `/rs` in a car writes `rawvehicles.txt` relative to the game's current
-                // directory (B string `rawvehicles.txt`, no user-files prefix); the other files go
-                // to the user files directory.
+                // `/rs` in a car writes `rawvehicles.txt` relative to the game's current directory (no
+                // user-files prefix, like samp); the other files go to the user files directory.
                 let path = if file == samp_ui::commands::SaveFile::RawVehicles {
                     Some(PathBuf::from(file.file_name()))
                 } else {
@@ -992,11 +986,11 @@ impl UiCore {
             }
             Effect::RebuildFonts(_) => self.requests.rebuild_fonts = true,
             Effect::SetTimestamps(on) => self.chat.set_timestamps(on),
-            // `/hudscalefix`: samp's flag A 0x10117470 (mainhooks.rs).
+            // `/hudscalefix`: toggles the HUD aspect-ratio fix in mainhooks.rs.
             #[cfg(windows)]
             Effect::SetHudScaleFix(on) => crate::mainhooks::set_enabled(on),
-            // `/testdw` (B 0x100684C0): eight fixed rows through the death-message path (killer, victim, colours
-            // 0xFFFFFFFF, reason); a missing killer name is empty.
+            // `/testdw`: eight fixed rows through the death-message path (killer, victim, colours 0xFFFFFFFF,
+            // reason); a missing killer name is empty.
             Effect::FillTestDeathWindow => {
                 const ROWS: [(&[u8], &[u8], u8); 8] = [
                     (b"Pooper", b"Pooper333", 1),
@@ -1014,13 +1008,13 @@ impl UiCore {
             }
             // `/dl`: the flag lives in `settings.vehicle_labels`; the labels are built by `vehlabels.rs`.
             Effect::SetVehicleLabels(_) => {}
-            // Stored in `settings`; their game effects belong to later milestones.
+            // Any other effect is only stored in `settings`.
             other => crate::log!("ui: effect {other:?} stored only (not applied in M4)"),
         }
     }
 
-    /// Scoreboard row activated (B 0x1006EBD0): RPC 23 with the row's id text (atol), then the scoreboard
-    /// closes with cursor mode 0 and the delayed input restore (`0x100A0720(0, 0)`).
+    /// Scoreboard row activated: RPC 23 with the row's id text (atol), then the scoreboard closes with
+    /// cursor mode 0 and the delayed input restore. Mirrors samp.dll B 0x1006EBD0.
     pub fn scoreboard_activate(&mut self) {
         if !self.scoreboard.is_open() {
             return;
@@ -1043,8 +1037,8 @@ impl UiCore {
 
     // ---- control channel -----------------------------------------------------------
 
-    /// `chat [N]`: header plus the last N non-empty entries (oldest first), each
-    /// with its colour runs as drawn (UR §3.3 glyph colouring).
+    /// `chat [N]`: header plus the last N non-empty entries (oldest first), each with its colour runs as
+    /// drawn (ui-rendering.md, "3.3 Embedded colour codes").
     pub fn chat_report(&self, n: usize) -> String {
         let all: Vec<&ChatEntry> = self.chat.entries().flatten().collect();
         let take = n.min(all.len());
@@ -1183,8 +1177,8 @@ mod tests {
         u.on_rpc(&Incoming::Ui(ui::Incoming::ShowDialog(d)), &NoExpansion);
     }
 
-    /// INPUT-1: the Enter that sends a chat line (on its key-up, like samp's edit box) must not
-    /// answer the dialog the server shows in reply, nor may auto-repeat or a dialog chain.
+    /// The Enter that sends a chat line (on its key-up, like samp's edit box) must not answer the
+    /// dialog the server shows in reply, nor may auto-repeat or a dialog chain.
     #[test]
     fn chat_enter_does_not_answer_the_reply_dialog() {
         for style in [0u8, 1, 2, 3] {

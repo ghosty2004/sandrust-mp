@@ -1,5 +1,9 @@
-//! GTA menus built through script commands (UCA §77; samp A 0x100a7780 order) and the
-//! pad state of the per-frame poll (A 0x10008200). Windows only.
+//! Server menus (ShowMenu), drawn by GTA's own menu system (Windows only).
+//!
+//! [`build`] creates the GTA menu with script commands in the same order as samp; [`pad_buttons`] reads the
+//! pad state for the per-frame menu poll; [`install_gxt_hook`] hooks `CText::Get` so GTA's menu finds the
+//! row and header texts under `SAMP…` keys. Spec: docs/re/subsystems/ui-chat-audio.md, "76 PlayerInitMenu"
+//! to "132 OnPlayerSelectedMenuRow"; addresses in docs/re/addresses/ui-menus.md.
 
 use samp_ui::menu::MenuBuild;
 
@@ -13,7 +17,7 @@ const OP_ACTIVATE_MENU_ITEM: u16 = 0x08D9;
 /// `CPad::GetPad(0)`; new state `ButtonCross` +0x20, `ButtonTriangle` +0x1E.
 const PAD0: u32 = 0xB73458;
 
-/// Runs the build sequence; returns the GTA menu handle.
+/// Runs the build sequence; returns the GTA menu handle. Mirrors samp.dll 0x100A7780.
 pub fn build(r: &mut Runner, b: &MenuBuild) -> Option<i32> {
     r.run(
         OP_CREATE_MENU,
@@ -43,14 +47,15 @@ pub fn build(r: &mut Runner, b: &MenuBuild) -> Option<i32> {
     Some(h)
 }
 
-/// (cross, triangle) of pad 0's new state.
+/// (cross, triangle) of pad 0's new state, polled every frame while a menu is shown.
+/// Mirrors samp.dll 0x10008200.
 pub fn pad_buttons() -> (bool, bool) {
     let m = ProcessMemory;
     let w = |o: u32| m.read_u16(PAD0 + o).unwrap_or(0) != 0;
     (w(0x20), w(0x1E))
 }
 
-// ---- CText::Get hook (CSV row 58, samp A 0x100a4070) ----------------------------------
+// ---- CText::Get hook (docs/re/subsystems/gta-patches.md, "HUD / menus / rendering") ----------
 
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU32;
@@ -140,7 +145,7 @@ fn handler_code(lookup: u32, result: u32) -> Vec<u8> {
     c
 }
 
-/// Installs the `CText::Get` hook once.
+/// Installs the `CText::Get` hook once. Mirrors samp.dll 0x100A4070.
 pub fn install_gxt_hook() -> Result<(), String> {
     use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, VirtualAlloc};
     let mut mem = ProcessMemory;

@@ -1,22 +1,11 @@
-//! Object material text (RPC 44 / 84 material kind 2, milestone M6), Windows only.
+//! Object material text (CreateObject / SetPlayerObjectMaterial, material kind 2), Windows only.
 //!
-//! samp (static B 0x100A86C0 record, 0x100A9EF0 object pass, 0x100708E0 renderer, size table 0x100A8C90;
-//! TRACE-6 batch 3 / TRACE-7 for the D3D order): the record gives the slot a fresh 2x2 RenderWare texture
-//! (`RwRasterCreate(2, 2, 0, 0)` + `RwTextureCreate`) as its material texture and remembers that texture's
-//! D3D texture; the slot colour is cleared. Once per text slot, from samp's CGame::Process wrapper (object pool
-//! pass; after the previous Present, before RenderWare's BeginScene): `GetDisplayMode`,
-//! `D3DXCreateTexture(w, h, 1, RENDERTARGET, fmt, DEFAULT)` with (w, h) the material size itself and fmt
-//! A8R8G8B8 when the background colour is 0, else X8R8G8B8; `GetSurfaceLevel(0)`, `GetDesc`,
-//! `D3DXCreateRenderToSurface(desc w, desc h, desc format, depth, D16)`,
-//! `D3DXCreateFontA(face, height = font size, width 0, weight 700 when bold else 400, mip 1, charset 1,
-//! quality 0)`; `BeginScene`, `Clear(TARGET|ZBUFFER, background ARGB, 0.0)`, `sprite.Begin(0x10)`, for
-//! background 0 `SetRenderState(DESTBLEND, BLENDFACTOR)`, `DrawTextA(text, [0, 0, w, h], fmt, font colour)`
-//! with fmt 0x100 (left, top), 0x105 (centre), 0x102 (right, top), colour codes per glyph, `sprite.End`,
-//! `EndScene`. Never redrawn. While the object renders, samp's device proxy `SetTexture` (A 0x10074BB0)
-//! replaces the 2x2 texture with the render target (world-entities.md RE-10 §4).
-//!
-//! Device loss (CRASH-1, measured with a forced Reset on both clients): the render targets are released before
-//! `Reset` and re-created by the next object pass ([`on_lost`]).
+//! Each text slot gets a fresh 2x2 RenderWare texture as its material texture. Once per slot, from the
+//! CGame::Process pre-step, [`ensure`] renders the text into a D3D render target of exactly the material
+//! size; while the object renders, the device proxy's `SetTexture` swaps the 2x2 texture for that target.
+//! Targets are never redrawn; on device loss they are released and re-created by the next object pass
+//! ([`on_lost`]). Spec: docs/re/subsystems/world-entities.md, "84 SetPlayerObjectMaterial"; measurements in
+//! docs/phase3/m6-notes.md; addresses in docs/re/addresses/ui-mattext.md.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -31,7 +20,8 @@ use super::d3d::{self, D3dx, Font, FontArgs, Rect, Sprite, dt};
 #[derive(Clone, Debug)]
 pub struct TextSpec {
     pub slot: usize,
-    /// D3D texture of the slot's 2x2 RenderWare texture: the one the render target stands in for (samp +0x110B).
+    /// D3D texture of the slot's 2x2 RenderWare texture, which the render target stands in for (samp keeps it at
+    /// object +0x110B).
     pub key: u32,
     /// Material size code (10 = 32x32 … 140 = 512x512); the render target has exactly this size.
     pub size: u8,
@@ -44,7 +34,7 @@ pub struct TextSpec {
     pub text: Vec<u8>,
 }
 
-/// Material size code → render-target (width, height) (samp A 0x100A8CC0 / B 0x100A8C90).
+/// Material size code → render-target (width, height). Mirrors samp.dll 0x100A8CC0.
 pub fn material_size(code: u8) -> Option<(u32, u32)> {
     Some(match code {
         10 => (32, 32),
@@ -119,10 +109,9 @@ fn release(old: Option<Vec<Entry>>) {
     }
 }
 
-/// Device lost (samp's lost-device handler B 0x100C3F60 → object pool loop 0x10012B20 → 0x100A8EE0 for every
-/// object with materials): every created render target (D3DPOOL_DEFAULT) is released and marked "not created",
-/// so `Reset` can succeed and the next object pass re-creates it ([`ensure`]). Slots whose creation failed stay
-/// failed, as in samp (its "created" flag is cleared only together with a texture).
+/// Device lost: every created render target (D3DPOOL_DEFAULT) is released and marked "not created", so `Reset`
+/// can succeed and the next object pass re-creates it ([`ensure`]). Slots whose creation failed stay failed,
+/// as in samp (its "created" flag is cleared only together with a texture). Mirrors samp.dll B 0x100A8EE0.
 pub fn on_lost() {
     let old: Vec<u32> = with(|s| {
         let mut out = Vec::new();
@@ -204,19 +193,19 @@ const D3DFMT_A8R8G8B8: u32 = 21;
 const D3DFMT_X8R8G8B8: u32 = 22;
 const D3DFMT_D16: u32 = 80;
 const D3DPOOL_DEFAULT: u32 = 0;
-/// `D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER` (TRACE-7: Clear(TARGET|ZBUFFER, background, 0.0)).
+/// `D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER`; the target is cleared to the background colour with depth 0.0.
 const CLEAR_TARGET_ZBUFFER: u32 = 3;
-/// `D3DRS_DESTBLEND` / `D3DBLEND_BLENDFACTOR`: set after `sprite.Begin` when the background is 0 (B 0x10070A7C).
+/// `D3DRS_DESTBLEND` / `D3DBLEND_BLENDFACTOR`: set after `sprite.Begin` when the background is 0.
 const D3DRS_DESTBLEND: u32 = 20;
 const D3DBLEND_BLENDFACTOR: u32 = 14;
 
-/// Render-target format: with a zero background the target keeps an alpha channel (B 0x1007090B).
+/// Render-target format: with a zero background the target keeps an alpha channel.
 pub fn target_format(background: u32) -> u32 {
     if background == 0 { D3DFMT_A8R8G8B8 } else { D3DFMT_X8R8G8B8 }
 }
 
-/// DrawText format per alignment (B 0x100709B7): 1 centre (DT_CENTER | DT_VCENTER), 2 right (DT_RIGHT), anything
-/// else left / top; always DT_NOCLIP.
+/// DrawText format per alignment: 1 centre (DT_CENTER | DT_VCENTER), 2 right (DT_RIGHT), anything else
+/// left / top; always DT_NOCLIP.
 pub fn draw_format(alignment: u8) -> u32 {
     let a = match alignment {
         1 => dt::CENTER | dt::VCENTER,
@@ -226,8 +215,8 @@ pub fn draw_format(alignment: u8) -> u32 {
     a | dt::NOCLIP
 }
 
-/// samp's sign-text renderer keeps one sprite for every fill (renderer object +4, used by B 0x100708E0); ours is
-/// created before the first fill and kept (released only with the process), reset around device loss.
+/// samp's sign-text renderer keeps one sprite for every fill; ours is created before the first fill and kept
+/// (released only with the process), reset around device loss.
 static SPRITE: AtomicU32 = AtomicU32::new(0);
 static SPRITE_LOST: AtomicBool = AtomicBool::new(false);
 
@@ -245,7 +234,8 @@ fn shared_sprite(d3dx: &D3dx) -> Result<u32, String> {
     Ok(p)
 }
 
-/// Creates and fills one render target (see the module header).
+/// Creates and fills one render target: D3DX texture + render-to-surface (D16 depth), D3DX font, clear, then
+/// the text with per-glyph colour codes. Mirrors samp.dll B 0x100708E0.
 fn render(spec: &TextSpec) -> Result<u32, String> {
     let (w, h) = material_size(spec.size).ok_or("unknown material size")?;
     let dev = d3d::real_device();
@@ -302,7 +292,7 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
         },
     )
     .inspect_err(|_| {
-        // B 0x100708E0: a debug chat line naming the face (FEAT-B, A17).
+        // Like samp: a debug chat line naming the face that failed.
         super::glue::print_debug_later(format!("SignText: Can't create font {}", String::from_utf8_lossy(&spec.font)));
     })?;
     let sprite = std::mem::ManuallyDrop::new(Sprite { ptr: sprite_ptr as usize as *mut c_void });
@@ -312,8 +302,8 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
         if !surf.is_null() {
             let begin: extern "system" fn(*mut c_void, *mut c_void, *const c_void) -> d3d::HResult = d3d::vfn(rts, 5);
             let end: extern "system" fn(*mut c_void, u32) -> d3d::HResult = d3d::vfn(rts, 6);
-            // Runs from the CGame::Process pre-step, between the previous Present and RenderWare's BeginScene
-            // (TRACE-7), so the render-to-surface scene is never nested.
+            // Runs from the CGame::Process pre-step, between the previous Present and RenderWare's BeginScene,
+            // so the render-to-surface scene is never nested.
             let hb = begin(rts, surf, std::ptr::null());
             if hb < 0 {
                 crate::log!("mattext: {}x{} slot {}: render-to-surface BeginScene failed {hb:#x}", w, h, spec.slot);
