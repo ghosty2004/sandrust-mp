@@ -941,3 +941,22 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   (`--orig-runs 1 --ours-runs 1`, reusing those 5 original runs; ours-20261107-054758): exit 0, MATCH 131,
   UNTRIGGERABLE 10, only DIFF2-D1 accepted; report in ~/samp-rs/target/diff/rpc-coverage.md. Cost: ~2.5 h wall,
   ~11 original + 9 own game runs (full and subset), 2 focused F2 pairs, 1 combatveh, 1 m7.
+
+## 2026-11-07 — Final proofs on main 67eba42 (all of F1–F7)
+- Code under test: 67eba42 (material text, the user's real-server reports, the audit's class-A gaps, model
+  previews); 61b9470 on top adds only F1 decision rows (DIFF2-D5/D6) and docs. Binaries built once beforehand.
+- F7 `tools/e2e/soak.sh`, 7200 s per gamemode in parallel (gungame veh, derby ui, simpletdm trace): gungame PASS
+  (99.978 %), derby PASS (99.904 %), simpletdm PASS (99.997 %), fps min 52.3, 0 crashes, every case ok — each exit 0.
+- F3 `tools/diff/cross-client.sh`: 66/66 MATCH, 0 DIFF, 0 pending — exit 0.
+- F4 `tools/diff/visual.sh` (original capture of the 46-element scenario): every element OK — exit 0.
+- F5 `tools/diff/patch-coverage.sh`: PASS, 0 missing / different / unverified — exit 0.
+- F6 `tools/diff/files.sh`: IDENTICAL, PASS — exit 0.
+- F2 `tools/diff/network.sh`: first run 386/387 (session total of unoccupied sync 209: original 3, ours 0);
+  rerun 385/385 — exit 0. Analysis (net6-notes §5): the 209s are physics-driven settles/catches, ours has the same
+  gates as samp (A 0x1001F3C0 / 0x100B74A0 / 0x10006E00) and emits them less often (focused 4-round scenario:
+  original 17, ours 14); left as the open NET6-P3 settling residual, no tolerance row added.
+- F1 `tools/diff/rpc-coverage.sh`: the batch run had velocity_up (fall damage) and skin_101 (model request) DIFF;
+  both are original-side variance (3 of 10 original runs land without damage; 101 already streamed in 1 of 10
+  original runs) → DIFF2-D5 / DIFF2-D6. Report on the final runs (6 original, ours-20261107-054758) with main's
+  tooling: MATCH 131, UNTRIGGERABLE 10 — exit 0.
+- cargo test 620 passed, clippy 0 (host, i686).
