@@ -1,23 +1,16 @@
-//! Our own minimal replacement for the story script `main.scm`.
-//!
-//! samp.dll keeps GTA's script engine running but serves its own small SCM
-//! instead of the stock story script (TRACE-1, docs/phase3/m2-notes.md). We
-//! may not use samp's file, so we generate an equivalent from scratch: the
-//! chunk header GTA's `CTheScripts::Init` expects (layout per gta-reversed
-//! `Scripts/SCMChunks.hpp`), a global-variable area, no objects, no missions,
-//! no streamed scripts, and a short main thread that sets up the world,
-//! creates the local player and then only waits.
-//!
-//! The file is written once per run and served in place of
-//! `data\script\main.scm` by a hook on the open call in `CTheScripts::Init`.
-//! `script.img` stays the stock file: with zero streamed scripts declared
-//! here the game never loads anything from it.
+//! Our own minimal replacement for the story script `main.scm`, used when no samp.saa is available
+//! (otherwise `filehook` serves samp's own script). samp keeps GTA's script engine running but replaces
+//! the story script; we may not ship samp's file, so [`build_main_scm`] generates an equivalent: the chunk
+//! header `CTheScripts::Init` expects, a global-variable area, no objects, missions or streamed scripts,
+//! and a short main thread that sets up the world, creates the local player and then only waits.
+//! `dll` writes it once per run and serves it in place of `data\script\main.scm`; `script.img` stays
+//! stock (with no streamed scripts declared the game never reads it). Background: docs/phase3/m2-notes.md,
+//! "How the story script is kept out".
 
 use crate::script::{Arg, encode, op};
 
 /// Size of the global-variable area (offset of the first chunk after it).
-/// Same size as observed for the original client's script (46268 bytes), so
-/// global offsets used by game code and samp-compatible servers stay valid.
+/// The same size as in samp's script, so global offsets used by game code and servers stay valid.
 pub const GLOBAL_SPACE: u32 = 46268;
 /// Global variable that receives the player handle.
 pub const VAR_PLAYER: u16 = 8;
@@ -80,8 +73,7 @@ pub fn build_main_scm(player_pos: [f32; 3]) -> Vec<u8> {
     instr(&mut s, op::SET_TIME_OF_DAY, &[Arg::Int(12), Arg::Int(0)]);
     instr(&mut s, op::SET_PED_DENSITY_MULTIPLIER, &[Arg::Float(0.0)]);
     instr(&mut s, op::SET_CAR_DENSITY_MULTIPLIER, &[Arg::Float(0.0)]);
-    // samp's script caps the wanted level at 0 (TRACE-4 SP-OFF): no police, no
-    // forbidden-territory wanted level.
+    // samp's script caps the wanted level at 0: no police, no forbidden-territory wanted level.
     instr(&mut s, op::SET_MAX_WANTED_LEVEL, &[Arg::Int(0)]);
     instr(&mut s, op::REQUEST_COLLISION, &[Arg::Float(x), Arg::Float(y)]);
     instr(

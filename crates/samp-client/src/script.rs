@@ -1,16 +1,9 @@
-//! Running single GTA script (SCM) commands from our code.
-//!
-//! samp.dll drives most player/camera changes through the game's own script
-//! command handlers (player-state.md, "ScriptCommand" row of the object map:
-//! a 16-bit opcode plus typed parameters executed on a private, zeroed
-//! 0xE0-byte script thread). We do the same: encode one instruction in the
-//! public SCM format (opcode u16, then one type byte + value per parameter)
-//! into a buffer, point a private `CRunningScript` at it and call
-//! `CRunningScript::ProcessOneCommand` (0x469EB0, named via gta-reversed
-//! `RunningScript.cpp`). Output parameters are written to the thread's local
-//! variables, which we read back afterwards.
-//!
-//! Opcode numbers are named via gta-reversed `Enums/eScriptCommands.h`.
+//! Running single GTA script (SCM) commands from our code, the way samp drives most player and camera
+//! changes: [`encode`] writes one instruction in the public SCM format (opcode u16, then one type byte +
+//! value per parameter), and `Runner` points a private, zeroed `CRunningScript` at it and calls
+//! `CRunningScript::ProcessOneCommand`. Output parameters land in the thread's local variables, which are
+//! read back afterwards. Opcode and layout names follow gta-reversed (`eScriptCommands.h`,
+//! `RunningScript.h`). Spec: docs/re/subsystems/player-state.md, "ScriptCommand".
 
 /// Opcodes used by the client (gta-reversed `eScriptCommands.h`).
 pub mod op {
@@ -22,10 +15,10 @@ pub mod op {
     pub const REQUEST_ANIMATION: u16 = 0x04ED;
     pub const HAS_ANIMATION_LOADED: u16 = 0x04EE;
     pub const SET_CHAR_DROPS_WEAPONS_WHEN_DEAD: u16 = 0x087E;
-    // Parity pass: local per-frame polls (TRACE-1 "Walking") and special actions.
+    // Local per-frame polls and special actions.
     pub const SET_PLAYER_DRUNKENNESS: u16 = 0x052C;
-    /// RPC 150's player command (descriptor A 0x100e6234: 0x03FD, "ii"; public lists call the RPC
-    /// "set player drunk handling", the opcode's name is unverified).
+    /// RPC 150's player command (parameters "ii"; public lists call the RPC "set player drunk handling",
+    /// the opcode's name is unverified).
     pub const RPC150_PLAYER_COMMAND: u16 = 0x03FD;
     pub const GET_CURRENT_CHAR_WEAPON: u16 = 0x0470;
     pub const GET_AREA_VISIBLE: u16 = 0x077E;
@@ -58,7 +51,7 @@ pub mod op {
     pub const SWITCH_RANDOM_TRAINS: u16 = 0x06D7;
     pub const CAMERA_RESET_NEW_SCRIPTABLES: u16 = 0x0925;
     pub const CAMERA_PERSIST_POS: u16 = 0x0930;
-    // Vehicles (M5; names via gta-reversed eScriptCommands.h, parameter lists via the SCM opcode database).
+    // Vehicles (parameter lists from the public SCM opcode database).
     pub const CREATE_CAR: u16 = 0x00A5;
     pub const DELETE_CAR: u16 = 0x00A6;
     pub const POINT_CAMERA_AT_CAR: u16 = 0x0158;
@@ -89,14 +82,15 @@ pub mod op {
     pub const SET_VEHICLE_AREA_VISIBLE: u16 = 0x0840;
     pub const ATTACH_TRAILER_TO_CAB: u16 = 0x0893;
     pub const SET_PETROL_TANK_WEAKPOINT: u16 = 0x09C4;
-    // Combat (M7).
+    // Combat.
     /// `EXPLODE_CHAR_HEAD` (remote death, RPC 166).
     pub const EXPLODE_CHAR_HEAD: u16 = 0x0321;
-    /// `ADD_EXPLOSION_VARIABLE_SHAKE`-style "fffii" command samp uses for RPC 79 (player-state.md 79).
+    /// `ADD_EXPLOSION_VARIABLE_SHAKE`-style "fffii" command samp uses for RPC 79
+    /// (docs/re/subsystems/player-state.md, "79 CreateExplosion").
     pub const ADD_EXPLOSION: u16 = 0x0948;
     /// `TASK_DRIVE_BY` (drive-by of a passenger).
     pub const TASK_DRIVE_BY: u16 = 0x0713;
-    // Remaining behaviour (M8b): camera, spectating, interiors, animations, misc.
+    // Camera, spectating, interiors, animations, misc.
     pub const ADD_SCORE: u16 = 0x0109;
     pub const CLEAR_PRINTS: u16 = 0x00BE;
     pub const POINT_CAMERA_AT_CHAR: u16 = 0x0159;
@@ -108,11 +102,11 @@ pub mod op {
     pub const CAMERA_SET_VECTOR_TRACK: u16 = 0x0920;
     pub const CAMERA_PERSIST_TRACK: u16 = 0x092F;
     pub const CAMERA_SET_VECTOR_MOVE: u16 = 0x0936;
-    // Player markers (samp B 0x100AF740 / 0x100A0DA0).
+    // Player markers.
     pub const ADD_BLIP_FOR_CHAR: u16 = 0x0187;
     pub const CHANGE_BLIP_DISPLAY: u16 = 0x018B;
     pub const ADD_SHORT_RANGE_SPRITE_BLIP_FOR_COORD: u16 = 0x04CE;
-    // Held items, piss and the remote parachute (FEAT-B; samp B 0x100B02E0 / 0x100AE110 / 0x100AD4E0).
+    // Held items, piss and the remote parachute.
     pub const CREATE_OBJECT: u16 = 0x0107;
     pub const ADD_ONE_OFF_SOUND: u16 = 0x018C;
     pub const PLAY_FX_SYSTEM: u16 = 0x064C;
@@ -207,9 +201,9 @@ mod runner {
 
     use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
-    /// The last opcode run and whether a command is running (samp's ScriptCommand globals B 0x1026B3D4 /
-    /// B 0x1026B3D8, shown by the crash report as "SCM Op" and "lDbg").
+    /// The last opcode run, shown by the crash report as "SCM Op". Mirrors samp.dll B 0x1026B3D4.
     static LAST_OPCODE: AtomicU16 = AtomicU16::new(0);
+    /// Whether a command is running, shown by the crash report as "lDbg". Mirrors samp.dll B 0x1026B3D8.
     static IN_COMMAND: AtomicBool = AtomicBool::new(false);
 
     pub fn last_opcode() -> u16 {
@@ -242,8 +236,9 @@ mod runner {
             Self { thread, code: Vec::with_capacity(64) }
         }
 
-        /// Executes one command; returns the thread's condition result
-        /// (meaningful for conditional opcodes only).
+        /// Executes one command; returns the thread's condition result (meaningful for conditional opcodes
+        /// only). A fault inside the command is caught, logged and reported to `swap`.
+        /// Mirrors samp.dll 0x100B2350 (samp's ScriptCommand).
         pub fn run(&mut self, opcode: u16, args: &[Arg]) -> bool {
             encode(opcode, args, &mut self.code);
             // Padding so a handler reading one parameter too many stays inside our buffer.
@@ -252,9 +247,8 @@ mod runner {
             self.thread[layout::BASE_IP..layout::BASE_IP + 4].copy_from_slice(&ip.to_le_bytes());
             self.thread[layout::IP..layout::IP + 4].copy_from_slice(&ip.to_le_bytes());
             self.thread[layout::COND_RESULT] = 0;
-            // SAFETY: the game's command interpreter (thiscall, `this` only), called on the main thread with a
-            // zeroed CRunningScript whose IP points at a well-formed instruction that stays alive for the
-            // duration of the call; inside the shared SEH guard like samp's ScriptCommand (B 0x100B2320).
+            // SAFETY: the game's interpreter on the main thread, with a zeroed CRunningScript whose IP points at a
+            // well-formed instruction that outlives the call; faults are caught by the shared SEH guard.
             LAST_OPCODE.store(opcode, Ordering::SeqCst);
             IN_COMMAND.store(true, Ordering::SeqCst);
             let code = unsafe { crate::swap::guarded_thiscall(PROCESS_ONE_COMMAND as u32, self.thread.as_mut_ptr() as u32) };

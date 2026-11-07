@@ -1,21 +1,9 @@
-//! Relocation of `CWorld::ms_aSectors` (gta-patches.md §4.3, "Streaming, memory
-//! and world tables"; CSV rows 262–346 and 138, data fill row 347).
-//!
-//! GTA's 120 × 120 sector grid (8 bytes per sector, 0xB7D0B8…0xB992B8) sits
-//! directly after the two-entry `CWorld::Players` array. SA:MP creates remote
-//! players with player indices 2…209, so GTA's own `Players[slot]` indexing
-//! lands in the grid's memory (remote-control-onfoot.md §1.3). Before the first
-//! such ped exists, every listed code reference to the grid is pointed at a
-//! 160000-byte buffer of ours and the original grid is zeroed.
-//!
-//! Every reference is checked before anything is written: either all of them
-//! move or none (a half-relocated grid would corrupt the world).
-//!
-//! Not applied: row 269 (0x40914E). samp's absolute-pointer table lists it, but
-//! the dword there is the opcode/ModRM/SIB of an instruction in
-//! `CStreaming::DeleteAllRwObjects`, not its displacement; that function is
-//! made RET instead (row 178, in `patches.rs`). Duplicate rows 134–137/139 and
-//! 325 name sites already listed here.
+//! Relocation of `CWorld::ms_aSectors`, GTA's 120 × 120 sector grid, into a larger buffer of ours.
+//! SA:MP creates remote players with player indices 2…209, so GTA's own `CWorld::Players[slot]` indexing
+//! runs past the two-entry array into the grid's memory (docs/re/subsystems/remote-control-onfoot.md,
+//! "Why a player index above 1 does not corrupt memory"). [`relocate`] moves every listed reference
+//! all-or-nothing (a half-moved grid would corrupt the world), then zeroes the original grid.
+//! Spec: docs/re/subsystems/gta-patches.md, "Sector array relocation".
 
 use crate::patch::{Memory, PatchError, Patcher};
 
@@ -23,7 +11,7 @@ use crate::patch::{Memory, PatchError, Patcher};
 pub const ORIGINAL_GRID: u32 = 0xB7D0B8;
 /// 120 × 120 × 8 bytes.
 pub const GRID_BYTES: u32 = 115_200;
-/// Size of the replacement buffer (samp: 160000 bytes, gta-patches.md §4.3).
+/// Size of the replacement buffer (the same as samp's).
 pub const BUFFER_BYTES: u32 = 160_000;
 
 /// What the relocated reference points at, relative to our buffer.
@@ -43,7 +31,7 @@ pub struct SectorRef {
     pub original: u32,
     /// New value = buffer base + `offset`.
     pub offset: u32,
-    /// Line in gta-patches-r4-annotated.csv.
+    /// Row in docs/re/data/gta-patches-r4-annotated.csv.
     pub csv_row: u32,
 }
 
@@ -51,9 +39,11 @@ const fn r(addr: u32, original: u32, offset: u32, csv_row: u32) -> SectorRef {
     SectorRef { addr, original, offset, csv_row }
 }
 
-/// CSV rows 262–275 (absolute pointers, without 269), 276–331 (imm32 at
-/// instruction+3, without the duplicate 325), 332–342 (+4 field), 138
-/// (repeat-sector base) and 343–346 (loop bounds).
+/// Every reference samp moves: absolute pointers, imm32 operands at instruction+3, references to the
+/// `+4` field, the repeat-sector base and the loop bounds. One site from samp's absolute-pointer list,
+/// 0x40914E, is left out on purpose: the dword there is the opcode/ModRM/SIB of an instruction in
+/// `CStreaming::DeleteAllRwObjects`, not its displacement (that function is made to return at once in
+/// `patches.rs` instead). Rows of the CSV that repeat a site listed here are not repeated.
 pub const SECTOR_REFS: &[SectorRef] = &[
     r(0x5dc7aa, 0xB7D0B8, BASE, 262),
     r(0x41a85d, 0xB7D0B8, BASE, 263),
@@ -141,7 +131,7 @@ pub const SECTOR_REFS: &[SectorRef] = &[
     r(0x564283, 0xB992B8, BUFFER_END, 346),
 ];
 
-/// CSV row 347: the original grid is zeroed after the move.
+/// Row of the annotated CSV that records zeroing the original grid after the move.
 pub const ZERO_FILL_CSV_ROW: u32 = 347;
 
 /// Moves every reference to `buffer` (which must be `BUFFER_BYTES` long and
@@ -181,7 +171,7 @@ mod tests {
             assert_eq!(row["size"], "4");
             assert!(row["kind"].starts_with("pointer-redirect"), "row {}", s.csv_row);
             assert_eq!(testutil::unhex(&row["original_bytes_hex"]), s.original.to_le_bytes(), "row {}", s.csv_row);
-            // samp's target, relative to its buffer at 0x101A2490.
+            // samp's target, relative to its sector buffer (docs/re/addresses/sectors.md).
             let a = row["kind"].split("A:").nth(1).and_then(|t| t.split_whitespace().next()).unwrap();
             let a = u32::from_str_radix(a.trim_start_matches("0x"), 16).unwrap();
             assert_eq!(a - 0x101A_2490, s.offset, "row {}", s.csv_row);

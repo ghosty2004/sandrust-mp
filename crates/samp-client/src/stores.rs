@@ -1,16 +1,8 @@
-//! Enlarged model-info stores (gta-patches.md §4.2, CSV rows 132 and 248–261).
-//!
-//! samp moves `CModelInfo::ms_atomicModelInfoStore`'s entries to a 20000-entry
-//! array and `ms_pedModelInfoStore`'s entries to a 319-entry array. Each new
-//! entry is zeroed and gets the class vtable, which is all samp writes
-//! (B 0x100AAA20 / 0x100AA9D0). The store counts stay where they are; only the
-//! listed references to the entry arrays move.
-//!
-//! The data samp serves from samp.saa needs this: its peds.ide plus SAMP.ide
-//! define 311 ped models (the stock store holds 278) and SAMP.ide adds 1433
-//! objects to roughly 14000 stock ones (the stock atomic store holds 14000).
-//!
-//! As with the sector grid, each store moves all-or-nothing.
+//! Enlarged model-info stores: the atomic store grows to 20000 entries and the ped store to 319, because
+//! samp's own data (samp.saa's peds.ide plus SAMP.ide) defines more models than the stock stores hold.
+//! Each new entry is zeroed and gets the class vtable; the store counts stay where they are and only the
+//! listed references to the entry arrays move, all-or-nothing per store ([`relocate`]).
+//! Spec: docs/re/subsystems/gta-patches.md, "Model-info stores".
 
 use crate::patch::{Memory, PatchError, Patcher};
 
@@ -24,7 +16,7 @@ pub struct Store {
     pub entries: u32,
     /// Class vtable written into every new entry.
     pub vtable: u32,
-    /// Code references to `original_entries`: (site, CSV row).
+    /// Code references to `original_entries`: (site, row in docs/re/data/gta-patches-r4-annotated.csv).
     pub refs: &'static [(u32, u32)],
 }
 
@@ -34,9 +26,7 @@ impl Store {
     }
 }
 
-/// `CModelInfo::ms_atomicModelInfoStore` (count at 0xAAE950, entries at
-/// 0xAAE954, 32-byte `CAtomicModelInfo`, vtable 0x85BBF0); samp's list at
-/// B .data 0x10116720.
+/// `CModelInfo::ms_atomicModelInfoStore` entries (32-byte `CAtomicModelInfo`; the count is at 0xAAE950).
 pub const ATOMIC: Store = Store {
     name: "atomic model-info store",
     original_entries: 0xAAE954,
@@ -61,8 +51,8 @@ pub const ATOMIC: Store = Store {
     ],
 };
 
-/// `CModelInfo::ms_pedModelInfoStore` entries (0x44-byte `CPedModelInfo`,
-/// vtable 0x85BDC0). samp moves only the reference in `AddPedModel`.
+/// `CModelInfo::ms_pedModelInfoStore` entries (0x44-byte `CPedModelInfo`). samp moves only the reference
+/// in `AddPedModel`.
 pub const PED: Store = Store {
     name: "ped model-info store",
     original_entries: 0xB478FC,

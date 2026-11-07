@@ -5,23 +5,25 @@
 
 use crate::patch::{Memory, PatchError};
 
-/// Byte probed to identify the executable: 0x89 on 1.0 US (first byte of
-/// `mov [gGameState],esi` in `psInitialize`); gta-patches.md §2.
+/// Byte probed to identify the executable: the first byte of `mov [gGameState],esi` in `psInitialize` on 1.0 US
+/// (docs/re/subsystems/gta-patches.md, "When patches are applied").
 pub const VERSION_PROBE_ADDR: u32 = 0x747483;
+/// The probe's value on 1.0 US.
 pub const VERSION_PROBE_US10: u8 = 0x89;
 /// Same probe on 1.0 EU (not supported).
 pub const VERSION_PROBE_EU10: u8 = 0xC8;
 
-/// samp's version check (B 0x100AA720) also gives up at once when this byte is 1 (read in the polling loop).
+/// samp's version check also gives up at once when this byte is 1 (read in the polling loop).
 pub const VERSION_GIVE_UP_FLAG: u32 = 0xBA6831;
-/// The check polls every 10 ms up to 6000 times (B 0x100AA7BE…).
+/// The check polls every 10 ms …
 pub const VERSION_POLL_MS: u64 = 10;
+/// … up to 6000 times.
 pub const VERSION_POLLS: u32 = 6000;
-/// The message box samp shows when the check fails (B 0x100A08EA), then `ExitProcess(1)`.
+/// The message box samp shows when the check fails, followed by `ExitProcess(1)`.
 pub const VERSION_ERROR_TEXT: &str = "I can't determine your GTA version.\r\nSA-MP only supports GTA:SA v1.0 USA/EU";
 pub const VERSION_ERROR_CAPTION: &str = "Version Error";
 
-/// One poll of samp's version check.
+/// One poll of samp's version check ([`version_poll`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VersionPoll {
     Us,
@@ -32,6 +34,7 @@ pub enum VersionPoll {
     Wait,
 }
 
+/// Classifies one poll of the version probe. Mirrors samp.dll B 0x100AA720.
 pub fn version_poll(probe: u8, give_up: u8) -> VersionPoll {
     match probe {
         VERSION_PROBE_US10 => VersionPoll::Us,
@@ -55,32 +58,32 @@ pub const FRONTEND_MENU_MANAGER: u32 = 0xBA6748;
 pub const CWORLD_PLAYERS: u32 = 0xB7CD98;
 /// `Render2dStuff`, named via gta-reversed; called from `Idle` at 0x53EB12.
 pub const RENDER_2D_STUFF: u32 = 0x53E230;
-/// Call site of `Render2dStuff` inside `Idle` (0x53E920); gta-patches CSV row 6.
+/// Call site of `Render2dStuff` inside `Idle`, hooked for our per-frame work.
 pub const IDLE_RENDER_2D_CALL: u32 = 0x53EB12;
 
 /// `CGame::Process`, named via gta-reversed; called from `Idle` at 0x53E981.
 pub const CGAME_PROCESS: u32 = 0x53BEE0;
-/// Call site of `CGame::Process` inside `Idle`; gta-patches CSV row 10. Unlike
-/// the Render2dStuff call it also runs while the screen is faded out.
+/// Call site of `CGame::Process` inside `Idle`, hooked like samp. Unlike the Render2dStuff call it also runs
+/// while the screen is faded out.
 pub const IDLE_GAME_PROCESS_CALL: u32 = 0x53E981;
 
-/// `CGame::Shutdown` (cdecl, no args), gta-reversed; CSV row 52 hooks its entry.
+/// `CGame::Shutdown` (cdecl, no args), gta-reversed; samp hooks its entry.
 pub const CGAME_SHUTDOWN: u32 = 0x53C900;
-/// First 7 bytes of `CGame::Shutdown` (`push esi; push edi; mov ecx, g_breakMan`).
-/// Padding dword in front of `CGame::Shutdown` that holds samp's handler (row 52's `jmp [slot]`).
+/// Padding dword in front of `CGame::Shutdown` that holds the handler for the entry hook's `jmp [slot]`.
 pub const CGAME_SHUTDOWN_SLOT: u32 = 0x53C8F1;
+/// First 7 bytes of `CGame::Shutdown` (`push esi; push edi; mov ecx, g_breakMan`).
 pub const CGAME_SHUTDOWN_ORIGINAL: [u8; 7] = [0x56, 0x57, 0xB9, 0x40, 0x42, 0xBB, 0x00];
 
 /// `FindPlayerPed` (cdecl, int player), gta-reversed.
 pub const FIND_PLAYER_PED: u32 = 0x56E210;
-/// The `call FindPlayerPed` in `CAEPoliceScannerAudioEntity::AddAudioEvent`; CSV row 55.
+/// The `call FindPlayerPed` in `CAEPoliceScannerAudioEntity::AddAudioEvent`, hooked like samp.
 pub const POLICE_SCANNER_FIND_PLAYER_CALL: u32 = 0x4E7427;
-/// Size of the zeroed stand-in ped samp hands to the police scanner (B 0x100A17BB: 0x1E8 dwords).
+/// Size of the zeroed stand-in ped samp hands to the police scanner (0x1E8 dwords).
 pub const SCANNER_DUMMY_PED_BYTES: usize = 0x7A0;
 
 /// `CFileMgr::OpenFile(path, mode)` (cdecl, a jump to the CRT `fopen`), gta-reversed `FileMgr.cpp`.
 pub const CFILEMGR_OPEN_FILE: u32 = 0x538900;
-/// The `call CFileMgr::OpenFile` that opens "main.scm" in `CTheScripts::Init` (0x468D50).
+/// The `call CFileMgr::OpenFile` that opens "main.scm" in `CTheScripts::Init`.
 pub const MAIN_SCM_OPEN_CALL: u32 = 0x468EC9;
 /// Where the local player ped is created before the server places it
 /// (the stock script's own start point, Grove Street).
@@ -102,7 +105,7 @@ pub mod key {
 pub const PED_POOL: u32 = 0xB74490;
 /// Ped pool element size (`CCopPed`, 0x7C4), gta-reversed `CopPed.h`.
 pub const PED_POOL_ELEMENT: u32 = 0x7C4;
-/// `CWorld::Players[0].m_nMoney` (player-state.md, ResetPlayerMoney: 0xB7CE50).
+/// `CWorld::Players[0].m_nMoney` (docs/re/subsystems/player-state.md, "20 ResetPlayerMoney").
 pub const PLAYER_MONEY: u32 = CWORLD_PLAYERS + 0xB8;
 /// `FrontEndMenuManager.m_bHudOn` (+0x21), gta-reversed `MenuManager.h`.
 pub const MENU_HUD_ON: u32 = FRONTEND_MENU_MANAGER + 0x21;
@@ -110,7 +113,7 @@ pub const MENU_HUD_ON: u32 = FRONTEND_MENU_MANAGER + 0x21;
 pub const MENU_ACTIVE: u32 = FRONTEND_MENU_MANAGER + 0x5C;
 /// `CHud::bScriptDontDisplayRadar`, gta-reversed `Hud.h`.
 pub const HUD_SCRIPT_DONT_DISPLAY_RADAR: u32 = 0xBAA3FB;
-/// `CCamera::Fade` entry; samp writes `ret 8` here at every spawn (CSV row 365).
+/// `CCamera::Fade` entry; samp writes `ret 8` here at every spawn.
 pub const CAMERA_FADE: u32 = 0x50AC20;
 /// `CPlayerPed::SetInitialState(bool)` (thiscall), gta-reversed `PlayerPed.cpp`.
 pub const PLAYER_PED_SET_INITIAL_STATE: u32 = 0x60CD20;
@@ -120,27 +123,28 @@ pub const PED_GIVE_WEAPON: u32 = 0x5E6080;
 pub const PED_CLEAR_WEAPONS: u32 = 0x5E6320;
 /// `CAEPedSpeechAudioEntity::Initialise(CEntity*)` (thiscall), gta-reversed `AEPedSpeechAudioEntity.cpp`.
 pub const PED_SPEECH_INITIALISE: u32 = 0x4E68D0;
-/// `CTaskSimpleJetPack` vtable (remote-control-onfoot.md §2.1).
+/// `CTaskSimpleJetPack` vtable (docs/re/subsystems/remote-control-onfoot.md, "Keys → shadow pad").
 pub const VTBL_TASK_SIMPLE_JETPACK: u32 = 0x8705C4;
-/// Primary-task vtable samp tests for "hands up" (A 0x100ACBA0; the task `TASK_HANDS_UP` creates).
+/// Primary-task vtable samp tests for "hands up" (the task `TASK_HANDS_UP` creates).
 pub const VTBL_TASK_HANDS_UP: u32 = 0x85A29C;
-/// `CPedIntelligence::SetTaskDuckSecondary(u16 length)` (thiscall), samp A 0x100AC700.
+/// `CPedIntelligence::SetTaskDuckSecondary(u16 length)` (thiscall).
 pub const INTELLIGENCE_SET_TASK_DUCK_SECONDARY: u32 = 0x601230;
-/// `CPedIntelligence` secondary task slot 5 (IK chain task), removed before a skin change (A 0x100AE060).
+/// `CPedIntelligence` secondary task slot 5 (IK chain task), which samp removes before a skin change.
 pub const INTELLIGENCE_SECONDARY_IK: u32 = 0x2C;
-/// Scalar deleting destructor samp calls on that task (A 0x100AE060).
+/// Scalar deleting destructor samp calls on that task.
 pub const TASK_IK_DELETING_DTOR: u32 = 0x639330;
-/// `CModelInfo::ms_modelInfoPtrs` and its size; a ped model's info has the
-/// `CPedModelInfo` vtable (samp's valid-ped-model test A 0x100B3E10).
+/// `CModelInfo::ms_modelInfoPtrs`.
 pub const MODEL_INFO_PTRS: u32 = 0xA9B0C8;
+/// Number of entries in `ms_modelInfoPtrs`.
 pub const MODEL_INFO_COUNT: u32 = 20001;
+/// `CPedModelInfo` vtable; a ped model's info has it.
 pub const VTBL_PED_MODEL_INFO: u32 = 0x85BDC0;
-/// `CPed::GiveWeapon(weapon, ammo, likeUnused)` is [`PED_GIVE_WEAPON`]; `CWorld::PlayerInFocus` (u8).
+/// `CWorld::PlayerInFocus` (u8).
 pub const PLAYER_IN_FOCUS: u32 = 0xB7CD74;
 /// `CStats::StatTypesFloat[69..79]` (weapon skills, 11 floats).
 pub const WEAPON_SKILL_STATS: u32 = 0xB79380 + 0x114;
 
-/// samp's valid-ped-model test (A 0x100B3E10): a model-info pointer with the ped vtable.
+/// samp's valid-ped-model test: a model-info pointer with the ped vtable. Mirrors samp.dll 0x100B3E10.
 pub fn is_ped_model<M: Memory>(mem: &M, model: u32) -> bool {
     if model >= MODEL_INFO_COUNT {
         return false;
@@ -153,7 +157,7 @@ pub fn is_ped_model<M: Memory>(mem: &M, model: u32) -> bool {
 pub mod off {
     /// `CEntity` vtable pointer.
     pub const VTABLE: u32 = 0x0;
-    /// `CEntity::Teleport(CVector, bool)` vtable slot (player-state.md RPC 12).
+    /// `CEntity::Teleport(CVector, bool)` vtable slot (docs/re/subsystems/player-state.md, "12 SetPlayerPosition").
     pub const VT_TELEPORT: u32 = 0x38;
     /// `CEntity::SetModelIndex(uint32)` vtable slot (samp's skin change).
     pub const VT_SET_MODEL_INDEX: u32 = 0x14;
@@ -167,21 +171,25 @@ pub mod off {
     pub const MOVE_SPEED: u32 = 0x44;
     /// `CPed` flag words (first: bit 8 bInVehicle, bit 26 bIsDucking).
     pub const PED_FLAGS: u32 = 0x46C;
-    /// `CPed::m_pIntelligence`; its primary task slot is at +0x10 (remote-control-onfoot.md §2.1).
+    /// `CPed::m_pIntelligence`.
     pub const PED_INTELLIGENCE: u32 = 0x47C;
+    /// Primary task slot in `CPedIntelligence` (docs/re/subsystems/remote-control-onfoot.md, "Keys → shadow pad").
     pub const INTELLIGENCE_PRIMARY_TASK: u32 = 0x10;
     /// `CPed::m_ePedState`.
     pub const PED_STATE: u32 = 0x530;
     /// `CPed::m_fHeadingGoal`.
     pub const PED_HEADING_GOAL: u32 = 0x55C;
-    /// `CPed::m_aWeapons` (13 × CWeapon, 0x1C each: type +0, total ammo +0xC).
+    /// `CPed::m_aWeapons` (13 × CWeapon; the type is at +0).
     pub const PED_WEAPONS: u32 = 0x5A0;
+    /// Size of one `CWeapon`.
     pub const WEAPON_SIZE: u32 = 0x1C;
+    /// `CWeapon::m_nTotalAmmo`.
     pub const WEAPON_AMMO_TOTAL: u32 = 0xC;
     /// `CPed::m_nSelectedWepSlot` (u8).
     pub const PED_SELECTED_WEAPON_SLOT: u32 = 0x718;
-    /// Last damage weapon / entity (player-state.md 53; spawn clears them).
+    /// Last damage weapon (docs/re/subsystems/player-state.md, "53 OnPlayerDeath"; spawn clears it).
     pub const PED_LAST_DAMAGE_WEAPON: u32 = 0x760;
+    /// Last damage entity (spawn clears it).
     pub const PED_LAST_DAMAGE_ENTITY: u32 = 0x764;
     /// `CPlayerInfo::m_pPed`.
     pub const PLAYER_INFO_PED: u32 = 0x0;
@@ -381,8 +389,8 @@ pub fn read_local_sample<M: Memory>(mem: &M, ped: u32) -> Result<crate::footsync
         health: mem.read_f32(ped + off::PED_HEALTH)?,
         armour: mem.read_f32(ped + off::PED_ARMOUR)?,
         weapon: weapon.min(63) as u8,
-        // samp's order (A 0x10003410): jetpack, dance, hands up, phone, piss, duck, … Only the
-        // ones this client can be in are reported.
+        // samp checks in this order: jetpack, dance, hands up, phone, piss, duck, … Only the ones this
+        // function can detect are reported here.
         special_action: if jetpack {
             2
         } else if hands_up {

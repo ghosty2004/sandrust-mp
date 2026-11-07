@@ -1,65 +1,59 @@
-//! Init-main hooks that belong to no feature module (Windows only; from the parity audit, docs/phase3/par-audit.md).
-//!
-//! * HUD scale fix (CSV rows 7, 368, 369; also used by the row 8 crosshair wrapper in combathooks.rs). Static
-//!   reading of samp.dll A 0x100A2440 (correction), 0x100A2540 (radar wrapper) and 0x100A2590 (crosshair wrapper):
-//!   - only with samp's flag A 0x10117470 (initial value 1; start-up clears it when sa-mp.cfg `nohudscalefix` is
-//!     exactly 1, A 0x100C49DD; `/hudscalefix` toggles it);
-//!   - the two screen-scale floats 0x859520/0x859524 are saved, then the screen size `RsGlobal` 0xC17044/0xC17048 is
-//!     read; with a non-positive width or height nothing else happens;
-//!   - aspect = width / height (x87). Below 1.6 the HUD floats 0x866B74/0x866B78 := 76.0/94.0 and nothing is
-//!     marked; otherwise HUD floats := 82.0/96.0, 0x859524 := 0x3B1E98DD and 0x859520 := 0.00222 / aspect, and the
-//!     correction is marked active;
-//!   - after the wrapped draw an active correction is undone: both scale floats back to the saved values, HUD floats
-//!     := 76.0/94.0, mark cleared;
-//!   - the radar wrapper always corrects around `CHud::DrawRadar`; the crosshair wrapper only while the local
-//!     camera mode (`TheCamera.m_aCams[0].m_nMode`) is 0x35.
-//!
-//!   samp makes both .rdata ranges writable once at start-up (A 0x100AAEF0); so do we.
-//! * Row 16: the first `CTimer::GetCurrentTimeInCycles` call of Idle's 14 ms busy-wait goes through samp
-//!   (A 0x100A2420), which calls `Sleep(1)` first and then the original.
-//! * Row 50: `CCheat::AddToCheatString`, at `mov [CCheat::m_bHasPlayerCheated],1` right before the cheat function
-//!   would be called: samp (A 0x100A3AA0) keeps the flag write and resumes at 0x438581, i.e. neither the cheat
-//!   function (`call eax`) nor the toggle branch (0x43858E) runs — typed cheats do nothing. samp also stores EAX (the
-//!   cheat function) into a global that nothing reads (only reference: A 0x100A3AA0); not replicated.
+//! Start-up hooks that belong to no feature module (Windows only):
+//! * the HUD scale fix around `CHud::DrawRadar` ([`install`]) and `CHud::DrawCrossHairs` ([`crosshairs`], called
+//!   from combathooks.rs), switchable through sa-mp.cfg `nohudscalefix` and `/hudscalefix` ([`set_enabled`]);
+//! * `Sleep(1)` before the first time read of Idle's 14 ms busy-wait;
+//! * typed single-player cheats do nothing (`CCheat::AddToCheatString`).
+//! Spec: docs/re/subsystems/ui-rendering.md, "Other hooks that matter for UI"; docs/re/subsystems/gta-patches.md.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::patch::{PatchError, Patcher, ProcessMemory};
 
-/// Screen-scale floats (`1/640`, `1/448` in the file).
+/// Screen-scale float, `1/640` in the file.
 const SCALE_X: u32 = 0x859520;
+/// Screen-scale float, `1/448` in the file.
 const SCALE_Y: u32 = 0x859524;
-/// Two HUD floats chosen by the aspect ratio (76.0 / 94.0 in the file).
+/// First of two HUD floats chosen by the aspect ratio (76.0 in the file).
 const HUD_A: u32 = 0x866B74;
+/// Second HUD float (94.0 in the file).
 const HUD_B: u32 = 0x866B78;
-/// `RsGlobal.maximumWidth` / `maximumHeight`.
+/// `RsGlobal.maximumWidth`.
 const SCREEN_W: u32 = 0xC17044;
+/// `RsGlobal.maximumHeight`.
 const SCREEN_H: u32 = 0xC17048;
+/// Bits samp writes into `SCALE_Y` on a wide screen.
 const WIDE_SCALE_Y: u32 = 0x3B1E_98DD;
+/// On a wide screen `SCALE_X` := this / aspect.
 const WIDE_NUMERATOR: f32 = 0.00222;
+/// Aspect ratio from which the screen counts as wide.
 const WIDE_MIN_ASPECT: f32 = 1.6;
 const HUD_NARROW: (f32, f32) = (76.0, 94.0);
 const HUD_WIDE: (f32, f32) = (82.0, 96.0);
 
-/// `CHud::Draw` → `CHud::DrawRadar` call (row 7).
+/// `CHud::Draw` → `CHud::DrawRadar` call.
 pub const RADAR_CALL: u32 = 0x58FC53;
+/// `CHud::DrawRadar`.
 const DRAW_RADAR: u32 = 0x58A330;
-/// Idle's busy-wait `call CTimer::GetCurrentTimeInCycles` (row 16).
+/// Idle's busy-wait `call CTimer::GetCurrentTimeInCycles`.
 pub const IDLE_WAIT_CALL: u32 = 0x53E930;
+/// `CTimer::GetCurrentTimeInCycles`.
 const GET_CURRENT_TIME_IN_CYCLES: u32 = 0x561A80;
-/// `CCheat::AddToCheatString`: the 7-byte `mov byte [m_bHasPlayerCheated],1` (row 50), the pointer slot in the
-/// function's alignment padding and the resume address after `call eax`.
+/// `CCheat::AddToCheatString`: the 7-byte `mov byte [m_bHasPlayerCheated],1` right before the cheat function is
+/// called.
 pub const CHEAT_SITE: u32 = 0x438576;
 const CHEAT_SITE_ORIGINAL: [u8; 7] = [0xC6, 0x05, 0x8C, 0x91, 0x96, 0x00, 0x01];
+/// Pointer slot in `AddToCheatString`'s alignment padding (target of our `jmp [slot]`).
 const CHEAT_SLOT: u32 = 0x4385AA;
 const CHEAT_SLOT_ORIGINAL: [u8; 4] = [0x90; 4];
+/// `CCheat::m_bHasPlayerCheated`.
 const HAS_PLAYER_CHEATED: u32 = 0x96918C;
+/// `AddToCheatString` right after the `call eax` that runs the cheat (the toggle branch is not taken from here).
 const CHEAT_RESUME: u32 = 0x438581;
 /// `TheCamera.m_aCams[0].m_nMode` and the mode the crosshair correction applies to.
 const CAM0_MODE: u32 = crate::swap::addr::CAM0_MODE;
 const CROSSHAIR_FIX_MODE: u16 = 0x35;
 
-/// samp's flag A 0x10117470 (`nohudscalefix` ≠ 1).
+/// Whether the HUD scale fix runs (on unless sa-mp.cfg `nohudscalefix` is exactly 1). Mirrors samp.dll 0x10117470.
 static ENABLED: AtomicBool = AtomicBool::new(true);
 /// Set once the .rdata ranges are writable.
 static WRITABLE: AtomicBool = AtomicBool::new(false);
@@ -115,7 +109,10 @@ fn wide_scale(w: i32, h: i32) -> Option<f32> {
     (lt == 0).then_some(out)
 }
 
-/// A 0x100A2440.
+/// Saves both screen-scale floats, then by aspect ratio: below 1.6 the HUD floats get 76.0 / 94.0 and nothing is
+/// marked; otherwise HUD floats := 82.0 / 96.0, the scale floats are set for the wide screen and the correction is
+/// marked active, so [`restore`] undoes it after the draw. Nothing happens with a non-positive screen size.
+/// Mirrors samp.dll 0x100A2440.
 fn correct() {
     if !ENABLED.load(Ordering::Relaxed) || !WRITABLE.load(Ordering::Relaxed) {
         return;
@@ -145,7 +142,7 @@ fn restore() {
     }
 }
 
-/// Row 7 (A 0x100A2540): `CHud::DrawRadar` with the correction around it.
+/// `CHud::DrawRadar` with the correction around it. Mirrors samp.dll 0x100A2540.
 extern "C" fn radar_site() {
     correct();
     // SAFETY: the original cdecl function.
@@ -153,8 +150,8 @@ extern "C" fn radar_site() {
     restore();
 }
 
-/// Row 8 (A 0x100A2590): runs `draw` (`CHud::DrawCrossHairs`) with the correction while the local camera mode is
-/// 0x35.
+/// Runs `draw` (`CHud::DrawCrossHairs`) with the correction while the local camera mode is 0x35.
+/// Mirrors samp.dll 0x100A2590.
 pub fn crosshairs(draw: impl FnOnce()) {
     // SAFETY: TheCamera is a static of the executable.
     let mode = unsafe { std::ptr::read_volatile(CAM0_MODE as usize as *const u16) };
@@ -168,7 +165,7 @@ pub fn crosshairs(draw: impl FnOnce()) {
     }
 }
 
-/// Row 16 (A 0x100A2420).
+/// `Sleep(1)`, then the original time read. Mirrors samp.dll 0x100A2420.
 extern "C" fn idle_wait_time() -> u32 {
     // SAFETY: Win32 Sleep; then the original cdecl `CTimer::GetCurrentTimeInCycles`.
     unsafe {
@@ -177,7 +174,9 @@ extern "C" fn idle_wait_time() -> u32 {
     }
 }
 
-/// Row 50 (A 0x100A3AA0): keep the "has cheated" write, skip the cheat.
+/// Keeps the "has cheated" write and resumes after `call eax`, so neither the cheat function nor the toggle branch
+/// runs. (samp also stores the cheat function pointer into a global nothing reads; not replicated.)
+/// Mirrors samp.dll 0x100A3AA0.
 #[unsafe(naked)]
 unsafe extern "C" fn cheat_stub() {
     std::arch::naked_asm!(
@@ -196,7 +195,9 @@ fn unprotect(a: u32, len: usize) -> bool {
     unsafe { VirtualProtect(a as usize as *const core::ffi::c_void, len, PAGE_READWRITE, &mut old) != 0 }
 }
 
-/// Installs rows 7 (with 368/369), 16 and 50. Returns one result per row.
+/// Makes the two `.rdata` float ranges writable (as samp does once at start-up), then installs the radar hook, the
+/// idle-wait hook and the cheat hook. Returns one result per hook, keyed by its row in
+/// docs/re/data/gta-patches-r4-annotated.csv.
 pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Result<(), PatchError>)> {
     let mut out = Vec::new();
     let skip = crate::patches::skipped_rows();

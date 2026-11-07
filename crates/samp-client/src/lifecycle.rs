@@ -1,13 +1,8 @@
-//! Connection lifecycle of the netgame (milestone M10): samp's netgame state, the connect
-//! timer and the reactions to RakNet's packets, RPC 40 and RPC 130.
-//!
-//! Static: main loop B 0x1000b5a0, connect tick B 0x10008930, packet handler B 0x1000b250,
-//! lost connection B 0x1000ace0, server closed B 0x10008dd0, RPC 40 reset B 0x1000a530, RPC 130
-//! B 0x10010520. Measured: `docs/phase3/trace-notes.md` "Connection lifecycle" (TRACE-8).
-//!
-//! Main loop per frame: the packet handler first; while the state is not 5 the "not connected"
-//! scene; in state 1 the connect tick (more than 3000 ms since the last attempt → print
-//! `Connecting to H:P...`, connect, remember the time once Connect has returned, state 2).
+//! Connection lifecycle of the netgame: samp's netgame state, the connect timer and the reactions to
+//! RakNet's packets, RPC 40 (server restart) and RPC 130 (connection rejected). [`NetGame`] is pure logic
+//! and returns the [`Action`]s the host performs. Per frame samp runs the packet handler first, shows the
+//! "not connected" scene while the state is not 5, and in state 1 runs the connect tick.
+//! Spec: docs/phase3/trace-notes.md, "Connection lifecycle".
 
 /// samp's netgame states (NetGame +0x3cd).
 pub mod state {
@@ -23,12 +18,11 @@ pub mod state {
     pub const RESTARTING: u32 = 11;
 }
 
-/// The connect tick fires when strictly more than this has passed since the last attempt
-/// (B 0x10008942 `cmp eax, 3000; jbe`).
+/// The connect tick fires when strictly more than this has passed since the last attempt.
+/// Mirrors samp.dll B 0x10008930.
 pub const CONNECT_INTERVAL_MS: u64 = 3000;
 
-/// Chat texts (build B .rdata) and the helper each goes through: `Debug` = type 8
-/// (B 0x100680b0), `Info` = type 4 (B 0x10068030).
+/// samp's chat texts; each goes out as an [`Action::Debug`] (type 8) or [`Action::Info`] (type 4) line.
 pub mod msg {
     pub const DIDNT_RESPOND: &str = "The server didn't respond. Retrying..";
     pub const FULL: &str = "The server is full. Retrying...";
@@ -63,10 +57,10 @@ pub enum Action {
     Info(&'static str),
     /// RakClient `Disconnect` (block time in ms; no notification goes out in these paths).
     Disconnect(u32),
-    /// The RPC 40 reset routine (B 0x1000a530), which ends with the type-4 line
-    /// "The server is restarting.." and leaves the state at 11.
+    /// The RPC 40 reset routine, which ends with the type-4 line "The server is restarting.." and leaves the
+    /// state at 11. Mirrors samp.dll B 0x1000A530.
     Reset,
-    /// Delete every remote player from the pool (B 0x1000ad20 loop over 0..1004).
+    /// Delete every remote player from the pool (ids 0..1004).
     DeletePlayers,
     /// Stop the audio stream; `wait` for its worker.
     StopAudio { wait: bool },
@@ -81,7 +75,7 @@ pub struct NetGame {
 }
 
 impl NetGame {
-    /// Construction (B 0x1000b920 → state 1, last attempt = now; "Started" is printed there).
+    /// Construction: state 1, last attempt = now (samp prints "Started" here). Mirrors samp.dll B 0x1000B920.
     pub fn new(now_ms: u64) -> Self {
         Self { state: state::WAIT_CONNECT, last_attempt_ms: now_ms }
     }
@@ -96,8 +90,8 @@ impl NetGame {
         self.state == state::WAIT_CONNECT && now_ms.saturating_sub(self.last_attempt_ms) > CONNECT_INTERVAL_MS
     }
 
-    /// After Connect returned (A 0x10008985: GetTickCount is read again after the call): the
-    /// attempt time and state 2.
+    /// After Connect returned: the attempt time (samp reads the tick count again after the call) and
+    /// state 2.
     pub fn attempt_started(&mut self, now_ms: u64) {
         self.last_attempt_ms = now_ms;
         self.state = state::CONNECTING;
@@ -114,7 +108,7 @@ impl NetGame {
         vec![Action::Reset]
     }
 
-    /// A RakNet packet through the packet handler (B 0x1000b250).
+    /// A RakNet packet through the packet handler. Mirrors samp.dll B 0x1000B250.
     pub fn on_packet(&mut self, p: crate::netclient::NetPacket) -> Vec<Action> {
         use crate::netclient::NetPacket as P;
         match p {
@@ -126,11 +120,10 @@ impl NetGame {
                 self.state = state::WAIT_CONNECT;
                 vec![Action::Debug(msg::FULL)]
             }
-            // B 0x10008dd0: no state change, no reset (TRACE-8 kick: the world stays as it was).
+            // No state change and no reset: after a kick the world stays as it was.
             P::ServerClosed => {
                 vec![Action::Debug(msg::SERVER_CLOSED), Action::StopAudio { wait: true }, Action::Disconnect(2000)]
             }
-            // B 0x1000ace0.
             P::ConnectionLost => {
                 self.state = state::RESTARTING;
                 let v = vec![
@@ -153,8 +146,8 @@ impl NetGame {
         }
     }
 
-    /// RPC 130 ConnectionRejected (B 0x10010520): its lines (type 4), then Disconnect(500);
-    /// the state is unchanged, so no retry follows.
+    /// RPC 130 ConnectionRejected: its lines (type 4), then Disconnect(500); the state is unchanged, so no
+    /// retry follows. Mirrors samp.dll B 0x10010520.
     pub fn on_rejected(&mut self, reason: u8) -> Vec<Action> {
         let mut v = match reason {
             1 => vec![Action::Info(msg::REJECT_VERSION)],

@@ -1,32 +1,8 @@
-//! Debug control channel: a non-blocking TCP line protocol on 127.0.0.1,
-//! serviced by polling (from the per-frame tick in the game).
-//!
-//! Commands (one per line, replies are one line):
-//! * `ping`  → `pong`
-//! * `state` → game state and local player position/heading/health/armour
-//! * `quit`  → `bye`, then the game is asked to exit
-//! * `peek ADDR LEN` → `peek ADDR HEXBYTES` (LEN ≤ 256; ADDR hex with 0x or decimal)
-//! * `net`   → connection phase, player id, last RPC ids, packet counters
-//! * `remote` → `remote count=N …` followed by N lines, one per remote player
-//!   (id, name, ped slot, ped pointer, position, heading, health, last sync age)
-//! * `files` → `files mode=archive|fallback …` followed by one line per
-//!   samp.saa entry served so far (name, hash, size, opens, first path)
-//! * `vehicles` → `vehicles count=N …` followed by N lines, one per streamed vehicle (id, model, script
-//!   handle, CVehicle pointer, position, heading, health, driver player id / `local`, local occupancy)
-//! * `world` → `world count=N objects=… pickups=… actors=… …` followed by N lines, one per world entity
-//!   (objects, attached objects, pickups, actors, checkpoints, gang zones, map icons, 3D labels)
-//! * `spawn` → debugging aid: run the local spawn routine with the stored
-//!   spawn info (as if the server had answered RPC 129); not used by tests
-//! * `chat [N]` → `chat count=K …` header plus K lines `line type=… colour=…
-//!   name=… text=… runs=[…]` (the newest K ≤ N chat entries, default 20)
-//! * `input` → chat input state (`input open=… text=… caret=… …`)
-//! * `bubbles` → `bubbles count=N` header plus N lines `bubble id=… colour=… distance=… duration=…
-//!   lines=… text=…` (chat bubbles held per player; samp-tracer answers the same for the original)
-//! * `synced` → `synced count=N` header plus N lines `synced id=… health=… armour=…` (synced
-//!   health/armour per remote player, what the nametag bars show; same format in samp-tracer)
-//! * `say TEXT` → debugging aid: TEXT is handled as if typed into the chat
-//!   input and sent with Enter (next frame); replies `say queued`
-//! * anything else → `error unknown command`
+//! Debug control channel: a non-blocking TCP line protocol on 127.0.0.1, serviced by polling from the
+//! game's per-frame tick. One command per line ([`parse`] → [`Command`]); each reply starts with one line,
+//! some commands follow it with one line per listed item. Tests and tools (tools/e2e/, tools/trace/) use
+//! it to read the client's state; samp-tracer answers `bubbles` and `synced` in the same format for the
+//! original client.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -46,34 +22,57 @@ fn parse_port(v: Option<&str>) -> u16 {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    /// `ping` → `pong`.
     Ping,
+    /// `state`: game state and local player position / heading / health / armour.
     State,
+    /// `net`: connection phase, player id, last RPC ids, packet counters.
     Net,
+    /// `remote`: `remote count=N …`, then one line per remote player (id, name, ped slot, ped pointer,
+    /// position, heading, health, last sync age).
     Remote,
+    /// `files`: `files mode=archive|fallback …`, then one line per samp.saa entry served so far (name,
+    /// hash, size, opens, first path).
     Files,
+    /// `vehicles`: `vehicles count=N …`, then one line per streamed vehicle (id, model, script handle,
+    /// CVehicle pointer, position, heading, health, driver player id / `local`, local occupancy).
     Vehicles,
-    /// Combat counters (M7).
+    /// `combat`: combat counters.
     Combat,
+    /// `world`: `world count=N objects=… pickups=… actors=… …`, then one line per world entity (objects,
+    /// attached objects, pickups, actors, checkpoints, gang zones, map icons, 3D labels).
     World,
-    /// `behaviour`: camera / spectating / bounds / drunk / animation state (M8b).
+    /// `behaviour`: camera / spectating / bounds / drunk / animation state.
     Behaviour,
+    /// `spawn`: debugging aid, runs the local spawn routine with the stored spawn info (as if the server
+    /// had answered RPC 129); not used by tests.
     Spawn,
+    /// `quit` / `exit` → `bye`, then the game is asked to exit.
     Quit,
+    /// `chat [N]`: `chat count=K …`, then K lines `line type=… colour=… name=… text=… runs=[…]` (the newest
+    /// K ≤ N chat entries, default 20, at most 100).
     Chat(usize),
+    /// `input`: chat input state (`input open=… text=… caret=… …`).
     Input,
     /// `ui`: dialog / scoreboard / textdraw / menu / death window state.
     Ui,
-    /// `bubbles`: chat bubbles held per player (DIFF-3).
+    /// `bubbles`: `bubbles count=N`, then N lines `bubble id=… colour=… distance=… duration=… lines=…
+    /// text=…` (chat bubbles held per player).
     Bubbles,
-    /// `synced`: synced health/armour per remote player (DIFF-3).
+    /// `synced`: `synced count=N`, then N lines `synced id=… health=… armour=…` (synced health/armour per
+    /// remote player, what the nametag bars show).
     Synced,
+    /// `say TEXT`: debugging aid, TEXT is handled as if typed into the chat input and sent with Enter (next
+    /// frame); replies `say queued`.
     Say(String),
-    /// `audio`: audio stream / PlayerPlaySound state (M9).
+    /// `audio`: audio stream / PlayerPlaySound state.
     Audio,
+    /// `peek ADDR LEN` → `peek ADDR HEXBYTES` (LEN ≤ [`MAX_PEEK`]; ADDR hex with 0x or decimal).
     Peek { addr: u32, len: usize },
     /// `devreset [frames]`: test hook, the device reports "lost, reset possible" for that many
-    /// `TestCooperativeLevel` calls (default 15), so RenderWare runs its lost-device path (CRASH-1).
+    /// `TestCooperativeLevel` calls (default 15), so RenderWare runs its lost-device path.
     DevReset(u32),
+    /// Anything else → `error unknown command`.
     Unknown(String),
 }
 
@@ -205,8 +204,8 @@ impl Server {
                 if let Some(cmd) = parse(&line) {
                     let mut reply = handle(&cmd);
                     reply.push('\n');
-                    // Replies are short; a blocking write of a few bytes into an
-                    // empty socket buffer does not stall the frame.
+                    // Replies are short; a blocking write of a few bytes into an empty socket buffer does not
+                    // stall the frame.
                     let _ = c.stream.set_nonblocking(false);
                     if c.stream.write_all(reply.as_bytes()).is_err() {
                         alive = false;

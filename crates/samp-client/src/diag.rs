@@ -16,8 +16,7 @@ use windows_sys::Win32::System::Threading::{
 /// Logs EIP/ESP and up to 24 code-looking stack words of every other thread.
 pub fn dump_threads(why: &str) {
     crate::log!("diag: thread dump ({why})");
-    // SAFETY: Toolhelp/thread APIs on our own process; every opened handle is
-    // closed and every suspended thread resumed.
+    // SAFETY: Toolhelp/thread APIs on our own process; every handle is closed, every suspended thread resumed.
     unsafe {
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
         if snap == INVALID_HANDLE_VALUE {

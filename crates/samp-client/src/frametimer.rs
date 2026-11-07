@@ -1,31 +1,12 @@
-//! samp's step before every `CGame::Process` (A 0x100A1C50, called from its
-//! `CGame::Process` wrapper A 0x100A26A0, CSV row 10): a time-step estimate
-//! written every 250 ms, a 30 ms counter written into the pad, and the frame
-//! limiter. Static analysis only (docs/phase3/parity-notes.md "Speed
-//! magnitude"); the effect it was looked at for is the frame rate: the
-//! original runs at ~52 fps in the trace lane, ours ran at ~59 fps.
-//!
-//! Per call, with `now` in milliseconds from the performance counter:
-//! * first call: time step and non-clipped time step := 1.0, timers start,
-//!   nothing else;
-//! * counter: every > 30 ms a counter 0…4 advances (wrapping at 5); it is
-//!   written to 0xB7356E on every call once the timer has started;
-//! * every > 250 ms: `n = 4 × frames − 4` (frames counted since the last
-//!   estimate); time step := 3.0 if n < 17, else 50 / n;
-//! * limiter, `elapsed` = now − end of the previous call:
-//!   * the local ped's primary event task (intelligence +0xC) has type 0x10C
-//!     and it is on foot: with the menu frame limiter on and a limit < 46,
-//!     sleep to the limit; otherwise sleep `21 − elapsed` when 0 < elapsed < 22;
-//!   * otherwise: menu frame limiter off → sleep `10 − elapsed` when
-//!     0 < elapsed < 11; on → sleep to the `fpslimit` (sleep `1000/limit −
-//!     elapsed − 1` when 0 < elapsed < 1000/limit);
-//!   * the end time is taken after the sleep.
-//!
-//! The sleep is kernel32 `Sleep` as in samp (NET-6 §4: with std's sleep our frames were ~19.2 ms
-//! instead of the original's 19.0, which changed GTA's physics around vehicles and samp's send races).
+//! The step samp runs before every `CGame::Process`: a time-step estimate every 250 ms, a 30 ms counter
+//! written into the pad, and the frame limiter. Pure logic; `dll` applies the returned [`Step`] from its
+//! `CGame::Process` hook and sleeps with kernel32 `Sleep`, as samp does (std's sleep gives slightly longer
+//! frames under Wine, which changes GTA's physics around vehicles).
+//! Spec: docs/phase3/parity-notes.md, "Speed magnitude".
 
-/// `CTimer::ms_fTimeStep` and `ms_fTimeStepNonClipped`.
+/// `CTimer::ms_fTimeStep`.
 pub const TIME_STEP: u32 = 0xB7CB5C;
+/// `CTimer::ms_fTimeStepNonClipped`.
 pub const TIME_STEP_NON_CLIPPED: u32 = 0xB7CB58;
 /// Byte samp's 30 ms counter is written to (inside `CPad::Pads[0]`, meaning not identified).
 pub const PAD_COUNTER: u32 = 0xB7356E;
@@ -62,6 +43,17 @@ pub struct Limiter {
 }
 
 impl FrameTimer {
+    /// One call, `now` in milliseconds from the performance counter:
+    /// * first call: time step := 1.0, timers start, nothing else;
+    /// * every > 30 ms the pad counter advances 0…4 (wrapping at 5); it is reported on every call once its
+    ///   timer has started;
+    /// * every > 250 ms: `n = 4 × frames − 4`; time step := 3.0 if n < 17, else 50 / n;
+    /// * limiter, `elapsed` = now − end of the previous call: with the task gate set, sleep to the
+    ///   `fpslimit` when the menu limiter is on and the limit is < 46, else `21 − elapsed` when
+    ///   0 < elapsed < 22; without it, menu limiter off → `10 − elapsed` when 0 < elapsed < 11, on → sleep to
+    ///   the `fpslimit` (`1000/limit − elapsed − 1` when 0 < elapsed < 1000/limit).
+    ///
+    /// Mirrors samp.dll 0x100A1C50.
     pub fn step(&mut self, now: u64, l: Limiter) -> Step {
         let Some(rate_start) = self.rate_start else {
             self.rate_start = Some(now);

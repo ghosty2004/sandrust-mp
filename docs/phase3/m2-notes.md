@@ -78,6 +78,10 @@ probe reports `st=1` (ONFOOT).
 * RPC 67 SetPlayerArmedWeapon → SET_CURRENT_CHAR_WEAPON (the "next frame" 01B9(ped,0)/(ped,4)
   in the original trace are these RPCs; the post-spawn teleport/heading/camera reset are the
   server's RPCs 12/19/162, not part of the spawn routine).
+* Netgame creation: samp's `Render2dStuff` hook (A 0x100c47d0) does its one-time init on its first
+  call and creates the netgame on the second. In the trace the netgame constructor's 09BA ran in
+  frame 35; ours ran one frame earlier until the client also waited for the second call
+  (`dll.rs` `client_tick`, moved here from a code comment).
 
 ## Spawn routine (player-state.md "Local Spawn routine", order from TRACE-1)
 02EB → 0930(0)/0925/0373/02EB → HUD on → 01B4(0,1) + 04D7(ped,0) + teleport to own position →

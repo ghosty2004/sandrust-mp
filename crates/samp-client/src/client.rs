@@ -1,14 +1,10 @@
-//! The in-game client session (Windows only): network session, class
-//! selection, local spawn, on-foot sync and the S→C player RPCs of M2.
-//!
-//! Everything here runs on the game's main thread from the per-frame hook,
-//! except [`Client::status_line`] / [`Client::request_debug_spawn`], which
-//! only touch plain data.
-//!
-//! Specs: player-state.md (class selection, 128/129/52, "Local Spawn routine",
-//! 12/14/19/66/68/74, camera RPCs 157/158/162), remote-players-sync.md §0.3/§0.4
-//! and §2 (207, 205), gta-patches.md row 365 (fade) and row 385 (restart
-//! override).
+//! The in-game client session (Windows only): network session and connection lifecycle, class selection, local
+//! spawn and death, local sync, the S→C player RPCs, and the per-frame tick that drives the pools (remote players,
+//! vehicles, objects, entities, combat, behaviour). Entry points: [`Client::start`] and [`Client::tick`].
+//! Everything runs on the game's main thread from the per-frame hook, except [`Client::status_line`] /
+//! [`Client::request_debug_spawn`], which only touch plain data.
+//! Specs: docs/re/subsystems/player-state.md, docs/re/subsystems/remote-players-sync.md,
+//! docs/re/subsystems/session-misc.md.
 
 use std::time::{Duration, Instant};
 
@@ -29,47 +25,50 @@ use crate::script::{Arg, Runner, op};
 /// Environment variable with the (Windows) path of `auth_table.txt`.
 pub const AUTH_TABLE_ENV: &str = "SAMP_RS_AUTH_TABLE";
 
-/// Ped states (gta-reversed `Enums/ePedState.h`).
+/// Ped state `PEDSTATE_IDLE` (gta-reversed `Enums/ePedState.h`, like the other `PEDSTATE_*`).
 const PEDSTATE_IDLE: u32 = 1;
 const PEDSTATE_SNIPER: u32 = 12;
 const PEDSTATE_DRIVING: u32 = 50;
-/// `TheCamera.m_aCams[0].Front` (samp's camera-front pointer at A 0x101039c8 holds 0xB6F32C).
+/// `TheCamera.m_aCams[0].Front` (what samp's camera-front pointer holds).
 const CAMERA_FRONT: u32 = 0xB6F32C;
 const PEDSTATE_DIE: u32 = 54;
 /// `CPed::RemoveWeaponWhenEnteringVehicle(int)` (thiscall; gta-reversed `Ped.cpp`).
 const PED_REMOVE_WEAPON_ENTERING_VEHICLE: usize = 0x5E6370;
 const PEDSTATE_DEAD: u32 = 55;
 
-/// Win32 virtual-key codes polled like the original client (player-state.md 128/129).
-/// Animation blocks and models the original requests every frame (TRACE-1).
+/// Animation blocks the original requests every frame.
 const PRELOAD_ANIM_BLOCKS: [&str; 9] =
     ["PARACHUTE", "BAR", "GANGS", "PAULNMAC", "VENDING", "FIGHT_B", "FIGHT_C", "FIGHT_D", "FIGHT_E"];
+/// Models the original requests every frame.
 const PRELOAD_MODELS: [i32; 9] = [3131, 1485, 1486, 1543, 1546, 343, 342, 344, 330];
 
-/// DISPLAY_ZONE_NAMES starts this long after a spawn (A 0x10003c20 sets +0x30a := now + 1000).
+/// DISPLAY_ZONE_NAMES starts this long after a spawn.
 const ZONE_NAMES_DELAY: Duration = Duration::from_millis(1000);
 /// `CControllerState::ButtonTriangle` in `CPad::Pads[0].NewState` (samp's pad +0x1E).
 const PAD_TRIANGLE: u32 = 0x1E;
 
-/// Script commands of the RPC 40 reset (B 0x100ad350 / 0x100affe0).
+/// Script commands of the RPC 40 reset: select interior, link char to interior, explode char head.
 const OP_SELECT_INTERIOR: u16 = 0x04BB;
 const OP_LINK_CHAR_TO_INTERIOR: u16 = 0x0860;
 const OP_EXPLODE_CHAR_HEAD: u16 = 0x0321;
-/// `CPed::m_pFire`, `CVehicle::m_pFire`, `CPed` flags dword with the in-vehicle bit 0x100
-/// (B 0x100ad100 / 0x100affff).
+/// `CPed::m_pFire`.
 const PED_FIRE: u32 = 0x730;
+/// `CVehicle::m_pFire`.
 const VEHICLE_FIRE: u32 = 0x490;
 /// `CPed::m_pVehicle`.
 const PED_VEHICLE: u32 = 0x58C;
+/// `CPed` flags dword with the in-vehicle bit 0x100.
 const PED_FLAGS_IN_VEHICLE: u32 = 0x46C;
 /// `CFire::Extinguish` (thiscall).
 const GTA_FIRE_EXTINGUISH: u32 = 0x5393F0;
-/// `CWorld::PlayerInFocus` (B 0x10113978 → 0xB7CD74).
+/// `CWorld::PlayerInFocus`.
 const GTA_PLAYER_IN_FOCUS: u32 = 0xB7CD74;
-/// GTA gravity and samp's default (+0x3d5 +0x16 = 0x3c03126f = 0.008).
+/// GTA's gravity constant.
 const GTA_GRAVITY: u32 = 0x863984;
+/// samp's default gravity (server settings default, bits 0x3C03126F).
 const DEFAULT_GRAVITY: f32 = 0.008;
 
+/// Win32 virtual-key codes polled like the original client (docs/re/subsystems/player-state.md, class selection).
 const VK_SHIFT: i32 = 0x10;
 const VK_LEFT: i32 = 0x25;
 const VK_RIGHT: i32 = 0x27;
@@ -81,7 +80,7 @@ pub struct Client {
     sender: FootSender,
     spawn_info: Option<player::SpawnInfo>,
     spawned: bool,
-    /// RPC 74 flag: re-enter class selection on the next death (no death handling yet).
+    /// RPC 74 / F4 flag: re-enter class selection on the next death.
     force_class_selection: bool,
     on_foot_rate: u32,
     last_stats: Option<Instant>,
@@ -92,8 +91,7 @@ pub struct Client {
     first_frame_done: bool,
     /// Clock and weather (world.rs): settings hour/minute/weather, clock state.
     world: crate::world::World,
-    /// InitGame "zone names" (settings +0x21): DISPLAY_ZONE_NAMES every frame
-    /// from 1000 ms after the spawn (local tick A 0x100074c0, spawn A 0x10003c20).
+    /// InitGame "zone names" (settings +0x21): DISPLAY_ZONE_NAMES every frame from 1000 ms after the spawn.
     zone_names: bool,
     zone_names_from: Option<Instant>,
     /// Last interior reported with RPC 118 (local player +0x1cf, starts at 0).
@@ -102,33 +100,33 @@ pub struct Client {
     phone: bool,
     /// Local surf state (local-player object +0x2D4..+0x2EE, surf.rs).
     surf: crate::surf::LocalSurf,
-    /// Held item / piss state of the local ped (FEAT-B, `specials.rs`).
+    /// Held item / piss state of the local ped (`specials.rs`).
     specials: crate::specials::PedExtras,
-    /// Local head look (A 0x10002fa0): offset refreshed every 1000 ms, LookAt every 200 ms.
+    /// Local head look: offset refreshed every 1000 ms, LookAt every 200 ms.
     look_offset: [f32; 3],
     look_refresh: Option<Instant>,
     look_last: Option<Instant>,
-    /// Remote players (M3, players.rs).
+    /// Remote players (players.rs).
     players: crate::players::Players,
-    /// Vehicles (M5, vehicles.rs).
+    /// Vehicles (vehicles.rs).
     vehicles: crate::vehicles::Vehicles,
-    /// Combat (M7, combatclient.rs).
+    /// Combat (combatclient.rs).
     combat: crate::combatclient::Combat,
     /// Local player "dead" flag (local player +0xF4): set with RPC 53, cleared by the respawn.
     dead: bool,
     /// InitGame class count (class selection after a forced reselection).
     class_count: u32,
-    /// samp's netgame state and connect timer (lifecycle.rs, M10).
+    /// samp's netgame state and connect timer (lifecycle.rs).
     netgame: NetGame,
     /// Start of the netgame clock (GetTickCount stand-in).
     clock: Instant,
     /// `host`, `port` for the `Connecting to` line.
     connect_target: (String, u16),
-    /// Objects (M6, objects.rs).
+    /// Objects (objects.rs).
     objects: crate::objects::Objects,
-    /// Pickups, actors, checkpoints, gang zones, map icons, 3D labels (M6, entities.rs).
+    /// Pickups, actors, checkpoints, gang zones, map icons, 3D labels (entities.rs).
     entities: crate::entities::Entities,
-    /// Camera, spectating, bounds, drunk, animations, ClientCheck (M8b, behaviourclient.rs).
+    /// Camera, spectating, bounds, drunk, animations, ClientCheck (behaviourclient.rs).
     behaviour: crate::behaviourclient::Behaviour,
     /// Camera target reporting (RPC 170 → 168, camtarget.rs).
     cam_target: crate::camtarget::CamTarget,
@@ -143,8 +141,9 @@ fn poke<T: Copy>(addr: u32, v: T) {
     unsafe { std::ptr::write_unaligned(addr as usize as *mut T, v) };
 }
 
-/// F4 (B 0x100074B0 `GetAsyncKeyState(0x73)`) and its client line (B string 0x100E5910, type-4 helper 0x10068030).
+/// F4, polled with `GetAsyncKeyState` at the end of the local tick.
 const VK_F4: i32 = 0x73;
+/// The type-4 client line F4 prints.
 pub const F4_LINE: &str = "Returning to class selection after next death";
 
 /// `GetAsyncKeyState(vk) != 0` (either bit), like samp's F4 test.
@@ -156,15 +155,14 @@ fn async_key_any(vk: i32) -> bool {
 
 fn async_key_down(vk: i32) -> bool {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    // Only the "held now" bit, like the original (a stale "pressed since the last call" bit must not trigger a
+    // spawn request after the guard).
     // SAFETY: plain Win32 query.
-    // Only the "held now" bit, like the original (a stale "pressed since the
-    // last call" bit must not trigger a spawn request after the guard).
     (unsafe { GetAsyncKeyState(vk) } as u16) & 0x8000 != 0
 }
 
 impl Client {
-    /// Creates the session from the command line (`-n/-h/-p`) and the auth
-    /// table named by [`AUTH_TABLE_ENV`].
+    /// Creates the session from the command line (`-n/-h/-p`) and the auth table named by [`AUTH_TABLE_ENV`].
     pub fn start(args: &crate::cmdline::ConnectArgs) -> Result<Self, String> {
         let host = args.host.clone().unwrap_or_else(|| "127.0.0.1".into());
         let port = args.port.unwrap_or(7777);
@@ -176,9 +174,8 @@ impl Client {
         let server = crate::netclient::resolve(&host, port).map_err(|e| format!("resolve {host}:{port}: {e}"))?;
         crate::log!("client: connecting to {server} as {name:?} (auth table {path}, {} entries)", auth.len());
         let net = NetClient::new(server, &name, auth).map_err(|e| format!("udp socket: {e}"))?;
-        // "Started"; the connect tick starts the session 3.0 s later (lifecycle.rs: more than
-        // 3000 ms after the netgame constructor; TRACE-3 U-CONNECT-TIMING; parity run: join in
-        // frame 251 in both clients).
+        // "Started"; the connect tick starts the session more than 3000 ms after the netgame constructor
+        // (lifecycle.rs).
         crate::ui::on_netgame_start(&host, port, &name);
         let now = Instant::now();
         Ok(Self {
@@ -266,22 +263,23 @@ impl Client {
         out
     }
 
-    /// Control-channel `behaviour`: one line of M8b state.
+    /// Control-channel `behaviour`: one line of camera / spectating / bounds / drunk / animation state.
     pub fn behaviour_line(&self) -> String {
         self.behaviour.status_line(self.spawned)
     }
 
-    /// The call of `CCamera::Process` in `CGame::Process` (CSV row 9, dll.rs): the camera follows an attached object.
+    /// The call of `CCamera::Process` in `CGame::Process` (hooked in dll.rs): the camera follows an attached object.
     pub fn camera_process(&mut self) {
         if matches!(self.net.phase(), Phase::Connected) {
             self.behaviour.camera_follow(&mut self.runner, &self.objects);
         }
     }
 
-    /// CGame::Process pre-step (dll.rs): the per-frame object process (world-entities.md RE-10 §3).
+    /// CGame::Process pre-step (dll.rs): the vehicle pool's plate pass, then the per-frame object process
+    /// (docs/re/subsystems/world-entities.md, "Per-frame object process").
     pub fn pre_process(&mut self) {
         if self.netgame.connected() {
-            // The vehicle pool's plate pass (B 0x100A2741 → 0x1001ED20) before the object process.
+            // The vehicle pool's plate pass before the object process, as in samp.
             crate::plates::tick(&self.vehicles.plate_list(), &mut |t| crate::ui::paint_plate(t));
             self.objects.process(&mut self.runner, &self.vehicles, &self.players);
         }
@@ -300,8 +298,8 @@ impl Client {
         self.net.disconnect(Instant::now());
     }
 
-    /// `/quit` (A 0x100c3ec0): RakClient Disconnect(500) when the netgame is in state 5 (the
-    /// notification goes out); the game keeps running until [`Self::quit_teardown`].
+    /// `/quit`: RakClient Disconnect(500) when the netgame is in state 5 (the notification goes out); the game
+    /// keeps running until [`Self::quit_teardown`].
     pub fn begin_quit(&mut self) {
         crate::log!("client: /quit in netgame state {}", self.netgame.state);
         if self.netgame.connected() {
@@ -309,10 +307,10 @@ impl Client {
         }
     }
 
-    /// The netgame's destruction before samp's `ExitProcess` (A 0x10009880): RakClient
-    /// Disconnect(0) (no notification), then the pools in samp's order: players (remote peds),
-    /// vehicles (occupants warped out first), actors, textdraws, gang zones, 3D labels, pickups,
-    /// objects, menus. Textdraws, zones, labels and menus have no game-side objects.
+    /// The netgame's destruction before samp's `ExitProcess`: RakClient Disconnect(0) (no notification), then the
+    /// pools in samp's order: players (remote peds), vehicles (occupants warped out first), actors, textdraws,
+    /// gang zones, 3D labels, pickups, objects, menus. Textdraws, zones, labels and menus have no game-side
+    /// objects. Mirrors samp.dll 0x10009880.
     pub fn quit_teardown(&mut self) {
         self.net.disconnect_silent();
         self.players.clear(&mut self.runner);
@@ -333,13 +331,15 @@ impl Client {
         game::ped_handle(&ProcessMemory, ped).ok().flatten()
     }
 
-    /// One frame (main thread).
+    /// One frame (main thread), in samp's main-loop order: the packet handler first, then the first-frame setup,
+    /// the per-frame world work, remote players, the local tick (class selection / spawned / connecting), the
+    /// connect tick, the pools, and finally the queued sends. Mirrors samp.dll B 0x1000B5A0.
     pub fn tick(&mut self) {
         let now = Instant::now();
         // What the combat hooks queued during this frame's CGame::Process (206 / 115), first.
         self.entities.sent_177 += self.combat.drain(&mut self.net);
         self.update_combat_shared();
-        // samp's main loop (B 0x1000b5a0): the packet handler first.
+        // The packet handler first.
         for ev in self.net.tick(now) {
             self.on_event(ev, now);
         }
@@ -351,8 +351,8 @@ impl Client {
             self.spawn();
         }
         if !self.first_frame_done {
-            // The original's first frame: two ped flags on the local player
-            // (normally already set from the CGame::Process hook in dll.rs).
+            // The original's first frame: two ped flags on the local player (normally already set from the
+            // CGame::Process hook in dll.rs).
             self.first_frame_done = true;
             if !crate::dll::PED_FLAGS_DONE.load(std::sync::atomic::Ordering::SeqCst)
                 && let Some(h) = self.ped_handle(self.ped())
@@ -361,24 +361,22 @@ impl Client {
                 self.runner.run(op::SET_CHAR_SUFFERS_CRITICAL_HITS, &[Arg::Int(h), Arg::Int(0)]);
             }
             self.runner.run(op::DISPLAY_ZONE_NAMES, &[Arg::Int(0)]);
-            // samp's first frame (A 0x100c47d0): the GTA clock and the HUD clock string off
-            // (CSV rows 354/355).
+            // samp's first frame: the GTA clock and the HUD clock string off.
             let w = self.world.toggle_clock(false);
             crate::world::apply(&w);
-            // CSV row 356: skills to 1000, then SetStatValue := RET (vehicles.md RE-10 "Driving skills";
-            // also TRACE-5 "Stats at state 9").
+            // Driving skills to 1000, then SetStatValue := RET (docs/re/subsystems/vehicles.md, "Driving skills").
             self.vehicles.first_frame();
         }
-        // Every frame, like the original (netgame tick A 0x1000b5b0): the server's time
-        // of day while the server holds the time, then the pre-loading of the animation
-        // blocks and models samp uses.
+        // Every frame, like the original's netgame tick: the server's time of day while the server holds the
+        // time, then the pre-loading of the animation blocks and models samp uses.
         if let Some((h, m)) = self.world.time_of_day() {
             poke(crate::world::CLOCK_HOURS, h);
             poke(crate::world::CLOCK_MINUTES, m);
             self.runner.run(op::SET_TIME_OF_DAY, &[Arg::Int(i32::from(h)), Arg::Int(i32::from(m))]);
         }
         self.preload();
-        // Remote players before the local player's tick and send (onfoot §6 step 5b).
+        // Remote players before the local player's tick and send (docs/re/subsystems/remote-control-onfoot.md,
+        // "Per-frame order for a remote on-foot player").
         self.players.tick(&mut self.runner, now);
         self.vehicles.remote_tick(&mut self.runner, &mut self.players);
         self.vehicles.hook_events(&mut self.runner, &mut self.net);
@@ -388,7 +386,7 @@ impl Client {
         crate::ui::send_outgoing(&mut self.net);
         crate::ui::set_class_selection(self.class_sel.is_active());
         if self.behaviour.spectate.on && !self.spawned && matches!(self.net.phase(), Phase::Connected) {
-            // Spectating without being spawned (B 0x10007A9A): class selection is left, then the spectator tick.
+            // Spectating without being spawned: class selection is left, then the spectator tick.
             self.behaviour.drunk_not_spawned(&mut self.runner);
             if self.class_sel.is_active() {
                 self.class_sel.leave();
@@ -407,7 +405,7 @@ impl Client {
         } else if self.class_sel.is_active() {
             self.class_selection_tick(now);
         } else {
-            // Death (RPC 53) and the respawn after the wasted sequence (local tick A 0x100074C0).
+            // Death (RPC 53) and the respawn after the wasted sequence.
             if self.spawned || self.dead {
                 self.death_tick(now);
             }
@@ -419,15 +417,15 @@ impl Client {
                 self.connecting_tick();
             }
         }
-        // F4 at the end of the local tick (B 0x100074B0), except while spectating unspawned: once per pending
-        // flag, "class selection after the next death" (the flag RPC 74 sets) and its client line.
+        // F4 at the end of the local tick, except while spectating unspawned: once per pending flag, "class
+        // selection after the next death" (the flag RPC 74 sets) and its client line.
         if !(self.behaviour.spectate.on && !self.spawned) && !self.force_class_selection && async_key_any(VK_F4) {
             self.force_class_selection = true;
             crate::log!("client: F4 -> class selection after the next death");
             crate::ui::print_info(F4_LINE.as_bytes());
         }
-        // The connect tick (A 0x10008940), in state 1 only; GetTickCount at this point (the
-        // packet handler may have blocked in RakNet's Disconnect).
+        // The connect tick, in state 1 only; the tick count is read here (the packet handler may have blocked in
+        // RakNet's Disconnect).
         let now_ms = Instant::now().duration_since(self.clock).as_millis() as u64;
         if self.netgame.connect_due(now_ms) {
             let (host, port) = self.connect_target.clone();
@@ -435,7 +433,7 @@ impl Client {
             if let Err(e) = self.net.connect() {
                 crate::log!("client: connect failed: {e}");
             }
-            // samp reads GetTickCount again after RakClient::Connect returned (A 0x10008985).
+            // samp reads the tick count again after RakClient::Connect returned.
             let after = Instant::now();
             self.netgame.attempt_started(after.duration_since(self.clock).as_millis() as u64);
             for ev in self.net.tick(after) {
@@ -444,20 +442,21 @@ impl Client {
         }
         // Remote peds whose ProcessControl faulted (swap.rs fault containment).
         self.players.handle_faults(&mut self.runner);
-        // `/dl` labels (B 0x10075760), rebuilt every tick while the flag is on.
+        // `/dl` labels, rebuilt every tick while the flag is on.
         let spectating = self.behaviour.spectate.on;
         crate::vehlabels::tick(self.vehicles.debug_rows(), self.ped(), spectating);
         for line in crate::swap::take_fault_lines() {
             crate::ui::print_debug(&line);
         }
-        // Chat input and connection lines of the in-game UI (M4).
+        // Chat input and connection lines of the in-game UI.
         let (veh_count, veh_models) = self.vehicles.pool_stats();
         crate::ui::set_pool_stats(veh_count, veh_models, self.players.streamed(), self.objects.count());
         crate::ui::net_tick(&mut self.net);
-        // The vehicle pool tick follows the local player's (remote-control-vehicles §6 step 3c).
+        // The vehicle pool tick follows the local player's (docs/re/subsystems/remote-control-vehicles.md,
+        // "Per-frame order").
         if self.netgame.connected() {
             self.vehicles.pool_tick(&mut self.runner, &mut self.net, &self.players, now);
-            // World entities (M6): hook events (RPC 131 / 177), checkpoints, pickup poll, labels.
+            // World entities: hook events (RPC 131 / 177), checkpoints, pickup poll, labels.
             self.entities.hook_events(&mut self.net);
             self.objects.poll_editor(&mut self.runner, &mut self.net);
             self.entities.tick(&mut self.runner, &mut self.net, &self.players, &self.vehicles);
@@ -465,7 +464,7 @@ impl Client {
         // The hooks' view for the next CGame::Process.
         self.update_combat_shared();
         self.surf_publish();
-        // The driver-enter gate (A 0x100A3700) refuses while the local ped is cuffed or carrying.
+        // The driver-enter gate refuses while the local ped is cuffed or carrying.
         let cuffs = self.combat.cuffs;
         crate::vehhooks::with_shared(|s| (s.local_cuffed, s.local_carrying) = (cuffs.cuffed, cuffs.carry));
         self.entities.sent_177 += self.combat.drain(&mut self.net);
@@ -481,7 +480,7 @@ impl Client {
         match ev {
             Event::InitGame(g) => {
                 self.on_foot_rate = g.on_foot_rate.clamp(10, 1000);
-                // InitGame (A 0x10010660): hour, weather (applied), zone names, CJ walk.
+                // InitGame: hour, weather (applied), zone names, CJ walk.
                 self.world.hour = g.world_time;
                 self.world.weather = g.weather;
                 crate::world::apply(&self.world.weather_writes(g.weather));
@@ -502,12 +501,12 @@ impl Client {
                 crate::ui::on_init_game(&g);
                 self.netgame.on_init_game();
                 self.vehicles.set_init_game(&g);
-                // The InitGame vehicle-model preload (B 0x100A1620; `/dl` reports its flags).
+                // The InitGame vehicle-model preload (`/dl` reports its flags).
                 crate::vehlabels::preload(&mut self.runner, &g.vehicle_models);
                 self.objects.set_local_id(g.player_id);
                 self.entities.set_local_id(g.player_id);
-                // Join (TRACE-1): MARK_MODEL_AS_NO_LONGER_NEEDED(596) first, only on InitGame (the
-                // death → class-selection path does not release it: DIFF-2 kill_to_class_selection).
+                // Join: MARK_MODEL_AS_NO_LONGER_NEEDED(596) first, only on InitGame (the death → class-selection
+                // path does not release it, as in the original).
                 self.runner.run(op::MARK_MODEL_AS_NO_LONGER_NEEDED, &[Arg::Int(596)]);
                 self.enter_class_selection(now, g.spawns_available);
             }
@@ -544,15 +543,15 @@ impl Client {
         }
     }
 
-    /// RPC 40 reset (B 0x1000a530; session-misc.md §40). Measured effects (TRACE-8 gmx):
-    /// `0x04BB(0)`, `0x0860(char, 0)`, `0x04E4` at the ped, `0x0321(char)` in that frame, then
-    /// the not-connected scene every frame until InitGame.
+    /// RPC 40 reset (docs/re/subsystems/session-misc.md, "40 PlayerClose"): remote peds removed, pools cleared,
+    /// server settings back to their defaults, interior 0, the local ped killed, then the not-connected scene every
+    /// frame until InitGame (docs/phase3/trace-notes.md, "Connection lifecycle"). Mirrors samp.dll B 0x1000A530.
     fn reset_routine(&mut self) {
         crate::log!("client: reset routine (server restart / lost connection)");
         // Remote players lose their peds but stay in the pool.
         self.players.despawn_all(&mut self.runner);
         crate::log!("client: reset: remote peds removed");
-        // A 0x1009CCF0 (among the reset helpers): the 11 weapon-skill stats := 999.0, written directly.
+        // The 11 weapon-skill stats := 999.0, written directly.
         for skill in 0..11 {
             crate::combatclient::set_local_skill(skill, 999);
         }
@@ -573,7 +572,7 @@ impl Client {
         self.zone_names = false;
         self.zone_names_from = None;
         crate::pedhooks::set_cj_walk(false);
-        // Game side: interior 0 (B 0x100ad350(0, 1)), then the local ped is killed (B 0x100affe0).
+        // Game side: interior 0, then the local ped is killed.
         let ped = self.ped();
         crate::log!("client: reset: settings restored, local ped {ped:#x}");
         if let Some(h) = self.ped_handle(ped) {
@@ -584,32 +583,31 @@ impl Client {
             }
             crate::log!("client: reset: interior 0");
         }
-        // A 0x100A2100: the money back to 0 (ADD_SCORE with the negated amount).
+        // The money back to 0 (ADD_SCORE with the negated amount).
         crate::behaviourclient::reset_money(&mut self.runner);
         if let Some(h) = self.ped_handle(ped) {
             self.kill_local_ped(ped, h);
             crate::log!("client: reset: local ped killed");
-            // A 0x100ABDF0(0): armour 0.
+            // Armour 0.
             poke(ped + off::PED_ARMOUR, 0.0f32);
         }
-        // A 0x100A1560(0): zone names off; A 0x100A72C0: the player colour table back to the defaults.
+        // Zone names off; the player colour table back to the defaults.
         self.runner.run(op::DISPLAY_ZONE_NAMES, &[Arg::Int(0)]);
         crate::worldhooks::with_shared(|s| s.colours = Some(crate::ui::colours::PlayerColours::new()));
         crate::ui::reset_colours();
-        // GTA gravity back to the default (B 0x100a1410 → 0x863984).
-        // The gravity constant lives in a read-only page; samp unprotects it first (B 0x100aa4d0).
+        // GTA gravity back to the default. The constant lives in a read-only page; samp unprotects it first.
         if let Err(e) = ProcessMemory.write(GTA_GRAVITY, &DEFAULT_GRAVITY.to_le_bytes()) {
             crate::log!("client: reset: gravity write failed: {e}");
         }
-        // A 0x100A1460(0): the HUD wanted level 0; A 0x100A14A0(0): the HUD clock off.
+        // The HUD wanted level 0, the HUD clock off.
         crate::behaviourclient::set_wanted(0);
         let w = self.world.toggle_clock(false);
         crate::world::apply(&w);
         crate::ui::print_info(lifecycle::msg::RESTARTING.as_bytes());
     }
 
-    /// B 0x100affe0: fires out, teleport to its own position, health 0, `EXPLODE_CHAR_HEAD`
-    /// with `CWorld::PlayerInFocus` set to the ped's player number around it.
+    /// Kills the local ped like samp: fires out, teleport to its own position, health 0, `EXPLODE_CHAR_HEAD` with
+    /// `CWorld::PlayerInFocus` set to the ped's player number around it. Mirrors samp.dll B 0x100AFFE0.
     fn kill_local_ped(&mut self, ped: u32, handle: i32) {
         let m = ProcessMemory;
         let extinguish = |fire: u32| {
@@ -647,7 +645,7 @@ impl Client {
             S::Vehicle { .. } | S::Passenger(_) | S::Unoccupied(_) | S::Trailer(_) => {
                 self.vehicles.on_sync(&mut self.runner, &mut self.players, s, now)
             }
-            // Bullet sync fires its shot at once (A 0x10009B40 → 0x10016370; combat §8 P10).
+            // Bullet sync fires its shot at once (docs/re/subsystems/remote-control-combat.md, "Per-frame order").
             S::Bullet(b) => {
                 self.update_combat_shared();
                 self.combat.on_bullet(&mut self.runner, &mut self.players, &self.vehicles, &b);
@@ -672,15 +670,15 @@ impl Client {
                 crate::log!("[chat {:08x}] {}", m.colour, text(&m.message));
             }
             Incoming::Ui(ui::Incoming::SendGameText(g)) => crate::log!("[gametext] {}", text(&g.text)),
-            // M9 audio (audio.rs): RPC 41 / 42.
+            // Audio streams (audio.rs): RPC 41 / 42.
             Incoming::Ui(ui::Incoming::PlayAudioStreamForPlayer(a)) => crate::audio::on_play_rpc(&a),
             Incoming::Ui(ui::Incoming::StopAudioStreamForPlayer(_)) => {
                 crate::audio::stop(false);
             }
             Incoming::Remote(r) => {
                 use samp_proto::rpcs::remote::Incoming as R;
-                // Colour table (B 0x100A7220): PlayerJoin (B 0x1000FDE2) sets it only for a non-zero colour and an
-                // id below 1004 (the spawn of PlayerStreamIn: players.rs).
+                // Colour table: PlayerJoin sets it only for a non-zero colour and an id below 1004 (the spawn of
+                // PlayerStreamIn: players.rs).
                 if let R::PlayerJoin(j) = &r
                     && j.colour != 0
                     && j.player_id < 1004
@@ -703,9 +701,9 @@ impl Client {
                     R::PlayerJoin(j) => self.behaviour.forget_remote(j.player_id),
                     R::PlayerQuit(q) => self.behaviour.forget_remote(q.player_id),
                     R::TogglePlayerSpectating(t) => {
-                        // B 0x100041A0: spectating off with the class-selection flag (RPC 74 / F4) set leaves the
-                        // spawned state for the class selection (+0xf0 := 0, the local tick then enters it and
-                        // clears the flag); without the flag, leaving spectating spawns.
+                        // Spectating off with the class-selection flag (RPC 74 / F4) set leaves the spawned state for
+                        // the class selection (the local tick then enters it and clears the flag); without the flag,
+                        // leaving spectating spawns.
                         let off = t.enable == 0;
                         let spawn = self.behaviour.toggle_spectating(!off);
                         if off && self.force_class_selection {
@@ -769,8 +767,8 @@ impl Client {
             Incoming::Session(samp_proto::rpcs::session::Incoming::ClientCheckRequest(c)) => {
                 self.behaviour.client_check(&mut self.net, &mut self.runner, &c)
             }
-            // RPC 92 / 150 (A 0x10018c50 / 0x10018d00): opcode 0x052C / 0x03FD with (player 0, value)
-            // when the local player object exists (session-misc.md).
+            // RPC 92 / 150: opcode 0x052C / 0x03FD with (player 0, value) when the local player object exists
+            // (docs/re/subsystems/session-misc.md).
             Incoming::Session(samp_proto::rpcs::session::Incoming::SetPlayerDrunkVisuals(v)) => {
                 if self.ped() != 0 {
                     self.runner.run(op::SET_PLAYER_DRUNKENNESS, &[Arg::Int(0), Arg::Int(v.value as i32)]);
@@ -798,7 +796,7 @@ impl Client {
                     );
                     if c.selectable != 0 {
                         self.store_spawn_info(c.spawn);
-                        // Spec: clear weapons and show the class skin on the ped.
+                        // As in the spec: clear weapons and show the class skin on the ped.
                         let ped = self.ped();
                         if ped != 0 {
                             self.clear_weapons(ped);
@@ -815,14 +813,15 @@ impl Client {
                     }
                 }
                 P::SetPlayerCameraTargeting(t) => self.cam_target.enabled = t.enabled,
-                // RPC 60 (B 0x1000FF10 → 0x100A1760): with the HUD clock off, GTA's millisecond timer := time & 0x3FFFFFFF.
+                // RPC 60: with the HUD clock off, GTA's millisecond timer := time & 0x3FFFFFFF.
                 P::SendGameTimeUpdate(t) => {
                     if !self.world.clock_enabled {
                         poke(crate::world::TIMER_MS, (t.time as u32) & 0x3FFF_FFFF);
                     }
                 }
-                // RPC 48 (B 0x1001DC70): stored in the custom-model manager, which R4 never creates (session-misc.md
-                // "179"), so nothing happens; the value is only logged.
+                // RPC 48: stored in the custom-model manager, which R4 never creates
+                // (docs/re/subsystems/session-misc.md, "Custom-model download machinery"), so nothing happens; the
+                // value is only logged.
                 P::SetPlayerVirtualWorld(w) => crate::log!("client: RPC 48 virtual world {} (no effect in R4)", w.world_id),
                 P::PlayCrimeReport(c) => self.crime_report(&c),
                 P::ForcePlayerClassSelection(_) => {
@@ -830,11 +829,12 @@ impl Client {
                     self.force_class_selection = true;
                 }
                 P::SetPlayerPosition(s) => {
-                    // A 0x100193E4: surfing detached before the teleport.
+                    // Surfing is detached before the teleport.
                     self.surf.detach();
                     self.teleport(s.pos.x, s.pos.y, s.pos.z)
                 }
-                // RPC 13 (player-state.md): the ground height at (x, y, z) from 0x02CE, plus 1.5, then as RPC 12.
+                // RPC 13: the ground height at (x, y, z) from 0x02CE, plus 1.5, then as RPC 12
+                // (docs/re/subsystems/player-state.md, "13 SetPlayerPositionFindZ").
                 P::SetPlayerPositionFindZ(s) => {
                     self.surf.detach();
                     if self.ped() != 0 {
@@ -943,7 +943,7 @@ impl Client {
                 }
                 P::CreateExplosion(e) => crate::combatclient::create_explosion(&mut self.runner, &e),
                 P::SetPlayerTime(t) => {
-                    // A 0x1000f420: GTA clock, SET_TIME_OF_DAY, settings.
+                    // GTA clock, SET_TIME_OF_DAY, settings.
                     poke(crate::world::CLOCK_HOURS, t.hour);
                     poke(crate::world::CLOCK_MINUTES, t.minute);
                     self.runner.run(op::SET_TIME_OF_DAY, &[Arg::Int(i32::from(t.hour)), Arg::Int(i32::from(t.minute))]);
@@ -970,7 +970,7 @@ impl Client {
                 P::RemoveBuildingForPlayer(b) => {
                     self.objects.remove_building(b.model_id as i32, [b.pos.x, b.pos.y, b.pos.z], b.radius)
                 }
-                // B 0x100197B0: the local id, or a remote id up to 1004 that is in the pool.
+                // The local id, or a remote id up to 1004 that is in the pool.
                 P::SetPlayerColor(c)
                     if Some(c.player_id) == self.net.player_id()
                         || (c.player_id <= 1004 && self.players.get(c.player_id).is_some()) =>
@@ -981,7 +981,7 @@ impl Client {
                 }
                 P::SetPlayerColor(_) => {}
                 P::SetPlayerArmedWeapon(w) => {
-                    // A 0x10018E50: 0…46 only; set-armed-weapon (A 0x100AC0A0, not forced).
+                    // 0…46 only; set-armed-weapon, not forced.
                     if w.weapon <= 46 {
                         let ped = self.ped();
                         crate::combatclient::set_armed_local(&mut self.runner, ped, w.weapon as u8);
@@ -1002,7 +1002,8 @@ impl Client {
         }
     }
 
-    /// RPC 68 / 128 spawn block, with the client's range check (player-state.md 68).
+    /// RPC 68 / 128 spawn block, with the client's range check (docs/re/subsystems/player-state.md,
+    /// "68 SetSpawnInfo").
     fn store_spawn_info(&mut self, s: player::SpawnInfo) {
         let ok = s.pos.x > -20000.0
             && s.pos.x < 20000.0
@@ -1019,11 +1020,10 @@ impl Client {
 
     // ---- connecting -------------------------------------------------------
 
-    /// Every frame until InitGame: the original parks the ped and shows a fixed
-    /// view of Los Santos (TRACE-1: teleport to (1133.05, -2038.40, 69.1),
-    /// SET_FIXED_CAMERA_POSITION (1093, -2036, 90), POINT_CAMERA_AT_POINT (384, -1557, 20)).
+    /// Every frame until InitGame: the original forces weather 1, parks the ped and shows a fixed view of Los Santos
+    /// (docs/phase3/m2-notes.md). Mirrors samp.dll 0x100089B0.
     fn connecting_tick(&mut self) {
-        // A 0x100089b0 also forces weather 1 every frame while not connected.
+        // Weather 1 every frame while not connected.
         crate::world::apply(&self.world.weather_writes(crate::world::CONNECTING_WEATHER));
         set_hud(false);
         self.teleport(1133.05, -2038.40, 69.1);
@@ -1050,27 +1050,24 @@ impl Client {
     }
 
     fn class_selection_tick(&mut self, now: Instant) {
-        // While no frontend menu is open (samp reads the menu flag as a dword at
-        // FrontEndMenuManager+0x5C, A 0x100a0980): HUD off, every frame (A 0x10006100).
-        // Its input-lock mode 2 comes from the UI (set_class_selection → the class panel
-        // requests mode 2 every frame; measured: 0x541DF5 NOPed from the join frame on).
+        // While no frontend menu is open (samp reads the menu flag as a dword): HUD off, every frame. Its
+        // input-lock mode 2 comes from the UI (set_class_selection → the class panel requests mode 2 every frame).
         if ProcessMemory.read_u32(game::MENU_ACTIVE).unwrap_or(0) == 0 {
             set_hud(false);
         }
         let mem = ProcessMemory;
         // Clicks on the class-selection panel (<<, >>, Spawn) act like the keys.
         let click = crate::ui::take_class_click();
-        // The rest runs only while no dialog is open (A 0x10006100 tests dialog+0x28): a dialog the server
-        // shows on connect holds back the first RPC 128 until it is answered; it goes out in the first local
-        // tick after the close (the close clears the flag at once, A 0x1006f860, not after the input-lock
-        // restore).
+        // The rest runs only while no dialog is open: a dialog the server shows on connect holds back the first
+        // RPC 128 until it is answered; it goes out in the first local tick after the close (the close clears the
+        // flag at once, not after the input-lock restore).
         if crate::ui::dialog_open() {
             return;
         }
         let keys = classsel::Keys {
             left: click == 1 || async_key_down(VK_LEFT) || game::key_down(&mem, game::key::LEFT),
             right: click == 2 || async_key_down(VK_RIGHT) || game::key_down(&mem, game::key::RIGHT),
-            // Shift does nothing while the chat input is open (A 0x10006100 tests chat input +0x14e0).
+            // Shift does nothing while the chat input is open.
             shift: click == 3
                 || (!crate::ui::chat_input_open()
                     && (async_key_down(VK_SHIFT)
@@ -1084,8 +1081,8 @@ impl Client {
                 self.net.send_rpc(&player::PlayerRequestClass { class_index: i }, Reliability::Reliable);
             }
             Some(classsel::Action::ChangeClass { index, sound }) => {
-                // A 0x10005ff0 / 0x10006080: the sound at the ped's matrix position through the
-                // game audio object (A 0x100a2300, the RPC 16 path), then RPC 128, same tick.
+                // The sound at the ped's matrix position through the game audio object (the RPC 16 path), then
+                // RPC 128, same tick.
                 let pos = entity_pos(self.ped()).unwrap_or([0.0; 3]);
                 crate::audio::play_sound(&mut self.runner, sound, pos);
                 crate::log!("client: requesting class {index} (sound {sound})");
@@ -1099,8 +1096,9 @@ impl Client {
         }
     }
 
-    // ---- local spawn routine (player-state.md "Local Spawn routine") -------
+    // ---- local spawn routine (docs/re/subsystems/player-state.md, "Local Spawn routine") ----
 
+    /// The local spawn routine, in the original's order; the numbered steps follow the spec.
     fn spawn(&mut self) -> bool {
         let Some(s) = self.spawn_info else {
             crate::log!("client: spawn: no spawn info");
@@ -1111,27 +1109,27 @@ impl Client {
             crate::log!("client: spawn: no local ped");
             return false;
         }
-        // Surf state cleared (A 0x10003D5E).
+        // Surf state cleared.
         self.surf.reset();
-        // 2. leave class selection; its input lock ends 10 frames later (A 0x100a0750(0, 0)).
+        // 2. leave class selection; its input lock ends 10 frames later.
         if self.class_sel.is_active() {
             self.class_sel.leave();
         }
         crate::ui::class_selection_release();
-        // 3. camera, HUD, control (TRACE-1 order: 02EB, 0930/0925/0373/02EB, 01B4, 04D7, teleport).
+        // 3. camera, HUD, control (the original's order: 02EB, 0930/0925/0373/02EB, 01B4, 04D7, teleport).
         self.behaviour.attached = None;
         self.runner.run(op::RESTORE_CAMERA_JUMPCUT, &[]);
         self.camera_behind_player();
         set_hud(true);
         self.set_controllable(true);
-        // 4. ped reset (the original skips it on the first spawn: one-shot flag), area,
-        //    restart point, skin, weapons, damage record.
+        // 4. ped reset (the original skips it on the first spawn: one-shot flag), area, restart point, skin,
+        //    weapons, damage record.
         if self.spawned_once {
             self.reset_ped_state(ped);
         }
         self.runner.run(op::REQUEST_COLLISION, &[Arg::Float(s.pos.x), Arg::Float(s.pos.y)]);
-        // Restart override at the spawn point (CSV row 385; the traced build uses
-        // ADD_HOSPITAL_RESTART instead of writing the restart table directly).
+        // Restart override at the spawn point (the traced build uses ADD_HOSPITAL_RESTART instead of writing the
+        // restart table directly).
         self.runner.run(
             op::ADD_HOSPITAL_RESTART,
             &[Arg::Float(s.pos.x), Arg::Float(s.pos.y), Arg::Float(s.pos.z), Arg::Float(s.rotation), Arg::Int(0)],
@@ -1148,7 +1146,7 @@ impl Client {
                 self.give_weapon(ped, s.weapons[i] as u8, s.ammo[i]);
             }
         }
-        // 6. no random trains; CCamera::Fade := ret 8 (CSV row 365).
+        // 6. no random trains; CCamera::Fade := ret 8.
         self.runner.run(op::SWITCH_RANDOM_TRAINS, &[Arg::Int(0)]);
         if !self.fade_patched {
             let mut mem = ProcessMemory;
@@ -1160,8 +1158,8 @@ impl Client {
         // 7. teleport slightly above the spawn point, face the spawn heading.
         self.teleport(s.pos.x, s.pos.y, s.pos.z + 0.5);
         self.set_facing(s.rotation);
-        // (The original also issues two REMOVE_BLIP commands here with handles
-        // of its own that are never valid blips; nothing to reproduce.)
+        // (The original also issues two REMOVE_BLIP commands here with handles of its own that are never valid
+        // blips; nothing to reproduce.)
         // 8./9. state and RPC 52.
         self.spawned = true;
         self.dead = false;
@@ -1176,8 +1174,9 @@ impl Client {
         true
     }
 
-    // ---- death and respawn (local tick A 0x100074C0) -------------------------
+    // ---- death and respawn (local tick) -------------------------------------------
 
+    /// Death detection while spawned, then the respawn (or class selection) once GTA's wasted sequence has ended.
     fn death_tick(&mut self, now: Instant) {
         let ped = self.ped();
         if ped == 0 {
@@ -1196,7 +1195,7 @@ impl Client {
         if st == PEDSTATE_DIE || st == PEDSTATE_DEAD {
             return;
         }
-        // Cuffs off (A 0x100ACF40(0)); the jetpack does not exist here.
+        // Cuffs off; the jetpack does not exist here.
         self.combat.cuffs.cuffed = false;
         self.combat.publish_masks();
         let connected = self.netgame.connected();
@@ -1215,7 +1214,7 @@ impl Client {
     }
 
     /// The death branch of the local tick: special states off, controllable, a driver's last 200, fires out,
-    /// RPC 53 with the killer / reason of A 0x100AC890, then dead := 1, spawned := 0, zone names off.
+    /// RPC 53 with the killer / reason, then dead := 1, spawned := 0, zone names off.
     fn on_local_death(&mut self, ped: u32, now: Instant) {
         if self.hands_up(ped) {
             self.set_controllable(true);
@@ -1246,7 +1245,7 @@ impl Client {
         self.runner.run(op::DISPLAY_ZONE_NAMES, &[Arg::Int(0)]);
     }
 
-    /// The surf probe and state step (A 0x10003730), on foot.
+    /// The surf probe and state step, on foot. Mirrors samp.dll 0x10003730.
     fn surf_step(&mut self, ped: u32) {
         use crate::surf::{Contact, ProbeAction, Target};
         if let Some(o) = crate::surf::take_measured() {
@@ -1306,7 +1305,7 @@ impl Client {
     /// shot is fired).
     fn update_combat_shared(&self) {
         let objects = self.objects.pick_list().into_iter().map(|(id, ptr, _)| (ptr, id)).collect();
-        // The surf state's surface as a GTA entity (+0x2DA → wrapper +0x40), also when that entity is missing.
+        // The surf state's surface as a GTA entity (pool id → wrapper → entity), also when that entity is missing.
         let surface = self.surf.target.map(|t| match t {
             crate::surf::Target::Vehicle(id) => self.vehicles.gta_ptr(id).unwrap_or(0),
             crate::surf::Target::Object(id) => self.objects.gta_ptr(id).unwrap_or(0),
@@ -1314,7 +1313,7 @@ impl Client {
         self.combat.update_shared(&self.players, &self.vehicles, self.entities.hook_actors(), objects, surface);
     }
 
-    /// Hands the row-24 hook this frame's surfaces (local and remote, A 0x100A4990).
+    /// Hands the surfing hook this frame's surfaces (local and remote). Mirrors samp.dll 0x100A4990.
     fn surf_publish(&self) {
         let local = if self.spawned {
             self.surf_entity(self.surf.target).map(|e| (e, self.surf.offset, self.surf.glue))
@@ -1355,6 +1354,8 @@ impl Client {
 
     // ---- sync ---------------------------------------------------------------
 
+    /// The sync part of the local tick, in samp's order: spectating, or the surf probe, head look, 205 / 204,
+    /// passenger drive-by, the driving branch, the in-car packets, and on foot the 207 and then the 203.
     fn sync_tick(&mut self, now: Instant) {
         crate::behaviourclient::publish_bounds(self.spawned.then_some(self.behaviour.bounds));
         let ped = self.ped();
@@ -1367,7 +1368,7 @@ impl Client {
         {
             return;
         }
-        // Spectating (B 0x100078E9): the spectator tick replaces the on-foot / driver branches.
+        // Spectating: the spectator tick replaces the on-foot / driver branches.
         if self.behaviour.spectate.on {
             let interval = footsync::on_foot_interval(self.on_foot_rate, self.players.streamed());
             self.behaviour.spectator_tick(
@@ -1382,21 +1383,20 @@ impl Client {
             self.stats_tick(now);
             return;
         }
-        // On foot: the surf probe (A 0x10003730), before the head look.
+        // On foot: the surf probe, before the head look.
         if matches!(state, PEDSTATE_IDLE | PEDSTATE_SNIPER) {
             self.surf_step(ped);
         }
-        // Head look in the on-foot, driver and passenger branches of the local tick.
-        // `disableheadmove` clears samp's Game+0x59 flag, which the head look tests first
-        // (B 0x10002fbd; set at boot B 0x100c4ef7 and by `/headmove`).
+        // Head look in the on-foot, driver and passenger branches of the local tick. `disableheadmove` clears
+        // samp's Game+0x59 flag, which the head look tests first (set at boot and by `/headmove`).
         if matches!(state, PEDSTATE_IDLE | PEDSTATE_SNIPER | PEDSTATE_DRIVING) && !crate::ui::head_move_disabled() {
             self.head_look(ped, now);
         }
-        // 205 (> 1000 ms) and 204 (every tick) come before the per-state packets (A 0x100078A8 / 0x100078C9).
+        // 205 (> 1000 ms) and 204 (every tick) come before the per-state packets.
         self.stats_tick(now);
         self.combat.weapons_tick(&mut self.net, &self.players, ped, now);
         self.combat.cuffed_tick(&mut self.runner, ped);
-        // Local passenger drive-by (A 0x10007B68), before the 211.
+        // Local passenger drive-by, before the 211.
         let in_vehicle_flag = mem.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0;
         let veh = mem.read_u32(ped + 0x58C).unwrap_or(0);
         let is_driver = in_vehicle_flag && veh != 0 && mem.read_u32(veh + 0x460).unwrap_or(0) == ped;
@@ -1405,9 +1405,9 @@ impl Client {
         } else if self.combat.drive_by {
             self.combat.drive_by = false;
         }
-        // Driving: the world bounds on the vehicle (B 0x1000793D), before the driver packets.
+        // Driving: the world bounds on the vehicle, before the driver packets.
         if state == PEDSTATE_DRIVING {
-            // B 0x10007903…0x1000792F: unless the ped is a passenger (or sits in a 569/570 carriage, B 0x100ABFD0),
+            // Unless the ped is a passenger (or sits in a 569/570 train carriage),
             // `CPed::RemoveWeaponWhenEnteringVehicle(0)` every driving frame.
             let model = if veh != 0 { mem.read_u16(veh + 0x22).unwrap_or(0) } else { 0 };
             if !(in_vehicle_flag && veh != 0 && (!is_driver || matches!(model, 569 | 570))) {
@@ -1420,7 +1420,7 @@ impl Client {
             self.behaviour.bounds_driver(&mut self.runner, &self.vehicles, ped);
         }
         // In-car packets (200/210/211/106, passenger poll); on-foot sync only in ped states 1 and 12, so nothing
-        // is sent while entering a seat from the server's warp or during the exit animation (TRACE-4 §4).
+        // is sent while entering a seat from the server's warp or during the exit animation.
         self.vehicles.local_drive_by = self.combat.drive_by;
         self.vehicles.local_cuffed = self.combat.cuffs.cuffed;
         let in_car = self.vehicles.local_tick(&mut self.runner, &mut self.net, self.players.streamed(), now);
@@ -1428,17 +1428,17 @@ impl Client {
             self.combat.aim_in_car(&mut self.net, &mut self.vehicles, ped, is_driver, now);
         }
         if !in_car && state != PEDSTATE_DRIVING {
-            // On foot (B 0x10003F40): the world-bounds check.
+            // On foot: the world-bounds check.
             self.behaviour.bounds_on_foot(&mut self.runner, ped);
             match game::read_local_sample(&mem, ped) {
                 Ok(sample) => {
                     let keys = footsync::key_word(&sample.pad, sample.key_ctx);
                     let interval = footsync::on_foot_interval(self.on_foot_rate, self.players.streamed());
                     if self.sender.due(now, interval, keys, sample.pad.left_stick_x, sample.pad.left_stick_y) {
-                        // The 207 builder (A 0x10004f00) reads the weapon with GET_CURRENT_CHAR_WEAPON.
+                        // The 207 builder reads the weapon with GET_CURRENT_CHAR_WEAPON.
                         self.current_weapon(ped);
                         let mut sample = sample;
-                        // samp's order (A 0x10003410): jetpack, dance, hands up, phone, piss, duck.
+                        // samp's order: jetpack, dance, hands up, phone, piss, duck.
                         sample.special_action = crate::specials::local_report(
                             sample.special_action,
                             self.phone,
@@ -1455,7 +1455,7 @@ impl Client {
                             self.net.send_sync(&f);
                         }
                     }
-                    // 203 after the 207 (A 0x10007C9A).
+                    // 203 after the 207.
                     self.combat.aim_on_foot(&mut self.net, &mut self.sender, ped, keys, now);
                 }
                 Err(e) => crate::log!("client: cannot read local ped: {e}"),
@@ -1463,7 +1463,7 @@ impl Client {
         }
     }
 
-    /// 205 every > 1000 ms (B 0x100078A3): money and the drunk level (B 0x100ADFB0).
+    /// 205 every > 1000 ms: money and the drunk level.
     fn stats_tick(&mut self, now: Instant) {
         if self.last_stats.is_none_or(|t| now.duration_since(t) > footsync::STATS_INTERVAL) {
             self.last_stats = Some(now);
@@ -1472,36 +1472,36 @@ impl Client {
         }
     }
 
-    // ---- local per-frame commands (local tick A 0x100074c0) -----------------
+    // ---- local per-frame commands (local tick) -----------------------------------
 
-    /// The script commands samp's local tick issues every frame while spawned,
-    /// before the sync sends (TRACE-1 "Walking": 052C, 09BA, 0470, 077E).
+    /// The script commands samp's local tick issues every frame while spawned, before the sync sends
+    /// (052C, 09BA, 0470, 077E; docs/phase3/trace-notes.md). Mirrors samp.dll 0x100074C0.
     fn local_frame(&mut self, now: Instant) {
         let ped = self.ped();
         if ped == 0 {
             return;
         }
-        // `/ctd` labels (B 0x10004830, early in the spawned branch of the local tick).
+        // `/ctd` labels, early in the spawned branch of the local tick.
         if crate::ui::camera_target_labels_on() {
             self.draw_camera_target_labels();
         }
-        // Hands up + Triangle (enter/exit key) → control on again, which re-sets the ped
-        // to its own position and so ends the task (A 0x100074c0 → 0x100ac7d0(1)).
+        // Hands up + Triangle (enter/exit key) → control on again, which re-sets the ped to its own position and so
+        // ends the task.
         let triangle = ProcessMemory.read_u16(game::PAD0 + PAD_TRIANGLE).unwrap_or(0);
         if triangle != 0 && self.hands_up(ped) {
             self.set_controllable(true);
         }
-        // Piss / held item (B 0x1000772C…0x100077AB): Triangle or a vehicle ends them, else the item is used.
+        // Piss / held item: Triangle or a vehicle ends them, else the item is used.
         crate::specials::local_tick(&mut self.runner, ped, &mut self.specials, triangle != 0, &mut self.behaviour.drunk);
-        // Drunk handling (B 0x100ADE00), then the 207 animation encoder (B 0x100AE7A0).
+        // Drunk handling, then the 207 animation encoder.
         self.behaviour.drunk_tick(&mut self.runner, ped);
         self.behaviour.anim_tick(ped);
         if self.zone_names_from.is_some_and(|t| now >= t) {
             self.runner.run(op::DISPLAY_ZONE_NAMES, &[Arg::Int(i32::from(self.zone_names))]);
         }
-        // Weapons-update check (A 0x10006290; the 204 packet itself is not sent yet).
+        // Weapons-update check (the 204 packet itself goes out from `sync_tick`).
         self.current_weapon(ped);
-        // Interior change → RPC 118 (A 0x100a0f20 / 0x10005970).
+        // Interior change → RPC 118.
         self.runner.run(op::GET_AREA_VISIBLE, &[Arg::Local(0)]);
         let area = self.runner.local_i32(0) as u8;
         if area != self.last_interior {
@@ -1509,18 +1509,18 @@ impl Client {
             crate::log!("client: interior {area} -> RPC 118");
             self.net.send_rpc(&player::OnPlayerInteriorChange { interior: area }, Reliability::Reliable);
         }
-        // Camera target (B 0x100046E0, right after the interior check).
+        // Camera target, right after the interior check.
         self.camera_target_tick();
     }
 
-    /// RPC 112 (B 0x10019000 → 0x100A17A0): the police scanner's stand-in ped (CSV row 55) is cleared, the
-    /// on-foot description in `CAEPoliceScannerAudioEntity::AddAudioEvent` is NOPed (CSV row 361), a reported
-    /// vehicle becomes a temporary vehicle the stand-in sits in, then the local player's scanner gets
-    /// `AddAudioEvent(0xA4, crime, pos)`; the temporary vehicle is deleted afterwards. `suspect_id` is unused.
+    /// RPC 112: the police scanner's stand-in ped is cleared, the on-foot description in
+    /// `CAEPoliceScannerAudioEntity::AddAudioEvent` is NOPed, a reported vehicle becomes a temporary vehicle the
+    /// stand-in sits in, then the local player's scanner gets `AddAudioEvent(0xA4, crime, pos)`; the temporary
+    /// vehicle is deleted afterwards. `suspect_id` is unused. Mirrors samp.dll B 0x100A17A0.
     fn crime_report(&mut self, c: &player::PlayCrimeReport) {
         let dummy = crate::dll::scanner_dummy_ped();
         if dummy != 0 {
-            // SAFETY: our own leaked 0x7A0-byte buffer.
+            // SAFETY: our own leaked buffer of `SCANNER_DUMMY_PED_BYTES`.
             unsafe { std::ptr::write_bytes(dummy as usize as *mut u8, 0, game::SCANNER_DUMMY_PED_BYTES) };
         }
         let mut mem = ProcessMemory;
@@ -1618,8 +1618,8 @@ impl Client {
         crate::ui::draw_camera_target_labels(&items);
     }
 
-    /// The local head follows the camera (A 0x10002fa0, unless `disableheadmove`): every 1000 ms the offset := 20 × camera
-    /// front, every 200 ms `LookAt` at position + offset for 2000 ms.
+    /// The local head follows the camera (unless `disableheadmove`): every 1000 ms the offset := 20 × camera front,
+    /// every 200 ms `LookAt` at position + offset for 2000 ms. Mirrors samp.dll 0x10002FA0.
     fn head_look(&mut self, ped: u32, now: Instant) {
         let m = ProcessMemory;
         let matrix = m.read_u32(ped + off::PLACEABLE_MATRIX).unwrap_or(0);
@@ -1640,14 +1640,14 @@ impl Client {
         }
     }
 
-    /// `GET_CURRENT_CHAR_WEAPON` on the local ped (samp A 0x100abc90).
+    /// `GET_CURRENT_CHAR_WEAPON` on the local ped. Mirrors samp.dll 0x100ABC90.
     fn current_weapon(&mut self, ped: u32) -> u8 {
         let Some(h) = self.ped_handle(ped) else { return 0 };
         self.runner.run(op::GET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Local(0)]);
         self.runner.local_i32(0) as u8
     }
 
-    /// The local ped's primary task is the hands-up task (samp A 0x100acba0).
+    /// The local ped's primary task is the hands-up task. Mirrors samp.dll 0x100ACBA0.
     fn hands_up(&self, ped: u32) -> bool {
         let m = ProcessMemory;
         if m.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0 || !ped_in_world(ped) {
@@ -1658,7 +1658,7 @@ impl Client {
         task != 0 && m.read_u32(task).ok() == Some(game::VTBL_TASK_HANDS_UP)
     }
 
-    /// RPC 153 (A 0x10019190): valid ped models only; the local ped, or a streamed-in remote ped.
+    /// RPC 153: valid ped models only; the local ped, or a streamed-in remote ped. Mirrors samp.dll 0x10019190.
     fn on_set_player_skin(&mut self, player_id: u32, skin: u32) {
         if !game::is_ped_model(&ProcessMemory, skin) {
             let text = format!("Warning: SetPlayerSkin {skin} isn't a valid ped model.");
@@ -1676,9 +1676,9 @@ impl Client {
         }
     }
 
-    /// RPC 88 (LocalPlayer method A 0x100030f0), for the actions this client has:
-    /// 0 stops the phone, pissing and a held item (not hands up, as in samp); 10, 11,
-    /// 13, 20–23 and 68 start their state. Jetpack, dances, cuffs and carry are not here.
+    /// RPC 88, for the actions this client has: 0 stops the phone, pissing and a held item (not hands up, as in
+    /// samp); 10, 11, 13, 20–23 and 68 start their state. Jetpack, dances, cuffs and carry are not here.
+    /// Mirrors samp.dll 0x100030F0.
     fn on_special_action(&mut self, action: u8) {
         use crate::remote::special;
         crate::log!("client: special action {action}");
@@ -1686,7 +1686,7 @@ impl Client {
         let ped = self.ped();
         let Some(h) = self.ped_handle(ped) else { return };
         let in_vehicle = ProcessMemory.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0;
-        // samp's case 0 order: phone, piss, item (B 0x100030F0); 20–23 / 68 start an item / pissing.
+        // samp's case 0 order: phone, piss, item; 20–23 / 68 start an item / pissing.
         if matches!(action, special::NONE | special::PHONE_STOP) && self.phone {
             self.set_phone(h, false);
         }
@@ -1700,7 +1700,7 @@ impl Client {
         }
     }
 
-    /// Phone flag + `TASK_USE_MOBILE_PHONE(ped, flag)` (ped method A 0x100ae0b0).
+    /// Phone flag + `TASK_USE_MOBILE_PHONE(ped, flag)`. Mirrors samp.dll 0x100AE0B0.
     fn set_phone(&mut self, handle: i32, on: bool) {
         self.phone = on;
         self.runner.run(op::TASK_USE_MOBILE_PHONE, &[Arg::Int(handle), Arg::Int(i32::from(on))]);
@@ -1717,7 +1717,7 @@ impl Client {
         }
     }
 
-    /// Entity `Teleport` virtual (player-state.md RPC 12).
+    /// Entity `Teleport` virtual (docs/re/subsystems/player-state.md, "12 SetPlayerPosition").
     fn teleport(&mut self, x: f32, y: f32, z: f32) {
         let ped = self.ped();
         if ped == 0 {
@@ -1746,7 +1746,8 @@ impl Client {
         }
     }
 
-    /// RPC 15 behaviour (ped method 0x100ac7d0 in the spec).
+    /// RPC 15 behaviour: player control and freeze; enabling re-sets an on-foot ped to its own position.
+    /// Mirrors samp.dll 0x100AC7D0.
     fn set_controllable(&mut self, enable: bool) {
         let ped = self.ped();
         let Some(h) = self.ped_handle(ped) else { return };
@@ -1761,7 +1762,7 @@ impl Client {
         }
     }
 
-    /// RPC 162 behaviour (Camera method 0x1009d7a0): the attachment ends too.
+    /// RPC 162 behaviour: the attachment ends too. Mirrors samp.dll 0x1009D7A0.
     fn camera_behind_player(&mut self) {
         self.runner.run(op::CAMERA_PERSIST_POS, &[Arg::Int(0)]);
         self.runner.run(op::CAMERA_RESET_NEW_SCRIPTABLES, &[]);
@@ -1792,7 +1793,7 @@ impl Client {
         }
     }
 
-    /// `CPed::ClearWeapons` inside the local slot context (A 0x100AC050: PlayerInFocus only).
+    /// `CPed::ClearWeapons` inside the local slot context (`CWorld::PlayerInFocus` only). Mirrors samp.dll 0x100AC050.
     fn clear_weapons(&mut self, ped: u32) {
         crate::combatclient::local_context(false, || {
             // SAFETY: thiscall on the live local ped, main thread.
@@ -1803,13 +1804,13 @@ impl Client {
         });
     }
 
-    /// RPC 22 behaviour: load the weapon model, `CPed::GiveWeapon`, arm it.
+    /// RPC 22 behaviour: load the weapon model, `CPed::GiveWeapon`, arm it. Mirrors samp.dll 0x100AF7D0.
     fn give_weapon(&mut self, ped: u32, weapon: u8, ammo: u32) {
         let Some(model) = game::weapon_model(u32::from(weapon)) else { return };
         if !self.load_model(model) {
             return;
         }
-        // GiveWeapon inside the slot context, then set-armed-weapon, not forced (A 0x100AF7D0 → 0x100AC0A0(weapon, 0)).
+        // GiveWeapon inside the slot context, then set-armed-weapon, not forced.
         crate::combatclient::local_context(true, || {
             // SAFETY: thiscall on the live local ped, main thread.
             unsafe {
@@ -1822,11 +1823,10 @@ impl Client {
     }
 }
 
-/// samp's local surf probe (A 0x10003730 → 0x100aca50): on foot, a vertical
-/// `CWorld::ProcessLineOfSight` (0x56BA00) from 0.25 m to 2 m below the ped's
-/// position, vehicles and objects only. What samp does with a hit (surfing a vehicle
-/// of its pool or one of its objects, remote-players-sync.md "Local surfing") needs
-/// the vehicle/object pools (M5/M6); here only the probe itself runs, as in the original.
+/// samp's local surf probe: on foot, a vertical `CWorld::ProcessLineOfSight` from 0.25 m to 2 m below the ped's
+/// position, vehicles and objects only; returns the entity hit (0 = none). `Client::surf_step` turns a hit into
+/// surfing a pool vehicle or object (docs/re/subsystems/remote-players-sync.md, "Local surfing").
+/// Mirrors samp.dll 0x100ACA50.
 fn surf_probe(ped: u32) -> u32 {
     const PROCESS_LINE_OF_SIGHT: usize = 0x56BA00;
     type Los = extern "C" fn(*const f32, *const f32, *mut u8, *mut u32, u8, u8, u8, u8, u8, u8, u8, u8) -> u8;
@@ -1851,7 +1851,7 @@ fn surf_probe(ped: u32) -> u32 {
     entity
 }
 
-/// samp's "ped is live" test (A 0x1009f430): not a deleted entity, in the moving list.
+/// samp's "ped is live" test: not a deleted entity, in the moving list. Mirrors samp.dll 0x1009F430.
 pub(crate) fn ped_in_world(ped: u32) -> bool {
     let m = ProcessMemory;
     let vt = m.read_u32(ped + off::VTABLE).unwrap_or(0);
@@ -1863,7 +1863,7 @@ const VTBL_CPLACEABLE: u32 = 0x863C40;
 /// `CPhysical::m_pMovingList`.
 const PHYSICAL_MOVING_LIST: u32 = 0xB4;
 
-/// HUD drawing on/off (samp's 0x100a1df0: menu "HUD on" flag and the script radar flag).
+/// HUD drawing on/off (the menu "HUD on" flag and the script radar flag). Mirrors samp.dll 0x100A1DF0.
 pub(crate) fn set_hud(on: bool) {
     poke(game::MENU_HUD_ON, u8::from(on));
     poke(game::HUD_SCRIPT_DONT_DISPLAY_RADAR, u8::from(!on));
@@ -1886,16 +1886,15 @@ pub(crate) fn load_model(runner: &mut Runner, model: i32) -> bool {
     false
 }
 
-/// Skin change as the original does it, always (even for the current
-/// model): load the model, `DeleteRwObject` + `SetModelIndex` through the
-/// ped's vtable, then re-initialise its speech audio entity. CSV row 363
-/// (`CClothes::RebuildPlayer := ret`) first, so CJ's clothes never override it.
+/// Skin change as the original does it, always (even for the current model): load the model, `DeleteRwObject` +
+/// `SetModelIndex` through the ped's vtable, then re-initialise its speech audio entity.
+/// `CClothes::RebuildPlayer := ret` first, so CJ's clothes never override it. Mirrors samp.dll 0x100AFF90.
 pub(crate) fn set_ped_skin(runner: &mut Runner, ped: u32, skin: u32) {
-    // Ped method A 0x100aff90: an invalid model becomes 0.
+    // An invalid model becomes 0.
     let skin = if game::is_ped_model(&ProcessMemory, skin) { skin } else { 0 };
     let mut mem = ProcessMemory;
     let _ = mem.write(0x5A82C0, &[0xC3]);
-    // A 0x100ae060: the IK secondary task (head look) is deleted first.
+    // The IK secondary task (head look) is deleted first.
     let intel = ProcessMemory.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
     let ik = if intel != 0 { ProcessMemory.read_u32(intel + game::INTELLIGENCE_SECONDARY_IK).unwrap_or(0) } else { 0 };
     if ik != 0 {
@@ -1907,7 +1906,7 @@ pub(crate) fn set_ped_skin(runner: &mut Runner, ped: u32, skin: u32) {
         poke(intel + game::INTELLIGENCE_SECONDARY_IK, 0u32);
     }
     if !load_model(runner, skin as i32) {
-        // B 0x1009EF80: a debug chat line (FEAT-B, A17).
+        // samp prints a debug chat line here.
         crate::ui::print_debug(&format!("Warning: Model {skin} wouldn't load in time!"));
         return;
     }
@@ -1953,16 +1952,17 @@ fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
-/// CSV row 361: 39 bytes NOPed by RPC 112.
+/// Start of the on-foot suspect description in `AddAudioEvent`, NOPed by RPC 112 …
 const CRIME_NOP_ADDR: u32 = 0x4E7529;
+/// … for this many bytes.
 const CRIME_NOP_LEN: usize = 39;
 /// `CAEPoliceScannerAudioEntity::AddAudioEvent(eAudioEvents, eCrimeType, const CVector&)`.
 const SCANNER_ADD_AUDIO_EVENT: u32 = 0x4E71E0;
 
-/// `TheCamera` matrix position (samp's camera distance, B 0x1009F1C0).
+/// `TheCamera` matrix position (what samp's camera distance reads).
 const CAMERA_POS: u32 = 0xB6F9CC;
 
-/// The camera-target search (B 0x10004420; camtarget.rs): object, vehicle, player, actor.
+/// The camera-target search (camtarget.rs): object, vehicle, player, actor. Mirrors samp.dll B 0x10004420.
 fn camera_targets(objects: &[(u16, u32, i32)], vehicles: &[(u32, u16)], peds: &[(u32, u16)], actors: &[(u32, u16)]) -> [u16; 4] {
     use crate::camtarget as ct;
     let m = ProcessMemory;
@@ -1986,7 +1986,7 @@ fn camera_targets(objects: &[(u16, u32, i32)], vehicles: &[(u32, u16)], peds: &[
     if let Some((id, _, _)) = crate::objects::pick_within(start, e, objects, ct::OBJECT_RADIUS) {
         out[0] = id;
     }
-    // The local ped's own vehicle is skipped (B 0x100B7430).
+    // The local ped's own vehicle is skipped.
     let ped = m.read_u32(game::CWORLD_PLAYERS + off::PLAYER_INFO_PED).unwrap_or(0);
     let own = if ped != 0 && m.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & 0x100 != 0 {
         m.read_u32(ped + 0x58C).unwrap_or(0)

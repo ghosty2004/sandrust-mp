@@ -1,16 +1,10 @@
-//! The client's network session: samp-proto's sans-IO RakNet [`Connection`]
-//! over a non-blocking UDP socket, updated every 2 ms on RakNet's update thread.
-//!
-//! Flow (docs/re/handshake.md §1–§5, same order as the original client and
-//! `samp-bot`): open-connection request/cookie → `0x0b` connection request →
-//! auth key (`0x0c`) → `0x22` accepted → `0x1e` + ping + `0x29` + keep-alive
-//! (RakNet, update thread) → PlayerConnect (RPC 25, main thread) → InitGame (RPC 139).
-//! Afterwards every delivered RPC is decoded with `samp_proto::rpcs::decode` and handed
-//! to the caller as an [`Event`] by [`NetClient::tick`]; sends are queued and go out with
-//! the next update (docs/phase3/net6-notes.md).
-//!
-//! The socket is `std::net::UdpSocket` (on Windows that is Winsock), so the
-//! same code runs in host tests and in the DLL.
+//! The client's network session: samp-proto's sans-IO RakNet [`Connection`] over a non-blocking UDP socket
+//! (`std::net`, so the same code runs in host tests and in the DLL), updated every 2 ms on RakNet's update thread.
+//! Join order, as in the original client: open-connection request / cookie → `0x0b` connection request → auth key
+//! (`0x0c`) → `0x22` accepted → `0x1e` + ping + `0x29` + keep-alive → PlayerConnect (RPC 25) → InitGame (RPC 139).
+//! Afterwards [`NetClient::tick`] hands every decoded RPC and sync packet to the caller as an [`Event`]; sends are
+//! queued and go out with the next update.
+//! Spec: docs/re/handshake.md, "Connection establishment" to "Join"; docs/phase3/net6-notes.md.
 
 use std::collections::VecDeque;
 use std::io::ErrorKind;
@@ -30,22 +24,19 @@ use samp_proto::session::{self, InitGame};
 use samp_proto::sync::{SyncPacket, policy};
 use samp_proto::unconnected::{ServerReply, open_connection_request, parse_reply};
 
-/// Interval between open-connection requests while the server is silent: the next request (or,
-/// after the 6th, the failure `0x1D`) is due in the first update cycle whose RakNet time (whole
-/// ms) is strictly greater than the last request's + 1000 (A 0x1004165d skips while
-/// `next >= now`; A 0x1004169c next = now + 1000; the pending record starts with next = the
-/// Connect time, A 0x1003e6a0). Measured on the original: 1.001–1.002 s between requests, the
-/// next attempt's first request 1.04–1.05 s after the 6th, 6.05 s per silent attempt (the rest is
-/// samp's frame and RakClient::Connect's start-up, [`RAKNET_STOP`]); docs/phase3/reconnect-notes.md.
+/// Interval between open-connection requests while the server is silent: the next request (or, after the 6th,
+/// the failure `0x1D`) is due in the first update cycle whose RakNet time (whole ms) is strictly greater than the
+/// last request's + 1000; the first is due at the Connect time (docs/phase3/reconnect-notes.md, "What the
+/// original does"). Mirrors samp.dll 0x1004165D.
 const OPEN_RETRY_MS: u64 = 1000;
-/// Open-connection requests per attempt (TRACE-8: 6 requests 1.0 s apart per socket).
+/// Open-connection requests per attempt (one attempt = one socket).
 const OPEN_REQUESTS: u32 = 6;
-/// RakClient::Connect / Disconnect block samp's main thread while RakNet's update thread is
-/// stopped and a new one started: RakPeer::Disconnect polls the thread's exit with `Sleep(15)`
-/// (A 0x10040700), RakPeer::Initialize polls the new thread's start with `Sleep(10)` (A 0x10042934).
-/// The same waits are made here around stopping / starting our update thread (one poll each:
-/// the update thread sleeps 2 ms per cycle, samp's `threadSleepTimer`).
+/// RakClient::Connect / Disconnect block samp's main thread while RakNet's update thread is stopped and a new one
+/// started; we make the same waits around stopping / starting our update thread (one poll each, since the thread
+/// sleeps only 2 ms per cycle). RakPeer::Disconnect polls the thread's exit with `Sleep(15)`.
+/// Mirrors samp.dll 0x10040700.
 const RAKNET_STOP: Duration = Duration::from_millis(15);
+/// RakPeer::Initialize polls the new thread's start with `Sleep(10)`. Mirrors samp.dll 0x10042934.
 const RAKNET_START: Duration = Duration::from_millis(10);
 /// RakNet `ID_RSA_PUBLIC_KEY_MISMATCH` (samp prints "Failed to initialize encryption.").
 const ENCRYPTION_FAILED: u8 = 0x23;
@@ -89,9 +80,9 @@ pub enum Event {
     InitGame(Box<InitGame>),
     /// Any other decoded S→C RPC.
     Rpc(Incoming),
-    /// A decoded S→C sync packet (207, 203, …; remote-players-sync.md §2).
+    /// A decoded S→C sync packet (207, 203, …; docs/re/subsystems/remote-players-sync.md).
     Sync(samp_proto::sync::IncomingSync),
-    /// A RakNet packet the netgame's packet handler (B 0x1000b250) reacts to.
+    /// A RakNet packet the netgame's packet handler reacts to (see `lifecycle`).
     Packet(NetPacket),
     /// RPC 130 ConnectionRejected with its reason.
     Rejected(u8),
@@ -133,11 +124,10 @@ pub struct Counters {
     pub syncs_bad: u64,
 }
 
-/// The session. RakNet's part (socket, open-connection timers, reliability layer, internal
-/// messages) lives in [`Core`] and runs on an update thread every [`UPDATE_SLEEP`] like samp's
-/// RakNet (RakPeer's update thread with `threadSleepTimer` 2, A 0x10042700 / 0x10008988); the
-/// game's main thread queues sends and takes the packets in [`NetClient::tick`], as samp's
-/// packet handler does with RakClient::Receive. Host tests drive the update from `tick`.
+/// The session. RakNet's part (socket, open-connection timers, reliability layer, internal messages) lives in
+/// [`Core`] and runs on an update thread every [`UPDATE_SLEEP`], like samp's RakNet; the game's main thread queues
+/// sends and takes the packets in [`NetClient::tick`], as samp's packet handler does with RakClient::Receive.
+/// Host tests drive the update from `tick`.
 pub struct NetClient {
     core: Arc<Mutex<Core>>,
     worker: Option<Worker>,
@@ -152,18 +142,17 @@ struct Worker {
     handle: std::thread::JoinHandle<()>,
 }
 
-/// The open-connection cookie: one value for the whole process (A 0x10118e20, .data, initially 0),
-/// written only by a cookie reply (A 0x1003fdc2) and read by every request (A 0x100416a5). Nothing
-/// resets it on Connect, so after a lost connection the first request of every new attempt already
-/// carries the cookie of the last join; while the server's cookie is unchanged (open.mp reseeds every
-/// 300 s) that first request is accepted at once (docs/phase3/reconnect-notes.md).
+/// The open-connection cookie: one value for the whole process (initially 0), written only by a cookie reply and
+/// read by every request. Nothing resets it on Connect, so after a lost connection the first request of every new
+/// attempt already carries the cookie of the last join; while the server's cookie is unchanged (open.mp reseeds
+/// every 300 s) that first request is accepted at once (docs/phase3/reconnect-notes.md). Mirrors samp.dll 0x10118E20.
 static COOKIE: AtomicU16 = AtomicU16::new(0);
 
-/// RakNet's update thread sleep (`threadSleepTimer` passed by samp's connect tick, A 0x10008988).
+/// RakNet's update thread sleep (the `threadSleepTimer` samp's connect tick passes). Mirrors samp.dll 0x10008988.
 const UPDATE_SLEEP: Duration = Duration::from_millis(2);
 
 struct Core {
-    /// The attempt's socket; every connect opens a new one (TRACE-8: new source port).
+    /// The attempt's socket; every connect opens a new one (new source port), like samp.
     sock: Option<UdpSocket>,
     /// Drop the connection after the current update (its acks still go out).
     closing: bool,
@@ -239,10 +228,10 @@ impl NetClient {
         self.core().phase.clone()
     }
 
-    /// RakClient `Connect` (A 0x10034130, called by samp's connect tick A 0x10008940): RakNet is
-    /// shut down and started again (the waits of [`RAKNET_STOP`] / [`RAKNET_START`]), a new
-    /// socket and a new attempt; the first open-connection request goes out with the next update.
-    /// Returns when the attempt has started; samp takes the attempt time after this returns.
+    /// RakClient `Connect`, called by the connect tick: RakNet is shut down and started again (the waits of
+    /// [`RAKNET_STOP`] / [`RAKNET_START`]), with a new socket and a new attempt; the first open-connection request
+    /// goes out with the next update. Returns when the attempt has started; samp takes the attempt time after
+    /// this returns. Mirrors samp.dll 0x10034130.
     pub fn connect(&mut self) -> std::io::Result<()> {
         self.rak_stop();
         self.core().drop_connection();
@@ -300,9 +289,8 @@ impl NetClient {
         }
     }
 
-    /// RakClient `Disconnect` from samp's packet handlers (no notification is sent in the
-    /// measured cases): the update that delivered the packet already sent its acks; the
-    /// connection and its socket are dropped.
+    /// RakClient `Disconnect` from samp's packet handlers, without a notification: the update that delivered the
+    /// packet already sent its acks; the connection and its socket are dropped.
     pub fn disconnect_silent(&mut self) {
         self.rak_stop();
         let mut c = self.core();
@@ -352,9 +340,9 @@ impl NetClient {
         )
     }
 
-    /// The main thread's packet handling (samp's netgame tick, B 0x1000b250): the packets the
-    /// update thread received since the last frame. Without the thread (host tests) the update
-    /// runs here first.
+    /// The main thread's packet handling (samp's netgame tick): the packets the update thread received since
+    /// the last frame; on `0x22` it sends PlayerConnect (RPC 25). Without the thread (host tests) the update runs
+    /// here first.
     pub fn tick(&mut self, now: Instant) -> Vec<Event> {
         let mut c = self.core();
         if self.worker.is_none() && c.sock.is_some() {
@@ -378,7 +366,7 @@ impl NetClient {
         }
     }
 
-    /// Queues a C→S RPC (priority/channel 0 as in player-state.md).
+    /// Queues a C→S RPC on channel 0 (docs/re/subsystems/player-state.md).
     pub fn send_rpc<P: RpcPayload>(&mut self, p: &P, reliability: Reliability) {
         if let Some(c) = self.core().conn.as_mut() {
             c.send_bits(&p.to_rpc(), reliability, 0);
@@ -401,11 +389,10 @@ impl NetClient {
         }
     }
 
-    /// RakClient `Disconnect(500, 0)` of samp's `/quit` (A 0x100c3ec0): the disconnection
-    /// notification goes out UNRELIABLE on channel 0 (RakNet A 0x1003e8f0, reliability 6; measured
-    /// in every original capture, e.g. `orig-20261105-003749` net-42564: a 5-byte datagram
-    /// `rel6 0x20`) at once (RakNet sends it from the calling thread), RakNet waits for the
-    /// connection slot to close (one `Sleep(15)` poll) and stops; nothing is sent afterwards.
+    /// RakClient `Disconnect(500, 0)` of samp's `/quit`: the disconnection notification goes out UNRELIABLE on
+    /// channel 0 at once (RakNet sends it from the calling thread), RakNet waits for the connection slot to close
+    /// (one `Sleep(15)` poll) and stops; nothing is sent afterwards (docs/phase3/m10-notes.md).
+    /// Mirrors samp.dll 0x100C3EC0.
     pub fn disconnect(&mut self, now: Instant) {
         let sent = {
             let mut c = self.core();
@@ -446,11 +433,10 @@ impl Core {
         self.closing = false;
     }
 
-    /// One RakNet update cycle (RakPeer A 0x10041450): received datagrams into the reliability
-    /// layer, the open-connection timers, the reliability-layer update (acks, resends, new
-    /// messages), the dead-connection test, then the received messages: RakNet's internal ones
-    /// (auth key, `0x22`) are answered here and go out with the next update, the others are
-    /// queued for the main thread.
+    /// One RakNet update cycle: received datagrams into the reliability layer, the open-connection timers, the
+    /// reliability-layer update (acks, resends, new messages), the dead-connection test, then the received
+    /// messages: RakNet's internal ones (auth key, `0x22`) are answered here and go out with the next update, the
+    /// others are queued for the main thread. Mirrors samp.dll 0x10041450.
     fn update(&mut self, now: Instant) {
         if self.sock.is_none() {
             return;
@@ -552,9 +538,8 @@ impl Core {
     fn on_datagram(&mut self, data: &[u8], now: Instant, delivered: &mut Vec<Delivered>) {
         if self.phase == Phase::Opening {
             match parse_reply(data) {
-                // The original stores the cookie and answers with the next request of its
-                // 1000 ms retry timer (TRACE-4 capture orig-20261104-204143, net-59452: request
-                // at 0 s, cookie at 0.001 s, next request at 1.001 s).
+                // Like the original: store the cookie and answer with the next request of the 1000 ms retry
+                // timer, not at once (docs/phase3/parity-notes.md, "Connect cookie").
                 Some(ServerReply::Cookie(c)) => COOKIE.store(c, AtomicOrdering::Relaxed),
                 Some(ServerReply::Accepted) => {
                     crate::log!("net: open-connection accepted after {} request(s)", self.open_attempts);
@@ -586,7 +571,7 @@ impl Core {
         let (_, body) = strip_timestamp(&msg.data);
         let Some(&first) = body.first() else { return };
         match first {
-            // samp's RakNet answers the auth key itself (A 0x10041c16, connecting state).
+            // samp's RakNet answers the auth key itself while connecting.
             id::AUTH_KEY => {
                 let Some(challenge) = auth::parse_challenge(body) else {
                     crate::log!("net: malformed auth challenge");
@@ -643,8 +628,8 @@ impl Core {
                     }
                 }
             }
-            // RakNet ends the connection itself on these; samp's handlers only add their own
-            // lines / Disconnect calls (B 0x1000b250).
+            // RakNet ends the connection itself on these; samp's packet handler only adds its own lines /
+            // Disconnect calls (`lifecycle`).
             id::DISCONNECTION_NOTIFICATION => {
                 self.close("server closed the connection".into());
                 self.events.push(Event::Packet(NetPacket::ServerClosed));
@@ -666,10 +651,10 @@ impl Core {
         }
     }
 
-    /// RakNet's own answer to `0x22` (same order as the original client, handshake.md §1):
-    /// `0x1e`, a ping, `0x29`, a keep-alive, all system priority except the low-priority
-    /// keep-alive; they go out with the next update (measured: 2.2 ms after the ack of `0x22`),
-    /// and the update cycle pings once more after that (net6-notes).
+    /// RakNet's own answer to `0x22`, in the original client's order (docs/re/handshake.md, "Connection
+    /// establishment"): `0x1e`, a ping, `0x29`, a keep-alive, all system priority except the low-priority
+    /// keep-alive. They go out with the next update, and the update cycle pings once more after that
+    /// (docs/phase3/net6-notes.md).
     fn on_accepted(&mut self, body: &[u8], now: Instant) {
         let Some(acc) = session::parse_accepted(body) else {
             crate::log!("net: malformed connection-accepted");
@@ -690,7 +675,7 @@ impl Core {
         conn.mark_connected(now);
     }
 
-    /// samp's packet handler on `0x22` (main thread, A 0x1000ad80): PlayerConnect (RPC 25).
+    /// samp's packet handler on `0x22` (main thread): PlayerConnect (RPC 25). Mirrors samp.dll 0x1000AD80.
     fn send_player_connect(&mut self) {
         let Some(challenge) = self.accepted_challenge.take() else { return };
         let Some(conn) = self.conn.as_mut() else { return };
@@ -713,8 +698,8 @@ fn rak_wait(d: Duration) {
     std::thread::sleep(d);
 }
 
-/// The game string samp's serial hashes (A 0x1005ffa0 is called with 0x00C9236C: GTA's user-files path from its
-/// fifth character on, e.g. `sers\<user>\Documents\GTA San Andreas User Files`).
+/// The game string samp's client serial hashes: GTA's user-files path from its fifth character on, e.g.
+/// `sers\<user>\Documents\GTA San Andreas User Files` (docs/re/handshake.md, "Client serial").
 #[cfg(windows)]
 const SERIAL_INPUT: u32 = 0x00C9_236C;
 
@@ -763,8 +748,8 @@ mod tests {
         assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
-    /// TRACE-8: 6 open-connection requests 1 s apart on a new socket, then 0x1D 1.05 s after
-    /// the last; the next connect uses another source port.
+    /// Like the original: 6 open-connection requests 1 s apart on a new socket, then 0x1D; the next connect uses
+    /// another source port (docs/phase3/reconnect-notes.md).
     #[test]
     fn attempt_fails_after_six_requests_and_reconnect_uses_a_new_socket() {
         let server = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -855,8 +840,8 @@ mod tests {
         assert_eq!(c.phase(), Phase::Connecting);
         assert!(c.status_line().starts_with("net phase=connecting server=127.0.0.1:"));
 
-        // The cookie is process-global (A 0x10118e20): a new attempt (new socket) and even a new
-        // session start with it instead of 0.
+        // The cookie is process-global: a new attempt (new socket) and even a new session start with it
+        // instead of 0.
         for fresh in [false, true] {
             if fresh {
                 c = NetClient::new(addr, "Tester", AuthTable::parse("").unwrap()).unwrap();
