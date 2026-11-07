@@ -267,6 +267,36 @@ Reported from a real server: labels like `{FF0000}red {FFFFFF}white` were one co
   scenario's bot index comes from `BOTCOUNT` (m8afs numbers bots by connection order); merging split
   D3DX draws no longer re-adds the counts geo mode dropped.
 
+## velocity_up fall damage / skin_101 model request (2026-11-07)
+
+The F1 run on 67eba42 (ours-20261107-022425 against four fresh original runs taken with a new tracer build, so no
+older original run was reused) reported two DIFFs that had matched before. Neither is a client difference; both are
+GTA-side nondeterminism the four original runs happened not to show.
+* `velocity_up` (RPC 90): ours landed without `CPedDamageResponseCalculator` (weapon 54, building damager). The
+  calculator is constructed by GTA's own landing code (0x5E303E) before the `ComputeDamageResponse` hook
+  (0x4B5AC0 → A 0x100A3D50 → decision A 0x100A3BF0) that the surf rows belong to, so no client rule can remove it.
+  The surf rows were re-read anyway (A 0x100A3C4E..0x100A3C68: cancel only when local surf state +0x2DA is set and
+  either its wrapper +0x40 is the damager or the weapon is 0x36) and match `combat::decide` / `surf_inputs`.
+  Original runs on record: fall damage in 7 of 10 complete runs, none in orig-20261106-230401/-231911/-232933,
+  whose trajectories (apex ~24.0, landing ~60 frames later at 20.654) are the same as ours. DIFF2-D5.
+* `skin_101` (RPC 153): ours probed `HAS_MODEL_LOADED [101]` and found it loaded, so no `REQUEST_MODEL` /
+  `LOAD_ALL_MODELS_NOW`. Same rule on both clients (samp's skin method loads only when the probe fails); original
+  run orig-20261106-231135 shows exactly ours' trace. A per-step readout of `CStreaming::ms_aInfoForModel[0..311]`
+  load state (debug-only snapshot key, 3 original + 4 ours subset runs, not kept in `gtastate.py`) shows GTA's
+  ambient ped streaming holding a different random set of civilian models in every run of both clients by step 17
+  (12/17/20/40/41/44/46/48/93/148/262/282 …); 101 was not among them in these 7 runs (all requested it), but it was
+  in 1 of 10 original and 2 of 4 earlier ours full runs. Nothing requests 101 before the step in either trace and
+  the model-preview textdraws are fired much later (steps 74+). DIFF2-D6.
+* `rpc-coverage.sh` now runs from a git worktree: wine/, data/ and target/diff (runs, reuse, report) come from
+  `SAMP_RS_ROOT` (found through `git --git-common-dir` like `combatveh.sh`), `DIFF_OUT` can be overridden for
+  subset runs that must not replace the shared report, and `tools/trace/diff.py` finds the opcode-name enum under
+  `SAMP_RS_ROOT` (without it, worktree reports printed `scm 0x0247 [101]` and the D1/D2 rows did not match).
+
+* Full run from the worktree afterwards: exit 1 once on `vehicle_put_player` (the 411 created at z 15, player
+  warped in, lands with yaw 1.75 rad in ours vs 1.60 in 14 of 15 original runs and 1.65 once; ours 1.60 in 3 of 5,
+  1.55 once; identical calls), then exit 0 (MATCH 131) with 1 fresh + 5 reused original runs. Landing yaw after
+  the 5 m drop is physics noise on both sides; not judged as a regression.
+
 ## Open problems
 
 * Some entities are placed outside the camera view (actor at +6/+3, car at +7/+6 relative

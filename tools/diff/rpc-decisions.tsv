@@ -18,3 +18,8 @@ flow_join	trace-extra	^scm 0x0249 MARK_MODEL_AS_NO_LONGER_NEEDED \[(4\d\d|5\d\d|
 gamemode_restart	trace-missing	^scm 0x0249 MARK_MODEL_AS_NO_LONGER_NEEDED \[(4\d\d|5\d\d|60\d|61[01])\]$	DIFF2-D2	as above
 gamemode_restart	trace-extra	^scm 0x0249 MARK_MODEL_AS_NO_LONGER_NEEDED \[(4\d\d|5\d\d|60\d|61[01])\]$	DIFF2-D2	as above
 vehicle_remove_player	trace-extra	^CPlaceable::SetPosn\(vec\) \{this=\{type=ped,player=True\},pos=\[-?[0-9.]+,-?[0-9.]+,-?[0-9.]+\]\}  <gta>$	DIFF2-D4	GTA exit-task SetPosn of the local ped (0x5E09AF) the original also makes in 2 of 46 runs
+velocity_up	trace-missing	^CPedDamageResponseCalculator::\w+ \{damager=\{type=building,model=\d+\},.*weapon=54\b	DIFF2-D5	GTA fall damage on landing (0x5E303E) is not deterministic: original runs land with and without it
+velocity_up	trace-extra	^CPedDamageResponseCalculator::\w+ \{damager=\{type=building,model=\d+\},.*weapon=54\b	DIFF2-D5	as above
+velocity_up	state	^(snap\.ped_health|state\.health): 	DIFF2-D5	as above (health 45 with the fall damage, 50 without)
+skin_101	trace-missing	^(scm 0x0247( REQUEST_MODEL)? \[101\]|scm 0x038b( LOAD_ALL_MODELS_NOW)? \[\]|CStreaming::RequestModel \{model=(101|20\d{3}),flags=12\}|CStreaming::LoadAllRequestedModels \{only_priority=False\})	DIFF2-D6	skin 101 already held by GTA's ambient ped streaming at that moment (original runs with and without the request)
+skin_101	trace-extra	^(scm 0x0247( REQUEST_MODEL)? \[101\]|scm 0x038b( LOAD_ALL_MODELS_NOW)? \[\]|CStreaming::RequestModel \{model=(101|20\d{3}),flags=12\}|CStreaming::LoadAllRequestedModels \{only_priority=False\})	DIFF2-D6	as above

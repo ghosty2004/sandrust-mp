@@ -129,3 +129,24 @@ as passenger with G, exit with F, then 90 s idle). Captures `target/netdiff/orig
 * **RPC 25 bits** (join): the serial was random in ours (592–608 bits). Ours now uses samp's derivation
   (`session::samp_serial`, verified against the original's serial `254FF869…BA87`), so the RPC is
   identical.
+
+## 5. 209 counts in the F2 runs of 2026-11-07 (67eba42)
+
+F2 on 67eba42 failed once on `session total sync 209` (original 3, ours 0; the rule fails when one client sends
+none and the other ≥ 3) and once, on 244cb98-era code, on `passenger sync 211` (original 8, ours 18); the third run
+(`target/netdiff/*-20261107-041720`) passed 385/385. Suspected: ed04dcc/67eba42 vehicle changes.
+* Code: the 209 path (pool tick A 0x1001F3C0 → sender A 0x10006E00) was re-read: proofs pair, health-0 death,
+  boat / ≥ 200 m / not-in-water gate, rail models (A 0x100B74A0: 537, 538, 569, 570, 449), towed, ≤ 3 sends per
+  tick, > 100 ms per vehicle — the same gates as `Vehicles::unoccupied_send`. ed04dcc/67eba42 change nothing on
+  this path (RC-driver `CWorld::Remove` touches only remote drivers of RC models, the 570 warp only model 570).
+* All F2 runs on record: the original sent 209 in 6 of 8 sessions, ours in 1 of 8, all of them physics-driven:
+  the exit catch (+0.88–0.93 s after the exit key), one entry settle (+2.86 s) and, only in the two newest original
+  runs, a pair ~0.3 s after a car is created next to the player. Ours' 0 is older than ed04dcc (sessions
+  -004400, -052927, -123301, -224422, -235129 had 0 too).
+* Focused runs (`NET_SCEN` script: 4 × {create the ambulance beside the player, passenger enter, exit after 8 s,
+  delete}, once alone and once with the drive round before each, as in netscen.sh): both clients send the entry 209
+  (+0.45–0.60 s) in 16 of 16 rounds; the follow-up settle pair (+5.6–5.9 s, ~150 ms apart, twice the 211s) in 2 of 8
+  original rounds and 1 of 8 ours; the exit catch in 2 of 8 original rounds and 1 of 8 ours; no 209 after creation
+  on either. Totals: original 9 + 8, ours 7 + 7. Across NET-6, the F2 sessions and these runs the exit catch is
+  original 11/24, ours 5/24 — not significant (and fail1 had ours settling more than the original), so no change
+  was made; NET6-P3's "settling" residual stays open.

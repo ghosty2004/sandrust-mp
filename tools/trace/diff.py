@@ -29,6 +29,9 @@ import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 ENUM = os.path.join(ROOT, "re/gta-reversed/source/game_sa/Enums/eScriptCommands.h")
+# The gitignored re/ lives in the checkout that owns it (SAMP_RS_ROOT for a git worktree).
+if not os.path.exists(ENUM) and os.environ.get("SAMP_RS_ROOT"):
+    ENUM = os.path.join(os.environ["SAMP_RS_ROOT"], "re/gta-reversed/source/game_sa/Enums/eScriptCommands.h")
 DROP_FNS = {"pos", "globals_base", "suppressed", "tracer_start", "module", "quit", "first_frame"}
 DROP_WATCH = {"script_ips", "stock_script_cmds"}
 

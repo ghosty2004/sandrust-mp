@@ -19,18 +19,26 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-export WINEPREFIX="$ROOT/wine/prefix-diff"
-export GTA_DIR="$ROOT/wine/gta-sa-diff"
+# The gitignored wine/, data/ and the shared target/diff runs live in the checkout that owns them
+# (SAMP_RS_ROOT; found through git for a worktree without its own wine/).
+if [[ -z "${SAMP_RS_ROOT:-}" && ! -d "$ROOT/wine" ]]; then
+    common="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+    [[ -n "$common" && -d "$(dirname "$common")/wine" ]] && SAMP_RS_ROOT="$(dirname "$common")"
+fi
+export SAMP_RS_ROOT="${SAMP_RS_ROOT:-$ROOT}"
+DATA="$SAMP_RS_ROOT"
+export WINEPREFIX="$DATA/wine/prefix-diff"
+export GTA_DIR="$DATA/wine/gta-sa-diff"
 export E2E_TAG=diff E2E_PORT=7795 E2E_CTL_PORT=47705
 DIFF_TRACER_PORT=47706
-DIFF_OUT="$ROOT/target/diff"
+DIFF_OUT="${DIFF_OUT:-$DATA/target/diff}"
 DIFF_BIN="${DIFF_CARGO_TARGET:-$ROOT/target/diff-cargo}/i686-pc-windows-gnu/release"
 DIFF_NAME=DiffPlayer
 source "$ROOT/tools/wine-env.sh"
 source "$ROOT/tools/e2e/lib.sh"
 
 say() { printf '[diff] %s\n' "$*"; }
-lane_wine_kill() { WINEPREFIX="$ROOT/wine/prefix-diff" wineserver -k 2>/dev/null || true; }
+lane_wine_kill() { WINEPREFIX="$DATA/wine/prefix-diff" wineserver -k 2>/dev/null || true; }
 # Replace a top-level file of the lane's game dir (never write through a hard link).
 lane_put() { rm -f "$GTA_DIR/$2"; cp "$1" "$GTA_DIR/$2"; }
 user_files() { echo "$WINEPREFIX/drive_c/users/$USER/Documents/GTA San Andreas User Files"; }
@@ -42,7 +50,7 @@ if [ "${1:-}" = __inner ]; then
     dlls=(--dll "$(winepath -w "$GTA_DIR/samp-tracer.dll")")
     if [ "$CLIENT" = ours ]; then
         export SAMP_RS_CTL_PORT="$E2E_CTL_PORT"
-        [ -f "$ROOT/data/auth_table.txt" ] && SAMP_RS_AUTH_TABLE="$(winepath -w "$ROOT/data/auth_table.txt")" \
+        [ -f "$DATA/data/auth_table.txt" ] && SAMP_RS_AUTH_TABLE="$(winepath -w "$DATA/data/auth_table.txt")" \
             && export SAMP_RS_AUTH_TABLE
         dlls+=(--dll "$(winepath -w "$GTA_DIR/samp_client.dll")")
         CLIENT_PORT="$E2E_CTL_PORT"
@@ -102,7 +110,7 @@ done
 lane_put "$DIFF_BIN/samp_tracer.dll" samp-tracer.dll
 lane_put "$DIFF_BIN/samp-launcher.exe" samp-rs-launcher.exe
 lane_put "$DIFF_BIN/samp_client.dll" samp_client.dll
-[ -f "$ROOT/data/auth_table.txt" ] || say "warning: data/auth_table.txt missing; our client cannot join"
+[ -f "$DATA/data/auth_table.txt" ] || say "warning: data/auth_table.txt missing; our client cannot join"
 
 # Lane server: base gamemode + probe + RPC filterscript, RCON on (local only).
 diff_server_start() {

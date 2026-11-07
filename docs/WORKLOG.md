@@ -909,3 +909,35 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   visual_mattext → visual_previews → visual_classdlg. On the rebased tree: `tools/diff/visual.sh --orig` rc=0, all
   46 elements OK (dl 2 lines covered; the 411 specular lines no longer occur); m8a PASS; cargo test 620 passed;
   clippy host + i686 clean.
+
+## 2026-11-07 — F1 regressions on 67eba42: velocity_up / skin_101
+- Report: F1 on 67eba42 (ours-20261107-022425 vs 4 fresh original runs; no older run reused because the tracer was
+  rebuilt) had two DIFFs that matched on 244cb98: `velocity_up` (no fall damage in ours, health 50 vs 45) and
+  `skin_101` (no REQUEST_MODEL 101 in ours). Suspects were ed04dcc (surf damage rows) and 67eba42 (model previews).
+- velocity_up: GTA never built the damage calculator in ours (`CPedDamageResponseCalculator` ctor from GTA 0x5E303E
+  absent), and that happens before the `ComputeDamageResponse` hook (0x4B5AC0) the surf rows live in, so the surf
+  rows cannot be involved. Static re-check of A 0x100A3BF0 (rows 3/4: +0x2DA set and wrapper +0x40 == damager or
+  weapon 0x36) matches `combat::decide`. The original lands without fall damage in 3 of 10 complete runs on
+  record, with the same trajectory as ours. Decision DIFF2-D5 (rows in `tools/diff/rpc-decisions.tsv`).
+- skin_101: both clients load the skin only when `HAS_MODEL_LOADED` fails; GTA's ambient ped streaming holds a
+  random set of civilian models by step 17 (per-step readout of `ms_aInfoForModel` load states, debug-only, 3
+  original + 4 ours subset runs: different sets in every run, all 7 requested 101), and original run
+  orig-20261106-231135 has ours' exact step trace. Decision DIFF2-D6.
+- Harness: `rpc-coverage.sh` runs from a git worktree (wine/, data/, target/diff from SAMP_RS_ROOT; `DIFF_OUT`
+  override for subset runs); `tools/trace/diff.py` finds the opcode-name enum under SAMP_RS_ROOT.
+- Verified: report-only on the failing F1 data with the new rows: exit 0, MATCH 131 (velocity_up and skin_101
+  MATCH through D5/D6); subset `rpc-coverage.sh --orig-runs 3 --ours-runs 1 --only 'velocity_up|skin_101'`
+  (DIFF_OUT=worktree target/diff-steps): both steps MATCH without any accepted line; cargo test --workspace 620
+  passed; clippy host --all-targets and i686 -D warnings clean; tools/e2e/m7.sh (lane ui) PASS, modes 1 2 0.
+- F2 follow-up (209 unoccupied sync, coordinator request): no regression — ours sent no 209 in 7 of 8 full F2
+  sessions already before ed04dcc; the 209 path is unchanged by ed04dcc/67eba42 and its gates match A 0x1001F3C0 /
+  A 0x10006E00 (re-read). Focused `network.sh` runs with a 4-round create/passenger script (alone and with the drive
+  round first): entry 209 in 16/16 rounds on both clients, settle pairs 2/8 vs 1/8, exit catch 2/8 vs 1/8, 209
+  totals 17 vs 14. Notes: docs/phase3/net6-notes.md §5. combatveh.sh PASS (surf rows, gate, RC, mod shop, 570).
+- Full F1 from the worktree (`SAMP_RS_ROOT=~/samp-rs tools/diff/rpc-coverage.sh`): first run (5 usable original runs,
+  one original failed to join; ours-20261107-051026) exit 1 on `vehicle_put_player` only: the 411 dropped 5 m with
+  the player warped in and landed with yaw 1.75 rad, the original 1.60 (14 of 15 runs; 1.65 once), earlier ours
+  runs 1.60 ×3 / 1.55 — landing physics, same calls in the trace, velocity_up and skin_101 MATCH. Second run
+  (`--orig-runs 1 --ours-runs 1`, reusing those 5 original runs; ours-20261107-054758): exit 0, MATCH 131,
+  UNTRIGGERABLE 10, only DIFF2-D1 accepted; report in ~/samp-rs/target/diff/rpc-coverage.md. Cost: ~2.5 h wall,
+  ~11 original + 9 own game runs (full and subset), 2 focused F2 pairs, 1 combatveh, 1 m7.
