@@ -13,7 +13,8 @@ differential capture against the original client, e2e script.
 | Slot | Running | Next |
 |---|---|---|
 | lane main, main2 | reserved for the user's manual play | — |
-| lanes ui, veh, trace, diff | — (free) | CLEANUP verification runs |
+| 7 worktrees (no games) | CLEANUP phase 1: comments only, per docs/STYLE.md, proven by tools/check-code-only.py (vehicles; players/combat; UI/audio; client core; world/patches; proto/ui/bot crates; tracer) | phase 2: file/function splits, memory-access helpers |
+| lanes ui, veh, trace, diff | — (free) | CLEANUP phase 2 verification runs |
 
 ## Next up (ordered queue — the scheduler takes from the top)
 
