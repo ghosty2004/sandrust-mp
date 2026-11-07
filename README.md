@@ -16,6 +16,10 @@ A clean-room reimplementation of the **SA:MP 0.3.7-R4 client** in Rust. It joins
   <img src="docs/img/model-previews.jpg" width="49%" alt="Model-preview textdraws: skins, a vehicle and an object">
   <img src="docs/img/material-text.jpg" width="49%" alt="Object material text with colour codes and alignments">
 </p>
+<p align="center">
+  <img src="docs/img/dialog.jpg" width="49%" alt="A list dialog">
+  <img src="docs/img/scoreboard.jpg" width="49%" alt="The scoreboard">
+</p>
 
 <sub>Screenshots of this client, taken on an isolated test display during the visual-parity runs.</sub>
 
