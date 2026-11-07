@@ -79,6 +79,12 @@ module header. Painter D3D stream (from `D3DXCreateTexture 64×32` to the RTS `E
 **MATCH** (32 calls) after drawing every pass through the font renderer's colour proxy (measured: the DrawTexts
 carry the proxy, not the sprite). Screenshot `p-plate3.png` identical to the original's (RUST 42 on GTA's plate).
 
+Original's painter stream (run `orig-20261105-042300`, marks `plate` / `plate2`; moved here from the `plates.rs`
+header): D3DXCreateTexture 64×32 X8R8G8B8 default pool, render-to-surface BeginScene, Clear 0xFFBEB6A8, four
+outline DrawTexts in 0xB4F0EEE4 at (0,−2) / (+2,0) / (0,+2) / (−2,0) around (0, 3), then the text in 0xEE444470,
+rect right/bottom 128/32, format 0x105, EndScene, D3DXLoadSurfaceFromSurface — on the frame after the
+stream-in; "RUST 42" visible on the car.
+
 ### Train exit
 Measured: F in a stopped train → in the constructor hook WARP_CHAR_FROM_CAR_TO_COORD(train + (2.5, 2.5, 0)) two
 frames after the key, then GTA's SetTask of the leave task; no camera call, no RPC 154. Ours warped from the next

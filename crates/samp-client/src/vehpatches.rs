@@ -1,19 +1,15 @@
-//! Init-time and runtime patch rows for vehicles (milestone M5), table-driven from
-//! `docs/re/data/gta-patches-r4-annotated.csv` (row = 1-based line number, header = line 1).
-//!
-//! Hook rows (vtable redirects, call/jmp hooks) are installed by `vehhooks.rs`; this file holds the plain byte
-//! patches, the 256-colour vehicle palette (rows 148–154) and the two runtime groups:
-//! * rows 140–147: the `CVehicle::DoVehicleLights` rewrite, applied once when InitGame enables manual
-//!   engine/lights (row 147 overwrites part of row 140, so it expects the NOPs of row 140);
-//! * row 356: `CStats::SetStatValue := RET` at the first frame, right after GTA's own vehicle- and
-//!   weapon-skill cheats (vehicles.md RE-10 "Driving skills").
-//!
-//! Not here on purpose (docs/phase3/m5-notes.md): 107 (vehicle pool 710, applied by the main patch table),
-//! 181/182/189/199 (single-player removal, SP-OFF), 2/3 (samp opcodes, SAA-2), 51/59/60/64/379 (radar colour,
-//! plates, D3D proxy; row 62 is a call hook in `vehhooks.rs`), 375 (dead code in samp, never applied), 61 (EU-only stub).
+//! samp.dll's plain byte patches to gta_sa.exe's vehicle code, as data: [`INIT`] (applied with the main patch
+//! block), [`MANUAL_LIGHTS`] (the `CVehicle::DoVehicleLights` rewrite, once when InitGame enables manual
+//! engine/lights), [`STATS`] (`CStats::SetStatValue` becomes RET on the first frame, right after GTA's own
+//! driving- and weapon-skill cheats) and the 256-colour vehicle palette ([`apply_colour_table`]).
+//! Hooks (vtable redirects, call/jmp hooks) live in `vehhooks.rs`; vehicle patches that belong to other systems
+//! (pool sizes, single-player removal, plates, radar) live with those systems.
+//! Each entry's `csv_row` is its line in `docs/re/data/gta-patches-r4-annotated.csv` (header = line 1).
+//! Spec: docs/re/subsystems/gta-patches.md, "Vehicles"; docs/phase3/m5-notes.md lists the rows left out.
 
 use crate::patch::{Memory, PatchError, Patcher};
 
+/// What a patch writes.
 #[derive(Debug, Clone, Copy)]
 pub enum Write {
     Bytes(&'static [u8]),
@@ -23,6 +19,7 @@ pub enum Write {
 }
 
 impl Write {
+    /// The bytes written.
     pub fn bytes(&self) -> Vec<u8> {
         match *self {
             Write::Bytes(b) => b.to_vec(),
@@ -32,17 +29,21 @@ impl Write {
     }
 }
 
+/// One byte patch at a gta_sa.exe address.
 #[derive(Debug, Clone, Copy)]
 pub struct Entry {
     pub addr: u32,
     pub write: Write,
     /// Bytes of the unmodified gta_sa.exe 1.0 US.
     pub original: &'static [u8],
+    /// Line in `docs/re/data/gta-patches-r4-annotated.csv`.
     pub csv_row: u32,
+    /// GTA function the patch lands in (used as the patch label).
     pub what: &'static str,
 }
 
 impl Entry {
+    /// Number of bytes written.
     pub fn size(&self) -> usize {
         self.write.bytes().len()
     }
@@ -50,7 +51,7 @@ impl Entry {
 
 /// Init-main byte patches (applied with the main block at gGameState 7).
 pub const INIT: &[Entry] = &[
-    // CSV row 156 — 0x5b8f00 CVehicleModelInfo::SetupCommonData.
+    // 'VehicleStruct' pool capacity 50 → 127.
     Entry {
         addr: 0x5b8fe4,
         write: Write::Bytes(&[0x7f]),
@@ -58,7 +59,7 @@ pub const INIT: &[Entry] = &[
         csv_row: 156,
         what: "0x5b8f00 CVehicleModelInfo::SetupCommonData",
     },
-    // CSV row 168 — 0x56e0d0 FindPlayerVehicle.
+    // FindPlayerVehicle: drop the branch that returns the player's remote-controlled vehicle.
     Entry {
         addr: 0x56e0fa,
         write: Write::Nop(18),
@@ -68,7 +69,7 @@ pub const INIT: &[Entry] = &[
         csv_row: 168,
         what: "0x56e0d0 FindPlayerVehicle",
     },
-    // CSV row 169 — 0x6bc930 CBike::ProcessAI (virtual).
+    // CBike::ProcessAI: no comparison of the driver with `CWorld::Players[0]` (remote players drive bikes too).
     Entry {
         addr: 0x6bc9eb,
         write: Write::Nop(2),
@@ -76,7 +77,7 @@ pub const INIT: &[Entry] = &[
         csv_row: 169,
         what: "0x6bc930 CBike::ProcessAI (virtual)",
     },
-    // CSV row 171 — 0x44aa50 CGarage::Update.
+    // CGarage::Update: `CGarages::IsCarSprayable` replaced by `mov al,1` — every vehicle can be resprayed.
     Entry {
         addr: 0x44ac75,
         write: Write::Bytes(&[0xb0, 0x01, 0x90, 0x90, 0x90]),
@@ -84,7 +85,7 @@ pub const INIT: &[Entry] = &[
         csv_row: 171,
         what: "0x44aa50 CGarage::Update",
     },
-    // CSV row 188 — 0x6f86a0 CTrain::ProcessControl (virtual).
+    // CTrain::ProcessControl: jump over the train passenger block.
     Entry {
         addr: 0x6f8cf8,
         write: Write::Bytes(&[0x90, 0x90, 0x90, 0x90, 0x90, 0xb8, 0x89, 0x8f, 0x6f, 0x00, 0xff, 0xe0]),
@@ -92,7 +93,7 @@ pub const INIT: &[Entry] = &[
         csv_row: 188,
         what: "0x6f86a0 CTrain::ProcessControl (virtual)",
     },
-    // CSV row 190 — 0x540040 CPad::GetHandBrake.
+    // CPad::GetHandBrake: ignores DisablePlayerControls.
     Entry {
         addr: 0x540040,
         write: Write::Bytes(&[0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x85, 0xc9, 0x74]),
@@ -100,7 +101,8 @@ pub const INIT: &[Entry] = &[
         csv_row: 190,
         what: "0x540040 CPad::GetHandBrake",
     },
-    // CSV row 194 — 0x6b1880 CAutomobile::ProcessControl (virtual).
+    // The `CAEVehicleAudioEntity::Service` call in the ProcessControl of automobiles, bikes, boats and trains
+    // (samp drives vehicle audio itself).
     Entry {
         addr: 0x6b18f1,
         write: Write::Nop(5),
@@ -108,7 +110,6 @@ pub const INIT: &[Entry] = &[
         csv_row: 194,
         what: "0x6b1880 CAutomobile::ProcessControl (virtual)",
     },
-    // CSV row 195 — 0x6b9250 CBike::ProcessControl (virtual).
     Entry {
         addr: 0x6b9298,
         write: Write::Nop(5),
@@ -116,7 +117,6 @@ pub const INIT: &[Entry] = &[
         csv_row: 195,
         what: "0x6b9250 CBike::ProcessControl (virtual)",
     },
-    // CSV row 196 — 0x6f1770 CBoat::ProcessControl (virtual).
     Entry {
         addr: 0x6f1793,
         write: Write::Nop(5),
@@ -124,7 +124,6 @@ pub const INIT: &[Entry] = &[
         csv_row: 196,
         what: "0x6f1770 CBoat::ProcessControl (virtual)",
     },
-    // CSV row 197 — 0x6f86a0 CTrain::ProcessControl (virtual).
     Entry {
         addr: 0x6f86b6,
         write: Write::Nop(5),
@@ -132,7 +131,7 @@ pub const INIT: &[Entry] = &[
         csv_row: 197,
         what: "0x6f86a0 CTrain::ProcessControl (virtual)",
     },
-    // CSV row 204 — 0x63ad70 CTaskComplexEnterCarAsDriverTimed::Constructor.
+    // CTaskComplexEnterCarAsDriverTimed constructor: no `CEntity::RegisterReference` on the vehicle.
     Entry {
         addr: 0x63adc8,
         write: Write::Nop(6),
@@ -140,7 +139,7 @@ pub const INIT: &[Entry] = &[
         csv_row: 204,
         what: "0x63ad70 CTaskComplexEnterCarAsDriverTimed::Constructor",
     },
-    // CSV row 207 — 0x6a8500 CAutomobile::ProcessFlyingCarStuff (virtual).
+    // CAutomobile::ProcessFlyingCarStuff filled with RET: no flying-cars cheat physics.
     Entry {
         addr: 0x6a8500,
         write: Write::Fill(0xc3, 119),
@@ -156,7 +155,8 @@ pub const INIT: &[Entry] = &[
         csv_row: 207,
         what: "0x6a8500 CAutomobile::ProcessFlyingCarStuff (virtual)",
     },
-    // CSV row 218 — 0x6d16a0 CVehicle::SetDriver.
+    // CVehicle::SetDriver: six model-switch cases point at the default case — no "freebies" (ambulance health,
+    // taxi cash, Enforcer armour, Caddy club, Hotdog calories, cop-car shotgun).
     Entry {
         addr: 0x6d1874,
         write: Write::Bytes(&[
@@ -170,7 +170,8 @@ pub const INIT: &[Entry] = &[
         csv_row: 218,
         what: "0x6d16a0 CVehicle::SetDriver",
     },
-    // CSV row 219 — 0x64db30 CTaskSimpleCarGetIn::ProcessPed (virtual).
+    // Car-entry tasks keep the ped's weapon: `CPed::RemoveWeaponWhenEnteringVehicle` calls removed here and in
+    // the next two entries.
     Entry {
         addr: 0x64db49,
         write: Write::Nop(9),
@@ -178,7 +179,6 @@ pub const INIT: &[Entry] = &[
         csv_row: 219,
         what: "0x64db30 CTaskSimpleCarGetIn::ProcessPed (virtual)",
     },
-    // CSV row 220 — 0x64b950 CTaskSimpleCarSetPedInAsDriver::ProcessPed.
     Entry {
         addr: 0x64bc9f,
         write: Write::Nop(9),
@@ -186,7 +186,6 @@ pub const INIT: &[Entry] = &[
         csv_row: 220,
         what: "0x64b950 CTaskSimpleCarSetPedInAsDriver::ProcessPed",
     },
-    // CSV row 221 — 0x64b5d0 CTaskSimpleCarSetPedInAsPassenger::ProcessPed.
     Entry {
         addr: 0x64b872,
         write: Write::Nop(9),
@@ -194,7 +193,7 @@ pub const INIT: &[Entry] = &[
         csv_row: 221,
         what: "0x64b5d0 CTaskSimpleCarSetPedInAsPassenger::ProcessPed",
     },
-    // CSV row 222 — 0x5e7cb0 CPed::AttachPedToEntity.
+    // CPed::AttachPedToEntity returns before it gives the weapon, sets the camera mode or changes the ped state.
     Entry {
         addr: 0x5e7d62,
         write: Write::Bytes(&[0x5e, 0x5d, 0xc2, 0x1c, 0x00]),
@@ -202,7 +201,7 @@ pub const INIT: &[Entry] = &[
         csv_row: 222,
         what: "0x5e7cb0 CPed::AttachPedToEntity",
     },
-    // CSV row 177 — 0x7046e0 CPostEffects::Render: the `CPostEffects::SpeedFX` call is NOPed (no speed blur).
+    // CPostEffects::Render: the `CPostEffects::SpeedFX` call is NOPed (no speed blur).
     Entry {
         addr: 0x704e8a,
         write: Write::Nop(5),
@@ -212,9 +211,10 @@ pub const INIT: &[Entry] = &[
     },
 ];
 
-/// Manual engine/lights: the DoVehicleLights rewrite (InitGame, once). Order matters (147 after 140).
+/// Manual engine/lights: the `CVehicle::DoVehicleLights` rewrite (InitGame, once). The game's own on/off logic
+/// is removed and the lights follow bit 0x40 of the vehicle's byte at +0x428. Order matters: the last entry
+/// writes inside the NOPs of the first.
 pub const MANUAL_LIGHTS: &[Entry] = &[
-    // CSV row 140 — 0x6e1a60 CVehicle::DoVehicleLights.
     Entry {
         addr: 0x6e1be3,
         write: Write::Nop(37),
@@ -226,7 +226,6 @@ pub const MANUAL_LIGHTS: &[Entry] = &[
         csv_row: 140,
         what: "0x6e1a60 CVehicle::DoVehicleLights",
     },
-    // CSV row 141 — 0x6e1a60 CVehicle::DoVehicleLights.
     Entry {
         addr: 0x6e1c38,
         write: Write::Nop(8),
@@ -234,7 +233,6 @@ pub const MANUAL_LIGHTS: &[Entry] = &[
         csv_row: 141,
         what: "0x6e1a60 CVehicle::DoVehicleLights",
     },
-    // CSV row 142 — 0x6e1a60 CVehicle::DoVehicleLights.
     Entry {
         addr: 0x6e1d98,
         write: Write::Nop(15),
@@ -242,7 +240,6 @@ pub const MANUAL_LIGHTS: &[Entry] = &[
         csv_row: 142,
         what: "0x6e1a60 CVehicle::DoVehicleLights",
     },
-    // CSV row 143 — 0x6e1a60 CVehicle::DoVehicleLights.
     Entry {
         addr: 0x6e1dbc,
         write: Write::Nop(8),
@@ -250,7 +247,6 @@ pub const MANUAL_LIGHTS: &[Entry] = &[
         csv_row: 143,
         what: "0x6e1a60 CVehicle::DoVehicleLights",
     },
-    // CSV row 144 — 0x6e1a60 CVehicle::DoVehicleLights.
     Entry {
         addr: 0x6e1ba0,
         write: Write::Nop(6),
@@ -258,7 +254,6 @@ pub const MANUAL_LIGHTS: &[Entry] = &[
         csv_row: 144,
         what: "0x6e1a60 CVehicle::DoVehicleLights",
     },
-    // CSV row 145 — 0x6e1a60 CVehicle::DoVehicleLights.
     Entry {
         addr: 0x6e1bb1,
         write: Write::Nop(6),
@@ -266,7 +261,6 @@ pub const MANUAL_LIGHTS: &[Entry] = &[
         csv_row: 145,
         what: "0x6e1a60 CVehicle::DoVehicleLights",
     },
-    // CSV row 146 — 0x6e1a60 CVehicle::DoVehicleLights.
     Entry {
         addr: 0x6e1bd2,
         write: Write::Nop(7),
@@ -274,7 +268,7 @@ pub const MANUAL_LIGHTS: &[Entry] = &[
         csv_row: 146,
         what: "0x6e1a60 CVehicle::DoVehicleLights",
     },
-    // CSV row 147 — 0x6e1a60 CVehicle::DoVehicleLights.
+    // Rewritten inside the NOPed range: `mov al,[esi+0x428]; test al,0x40; jz +0x28`.
     Entry {
         addr: 0x6e1be5,
         write: Write::Bytes(&[0x8a, 0x86, 0x28, 0x04, 0x00, 0x00, 0xa8, 0x40, 0x74, 0x28]),
@@ -284,9 +278,9 @@ pub const MANUAL_LIGHTS: &[Entry] = &[
     },
 ];
 
-/// First frame, after `CCheat::VehicleSkillsCheat` / `WeaponSkillsCheat`.
+/// First frame, after `CCheat::VehicleSkillsCheat` / `WeaponSkillsCheat`: `CStats::SetStatValue` becomes RET, so
+/// the game cannot change stat values afterwards (samp sets them directly).
 pub const STATS: &[Entry] = &[
-    // CSV row 356 — 0x55a070 CStats::SetStatValue.
     Entry {
         addr: 0x55a070,
         write: Write::Bytes(&[0xc3]),
@@ -296,8 +290,9 @@ pub const STATS: &[Entry] = &[
     },
 ];
 
-/// `CCheat::VehicleSkillsCheat` / `CCheat::WeaponSkillsCheat` (cdecl, named via gta-reversed).
+/// `CCheat::VehicleSkillsCheat` (cdecl): maxes the driving skills.
 pub const VEHICLE_SKILLS_CHEAT: u32 = 0x4399D0;
+/// `CCheat::WeaponSkillsCheat` (cdecl): maxes the weapon skills.
 pub const WEAPON_SKILLS_CHEAT: u32 = 0x439940;
 
 /// samp's 256-entry vehicle colour palette (RGBA, one byte per channel in memory order R, G, B, A), copied
@@ -355,8 +350,8 @@ pub static COLOUR_TABLE: [u8; 1024] = colour_bytes();
 /// `CVehicleModelInfo::ms_vehicleColourTable`.
 pub const GTA_COLOUR_TABLE: u32 = 0xB4E480;
 
-/// The seven imm32 operands that point into the colour table (CSV rows 148–154): (row, operand address,
-/// byte offset into the table).
+/// The seven imm32 operands in gta_sa.exe that point into the colour table: (`csv_row`, operand address, byte
+/// offset into the table).
 pub const COLOUR_REFS: [(u32, u32, u32); 7] = [
     (148, 0x44B1C1, 0),
     (149, 0x4C8390, 0),
@@ -370,12 +365,14 @@ pub const COLOUR_REFS: [(u32, u32, u32); 7] = [
 /// Outcome of applying a group.
 #[derive(Debug, Default)]
 pub struct Report {
+    /// (`csv_row`, address) of each patch written.
     pub applied: Vec<(u32, u32)>,
+    /// (`csv_row`, address, error) of each patch that failed.
     pub failed: Vec<(u32, u32, PatchError)>,
 }
 
-/// Applies `entries` in order. `expect_override` gives the bytes expected for a row that overlaps an earlier
-/// one of the same group (row 147 over row 140).
+/// Applies `entries` in order. An entry that overlaps an earlier one of the same group expects the bytes that
+/// entry left there instead of the original bytes.
 pub fn apply<M: Memory>(patcher: &mut Patcher, mem: &mut M, entries: &[Entry]) -> Report {
     let mut r = Report::default();
     let mut written: Vec<(u32, usize)> = Vec::new();
@@ -406,7 +403,7 @@ pub fn apply<M: Memory>(patcher: &mut Patcher, mem: &mut M, entries: &[Entry]) -
     r
 }
 
-/// Rows 148–154: points the colour-table operands at [`COLOUR_TABLE`] (each must still hold the GTA address).
+/// Points the colour-table operands at [`COLOUR_TABLE`] (each must still hold the GTA address).
 pub fn apply_colour_table<M: Memory>(patcher: &mut Patcher, mem: &mut M) -> Report {
     let base = COLOUR_TABLE.as_ptr() as usize as u32;
     let mut r = Report::default();

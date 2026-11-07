@@ -1,12 +1,9 @@
-//! Vehicles: the platform-independent part (milestone M5).
-//!
-//! Specs: vehicles.md (RPC layouts and client reactions), remote-control-vehicles.md (§1 lifecycle, §2 remote
-//! drivers, §3 passengers / unoccupied, §5 enter/exit), remote-players-sync.md (§0.4 send rates, §200/§209/§211,
-//! §2.1 apply rules) and the measured behaviour of the original client in docs/phase3/trace-notes.md "Vehicles
-//! (TRACE-4)".
-//!
+//! Vehicles: the platform-independent part — model sets, remote driver / passenger / unoccupied corrections, the
+//! in-car send rules (200, 209, 211, duplicate gate, intervals), the enter gate and damage / engine rules.
 //! Everything here is pure data and arithmetic so it can be unit-tested on the host; the GTA side (script
 //! commands, hooks, memory writes) lives in `vehicles.rs` / `vehhooks.rs` (Windows only).
+//! Specs: docs/re/subsystems/vehicles.md, docs/re/subsystems/remote-control-vehicles.md and
+//! docs/re/subsystems/remote-players-sync.md (sections 200, 209, 211 and "0.4 Send-rate machinery").
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -23,47 +20,55 @@ pub const MAX_VEHICLES: u16 = 2000;
 /// Models accepted by RPC 164.
 pub const MODEL_MIN: u32 = 400;
 pub const MODEL_MAX: u32 = 611;
-/// Trains and trams (vehicles.md "Model sets").
+/// Trains, trams and their carriages.
 pub const RAIL_MODELS: [u32; 5] = [537, 538, 569, 570, 449];
-/// Models whose driver sync goes through the train path (remote-control-vehicles §2.2 step 2).
+/// Models whose driver sync goes through the train path (locomotives and the tram).
 pub const TRAIN_SYNC_MODELS: [u32; 3] = [537, 538, 449];
 /// RC models (no RPC 154 on exit; the remote "driver" is taken out of the world).
 pub const RC_MODELS: [u32; 6] = [441, 464, 465, 501, 564, 594];
 /// Hydra: `extra` carries the thrust nozzle angle.
 pub const MODEL_HYDRA: u32 = 520;
-/// Passenger carriage of the Brown Streak (570): cannot be entered as driver; the local passenger enter warps
-/// (A 0x100AC450).
+/// Passenger carriage of the Brown Streak (570): cannot be entered as driver; the local passenger enter warps.
 pub const MODEL_FREIGHT_CARRIAGE: u32 = 570;
-/// Freight flat carriage (569): like 570 in samp's "is a passenger" test (A 0x100AC000).
+/// Freight flat carriage (569): like 570 in samp's "is a passenger" test.
 pub const MODEL_FLAT_CARRIAGE: u32 = 569;
-/// Highest player id RPC 96 type 4 accepts (A 0x10001B1F: `id ≤ 0x3EC`).
+/// Highest player id RPC 96 type 4 accepts.
 pub const MAX_REMOTE_PLAYER_ID: u16 = 0x3EC;
 /// Parachute weapon id (dropped before entering a car).
 pub const WEAPON_PARACHUTE: u8 = 46;
 
-/// Driver correction (A 0x10015140, remote-players-sync §2.1).
+/// Driver correction ([`correct_driver`]): per-axis dead zone.
 pub const DRIVER_DEAD_ZONE: f32 = 0.05;
+/// Share of the position error added to the move speed.
 pub const DRIVER_GAIN: f32 = 0.06;
+/// Teleport instead of nudging beyond this error on x or y.
 pub const DRIVER_TELEPORT_XY: f32 = 8.0;
+/// Teleport beyond this z error (cars and bikes).
 pub const DRIVER_TELEPORT_Z: f32 = 0.5;
+/// Teleport beyond this z error (helis, planes, boats).
 pub const DRIVER_TELEPORT_Z_AIR_WATER: f32 = 2.0;
 /// A nudged move speed is only written when one component exceeds this.
 pub const DRIVER_MIN_SPEED: f32 = 0.01;
-/// Turn speed clamp per axis (A 0x100FE4B8 switch = 1).
+/// Turn speed clamp per axis for remote-driven vehicles (samp's clamp switch is on in 0.3.7).
 pub const TURN_CLAMP: f32 = 0.02;
-/// Unoccupied apply (A 0x100158D0).
+/// Unoccupied apply ([`correct_unoccupied`]): dead zone on all three axes.
 pub const UNOCC_DEAD_ZONE: f32 = 0.1;
+/// Teleport instead of nudging beyond this error on x or y.
 pub const UNOCC_TELEPORT_XY: f32 = 6.0;
+/// Teleport beyond this z error.
 pub const UNOCC_TELEPORT_Z: f32 = 3.0;
+/// Per-axis error above which the axis is nudged.
 pub const UNOCC_AXIS_ZONE: f32 = 0.05;
+/// Share of the position error added to the move speed.
 pub const UNOCC_GAIN: f32 = 0.06;
-/// Unoccupied send rules (remote-control-vehicles §3.2).
+/// Unoccupied vehicles farther than this from the local player are not sent.
 pub const UNOCC_SEND_RANGE: f32 = 90.0;
-/// Per-vehicle 209 interval ("> 100 ms"). Checked only on pool-tick frames (every 4th frame), which gives the measured
-/// ≈ 150 ms spacing of the original (TRACE-4: 150 ms; TRACE-5: ≈ 153 ms at 49 fps).
+/// Per-vehicle 209 interval ("> 100 ms"). Checked only on pool-tick frames, so the real spacing is about 150 ms at
+/// 50 fps, as in the original.
 pub const UNOCC_SEND_INTERVAL: Duration = Duration::from_millis(100);
-/// The vehicle pool tick runs on every 4th frame (measured, TRACE-4 trace orig-20261104-204143).
+/// The vehicle pool tick runs on every 4th frame.
 pub const POOL_TICK_FRAMES: u64 = 4;
+/// At most this many 209 packets per pool tick.
 pub const UNOCC_SENDS_PER_TICK: u32 = 3;
 /// Distance gates of the pool tick and the hooks (2-D for the ProcessControl hook).
 pub const NEAR_RANGE: f32 = 200.0;
@@ -81,11 +86,14 @@ pub const CREATE_Z_OFFSET: f32 = 0.25;
 pub const EJECT_Z_OFFSET: f32 = 2.0;
 /// Train exit: the local ped is placed beside the train (+2.5 on x and y).
 pub const TRAIN_EXIT_OFFSET: f32 = 2.5;
-/// Radar blip colours (samp's own codes, vehicles.md RE-10 "radar blips").
+/// Radar blip colour code of an unoccupied vehicle (samp's own code; docs/re/subsystems/vehicles.md, "Vehicle
+/// radar blips").
 pub const BLIP_COLOUR_UNOCCUPIED: i32 = 0x3EC;
+/// Radar blip colour code of a vehicle marked as a mission objective.
 pub const BLIP_COLOUR_OBJECTIVE: i32 = 0x3EE;
 
-/// samp's vehicle kind classifier (A 0x100B6220, by vtable). Many setters only act on [`Kind::Automobile`].
+/// samp's vehicle kind classifier (by vtable). Many setters only act on [`Kind::Automobile`]; quads and monster
+/// trucks count as [`Kind::Other`]. Mirrors samp.dll 0x100B6220.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Other = 0,
@@ -112,6 +120,7 @@ pub mod vtbl {
     pub const TRAIN: u32 = 0x872370;
 }
 
+/// The [`Kind`] of a GTA vehicle vtable.
 pub fn kind_from_vtable(vt: u32) -> Kind {
     match vt {
         vtbl::AUTOMOBILE => Kind::Automobile,
@@ -125,31 +134,31 @@ pub fn kind_from_vtable(vt: u32) -> Kind {
     }
 }
 
+/// Train, tram or carriage.
 pub fn is_rail(model: u32) -> bool {
     RAIL_MODELS.contains(&model)
 }
 
+/// Remote-controlled toy vehicle.
 pub fn is_rc(model: u32) -> bool {
     RC_MODELS.contains(&model)
 }
 
-/// Nametag anchor (A 0x10074270 / 0x10075390 with A 0x100b7e40): only a remote driving an RC
-/// vehicle is tagged at the vehicle's matrix position; every other player, drivers of ordinary
-/// vehicles included, at the ped's bone 8 (head). Measured on the original: a driver of an
-/// Infernus is tagged at its head, 0.3 m above the car's matrix position.
+/// Nametag anchor: only a remote driving an RC vehicle is tagged at the vehicle's matrix position; every other
+/// player, drivers of ordinary vehicles included, at the ped's bone 8 (head).
 pub fn tag_at_vehicle(remote_state: u8, vehicle_model: Option<u32>) -> bool {
     remote_state == state::DRIVER && vehicle_model.is_some_and(is_rc)
 }
 
-/// The driver-enter gate's rules on the vehicle and the local ped (A 0x100A3700, before the driver checks): the samp
-/// locked flag, model 570, and the local ped object cuffed (special action 24) or carrying (25).
+/// The driver-enter gate's rules on the vehicle and the local ped (checked before the driver checks): the samp
+/// locked flag, model 570, and the local ped cuffed (special action 24) or carrying (25).
 pub fn driver_enter_refused(locked: bool, model: u32, cuffed: bool, carrying: bool) -> bool {
     locked || model == MODEL_FREIGHT_CARRIAGE || cuffed || carrying
 }
 
-/// How the local passenger-enter poll (A 0x10006FE0 → A 0x100AC450(handle, 1)) seats the local ped: model 570
-/// warps it at once with WARP_CHAR_INTO_CAR_AS_PASSENGER and seat −1 (GTA's first free passenger seat), every other
-/// model gets TASK_ENTER_CAR_AS_PASSENGER (3000 ms, seat −1).
+/// How the local passenger-enter poll seats the local ped: model 570 warps it at once with
+/// WARP_CHAR_INTO_CAR_AS_PASSENGER and seat −1 (GTA's first free passenger seat), every other model gets
+/// TASK_ENTER_CAR_AS_PASSENGER (3000 ms, seat −1).
 pub fn passenger_enter_warps(model: u32) -> bool {
     model == MODEL_FREIGHT_CARRIAGE
 }
@@ -163,13 +172,15 @@ pub struct Seat {
     pub model: u32,
 }
 
-/// samp's "is a passenger" test (A 0x100AC000): in a vehicle, and either not its driver or in a carriage (569/570).
+/// samp's "is a passenger" test: in a vehicle, and either not its driver or in a carriage (569/570).
+/// Mirrors samp.dll 0x100AC000.
 pub fn counts_as_passenger(s: Option<Seat>) -> bool {
     s.is_some_and(|s| !s.is_driver || matches!(s.model, MODEL_FLAT_CARRIAGE | MODEL_FREIGHT_CARRIAGE))
 }
 
-/// RPC 96 type 4 (A 0x10001A60 case 4): it acts only when the remote player is seated and not a passenger, the
-/// local player is seated as a passenger, and both are in the same vehicle (`None` = not in a vehicle).
+/// RPC 96 type 4 (a driver enters or leaves a mod shop): it acts only when the remote player is seated and not a
+/// passenger, the local player is seated as a passenger, and both are in the same vehicle (`None` = not in a
+/// vehicle).
 pub fn mod_shop_follow_applies(remote: Option<Seat>, local: Option<Seat>) -> bool {
     let (Some(r), Some(l)) = (remote, local) else { return false };
     !counts_as_passenger(remote) && counts_as_passenger(local) && r.vehicle == l.vehicle
@@ -177,12 +188,12 @@ pub fn mod_shop_follow_applies(remote: Option<Seat>, local: Option<Seat>) -> boo
 
 /// RPC 96 type 4 effect: entering (arg1 ≠ 0) → interior `arg2` and the local player frozen (not controllable);
 /// leaving → interior 0 and controllable again. Returns (vehicle interior, ped interior, controllable): the
-/// vehicle takes the full value (A 0x100B70D0), the ped its low byte (A 0x100AD380).
+/// vehicle takes the full value, the ped its low byte.
 pub fn mod_shop_follow(arg1: u32, arg2: u32) -> (i32, u8, bool) {
     if arg1 != 0 { (arg2 as i32, arg2 as u8, false) } else { (0, 0, true) }
 }
 
-/// Towable trailer models (A 0x100B7DB0 list; remote-players-sync §210).
+/// Towable trailer models (samp's list, used for 210 trailer sync).
 pub fn is_towable_list(model: u32) -> bool {
     [435, 450, 584, 591, 606, 607, 608, 610, 611].contains(&model)
 }
@@ -196,7 +207,7 @@ pub fn carriage_of(model: u32) -> Option<u32> {
     }
 }
 
-/// CREATE_MISSION_TRAIN type for a locomotive / tram model (remote-control-vehicles §1.2.5).
+/// CREATE_MISSION_TRAIN type for a locomotive / tram model.
 pub fn train_type(model: u32) -> Option<i32> {
     match model {
         538 => Some(5),
@@ -206,31 +217,35 @@ pub fn train_type(model: u32) -> Option<i32> {
     }
 }
 
+/// Distance in the x/y plane.
 pub fn dist2d(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
 }
 
+/// Distance in 3-D.
 pub fn dist3d(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
+/// Protocol vector → array.
 pub fn vec3(v: Vec3) -> [f32; 3] {
     [v.x, v.y, v.z]
 }
 
+/// Array → protocol vector.
 pub fn to_vec3(v: [f32; 3]) -> Vec3 {
     Vec3 { x: v[0], y: v[1], z: v[2] }
 }
 
 // ---- remote driver / passenger data ------------------------------------------------------------------
 
-/// Remote state byte values used by vehicles (remote-players-sync §2.1).
+/// Remote player state byte values used by vehicles.
 pub mod state {
     pub const PASSENGER: u8 = 18;
     pub const DRIVER: u8 = 19;
 }
 
-/// The decoded fields of the last accepted 200 (remote-players-sync §200 S→C).
+/// The decoded fields of the last accepted driver sync (200).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DriverData {
     pub vehicle_id: u16,
@@ -253,6 +268,7 @@ pub struct DriverData {
 }
 
 impl DriverData {
+    /// Decodes a received 200 (rotation normalised).
     pub fn from_sync(s: &RemoteVehicleSync) -> Self {
         let v = s.velocity.to_vec3();
         Self {
@@ -280,7 +296,7 @@ impl DriverData {
     }
 }
 
-/// The decoded fields of the last 211 (remote-players-sync §211).
+/// The decoded fields of the last passenger sync (211).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PassengerData {
     pub vehicle_id: u16,
@@ -296,6 +312,7 @@ pub struct PassengerData {
 }
 
 impl PassengerData {
+    /// Decodes a received 211 (seat = low 6 bits).
     pub fn from_sync(s: &PassengerSync) -> Self {
         Self {
             vehicle_id: s.vehicle_id,
@@ -316,10 +333,11 @@ impl PassengerData {
 pub struct RemoteVeh {
     pub driver: Option<DriverData>,
     pub passenger: Option<PassengerData>,
-    /// A 200 was stored and not yet applied (update type 17).
+    /// A 200 was stored and not yet applied.
     pub driver_new: bool,
+    /// A 211 was stored and not yet applied.
     pub passenger_new: bool,
-    /// Timestamp of the last accepted 200 (shared rule with 207 in samp: one field per player).
+    /// Diagnostic counters: nudges, teleports, warps into and out of the vehicle.
     pub corrections: u32,
     pub teleports: u32,
     pub warps_in: u32,
@@ -339,8 +357,9 @@ pub enum VehCorrection {
     Teleport,
 }
 
-/// Driver sync correction (A 0x10015140), applied right after `move speed := synced velocity`.
-/// `synced` is that velocity; `z_threshold` is 2.0 for heli/plane/boat and 0.5 otherwise.
+/// Driver sync correction, applied right after `move speed := synced velocity`. `synced` is that velocity;
+/// `z_threshold` is 2.0 for heli/plane/boat and 0.5 otherwise. A vehicle that is not moving is always teleported.
+/// Mirrors samp.dll 0x10015140.
 pub fn correct_driver(
     current: [f32; 3],
     target: [f32; 3],
@@ -368,6 +387,7 @@ pub fn correct_driver(
     }
 }
 
+/// The z error beyond which a remote-driven vehicle is teleported.
 pub fn z_threshold(kind: Kind) -> f32 {
     match kind {
         Kind::Heli | Kind::Plane | Kind::Boat => DRIVER_TELEPORT_Z_AIR_WATER,
@@ -375,17 +395,17 @@ pub fn z_threshold(kind: Kind) -> f32 {
     }
 }
 
-/// Turn speed clamped to ±0.02 per axis (remote-control-vehicles §2.2, every frame).
+/// Turn speed clamped to ±0.02 per axis (every frame).
 pub fn clamp_turn(t: [f32; 3]) -> [f32; 3] {
     t.map(|c| c.clamp(-TURN_CLAMP, TURN_CLAMP))
 }
 
-/// Train path of the driver apply (A 0x10015650): teleport beyond 10 units on x or y.
+/// Train path of the driver apply: teleport beyond 10 units on x or y. Mirrors samp.dll 0x10015650.
 pub fn train_needs_teleport(current: [f32; 3], target: [f32; 3]) -> bool {
     (target[0] - current[0]).abs() > 10.0 || (target[1] - current[1]).abs() > 10.0
 }
 
-/// 209 receive validation (remote-players-sync §209 S→C).
+/// Validation of a received unoccupied sync (209): id, unit roll/direction vectors, world bounds and speeds.
 pub fn unoccupied_valid(s: &UnoccupiedSync) -> bool {
     let unit = |v: Vec3| [v.x, v.y, v.z].iter().all(|c| (-1.0..=1.0).contains(c));
     let small = |v: Vec3| [v.x, v.y, v.z].iter().all(|c| *c > -100.0 && *c < 100.0);
@@ -402,8 +422,9 @@ pub fn unoccupied_valid(s: &UnoccupiedSync) -> bool {
         && small(s.turn_velocity)
 }
 
-/// 209 apply (A 0x100158D0): `None`, `Speed(v)` = keep the position, set rotation, turn speed and this velocity,
-/// or `Teleport` (position, rotation, velocity and turn speed from the packet).
+/// Unoccupied sync (209) apply: `None`, `Speed(v)` = keep the position, set rotation, turn speed and this
+/// velocity, or `Teleport` (position, rotation, velocity and turn speed from the packet).
+/// Mirrors samp.dll 0x100158D0.
 pub fn correct_unoccupied(current: [f32; 3], target: [f32; 3], synced: [f32; 3]) -> VehCorrection {
     let d = [0, 1, 2].map(|i| (target[i] - current[i]).abs());
     if d.iter().all(|&v| v <= UNOCC_DEAD_ZONE) {
@@ -434,9 +455,9 @@ pub fn rows_from_roll_direction(right: [f32; 3], forward: [f32; 3]) -> Rotation 
 
 // ---- local sending ------------------------------------------------------------------------------------
 
-/// Duplicate suppression shared by the in-car packets (remote-players-sync §0.4): one timestamp for all types,
-/// one "last struct" copy per type. A struct identical to the last one of its type is not sent while fewer
-/// than 501 ms have passed since the last send of any of them.
+/// Duplicate suppression shared by the in-car packets: one timestamp for all types, one "last struct" copy per
+/// type. A struct identical to the last one of its type is not sent while fewer than 501 ms have passed since
+/// the last send of any of them.
 #[derive(Debug, Default)]
 pub struct DupGate {
     last_send: Option<Instant>,
@@ -444,6 +465,7 @@ pub struct DupGate {
 }
 
 impl DupGate {
+    /// True when `bytes` may be sent now (and records it as sent).
     pub fn offer(&mut self, now: Instant, packet_id: u8, bytes: Vec<u8>) -> bool {
         let recent = self.last_send.is_some_and(|t| now.duration_since(t) < crate::footsync::DUPLICATE_WINDOW);
         if recent && self.last.get(&packet_id) == Some(&bytes) {
@@ -459,12 +481,13 @@ impl DupGate {
         self.last_send = Some(now);
     }
 
+    /// Forgets every send.
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 }
 
-/// In-car interval: `inCarRate + N` ms, N = streamed-in remote player peds (§0.4).
+/// In-car interval: `inCarRate + N` ms, N = streamed-in remote player peds.
 pub fn in_car_interval(in_car_rate_ms: u32, streamed_peds: u32) -> Duration {
     Duration::from_millis(u64::from(in_car_rate_ms) + u64::from(streamed_peds))
 }
@@ -476,6 +499,7 @@ pub struct IntervalTimer {
 }
 
 impl IntervalTimer {
+    /// True (and restarts) when more than `interval` has passed since the last due time.
     pub fn due(&mut self, now: Instant, interval: Duration) -> bool {
         if self.last.is_none_or(|t| now.duration_since(t) > interval) {
             self.last = Some(now);
@@ -485,6 +509,7 @@ impl IntervalTimer {
         }
     }
 
+    /// The next call to [`IntervalTimer::due`] is due at once.
     pub fn reset(&mut self) {
         self.last = None;
     }
@@ -527,7 +552,7 @@ pub fn filtered_quat(r: &Rotation, last: Option<Quat>) -> Quat {
     q
 }
 
-/// Builds the 200 struct (remote-players-sync §200 C→S).
+/// Builds the driver sync (200) sent by the local player.
 pub fn build_driver_sync(s: &DriverSample, last_rotation: Option<Quat>) -> VehicleSync {
     VehicleSync {
         vehicle_id: s.vehicle_id,
@@ -548,7 +573,7 @@ pub fn build_driver_sync(s: &DriverSample, last_rotation: Option<Quat>) -> Vehic
     }
 }
 
-/// Builds the 211 struct (remote-players-sync §211 C→S). Drive-by and cuffs are not tracked locally yet.
+/// Builds the passenger sync (211) sent by the local player. Drive-by and cuffed are always sent as false.
 #[allow(clippy::too_many_arguments)]
 pub fn build_passenger_sync(
     vehicle_id: u16,
@@ -577,9 +602,9 @@ pub fn build_passenger_sync(
     }
 }
 
-/// Who sends 209 for one vehicle (A 0x10006E00, remote-control-vehicles §3.2): `Some(seat)` to send.
-/// `moving`: not "stopped", where stopped = in GTA's moving list with a zero move speed (A 0x1009FE40).
-/// `first_passenger`: the first passenger seat holding a player ped (`m_nPedType` +0x598 == 0, local or remote; AI
+/// Who sends 209 for one vehicle: `Some(seat)` to send. Mirrors samp.dll 0x10006E00.
+/// `moving`: not "stopped", where stopped = in GTA's moving list with a zero move speed.
+/// `first_passenger`: the first passenger seat holding a player ped (`m_nPedType` == 0, local or remote; AI
 /// peds do not count): `None` = none, `Some((true, idx))` = the local ped in seat idx, `Some((false, _))`
 /// = another ped. `local_closest`: [`local_is_closest`].
 pub fn unoccupied_seat(
@@ -600,9 +625,9 @@ pub fn unoccupied_seat(
     }
 }
 
-/// The closest-player test of an empty car (A 0x10006E00): players in id order (ids 0 ..= max(highest id, local id)),
-/// each with its distance to the car while its ped is in the world (`None` otherwise, A 0x1009F430). Id 0 seeds the
-/// minimum unconditionally; later ids replace it only when strictly closer; the initial minimum is id 0 at 100000.
+/// The closest-player test of an empty car: players in id order (ids 0 ..= max(highest id, local id)), each
+/// with its distance to the car while its ped is in the world (`None` otherwise). Id 0 seeds the minimum
+/// unconditionally; later ids replace it only when strictly closer; the initial minimum is id 0 at 100000.
 /// The local id must hold the minimum, at most 90 units away.
 pub fn local_is_closest(local_id: u16, players: impl IntoIterator<Item = (u16, Option<f32>)>) -> bool {
     let (mut best_id, mut best) = (0u16, 100_000.0f32);
@@ -640,7 +665,7 @@ pub fn build_unoccupied_sync(
     }
 }
 
-/// Damage-status cache of the 106 poll (vehicles.md "106 C→S").
+/// Damage status of a vehicle as RPC 106 sends it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DamageStatus {
     pub panels: u32,
@@ -649,6 +674,7 @@ pub struct DamageStatus {
     pub tyres: u8,
 }
 
+/// Damage-status cache of the RPC 106 poll for the vehicle the local player drives.
 #[derive(Debug, Default)]
 pub struct DamageCache {
     id: Option<u16>,
@@ -682,7 +708,8 @@ pub fn car_tyre_bits(wheels: [u8; 4]) -> u8 {
     t
 }
 
-/// Engine application per frame (vehicles.md 24 "Engine/lights application"). `param` −1/0/1.
+/// Engine state wanted per frame (RPC 24 vehicle params). `param` is −1 (unset), 0 or 1; `manual` is the
+/// InitGame manual engine/lights mode.
 pub fn engine_wanted(manual: bool, param: i32, driver_seated: bool) -> bool {
     if manual {
         param > 0

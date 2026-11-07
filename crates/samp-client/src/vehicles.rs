@@ -1,18 +1,10 @@
-//! Vehicles inside the game (Windows only, milestone M5): the samp vehicle pool, the vehicle RPCs, remote
-//! drivers/passengers, unoccupied sync and the local in-car senders. Runs on the game's main thread from the
-//! client tick (samp: netgame tick → receive → player pool → local player → vehicle pool).
-//!
-//! Specs: vehicles.md (every RPC), remote-control-vehicles.md (§1 lifecycle, §2 remote drivers, §3 passengers and
-//! unoccupied cars, §4 trailers/trains, §5 enter/exit), remote-players-sync.md (§0.4, §200, §209, §210, §211,
-//! §2.1). Measured behaviour of the original client: docs/phase3/trace-notes.md "Vehicles (TRACE-4)" — stream-in
-//! opcode order with the busy-wait load and z + 0.25, the per-frame proofs/tyres pair for every car, IS_CAR_IN_WATER
-//! every 4th frame, blips, remote seating by WARP_CHAR_INTO_CAR on the first 200 and WARP_CHAR_FROM_CAR_TO_COORD
-//! to the ped's own position, corrections after `CWorld::Process` (rotation slerp every frame, speed writes per
-//! packet, no position writes in normal driving), RPC 26/154 at the moment of F, no sync during the exit
-//! animation, stream-out order.
-//!
-//! Not here: weapons, drive-by and cuffs of remote occupants (applied through players.rs / combat), plate
-//! textures (plates.rs), spectating (behaviour); open differences are listed in docs/phase3/m5-notes.md.
+//! Vehicles inside the game (Windows only): [`Vehicles`] owns the samp vehicle pool and handles the vehicle RPCs
+//! ([`Vehicles::on_rpc`]), remote drivers and passengers ([`Vehicles::on_sync`], [`Vehicles::remote_tick`]), the
+//! per-frame pool tick (damage authority, deaths, unoccupied sync, engine/lights, blips) and the local in-car
+//! senders ([`Vehicles::local_tick`]). Runs on the game's main thread from the client tick. Remote weapons are
+//! applied through `players.rs`, plate textures live in `plates.rs`; the pure rules are in `vehicle.rs`.
+//! Specs: docs/re/subsystems/vehicles.md, docs/re/subsystems/remote-control-vehicles.md and
+//! docs/re/subsystems/remote-players-sync.md; open differences are listed in docs/phase3/m5-notes.md.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -34,16 +26,18 @@ use crate::script::{Arg, Runner, op};
 use crate::vehhooks::{self, HookEvent, VehInfo};
 use crate::vehicle::{self as vm, DriverData, Kind, PassengerData, RemoteVeh, VehCorrection, state};
 
-/// "Car Jacked" game text (B string 0x100E6158; shown by B 0x10016220 for 1000 ms in style 5).
+/// "Car Jacked" game text, shown for 1000 ms in style 5.
 pub const CAR_JACKED_TEXT: &str = "~r~Car Jacked~w~!";
 const CAR_JACKED_MS: u32 = 1000;
 const CAR_JACKED_STYLE: u32 = 5;
 
 /// GTA addresses / fields (names via gta-reversed / plugin-sdk).
 mod g {
+    /// `CPools::ms_pVehiclePool`.
     pub const VEHICLE_POOL: u32 = 0xB74494;
     /// `CPool<CVehicle>::GetAt(handle)` (thiscall).
     pub const POOL_GET_AT: u32 = 0x4048E0;
+    /// `CEntity` moving-list link (non-zero while the entity is in the world's moving list).
     pub const MOVING_LIST: u32 = 0xB4;
     /// `CWorld::Remove(CEntity*)` (cdecl).
     pub const CWORLD_REMOVE: u32 = 0x563280;
@@ -146,8 +140,8 @@ fn in_vehicle(ped: u32) -> bool {
     rd::<u32>(ped + off::PED_FLAGS) & (1 << 8) != 0
 }
 
-/// samp's entity "remove from world" virtual (A 0x1009F460): a live entity (not the deleted-entity
-/// `CPlaceable` vtable) that is in the moving list goes through `CWorld::Remove`.
+/// samp's entity "remove from world": a live entity (not the deleted-entity `CPlaceable` vtable) that is in the
+/// moving list goes through `CWorld::Remove`. Mirrors samp.dll 0x1009F460.
 fn remove_from_world(ent: u32) {
     if ent == 0 || rd::<u32>(ent) == g::VTBL_CPLACEABLE || rd::<u32>(ent + g::MOVING_LIST) == 0 {
         return;
@@ -159,7 +153,7 @@ fn remove_from_world(ent: u32) {
     }
 }
 
-/// A ped's seat for samp's ped helpers (A 0x100ABEB0 in-vehicle flag, `m_pVehicle`, its driver and model).
+/// A ped's seat for samp's ped helpers (in-vehicle flag, `m_pVehicle`, its driver and model).
 fn seat_of(ped: u32) -> Option<vm::Seat> {
     if ped == 0 || !in_vehicle(ped) {
         return None;
@@ -235,11 +229,11 @@ struct Veh {
     blip: Option<i32>,
     objective_blip: Option<i32>,
     last_unocc_send: Option<Instant>,
-    /// Last remote player whose 209 was applied (pool +0x8E34).
+    /// Last player whose 209 was applied or sent.
     last_unocc_sender: Option<u16>,
     /// Carriage of a locomotive: no own GTA vehicle created, deleted with the locomotive.
     carriage: bool,
-    /// The stream-in position (samp's pool +0x11AD8, shown by `/dl` as "sPos").
+    /// The stream-in position (shown by `/dl` as "sPos").
     spawn_pos: [f32; 3],
 }
 
@@ -286,6 +280,7 @@ struct Counters {
     applied_209: u32,
 }
 
+/// The samp vehicle pool and the in-car state of the local and remote players.
 #[derive(Default)]
 pub struct Vehicles {
     pool: BTreeMap<u16, Veh>,
@@ -309,45 +304,47 @@ pub struct Vehicles {
     n: Counters,
     /// Set when a 200 went out (combat: 203 after each 200 of an armed vehicle).
     driver_sent: Option<u16>,
-    /// The local passenger drive-by is active (combat, local player +0x1CB): 211 drive-by bit.
+    /// The local passenger drive-by is active (set by the combat code): 211 drive-by bit.
     pub local_drive_by: bool,
     /// The local player is cuffed (special action 24): 211 cuffed bit.
     pub local_cuffed: bool,
-    /// Remote +0x1E7 per player (see `remote_vehicle`).
+    /// Last synced vehicle per remote player (see `remote_vehicle`).
     last_vehicle: HashMap<u16, u16>,
 }
 
 impl Vehicles {
+    /// InitGame: manual engine/lights mode (patches `DoVehicleLights` once), in-car send rate, local id.
     pub fn set_init_game(&mut self, g: &samp_proto::session::InitGame) {
         self.manual = g.manual_engine_and_lights;
         self.in_car_rate = g.in_car_rate.clamp(10, 1000);
         self.local_id = Some(g.player_id);
         if self.manual {
-            // CSV rows 140–147, once.
             let r = crate::vehpatches::apply(&mut self.patcher, &mut ProcessMemory, crate::vehpatches::MANUAL_LIGHTS);
             crate::log!("vehicles: manual engine/lights: {} rows applied, {} failed", r.applied.len(), r.failed.len());
         }
     }
 
+    /// The local player spawned at least once (RPC 96 is ignored before that).
     pub fn set_spawned(&mut self) {
         self.spawned_once = true;
     }
 
+    /// RPC 167: vehicle-vehicle collisions off / on.
     pub fn set_disable_collisions(&mut self, on: bool) {
         vehhooks::with_shared(|s| s.disable_collisions = on);
     }
 
-    /// Script handle of a streamed vehicle (object attachments, M6).
+    /// Script handle of a streamed vehicle (object attachments).
     pub fn script_handle(&self, id: u16) -> Option<i32> {
         self.get(id).map(|v| v.handle)
     }
 
-    /// GTA vehicle pointer of a streamed vehicle (3D label attachments, M6).
+    /// GTA vehicle pointer of a streamed vehicle (3D label attachments).
     pub fn gta_ptr(&self, id: u16) -> Option<u32> {
         self.get(id).map(|v| vehicle_at(v.handle)).filter(|&p| p != 0)
     }
 
-    /// SA:MP id of a GTA vehicle of the pool (world bounds for the driver, M8b).
+    /// SA:MP id of a GTA vehicle of the pool (world bounds for the driver).
     pub fn id_of(&self, ptr: u32) -> Option<u16> {
         self.id_of_ptr(ptr)
     }
@@ -363,7 +360,7 @@ impl Vehicles {
         self.pool.get(&id).filter(|v| v.ptr != 0)
     }
 
-    /// First frame: GTA's vehicle- and weapon-skill cheats, then `CStats::SetStatValue := RET` (CSV row 356).
+    /// First frame: GTA's vehicle- and weapon-skill cheats, then `CStats::SetStatValue := RET`.
     pub fn first_frame(&mut self) {
         if self.stats_done {
             return;
@@ -386,6 +383,7 @@ impl Vehicles {
 
     // ---- RPCs ---------------------------------------------------------------------------------------------
 
+    /// Dispatches one vehicle RPC.
     pub fn on_rpc(&mut self, runner: &mut Runner, players: &mut Players, r: V) {
         match r {
             V::StreamInVehicle(s) => self.stream_in(runner, &s),
@@ -480,13 +478,14 @@ impl Vehicles {
         }
     }
 
-    /// RPC 98 (tyres) and 161 (old objective / doors), session-misc.md.
+    /// RPC 98: tyre damage (docs/re/subsystems/session-misc.md).
     pub fn on_tyres(&mut self, id: u16, tyres: u8) {
         if let Some(v) = self.get(id) {
             apply_tyres(v.ptr, v.kind, tyres);
         }
     }
 
+    /// RPC 161: old-style vehicle params (objective, doors locked).
     pub fn on_old_params(&mut self, id: u16, objective: u8, doors: u8) {
         if let Some(v) = self.pool.get_mut(&id).filter(|v| v.ptr != 0) {
             if objective != 0 {
@@ -497,18 +496,19 @@ impl Vehicles {
         }
     }
 
-    /// (id, GTA vehicle, stream-in position) of every vehicle with a GTA object, in id order (`/dl`, FEAT-B).
-    /// F5: vehicles in the pool and the distinct models among those with a GTA vehicle.
+    /// Vehicles in the pool and the distinct models among those with a GTA vehicle.
     pub fn pool_stats(&self) -> (u32, u32) {
         let models: std::collections::BTreeSet<u32> = self.pool.values().filter(|v| v.ptr != 0).map(|v| v.model).collect();
         (self.pool.len() as u32, models.len() as u32)
     }
 
+    /// (id, GTA vehicle, stream-in position) of every vehicle with a GTA object, in id order (`/dl` labels).
     pub fn debug_rows(&self) -> Vec<(u16, u32, [f32; 3])> {
         self.pool.values().filter(|v| v.ptr != 0).map(|v| (v.id, v.ptr, v.spawn_pos)).collect()
     }
 
-    /// RPC 164 (vehicles.md 164; remote-control-vehicles §1.2; TRACE-4 §1 opcode order).
+    /// RPC 164 StreamInVehicle: busy model load, CREATE_CAR (or CREATE_MISSION_TRAIN plus its carriages), then the
+    /// creation fix-ups, colours, damage, components and paintjob in the original's opcode order.
     fn stream_in(&mut self, runner: &mut Runner, s: &rv::StreamInVehicle) {
         if s.vehicle_id >= vm::MAX_VEHICLES || !(vm::MODEL_MIN..=vm::MODEL_MAX).contains(&s.model) {
             return;
@@ -625,13 +625,13 @@ impl Vehicles {
         }
     }
 
-    /// RPC 165 (vehicles.md 165; TRACE-4 §5: occupants warped first, then DELETE_CAR).
+    /// RPC 165 StreamOutVehicle: occupants are warped out first, trailers detached, then the vehicle is deleted.
     fn stream_out(&mut self, runner: &mut Runner, players: &mut Players, id: u16) {
         let Some(v) = self.get(id).cloned() else { return };
         crate::log!("vehicles: stream-out id={id}");
         let local = local_ped();
         if local != 0 && in_vehicle(local) && rd::<u32>(local + g::PED_VEHICLE) == v.ptr {
-            // A 0x100AC5B0: the local ped goes to the vehicle position (interpretation: the warp opcode).
+            // The local ped goes to the vehicle position (samp's helper; we use the warp opcode).
             if let (Some(p), Some(h)) = (pos_of(v.ptr), game::ped_handle(&ProcessMemory, local).ok().flatten()) {
                 runner.run(
                     op::WARP_CHAR_FROM_CAR_TO_COORD,
@@ -659,7 +659,8 @@ impl Vehicles {
         }
     }
 
-    /// The samp object's destructor (remote-control-vehicles §1.3).
+    /// The samp object's destructor: blips, occupants warped out 2 m above the car, trailer detached, then
+    /// DELETE_CAR / DELETE_MISSION_TRAIN.
     fn delete(&mut self, runner: &mut Runner, id: u16) {
         let Some(v) = self.pool.remove(&id) else { return };
         if v.carriage || v.ptr == 0 {
@@ -691,7 +692,8 @@ impl Vehicles {
         } else {
             runner.run(op::DELETE_CAR, &[Arg::Int(v.handle)]);
         }
-        // Model release (> 80 loaded vehicle models, object +0x87) not reproduced: MR-5.9.
+        // TODO: samp also releases the model on stream-out when more than 80 vehicle models are loaded; not
+        // reproduced yet.
         crate::log!("vehicles: id={id} handle={:#x} deleted", v.handle);
     }
 
@@ -709,7 +711,7 @@ impl Vehicles {
         }
     }
 
-    /// RPC 24 (vehicles.md 24; names per RE-10 "GTA function names").
+    /// RPC 24 SetVehicleParams: engine, lights, alarm, doors, objective, siren, door and window states.
     fn set_params(&mut self, id: u16, p: &rv::VehicleParams) {
         let Some(v) = self.pool.get_mut(&id).filter(|v| v.ptr != 0) else { return };
         let ptr = v.ptr;
@@ -772,7 +774,7 @@ impl Vehicles {
         }
     }
 
-    /// RPC 96 S→C (vehicles.md 96).
+    /// RPC 96 SCMEvent (S→C): paintjob, component, colours or the mod-shop follow.
     fn scm_event(&mut self, runner: &mut Runner, players: &Players, e: &rv::ScmEvent) {
         if !self.spawned_once || e.vehicle_id >= u32::from(vm::MAX_VEHICLES) {
             return;
@@ -791,9 +793,9 @@ impl Vehicles {
         }
     }
 
-    /// RPC 96 type 4 (vehicles.md 96 S→C, A 0x10001A60 case 4): the driver `player_id` entered (arg1 ≠ 0) or left
-    /// a mod shop; the local player riding along as a passenger in the same vehicle follows into interior arg2 and
-    /// is frozen, or back to interior 0 and controllable. The packet's vehicle id only has to exist.
+    /// RPC 96 type 4: the driver `player_id` entered (arg1 ≠ 0) or left a mod shop; the local player riding along
+    /// as a passenger in the same vehicle follows into interior arg2 and is frozen, or back to interior 0 and
+    /// controllable. The packet's vehicle id only has to exist.
     fn mod_shop_follow(&mut self, runner: &mut Runner, players: &Players, e: &rv::ScmEvent) {
         if e.player_id > vm::MAX_REMOTE_PLAYER_ID {
             return;
@@ -805,14 +807,14 @@ impl Vehicles {
         }
         let Some(h) = game::ped_handle(&ProcessMemory, local).ok().flatten() else { return };
         let (veh_interior, interior, controllable) = vm::mod_shop_follow(e.arg1, e.arg2);
-        // The remote's vehicle (+0x1E1) follows first (LINK_VEHICLE_TO_INTERIOR when the vehicle exists in GTA).
+        // The remote's vehicle follows first (LINK_VEHICLE_TO_INTERIOR when the vehicle exists in GTA).
         if let Some(v) = self.remote_vehicle(e.player_id).and_then(|id| self.get(id)).filter(|v| v.ptr != 0) {
             runner.run(op::SET_VEHICLE_AREA_VISIBLE, &[Arg::Int(v.handle), Arg::Int(veh_interior)]);
         }
-        // Local interior without the scene refresh (A 0x100AD380(interior, 0)).
+        // Local interior without the scene refresh.
         runner.run(op::SET_AREA_VISIBLE, &[Arg::Int(i32::from(interior))]);
         runner.run(op::SET_CHAR_AREA_VISIBLE, &[Arg::Int(h), Arg::Int(i32::from(interior))]);
-        // Controllable (A 0x100AC7D0): the ped is seated, so the "teleport to its own position" step never runs.
+        // Controllable: the ped is seated, so samp's "teleport to its own position" step never runs.
         runner.run(op::SET_PLAYER_CONTROL, &[Arg::Int(0), Arg::Int(i32::from(controllable))]);
         runner.run(op::FREEZE_CHAR_POSITION, &[Arg::Int(h), Arg::Int(i32::from(!controllable))]);
         crate::log!(
@@ -822,7 +824,7 @@ impl Vehicles {
         );
     }
 
-    /// RPC 70 for the local ped (A 0x100AC2D0).
+    /// RPC 70 PutPlayerInVehicle for the local ped. Mirrors samp.dll 0x100AC2D0.
     fn put_local_in(&mut self, runner: &mut Runner, id: u16, seat: u8) {
         let Some(v) = self.get(id).cloned() else { return };
         let ped = local_ped();
@@ -830,7 +832,7 @@ impl Vehicles {
         if !seat_allowed(&v, seat) {
             return;
         }
-        // samp reads the weapon with GET_CURRENT_CHAR_WEAPON (A 0x100abc90; efx RPC 70 diff).
+        // samp reads the weapon with GET_CURRENT_CHAR_WEAPON; a parachute is swapped for fists.
         runner.run(op::GET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Local(0)]);
         if runner.local_i32(0) as u32 == u32::from(vm::WEAPON_PARACHUTE) {
             runner.run(op::SET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Int(0)]);
@@ -844,7 +846,7 @@ impl Vehicles {
         }
     }
 
-    /// RPC 26 S→C relay (vehicles.md 26).
+    /// RPC 26 EnterVehicle relay: a nearby remote ped starts the enter task (driver or passenger).
     fn remote_enter(&mut self, runner: &mut Runner, players: &mut Players, pid: u16, id: u16, passenger: bool) {
         let Some(v) = self.get(id).cloned() else { return };
         let Some(p) = players.get_mut(pid) else { return };
@@ -883,7 +885,7 @@ impl Vehicles {
 
     // ---- sync receive -------------------------------------------------------------------------------------
 
-    /// 200/211 are stored, 209/210 applied immediately (remote-control-vehicles §6 step 3a).
+    /// Received in-car sync: 200 / 211 are stored for the remote tick, 209 / 210 applied immediately.
     pub fn on_sync(&mut self, runner: &mut Runner, players: &mut Players, s: IncomingSync, now: Instant) {
         match s {
             IncomingSync::Vehicle { timestamp, sync } => {
@@ -912,7 +914,7 @@ impl Vehicles {
                 if ped != 0 && !in_vehicle(ped) && self.seat_remote(runner, ped, d.vehicle_id, 0) {
                     self.remote.entry(sync.player_id).or_default().warps_in += 1;
                 }
-                // The state change to driver comes last (B 0x100172F0 → 0x10016220).
+                // The state change to driver comes last.
                 if old_state != state::DRIVER {
                     self.car_jacked(runner, old_state, d.vehicle_id);
                 }
@@ -943,9 +945,9 @@ impl Vehicles {
         }
     }
 
-    /// "Car Jacked" (B 0x10016220): a remote player goes from on foot to driving the vehicle the local ped is
-    /// driving → the local ped is warped out of it to its own position + 1 m up, game text "~r~Car Jacked~w~!"
-    /// (1000 ms, style 5).
+    /// "Car Jacked": a remote player goes from on foot to driving the vehicle the local ped is driving → the local
+    /// ped is warped out of it to its own position + 1 m up, game text "~r~Car Jacked~w~!" (1000 ms, style 5).
+    /// Mirrors samp.dll 0x10016220 (build B).
     fn car_jacked(&mut self, runner: &mut Runner, old_state: u8, vehicle_id: u16) {
         let ped = local_ped();
         if old_state != remote::state::ON_FOOT || ped == 0 || !in_vehicle(ped) {
@@ -962,7 +964,8 @@ impl Vehicles {
         crate::log!("vehicles: car jacked (vehicle {vehicle_id}): local ped warped out");
     }
 
-    /// Driver/passenger seat warp (A 0x10014800 → A 0x100AC2D0). The weapon switch before it is M7.
+    /// Driver/passenger seat warp of a remote ped (the weapon is applied by the remote tick).
+    /// Mirrors samp.dll 0x10014800.
     fn seat_remote(&mut self, runner: &mut Runner, ped: u32, id: u16, seat: u8) -> bool {
         let Some(v) = self.get(id).cloned() else { return false };
         if !seat_allowed(&v, seat) {
@@ -982,7 +985,7 @@ impl Vehicles {
             r.driver = None;
             r.passenger = None;
         }
-        // B 0x10017288…0x100172D4: not while the ped runs its leave-car task (RPC 154 exit animation).
+        // Not while the ped runs its leave-car task (the RPC 154 exit animation).
         if p.ped != 0 && in_vehicle(p.ped) && sa != 3 && sa != 4 && !leaving_car(p.ped) {
             warp_out_own_position(runner, p.ped);
             if let Some(r) = self.remote.get_mut(&pid) {
@@ -991,7 +994,7 @@ impl Vehicles {
         }
     }
 
-    /// Right after a remote ped was (re)created: seat it from the stored driver/passenger sync (TRACE-4 §5).
+    /// Right after a remote ped was (re)created: seat it from the stored driver/passenger sync.
     pub fn after_stream_in(&mut self, runner: &mut Runner, players: &mut Players, pid: u16) {
         let Some(p) = players.get(pid) else { return };
         let ped = p.ped;
@@ -1010,17 +1013,19 @@ impl Vehicles {
         }
     }
 
+    /// A remote player left: drop its in-car state.
     pub fn forget_player(&mut self, pid: u16) {
         self.remote.remove(&pid);
         self.last_vehicle.remove(&pid);
     }
 
-    /// samp's cache reset of a remote (A 0x10015FA0: RPC 166, stream-out) clears its vehicle id (+0x1E7).
+    /// samp's cache reset of a remote (RPC 166, stream-out) clears its last synced vehicle.
+    /// Mirrors samp.dll 0x10015FA0.
     pub fn reset_remote_vehicle(&mut self, pid: u16) {
         self.last_vehicle.remove(&pid);
     }
 
-    /// 209 apply (A 0x100158D0), immediately on receive.
+    /// Unoccupied sync (209) apply, immediately on receive; skipped for player-driven or towed vehicles.
     fn apply_unoccupied(&mut self, pid: u16, s: &samp_proto::sync::vehicle::UnoccupiedSync) {
         if !vm::unoccupied_valid(s) {
             return;
@@ -1061,12 +1066,13 @@ impl Vehicles {
         self.n.applied_209 += 1;
     }
 
-    /// 210 apply (A 0x10015C90), immediately on receive.
+    /// Trailer sync (210) apply, immediately on receive: attach to the sender's cab, then nudge or teleport.
+    /// Mirrors samp.dll 0x10015C90.
     fn apply_trailer(&mut self, runner: &mut Runner, pid: u16, s: &TrailerSync) {
         let Some(cab_id) = self.remote.get(&pid).and_then(|r| r.driver).map(|d| d.vehicle_id) else { return };
         let (Some(cab), Some(t)) = (self.get(cab_id).cloned(), self.get(s.trailer_id).cloned()) else { return };
         if s.trailer_id == 0 || !vm::is_towable_list(t.model) {
-            // The second towable test (A 0x100B7E10) is not specified: TODO-unknown.
+            // TODO: samp has a second towable test that is not specified yet; only the model list is checked.
             return;
         }
         if rd::<u32>(t.ptr + g::VEH_TRACTOR) != cab.ptr {
@@ -1104,8 +1110,11 @@ impl Vehicles {
         }
     }
 
-    // ---- per frame: remote occupants (A 0x100166B0, driver/passenger part) --------------------------------
+    // ---- per frame: remote occupants ----------------------------------------------------------------------
 
+    /// Per frame, for every remote driver / passenger: the one-shot apply of a new 200 (corrections, extra,
+    /// siren, gear, health, weapon, trailer) or 211 (weapon, drive-by), then every frame the turn clamp, rotation
+    /// slerp and pad keys. Mirrors the driver / passenger part of samp.dll 0x100166B0.
     pub fn remote_tick(&mut self, runner: &mut Runner, players: &mut Players) {
         for p in players.iter_mut() {
             let Some(slot) = p.slot else { continue };
@@ -1172,7 +1181,7 @@ impl Vehicles {
                         }
                     }
                     poke(ptr + g::VEH_HEALTH, d.vehicle_health);
-                    // Weapon, as on foot (remote-players-sync §2.1 one-shot apply, driver; M7).
+                    // Weapon, as on foot.
                     crate::players::apply_weapon(runner, ped, slot, d.weapon);
                     if d.trailer_id == 0 || d.trailer_id >= vm::MAX_VEHICLES {
                         let tr: u32 = rd(ptr + g::VEH_TRAILER);
@@ -1191,8 +1200,8 @@ impl Vehicles {
                     let q = normalise(slerp(d.rotation, cur, remote::SLERP_KEEP));
                     write_rows(m, &rows_from_quat(q));
                 }
-                // RC models (A 0x10016F0A → remote ped wrapper slot 2, A 0x1009F460): the seated "driver" is taken
-                // out of the world (`CWorld::Remove`) whenever GTA has put it in the moving list again.
+                // RC models: the seated "driver" is taken out of the world (`CWorld::Remove`) whenever GTA has put
+                // it in the moving list again.
                 if vm::is_rc(v.model) {
                     remove_from_world(ped);
                 }
@@ -1214,7 +1223,7 @@ impl Vehicles {
                 poke(ptr + g::VEH_HORN, u32::from(d.keys & 2 != 0));
             } else if let (state::PASSENGER, Some(d)) = (p.state, r.passenger) {
                 if r.passenger_new && seated {
-                    // One-shot apply, passenger (§2.1 + RE-10): weapon, drive-by task, cuffs (M7).
+                    // One-shot apply, passenger: weapon and drive-by task.
                     crate::players::apply_weapon(runner, ped, slot, d.weapon);
                     remote_drive_by(runner, ped, slot, d.drive_by);
                 }
@@ -1229,20 +1238,21 @@ impl Vehicles {
         }
     }
 
-    // ---- combat (M7) --------------------------------------------------------------------------------------------
+    // ---- combat -------------------------------------------------------------------------------------------------
 
     /// Streamed vehicles as (GTA pointer, id) for the combat hooks.
     pub fn hook_vehicles(&self) -> Vec<(u32, u16)> {
         self.pool.values().filter(|v| v.ptr != 0 && v.id != 0).map(|v| (v.ptr, v.id)).collect()
     }
 
-    /// samp's remote +0x1E7: the vehicle of the last stored driver / passenger sync. Written by both stores,
-    /// kept after the remote leaves the vehicle, cleared only by the cache reset A 0x10015FA0 (RPC 166,
-    /// stream-out, the reset branch of the remote tick) and the constructor.
+    /// The vehicle of the remote's last stored driver / passenger sync. Written by both stores, kept after the
+    /// remote leaves the vehicle, cleared only by the cache reset (RPC 166, stream-out, the reset branch of the
+    /// remote tick) and when the player is created.
     pub fn remote_vehicle(&self, pid: u16) -> Option<u16> {
         self.last_vehicle.get(&pid).copied().filter(|&v| v != 0)
     }
 
+    /// `CVehicle*` of a pool vehicle (0 while it has no GTA vehicle).
     pub fn ptr_of(&self, id: u16) -> Option<u32> {
         self.get(id).map(|v| v.ptr)
     }
@@ -1257,7 +1267,7 @@ impl Vehicles {
         self.driver_sent.take()
     }
 
-    /// Death while driving (A 0x10007080): one last 200, outside the interval.
+    /// Death while driving: one last 200, outside the interval. Mirrors samp.dll 0x10007080.
     pub fn force_driver_send(&mut self, net: &mut NetClient, now: Instant) {
         let ped = local_ped();
         if ped == 0 || !in_vehicle(ped) {
@@ -1300,7 +1310,7 @@ impl Vehicles {
                         self.last_driven = Some(vehicle_id);
                     }
                     if train {
-                        // Warped inside the constructor hook (vehhooks::leave_filter); nothing else.
+                        // Warped inside the constructor hook (`vehhooks::leave_filter`); nothing else.
                     } else if !rc {
                         crate::log!("vehicles: exit vehicle {vehicle_id}");
                         send(net, &rv::OnPlayerExitVehicle { vehicle_id });
@@ -1312,9 +1322,9 @@ impl Vehicles {
         }
     }
 
-    /// RPC 96 C→S (B 0x10001CE0, vehicles.md "96 SCMEvent (C→S)"): only for a vehicle of the pool; type 3 then
-    /// applies the colours locally, type 4 sets / clears the "in mod shop" flag (on leaving, the vehicle's current
-    /// GTA colours become its stored colours).
+    /// RPC 96 SCMEvent (C→S): only for a vehicle of the pool; type 3 then applies the colours locally, type 4
+    /// sets / clears the "in mod shop" flag (on leaving, the vehicle's current GTA colours become its stored
+    /// colours).
     fn scm_event_out(&mut self, net: &mut NetClient, handle: i32, arg1: i32, arg2: i32, kind: i32) {
         let ptr = vehicle_at(handle);
         let Some(id) = self.id_of_ptr(ptr) else {
@@ -1353,7 +1363,7 @@ impl Vehicles {
     }
 
     /// The local player's in-car part of the tick. Returns true when on-foot sync must not be sent (ped state
-    /// not 1/12: driving, passenger, entering a seat or the exit animation; remote-players-sync §0.4).
+    /// not 1/12: driving, passenger, entering a seat or the exit animation).
     pub fn local_tick(&mut self, runner: &mut Runner, net: &mut NetClient, streamed: u32, now: Instant) -> bool {
         let ped = local_ped();
         if ped == 0 {
@@ -1459,7 +1469,7 @@ impl Vehicles {
             self.driver_sent = Some(id);
         }
         // 210 goes out on every in-car tick while towing, even when the 200 was suppressed as a duplicate, and it
-        // refreshes the shared send timestamp (TRACE-5: stationary 1 × 200 vs 119 × 210).
+        // refreshes the shared send timestamp.
         if s.trailer_id != 0
             && let Some(t) = self.get(s.trailer_id)
         {
@@ -1495,7 +1505,7 @@ impl Vehicles {
             footsync::key_word(&sample.pad, sample.key_ctx),
             sample.position,
         );
-        // Drive-by bit (byte 2 bit 6): the local drive-by task is active (TRACE-7: set from the start frame on).
+        // Drive-by bit (byte 2 bit 6): the local drive-by task is active, from its start frame on.
         p.drive_by = self.local_drive_by;
         p.cuffed = self.local_cuffed;
         if self.dup.offer(now, samp_proto::sync::ids::PASSENGER_SYNC, body(&p)) {
@@ -1504,7 +1514,8 @@ impl Vehicles {
         }
     }
 
-    /// Passenger-enter poll (A 0x10006FE0): the GROUP_CONTROL_FWD (DPadUp) press edge.
+    /// Passenger-enter poll: on the GROUP_CONTROL_FWD (DPadUp) press edge, enter the closest vehicle within 8 m as
+    /// a passenger and send RPC 26. Mirrors samp.dll 0x10006FE0.
     fn passenger_poll(&mut self, runner: &mut Runner, net: &mut NetClient, ped: u32) {
         let new: i16 = rd(g::PAD_DPAD_UP_NEW);
         let old: i16 = rd(g::PAD_DPAD_UP_OLD);
@@ -1523,12 +1534,12 @@ impl Vehicles {
             return;
         }
         let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return };
-        // samp reads the weapon with GET_CURRENT_CHAR_WEAPON (A 0x100abc90; efx RPC 70 diff).
+        // samp reads the weapon with GET_CURRENT_CHAR_WEAPON; a parachute is swapped for fists.
         runner.run(op::GET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Local(0)]);
         if runner.local_i32(0) as u32 == u32::from(vm::WEAPON_PARACHUTE) {
             runner.run(op::SET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Int(0)]);
         }
-        // A 0x100AC450(handle, 1): model 570 warps (seat −1 = GTA's first free passenger seat), others animate.
+        // Model 570 warps (seat −1 = GTA's first free passenger seat), others animate.
         if vm::passenger_enter_warps(model) {
             runner.run(op::WARP_CHAR_INTO_CAR_AS_PASSENGER, &[Arg::Int(h), Arg::Int(vh), Arg::Int(-1)]);
         } else {
@@ -1543,13 +1554,15 @@ impl Vehicles {
         self.train_camera(runner, id);
     }
 
-    // ---- per frame: the vehicle pool (A 0x1001F3C0) ----------------------------------------------------------
+    // ---- per frame: the vehicle pool ----------------------------------------------------------------------------
 
     /// (id, CVehicle*, plate text) of every vehicle in pool order (the plate pass, `plates.rs`).
     pub fn plate_list(&self) -> Vec<(u16, u32, Vec<u8>)> {
         self.pool.iter().map(|(id, v)| (*id, v.ptr, v.plate.clone())).collect()
     }
 
+    /// The vehicle pool tick (every 4th frame): damage authority, wasted / sunk vehicles, unoccupied sync,
+    /// engine/lights, colours and blips; publishes the hook state every frame. Mirrors samp.dll 0x1001F3C0.
     pub fn pool_tick(&mut self, runner: &mut Runner, net: &mut NetClient, players: &Players, now: Instant) {
         self.frame += 1;
         let local = local_ped();
@@ -1562,9 +1575,8 @@ impl Vehicles {
         }
         let local_pos = if local != 0 { pos_of(local) } else { None };
         let remote_peds: Vec<(u16, u32)> = players.iter().filter(|p| p.ped != 0).map(|p| (p.id, p.ped)).collect();
-        // The original runs this pool tick on every 4th frame only (TRACE-4 trace: the proofs/tyres pair,
-        // IS_CAR_IN_WATER and the blip calls of every car are exactly 4 frames apart, 1123 of 1124 gaps; a car
-        // created by RPC 164 is first processed on the next such frame).
+        // The original runs this pool tick on every 4th frame only; a car created by RPC 164 is first processed on
+        // the next such frame.
         if !self.frame.is_multiple_of(vm::POOL_TICK_FRAMES) {
             self.publish_hook_state(players);
             return;
@@ -1590,8 +1602,8 @@ impl Vehicles {
             let driver: u32 = rd(ptr + g::VEH_DRIVER);
             let local_drives = local != 0 && driver == local;
             let local_passenger = local != 0 && !local_drives && is_passenger(ptr, local);
-            // Damage authority: proofs + tyres pair every frame (TRACE-4 §2); none at all for the car the local
-            // ped sits in as a passenger (TRACE-5 MR-a).
+            // Damage authority: proofs + tyres pair on every pool tick (only the local driver's car is
+            // vulnerable); none at all for the car the local ped sits in as a passenger.
             if local_passenger {
                 // no pair
             } else if local_drives {
@@ -1676,16 +1688,16 @@ impl Vehicles {
         let driver: u32 = rd(ptr + g::VEH_DRIVER);
         let local = local_ped();
         let speed = v3(ptr + off::MOVE_SPEED);
-        // Not "stopped" (A 0x1009FE40): stopped = in the moving list with a zero move speed.
+        // Not "stopped": stopped = in the moving list with a zero move speed.
         let moving = rd::<u32>(ptr + g::MOVING_LIST) == 0 || speed != [0.0; 3];
-        // Only player peds (`m_nPedType` +0x598 == 0, local or remote) count as passengers; AI peds do not.
+        // Only player peds (`m_nPedType` == 0, local or remote) count as passengers; AI peds do not.
         let first = (0..8u32).find_map(|i| {
             let p: u32 = rd(ptr + g::VEH_PASSENGERS + 4 * i);
             (p != 0 && rd::<u32>(p + g::PED_TYPE) == 0).then_some((p == local, i as u8))
         });
         let has_driver = driver != 0 && in_vehicle(driver);
         let closest = first.is_none() && {
-            // Peds count while in the world (A 0x1009F430: not a deleted placeable, in the moving list).
+            // Peds count while in the world: not a deleted placeable, in the moving list.
             let dist_of = |ped: u32| {
                 (ped != 0 && rd::<u32>(ped) != g::VTBL_CPLACEABLE && rd::<u32>(ped + g::MOVING_LIST) != 0)
                     .then(|| pos_of(ped).map(|p| vm::dist3d(p, pos)))
@@ -1738,10 +1750,8 @@ impl Vehicles {
         }
     }
 
-    /// Objective / unoccupied radar blips (A 0x100B7720). "Occupied" = a driver ped is set or the local ped sits in it
-    /// as a passenger (TRACE-4: the blip goes when the local driver is seated and comes back after the exit
-    /// animation; TRACE-5 MR-b: removed once after the local ped is seated as a passenger). Remote passengers in a
-    /// driverless car are not measured.
+    /// Objective / unoccupied radar blips. "Occupied" = a driver ped is set or the local ped sits in it as a
+    /// passenger. Remote passengers in a driverless car have not been measured. Mirrors samp.dll 0x100B7720.
     fn blips(&mut self, runner: &mut Runner, id: u16, occupied: bool, dist: f32) {
         let Some(v) = self.pool.get_mut(&id) else { return };
         let h = v.handle;
@@ -1932,8 +1942,8 @@ fn clear_keys(p: &mut remote::RemotePlayer) {
     }
 }
 
-/// Seat checks of A 0x100AC2D0: vehicle health 0, seat beyond the passenger count (automobile/bike kinds),
-/// a deleted entity, or an occupied driver seat.
+/// Seat checks of samp's seat warp: refused for vehicle health 0, a seat beyond the passenger count
+/// (automobile/bike kinds), a deleted entity, or an occupied driver seat.
 fn seat_allowed(v: &Veh, seat: u8) -> bool {
     let ptr = v.ptr;
     if rd::<u32>(ptr) == g::VTBL_CPLACEABLE || rd::<f32>(ptr + g::VEH_HEALTH) == 0.0 {
@@ -1958,9 +1968,9 @@ fn warp_into(runner: &mut Runner, ped_handle: i32, v: &Veh, seat: u8) {
     }
 }
 
-/// PlayCrimeReport's temporary vehicle (B 0x100A17A0 → samp's vehicle constructor B 0x100B83E0 at (0, 0, 0)
-/// with heading 0, then colours (colour, 0xFF) and CWorld::Remove): the stream-in creation sequence without
-/// a pool entry. Returns (script handle, CVehicle*).
+/// PlayCrimeReport's temporary vehicle: samp's vehicle constructor at (0, 0, 0) with heading 0, then colours
+/// (colour, 0xFF) and `CWorld::Remove` — the stream-in creation sequence without a pool entry. Returns
+/// (script handle, CVehicle*).
 pub fn create_detached(runner: &mut Runner, model: u16, colour: u8) -> Option<(i32, u32)> {
     let (handle, ptr) = create_at(runner, model, [0.0, 0.0, 0.0])?;
     poke(ptr + g::VEH_PRIMARY_COLOUR, colour);
@@ -1975,9 +1985,9 @@ pub fn create_detached(runner: &mut Runner, model: u16, colour: u8) -> Option<(i
     Some((handle, ptr))
 }
 
-/// samp's vehicle constructor (B 0x100B83E0, A 0x100B8410) for a non-train model at `pos`, heading 0: busy model load,
-/// CREATE_CAR, 0175 heading, 09C4/07FF/053F, door lock and dirt 0, matrix z + 0.25 (not bikes / BMX). Returns
-/// (script handle, CVehicle*).
+/// samp's vehicle constructor for a non-train model at `pos`, heading 0: busy model load, CREATE_CAR, 0175
+/// heading, 09C4/07FF/053F, door lock and dirt 0, matrix z + 0.25 (not bikes / BMX). Returns
+/// (script handle, CVehicle*). Mirrors samp.dll 0x100B8410.
 pub fn create_at(runner: &mut Runner, model: u16, pos: [f32; 3]) -> Option<(i32, u32)> {
     let [x, y, z] = pos;
     if !busy_load(runner, i32::from(model)) {
@@ -2005,13 +2015,14 @@ pub fn create_at(runner: &mut Runner, model: u16, pos: [f32; 3]) -> Option<(i32,
     Some((handle, ptr))
 }
 
-/// samp's vehicle destructor (A 0x100B8930) for a vehicle made by [`create_at`]: DELETE_CAR (the model release over
-/// 80 loaded vehicle models is not reproduced, MR-5.9).
+/// samp's vehicle destructor for a vehicle made by [`create_at`]: DELETE_CAR (the model release over 80 loaded
+/// vehicle models is not reproduced). Mirrors samp.dll 0x100B8930.
 pub fn delete_handle(runner: &mut Runner, handle: i32) {
     runner.run(op::DELETE_CAR, &[Arg::Int(handle)]);
 }
 
-/// samp's vehicle-type code (A 0x100B6220) from the CVehicle vtable: 4 = vtable 0x8721A0.
+/// samp's vehicle-type code from the CVehicle vtable (same table as `vm::Kind`, 0 when unknown).
+/// Mirrors samp.dll 0x100B6220.
 pub fn samp_type(ptr: u32) -> u8 {
     match rd::<u32>(ptr) {
         0x871120 => 1,
@@ -2025,14 +2036,14 @@ pub fn samp_type(ptr: u32) -> u8 {
     }
 }
 
-/// WARP_CHAR_FROM_CAR_TO_COORD to the ped's own current position (TRACE-4 §3).
+/// WARP_CHAR_FROM_CAR_TO_COORD to the ped's own current position.
 fn warp_out_own_position(runner: &mut Runner, ped: u32) {
     let (Some(p), Some(h)) = (pos_of(ped), game::ped_handle(&ProcessMemory, ped).ok().flatten()) else { return };
     runner.run(op::WARP_CHAR_FROM_CAR_TO_COORD, &[Arg::Int(h), Arg::Float(p[0]), Arg::Float(p[1]), Arg::Float(p[2])]);
     crate::log!("vehicles: ped {ped:#x} warped out to its own position");
 }
 
-/// samp's camera reset (A 0x1009D7A0): 0930(0), 0925, 0373, 02EB.
+/// samp's camera reset: 0930(0), 0925, 0373, 02EB. Mirrors samp.dll 0x1009D7A0.
 fn camera_behind(runner: &mut Runner) {
     runner.run(op::CAMERA_PERSIST_POS, &[Arg::Int(0)]);
     runner.run(op::CAMERA_RESET_NEW_SCRIPTABLES, &[]);
@@ -2040,10 +2051,10 @@ fn camera_behind(runner: &mut Runner) {
     runner.run(op::RESTORE_CAMERA_JUMPCUT, &[]);
 }
 
-/// Model load before CREATE_CAR (TRACE-4 §1.1): HAS_MODEL_LOADED; if missing REQUEST_MODEL + LOAD_ALL_MODELS_NOW and
-/// busy-wait on HAS_MODEL_LOADED with Sleep(0). samp waits without limit (B 0x100B8474..0x100B84B6, a hang if the
-/// model never loads); we stop after 10 s, log, and return false: the caller then creates nothing (CREATE_CAR on a
-/// model that is not loaded faults in GTA and leaves a dead handle for the next opcodes; ROADMAP decision).
+/// Model load before CREATE_CAR: HAS_MODEL_LOADED; if missing REQUEST_MODEL + LOAD_ALL_MODELS_NOW and busy-wait on
+/// HAS_MODEL_LOADED with Sleep(0). samp waits without limit (a hang if the model never loads); we stop after 10 s,
+/// log, and return false: the caller then creates nothing (CREATE_CAR on a model that is not loaded faults in GTA
+/// and leaves a dead handle for the next opcodes; recorded in docs/ROADMAP.md "Decisions made autonomously").
 fn busy_load(runner: &mut Runner, model: i32) -> bool {
     if runner.run(op::HAS_MODEL_LOADED, &[Arg::Int(model)]) {
         return true;
@@ -2061,7 +2072,7 @@ fn busy_load(runner: &mut Runner, model: i32) -> bool {
     true
 }
 
-/// Add-component (vehicle method B 0x100B7FD0, used by RPC 65 and SCM event 2): not loaded → `REQUEST_MODEL`,
+/// Add-component (samp's vehicle method, used by stream-in and SCM event 2): not loaded → `REQUEST_MODEL`,
 /// `LOAD_ALL_MODELS_NOW`, `REQUEST_VEHICLE_MOD`, then up to 20 polls with `Sleep(1)`; if loaded, `ADD_VEHICLE_MOD`.
 fn add_component(runner: &mut Runner, handle: i32, component: i32) {
     if !runner.run(op::HAS_VEHICLE_MOD_LOADED, &[Arg::Int(component)]) {
@@ -2080,7 +2091,7 @@ fn add_component(runner: &mut Runner, handle: i32, component: i32) {
     }
 }
 
-/// `CPool::GetRef` for a vehicle pointer (A 0x100B3C40 → GTA 0x424160).
+/// `CPool<CVehicle>::GetRef` for a vehicle pointer: its script handle, or −1 without a pool.
 pub(crate) fn pool_ref(ptr: u32) -> i32 {
     let pool: u32 = rd(g::VEHICLE_POOL);
     if pool == 0 {
@@ -2107,7 +2118,7 @@ fn teleport(ent: u32, p: [f32; 3]) {
     }
 }
 
-/// Damage setter (A 0x100B7B00): automobiles and planes only.
+/// Damage setter (panels, doors, lights; all zero = fix): automobiles and planes only. Mirrors samp.dll 0x100B7B00.
 fn apply_damage(ptr: u32, kind: Kind, panels: u32, doors: u32, lights: u8) {
     if !matches!(kind, Kind::Automobile | Kind::Plane) {
         return;
@@ -2127,7 +2138,7 @@ fn apply_damage(ptr: u32, kind: Kind, panels: u32, doors: u32, lights: u8) {
     thiscall0(g::AUTOMOBILE_SETUP_DAMAGE, ptr);
 }
 
-/// Tyres (A 0x100B7980).
+/// Tyre setter: four bits for automobiles, two for bikes. Mirrors samp.dll 0x100B7980.
 fn apply_tyres(ptr: u32, kind: Kind, tyres: u8) {
     match kind {
         Kind::Automobile => {
@@ -2172,10 +2183,11 @@ fn dead(ped: u32) -> bool {
     st == 54 || st == 55 || rd::<f32>(ped + off::PED_HEALTH) <= 0.0
 }
 
-/// `CPedIntelligence` task slot samp reads for the drive-by task (RE-10: intelligence +0x10).
+/// `CPedIntelligence` task slot samp reads for the drive-by task.
 const INTEL_DRIVE_BY_SLOT: u32 = 0x10;
-/// `TASK_SIMPLE_GANG_DRIVEBY` task type and its deleting destructor.
+/// `TASK_SIMPLE_GANG_DRIVEBY` task type.
 const TASK_GANG_DRIVEBY: u32 = 0x3FE;
+/// `CTaskSimpleGangDriveBy` deleting destructor.
 const GANG_DRIVEBY_DELETING_DTOR: u32 = 0x6275E0;
 
 /// The task in the intelligence slot +0x10 (the task manager's primary slot 3) and its type, if any.
@@ -2212,12 +2224,12 @@ pub(crate) fn drive_by_task(ped: u32) -> u32 {
 /// `TASK_COMPLEX_LEAVE_CAR`.
 const TASK_LEAVE_CAR: u32 = 0x2C0;
 
-/// The ped is running the leave-car task (B 0x100AC650: intelligence slot +0x10, type 0x2C0).
+/// The ped is running the leave-car task (in the intelligence slot samp reads).
 fn leaving_car(ped: u32) -> bool {
     matches!(intel_slot_task(ped), Some((_, TASK_LEAVE_CAR)))
 }
 
-/// Stops the drive-by task through its deleting destructor and clears the slot (A 0x100AD0C0).
+/// Stops the drive-by task through its deleting destructor and clears the slot. Mirrors samp.dll 0x100AD0C0.
 pub(crate) fn stop_drive_by(ped: u32) {
     let task = drive_by_task(ped);
     if task == 0 {
@@ -2232,9 +2244,9 @@ pub(crate) fn stop_drive_by(ped: u32) {
     poke(intel + INTEL_DRIVE_BY_SLOT, 0u32);
 }
 
-/// Starts the drive-by task (A 0x100ACFD0): in a vehicle only; with the parachute the weapon goes to fists and no
-/// task starts; otherwise the current weapon is armed again and TASK_DRIVE_BY(ped, −1, −1, 0, 0, 0, 300, 8, 1, 20)
-/// runs (TRACE-7: same parameters for the local and the remote passenger).
+/// Starts the drive-by task: in a vehicle only; with the parachute the weapon goes to fists and no task starts;
+/// otherwise the current weapon is armed again and TASK_DRIVE_BY(ped, −1, −1, 0, 0, 0, 300, 8, 1, 20) runs (same
+/// parameters for the local and the remote passenger). Mirrors samp.dll 0x100ACFD0.
 pub(crate) fn start_drive_by(runner: &mut Runner, ped: u32, arm: impl FnOnce(&mut Runner, u8)) -> bool {
     if !in_vehicle(ped) || rd::<u32>(ped + g::PED_VEHICLE) == 0 {
         return false;
@@ -2254,7 +2266,7 @@ pub(crate) fn start_drive_by(runner: &mut Runner, ped: u32, arm: impl FnOnce(&mu
     true
 }
 
-/// Remote passenger drive-by bit (remote-players-sync RE-10): start when set and not active, stop when clear.
+/// Remote passenger drive-by bit: start when set and not active, stop when clear.
 fn remote_drive_by(runner: &mut Runner, ped: u32, slot: u8, on: bool) {
     let active = drive_by_task(ped) != 0;
     if on && !active {

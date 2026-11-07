@@ -220,3 +220,19 @@ Static analysis of samp.dll A (B checked where the trace lane runs it), then the
   moving platform object (server surf object 1 in 3 samples) → F **enters** (enter request, 1→2); special action 24 →
   no enter request; 25 → none; 0 → enters. Ours now refuses from `combat.cuffs` (`vehhooks::Shared::local_cuffed /
   local_carrying`, `vehicle::driver_enter_refused`) and logs the refusal; the same six cases match.
+
+## Measurements moved here from code comments (2026-11-07 readability pass)
+
+* Inside GTA's `CAutomobile::ProcessControl` of a remote-driven car (TRACE-4): `CWorld::PlayerInFocus` = the
+  remote's slot, `Pads[0]` = the remote keys, camera mode 4, camera front (0,0,0), look-left/right 0; unoccupied
+  cars far away are not processed at all (`vehhooks.rs`).
+* Trailer sync (TRACE-5): a stationary truck with a trailer sent 1 × 200 against 119 × 210 — 210 goes out on every
+  in-car tick while towing, even when the 200 is suppressed as a duplicate, and refreshes the shared send
+  timestamp (`vehicles.rs`, `send_driver`).
+* Radar blips (TRACE-4, TRACE-5 MR-b): the unoccupied blip goes when the local driver is seated and comes back
+  after the exit animation; it is also removed once after the local ped is seated as a passenger (`vehicles.rs`,
+  `blips`).
+* Nametag anchor (M8a): a driver of an Infernus is tagged at its head (bone 8), 0.3 m above the car's matrix
+  position; only RC drivers are tagged at the vehicle (`vehicle.rs`, `tag_at_vehicle`).
+* Train exit (`trainexit` mark of run `orig-20261105-042300`): the warp precedes GTA's SetTask of the leave task in
+  the same frame (`vehhooks.rs`, `leave_filter`; details in docs/phase3/m6p-notes.md "Train exit").

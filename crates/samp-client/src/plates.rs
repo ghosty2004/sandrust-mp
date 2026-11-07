@@ -1,19 +1,10 @@
-//! Number plates (CSV rows 59/60, RPC 123; vehicles.md "Number plates"): one samp-owned D3D texture per vehicle.
+//! Number plates (RPC 123 SetVehiclePlate): each vehicle's plate is a samp-owned D3D texture.
 //!
-//! Static source (samp.dll B): row 59 (B 0x100A4530) replaces the `RwRasterCreate` call in
-//! `CCustomCarPlateMgr::CreatePlateTexture` (0x6FDED6) and hands every car one shared raster (64×16, depth 32,
-//! flags 0x604, created once); row 60 (B 0x100A4440, `jmp [0x59C721]` at `RwRasterDestroy`) refuses to destroy that
-//! raster while the guard (B 0x10113AD8) is set — it is cleared during a device loss. The pre-step pool pass
-//! (B 0x1001ED20, only while the pool's device flag +0x17894 is set) paints the default plate `XYZSR998` once and
-//! then, per vehicle without a texture and with a non-empty text, its own plate (B 0x100B81B0 → painter
-//! B 0x1006D840). The device proxy's `SetTexture` (B 0x10074B80) swaps the shared raster's texture for the texture
-//! of the vehicle `CVehicle::Render` is drawing (row 62 records it), else the default one, after
-//! `RwRenderStateSet(TEXTUREFILTER, LINEAR)`.
-//!
-//! Measured (run `orig-20261105-042300`, marks `plate` / `plate2`): the painter's D3D calls (D3DXCreateTexture
-//! 64×32 X8R8G8B8 default pool, RTS BeginScene, Clear 0xFFBEB6A8, four outline DrawTexts 0xB4F0EEE4 at
-//! (0,−2)/(+2,0)/(0,+2)/(−2,0) around (0, 3) then the text 0xEE444470, rect right/bottom 128/32, format 0x105,
-//! EndScene, D3DXLoadSurfaceFromSurface) on the frame after the stream-in, and "RUST 42" on the car.
+//! GTA's plate-texture creation gets one shared raster for every car, which is never destroyed while the device
+//! is alive. [`tick`] paints the default plate `XYZSR998` and then each vehicle's own text into textures;
+//! [`substitute`], called from the device proxy's `SetTexture`, swaps the shared raster's texture for the plate
+//! of the vehicle being rendered. [`on_lost`] / [`on_reset`] follow D3D device loss.
+//! Spec: docs/re/subsystems/vehicles.md, "Number plates".
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -22,30 +13,34 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::patch::{PatchError, Patcher, ProcessMemory};
 use crate::worldhooks::rd;
 
-/// `RwRasterCreate` (1.0 US) and the shared raster's size / depth / flags (B 0x100A4504…).
+/// `RwRasterCreate` (1.0 US) and the shared raster's width, height, depth and flags.
 const RW_RASTER_CREATE: u32 = 0x7FB230;
 const PLATE_RASTER: (i32, i32, i32, i32) = (64, 16, 32, 0x604);
-/// Row 59 call site and row 60 site / slot / resume.
+/// The `RwRasterCreate` call in `CCustomCarPlateMgr::CreatePlateTexture`.
 const CREATE_PLATE_CALL: u32 = 0x6FDED6;
+/// `RwRasterDestroy` entry (hooked).
 const RASTER_DESTROY: u32 = 0x7FB020;
+/// Pointer slot for the hook's `jmp [slot]`, in padding inside gta_sa.exe (samp's form of the hook).
 const RASTER_DESTROY_SLOT: u32 = 0x59C721;
+/// Where `RwRasterDestroy` continues after the overwritten prologue.
 const RASTER_DESTROY_RESUME: u32 = 0x7FB026;
+/// The prologue bytes the hook overwrites.
 const RASTER_DESTROY_ORIGINAL: [u8; 6] = [0x56, 0x8B, 0x74, 0x24, 0x08, 0x56];
-/// `RwD3D9Raster` extension: the D3D texture at raster + 0x34 (B 0x100A4480).
+/// `RwD3D9Raster` extension: offset of the D3D texture in a raster.
 const RASTER_D3D_TEXTURE: u32 = 0x34;
 /// `RwEngineInstance` and its `RwRenderStateSet` slot (+0x20); TEXTUREFILTER (9) := LINEAR (2).
 const RW_ENGINE: u32 = 0xC97B24;
 const RW_RENDER_STATE_SET: u32 = 0x20;
-/// Default plate text (B 0x100E645C).
+/// Default plate text.
 pub const DEFAULT_TEXT: &[u8] = b"XYZSR998";
 
 static SHARED_RASTER: AtomicU32 = AtomicU32::new(0);
-/// B 0x10113AD8: 1 except during a device loss.
+/// While set, `RwRasterDestroy` keeps the shared raster; cleared during a device loss.
 static GUARD: AtomicBool = AtomicBool::new(true);
 
 #[derive(Default)]
 struct State {
-    /// The pool's device flag (+0x17894).
+    /// The device is usable (samp keeps this flag in its vehicle pool); off between loss and reset.
     device_ok: bool,
     default_tex: u32,
     /// (vehicle id, CVehicle*) → texture.
@@ -70,7 +65,8 @@ fn release(tex: u32) {
     }
 }
 
-/// Row 59: `RwRasterCreate(w, h, depth, flags)` → the shared raster (created on the first call).
+/// Replaces the `RwRasterCreate(w, h, depth, flags)` call of plate creation: returns the shared raster, created
+/// on the first call.
 extern "C" fn create_plate_raster(_w: i32, _h: i32, _d: i32, _flags: i32) -> u32 {
     let r = SHARED_RASTER.load(Ordering::SeqCst);
     if r != 0 {
@@ -90,7 +86,7 @@ extern "C" fn keep_raster(raster: u32) -> u32 {
     u32::from(GUARD.load(Ordering::SeqCst) && raster != 0 && raster == SHARED_RASTER.load(Ordering::SeqCst))
 }
 
-/// Row 60: `RwRasterDestroy(raster)` returns TRUE without destroying the shared raster while the guard is set,
+/// `RwRasterDestroy(raster)` hook: returns TRUE without destroying the shared raster while the guard is set,
 /// else runs the overwritten prologue and continues.
 #[unsafe(naked)]
 unsafe extern "C" fn raster_destroy_stub() {
@@ -115,6 +111,8 @@ unsafe extern "C" fn raster_destroy_stub() {
     )
 }
 
+/// Installs the shared-raster create and destroy hooks; returns (row in docs/re/data/gta-patches-r4.csv, result) for
+/// each.
 pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Result<(), PatchError>)> {
     let create = create_plate_raster as extern "C" fn(i32, i32, i32, i32) -> u32 as usize as u32;
     let destroy = raster_destroy_stub as unsafe extern "C" fn() as usize as u32;
@@ -146,8 +144,9 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
     ]
 }
 
-/// The pre-step pool pass (B 0x1001ED20): default plate first, then each vehicle (pool order) without a texture
-/// and with a text. `paint` is the plate painter (B 0x1006D840); vehicles no longer in `list` lose their texture.
+/// Per-frame pass before the game step: default plate first, then each vehicle (pool order) without a texture
+/// and with a text. `paint` is the plate painter; vehicles no longer in `list` lose their texture.
+/// Mirrors samp.dll 0x1001ED20 (build B).
 pub fn tick(list: &[(u16, u32, Vec<u8>)], paint: &mut dyn FnMut(&[u8]) -> u32) {
     with(|s| {
         let gone: Vec<(u16, u32)> =
@@ -175,8 +174,8 @@ pub fn tick(list: &[(u16, u32, Vec<u8>)], paint: &mut dyn FnMut(&[u8]) -> u32) {
     });
 }
 
-/// Device loss (B 0x100C4171…): guard and pool flag off, every vehicle's texture released (B 0x1001ED90); the
-/// painter releases the default plate with its own objects (B 0x1006D770).
+/// Device loss: guard and device flag off, every plate texture released (the default plate too, which samp's
+/// painter releases with its own objects).
 pub fn on_lost() {
     GUARD.store(false, Ordering::SeqCst);
     with(|s| {
@@ -188,14 +187,15 @@ pub fn on_lost() {
     });
 }
 
-/// After the reset (B 0x100C440D…): guard and pool flag on again; the next pass repaints.
+/// After the device reset: guard and device flag on again; the next pass repaints.
 pub fn on_reset() {
     GUARD.store(true, Ordering::SeqCst);
     with(|s| s.device_ok = true);
 }
 
-/// `SetTexture` substitution (B 0x10074BC3…): for the shared raster's D3D texture, the texture of the vehicle being
-/// rendered (row 62), else the default plate, after `RwRenderStateSet(9, 2)`.
+/// `SetTexture` substitution: for the shared raster's D3D texture, returns the plate of the vehicle being
+/// rendered (recorded by the `CVehicle::Render` hook), else the default plate, after setting
+/// `RwRenderStateSet(TEXTUREFILTER = 9, LINEAR = 2)`.
 pub fn substitute(tex: u32) -> Option<u32> {
     let raster = SHARED_RASTER.load(Ordering::Relaxed);
     if raster == 0 || tex == 0 || rd::<u32>(raster + RASTER_D3D_TEXTURE) != tex {

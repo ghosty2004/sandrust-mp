@@ -1,26 +1,17 @@
-//! Surfing: standing on a moving vehicle or object (CSV row 24).
+//! Surfing: a player standing on a moving vehicle or object is carried along with it.
 //!
-//! samp keeps the local player's surf state in its local-player object and runs three pieces:
-//! * the on-foot probe (A 0x10003730, every local on-foot tick): what the ped stands on (a vertical
-//!   line-of-sight test, `client::surf_probe`), classified as a pool vehicle (player-driven or a train
-//!   carriage 569/570, nearer than 30 units) or a moving pool object; contact is latched for 2000 ms;
-//! * the local glue (A 0x10003570): while latched and no movement stick is held, the ped is put at the
-//!   stored offset in the surface's frame and takes the surface's x/y move speed and z turn speed;
-//!   otherwise the offset is re-measured (inverse surface matrix × ped position);
-//! * the remote glue (A 0x10014650): a remote on-foot player whose 207 carries a surf id is put at
-//!   surface matrix × synced offset.
-//!
-//! Both glues run from samp's hook on the `CWorld::ProcessAttachedEntities` call in `CWorld::Process`
-//! (0x5689FD, A 0x100A4990): first the game's own function, then the local glue, then every remote
-//! player. The 207 sent by the local player carries the surf id and offset while latched (A 0x100050E8).
-//!
-//! The state machine is pure (host-tested); the GTA side is in [`gta`].
+//! [`LocalSurf`] is the pure, host-tested state machine: what the ped stands on (`client::surf_probe`), a
+//! 2-second contact latch and the surf fields of the on-foot sync packet (207). The game side is in [`gta`]:
+//! the local glue keeps the ped at a fixed offset in the surface's frame while no movement stick is held, the
+//! remote glue puts remote surfers at surface matrix × synced offset. Both run right after
+//! `CWorld::ProcessAttachedEntities` inside `CWorld::Process`.
+//! Spec: docs/re/subsystems/remote-control-onfoot.md, "3.7 Surfing".
 
-/// Contact latch (A 0x100038B5): after this long without contact the state is cleared.
+/// Contact latch: after this long without contact the surf state is cleared.
 pub const LATCH_MS: u32 = 2000;
-/// Vehicles farther than this from the local player are not surfed (A 0x100037E3, float A 0x100E5808).
+/// Vehicles farther than this from the local player are not surfed.
 pub const MAX_VEHICLE_DISTANCE: f32 = 30.0;
-/// Remote offsets outside [−100, 100] per component are ignored (A 0x100146EB, floats A 0x100E6110/14).
+/// Remote offsets outside [−100, 100] in any component are ignored.
 pub const MAX_REMOTE_OFFSET: f32 = 100.0;
 /// Surf ids: vehicles 1..1999, objects 2000 + object id.
 pub const OBJECT_BASE: u16 = 2000;
@@ -41,8 +32,7 @@ pub enum Target {
     Object(u16),
 }
 
-/// The local surf state (local-player object +0x2D4 id, +0x2D6 last contact, +0x2DA surface, +0x2DE glue,
-/// +0x2E2 latched, +0x2E6 offset).
+/// The local player's surf state (samp keeps the same fields in its local-player object).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LocalSurf {
     pub id: u16,
@@ -68,20 +58,20 @@ pub enum ProbeAction {
 }
 
 impl LocalSurf {
-    /// Spawn (A 0x10003D5E) and the local-player constructor: everything cleared.
+    /// Spawn and local-player creation: everything cleared.
     pub fn reset(&mut self) {
         *self = Self::default();
     }
 
-    /// RPC 12/13 teleports (A 0x100193E4 → 0x10003710(0, 0)) and the stream-out of the surfed vehicle
-    /// (RPC 165, A 0x10011055): unlatched, no surface, no glue (id and offset stay).
+    /// Teleports (RPC 12/13) and the stream-out of the surfed vehicle (RPC 165): unlatched, no surface, no
+    /// glue; the id and offset stay.
     pub fn detach(&mut self) {
         self.latched = false;
         self.target = None;
         self.glue = false;
     }
 
-    /// RPC 47 destroying the surfed object (A 0x1001BCB7): surface and latch cleared.
+    /// The surfed object was destroyed (RPC 47): surface and latch cleared.
     pub fn object_destroyed(&mut self, id: u16) {
         if self.target == Some(Target::Object(id)) {
             self.target = None;
@@ -89,15 +79,16 @@ impl LocalSurf {
         }
     }
 
-    /// RPC 165 stream-out of a vehicle (A 0x10011041).
+    /// A vehicle streamed out (RPC 165); detaches when it is the surfed one.
     pub fn vehicle_streamed_out(&mut self, id: u16) {
         if self.target == Some(Target::Vehicle(id)) {
             self.detach();
         }
     }
 
-    /// One probe step (A 0x10003730). `cancel` = the ped is entering a car / in the tasks samp tests
-    /// (A 0x100ACCD0, 0x100AC680, 0x100AC610); `exists(t)` = the surface is still in its pool.
+    /// One probe step, run on every local on-foot tick. Mirrors samp.dll 0x10003730.
+    /// `cancel`: the ped is entering a car or in another task that stops surfing (see `gta::cancel_tasks`);
+    /// `exists(t)`: the surface is still in its pool.
     pub fn probe(&mut self, contact: Contact, cancel: bool, now_ms: u32, exists: impl Fn(Target) -> bool) -> ProbeAction {
         if cancel {
             self.target = None;
@@ -164,20 +155,20 @@ impl LocalSurf {
         }
     }
 
-    /// After the first-contact measurement the glue is on (A 0x10003A09).
+    /// After the first-contact offset measurement: latched and glued.
     pub fn latch_after_measure(&mut self) {
         self.latched = true;
         self.glue = true;
     }
 
-    /// 207 surf fields (A 0x100050E8): (offset, id) while latched, else zeros.
+    /// Surf fields of the on-foot sync packet (207): (offset, id) while latched, else zeros.
     pub fn sync_fields(&self) -> ([f32; 3], u16) {
         if self.latched { (self.offset, self.id) } else { ([0.0; 3], 0) }
     }
 }
 
-/// Remote surf target from a 207 (A 0x10014650): `None` when the player does not surf or the offset is out
-/// of range.
+/// Surf target of a remote player from its on-foot sync (207): `None` when the player does not surf or the
+/// offset is out of range.
 pub fn remote_target(surf_id: u16, offset: [f32; 3]) -> Option<Target> {
     if surf_id == 0 || surf_id == NO_SURF || surf_id >= 3000 {
         return None;
@@ -194,7 +185,7 @@ pub fn remote_target(surf_id: u16, offset: [f32; 3]) -> Option<Target> {
     offset.iter().all(|v| (-MAX_REMOTE_OFFSET..=MAX_REMOTE_OFFSET).contains(v)).then_some(t)
 }
 
-/// `out = M × v` with GTA's matrix layout (right +0x00, forward +0x10, up +0x20, pos +0x30; A 0x100B4D50).
+/// `out = M × v` with GTA's matrix layout (right +0x00, forward +0x10, up +0x20, pos +0x30).
 pub fn transform(m: &[f32; 16], v: [f32; 3]) -> [f32; 3] {
     [
         m[8] * v[2] + m[4] * v[1] + m[0] * v[0] + m[12],
@@ -231,14 +222,14 @@ mod gta {
     const ENTITY_MATRIX: u32 = 0x14;
     const MOVE_SPEED: u32 = 0x44;
     const TURN_SPEED: u32 = 0x50;
-    /// `CPad::Pads[0]` NewState LeftStickX / LeftStickY (samp's pad pointer A 0x10114AE8).
+    /// `CPad::Pads[0]` NewState LeftStickX / LeftStickY.
     const PAD0: u32 = 0xB73458;
     /// `CPed::m_pIntelligence`, primary task slots of its task manager.
     const PED_INTELLIGENCE: u32 = 0x47C;
     const PED_FLAGS: u32 = 0x46C;
-    /// `RwMatrixInvert(dst, src)` (samp calls it through A 0x100B5780).
+    /// `RwMatrixInvert(dst, src)`.
     const RW_MATRIX_INVERT: u32 = 0x7F2070;
-    /// Task type 211 in the primary slot (A 0x100ACC50): the glue does not hold the ped.
+    /// Task type 211 in a primary slot: the glue does not hold the ped.
     const TASK_NO_GLUE: u32 = 0xD3;
 
     /// (ped, surface entity, offset) of every remote player to glue this frame.
@@ -277,7 +268,7 @@ mod gta {
         if task == 0 {
             return 0;
         }
-        // A 0x100B40E0: only tasks whose vtable lies in gta_sa.exe's .rdata (0x800000..=0x900000).
+        // Like samp, trust only tasks whose vtable lies in gta_sa.exe's .rdata (0x800000..=0x900000).
         let vt: u32 = rd(task);
         if !(0x80_0000..=0x90_0000).contains(&vt) {
             return 0;
@@ -302,8 +293,8 @@ mod gta {
         rd::<u32>(ped + PED_FLAGS) & 0x100 != 0
     }
 
-    /// The probe's cancel tests (A 0x100ACCD0, 0x100AC680, 0x100AC610): physical-response task 208 (not in a
-    /// vehicle), primary task 704, or an enter-car task (700/701/712/713).
+    /// The probe's cancel test: physical-response task 208 (not in a vehicle), primary task 704, or an
+    /// enter-car task (700/701/712/713).
     pub fn cancel_tasks(ped: u32) -> bool {
         if ped == 0 {
             return true;
@@ -314,8 +305,8 @@ mod gta {
         matches!(task_type(primary_task(ped, 3)), 0x2C0 | 0x2BC | 0x2BD | 0x2C8 | 0x2C9)
     }
 
-    /// samp's "player-driven" test of a vehicle (A 0x100B7120): a driver that is in the vehicle and has ped
-    /// type 0 (player).
+    /// samp's "player-driven" test of a vehicle: a driver that is in the vehicle and has ped type 0 (player).
+    /// Mirrors samp.dll 0x100B7120.
     pub fn player_driven(vehicle: u32) -> bool {
         let driver: u32 = rd(vehicle + 0x460);
         driver != 0 && in_vehicle(driver) && rd::<u32>(driver + 0x598) == 0
@@ -331,8 +322,8 @@ mod gta {
         out
     }
 
-    /// The local glue (A 0x10003570) for `ped` on `surface`: holds the ped when `glue` is set and no stick is
-    /// held, else returns the re-measured offset.
+    /// The local glue for `ped` on `surface`: holds the ped when `glue` is set and no stick is held, else
+    /// returns the re-measured offset (inverse surface matrix × ped position). Mirrors samp.dll 0x10003570.
     pub fn local_glue(ped: u32, surface: u32, offset: [f32; 3], glue: bool) -> Option<[f32; 3]> {
         let (Some(e), Some(p)) = (matrix(surface), matrix(ped)) else { return None };
         let lr: i16 = rd(PAD0);
@@ -358,7 +349,7 @@ mod gta {
         }
     }
 
-    /// The remote glue (A 0x10014650): the ped's position := surface × offset.
+    /// The remote glue: the ped's position := surface matrix × offset. Mirrors samp.dll 0x10014650.
     fn remote_glue(ped: u32, surface: u32, offset: [f32; 3]) {
         let (Some(e), Some(p)) = (matrix(surface), matrix(ped)) else { return };
         let pos = transform(&e, offset);
@@ -381,7 +372,8 @@ mod gta {
         MEASURED.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
-    /// After `CWorld::ProcessAttachedEntities` (row 24 hook body): local glue, then the remote players.
+    /// Runs right after `CWorld::ProcessAttachedEntities` (from the hook in `worldhooks`): local glue, then
+    /// the remote players.
     pub fn after_process_attached_entities(local_ped: u32) {
         let local = *LOCAL.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((surface, offset, glue)) = local

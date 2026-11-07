@@ -1,29 +1,24 @@
-//! `/dl` vehicle debug labels and the InitGame vehicle-model preload they report (FEAT-B).
+//! `/dl` vehicle debug labels, and the InitGame vehicle-model preload they report.
 //!
-//! samp.dll build B, behaviour in our own words:
-//! * **Labels** (per-frame UI pass B 0x10075760, flag B 0x1026EA30 toggled by `/dl`): one batch on the 3D-text
-//!   label painter, drawn after the audio title and before the scoreboard / F-key screens. For every vehicle slot
-//!   (ids 0…1999) in use whose distance to the local player (to the camera while spectating, B 0x1009F0F0) is at
-//!   most 20 m, a label at the vehicle's position in colour 0xFF358BD4 (no line-of-sight test):
-//!   `[id: ID, type: MODEL subtype: SUB Health: H preloaded: P]\nDistance: Dm\nPassengerSeats: N\n
-//!   cPos: X,Y,Z\nsPos: X,Y,Z` — SUB from the vehicle's vtable (B 0x100B61F0), H the vehicle health (+0x4C0),
-//!   P the InitGame preload flag of the model, N `m_nMaxPassengers` (+0x488), cPos the matrix position and sPos
-//!   the stream-in position.
-//! * **Preload** (InitGame, B 0x100A1620): every vehicle model 400…611 that is loaded is marked no longer needed;
-//!   the 212 per-model usage counts of InitGame are sorted by count, highest first (a bubble sort that keeps the
-//!   model order among equal counts); each of the first 80 entries with a non-zero count is requested
-//!   (`REQUEST_MODEL`, `LOAD_ALL_MODELS_NOW`) and flagged "preloaded".
+//! * Labels: while `/dl` is on, every vehicle within 20 m of the local player (of the camera while spectating)
+//!   gets a 3D text label with its id, model, subtype, health, preload flag, distance, passenger seats and its
+//!   current and stream-in positions; no line-of-sight test. `tick` builds them, the UI pass draws `draws`.
+//! * Preload (`preload`): on InitGame, loaded vehicle models are released, then the up to 80 most used models
+//!   (InitGame's per-model usage counts) are requested and flagged "preloaded".
+//!
+//! Spec: docs/re/subsystems/ui-rendering.md, "2.3 Present: per-frame draw order".
 
 /// Vehicle models covered by the InitGame usage table.
 pub const FIRST_MODEL: u16 = 400;
 pub const MODEL_COUNT: usize = 212;
 /// Entries of the sorted table that are preloaded.
 pub const PRELOAD_SLOTS: usize = 80;
-/// Label colour and range (B 0x10075910, float B 0x100E5804).
+/// Label colour and range in metres.
 pub const LABEL_ARGB: u32 = 0xFF35_8BD4;
 pub const LABEL_RANGE: f32 = 20.0;
 
-/// The models samp preloads for these usage counts, in request order.
+/// The models samp preloads for these usage counts, in request order: sorted by count, highest first, model
+/// order kept among equal counts; at most [`PRELOAD_SLOTS`], zero counts skipped.
 pub fn preload_models(counts: &[u8]) -> Vec<u16> {
     let mut v: Vec<(u8, u16)> =
         (0..MODEL_COUNT).map(|i| (counts.get(i).copied().unwrap_or(0), FIRST_MODEL + i as u16)).collect();
@@ -32,7 +27,7 @@ pub fn preload_models(counts: &[u8]) -> Vec<u16> {
     v.iter().take(PRELOAD_SLOTS).filter(|(c, _)| *c != 0).map(|&(_, m)| m).collect()
 }
 
-/// Vehicle subtype from the GTA vtable (B 0x100B61F0).
+/// Vehicle subtype from the GTA vtable (0 for an unknown vtable). Mirrors samp.dll 0x100B6220.
 pub fn subtype(vtable: u32) -> u8 {
     match vtable {
         0x0087_1120 => 1,
@@ -60,7 +55,7 @@ pub struct Row {
     pub spawn: [f32; 3],
 }
 
-/// The label text (format B 0x100EA7D8).
+/// The label text, in samp's format.
 pub fn text(r: &Row) -> String {
     format!(
         "[id: {}, type: {} subtype: {} Health: {:.1} preloaded: {}]\nDistance: {:.2}m\nPassengerSeats: {}\n\
@@ -92,14 +87,15 @@ mod imp {
     use crate::script::{Arg, Runner, op};
     use std::sync::Mutex;
 
-    /// Preload flags per model (samp's game object +0x6E…).
+    /// Preload flag per model, indexed from [`FIRST_MODEL`].
     static PRELOADED: Mutex<[bool; MODEL_COUNT]> = Mutex::new([false; MODEL_COUNT]);
-    /// The labels of the current frame (`None` while `/dl` is off), read by the UI pass.
     /// One label: world position and text.
     pub type Draw = ([f32; 3], String);
+    /// The labels of the current frame (`None` while `/dl` is off), read by the UI pass.
     static DRAWS: Mutex<Option<Vec<Draw>>> = Mutex::new(None);
 
-    /// InitGame (B 0x100A1620 from B 0x10010992).
+    /// InitGame: releases every loaded vehicle model, then requests and flags the preload set.
+    /// Mirrors samp.dll 0x100A1620 (build B).
     pub fn preload(runner: &mut Runner, counts: &[u8]) {
         let mut flags = PRELOADED.lock().unwrap_or_else(|e| e.into_inner());
         *flags = [false; MODEL_COUNT];
@@ -129,6 +125,7 @@ mod imp {
     }
 
     /// Client tick: rebuild the labels while `/dl` is on. `spectating` selects the camera as the reference point.
+    /// `rows` holds (vehicle id, `CVehicle*`, stream-in position) per streamed-in vehicle.
     pub fn tick(rows: Vec<(u16, u32, [f32; 3])>, local_ped: u32, spectating: bool) {
         const CAMERA_MATRIX_POS: u32 = 0xB6F9CC;
         if !crate::ui::vehicle_labels_on() {
@@ -150,13 +147,13 @@ mod imp {
                 id,
                 model,
                 subtype: subtype(m.read_u32(ptr).unwrap_or(0)),
-                health: m.read_f32(ptr + 0x4C0).unwrap_or(0.0),
+                health: m.read_f32(ptr + 0x4C0).unwrap_or(0.0), // CVehicle::m_fHealth
                 preloaded: model
                     .checked_sub(FIRST_MODEL)
                     .and_then(|i| flags.get(usize::from(i)).copied())
                     .unwrap_or(false),
                 distance: d,
-                seats: m.read_u8(ptr + 0x488).unwrap_or(0),
+                seats: m.read_u8(ptr + 0x488).unwrap_or(0), // CVehicle::m_nMaxPassengers
                 pos,
                 spawn,
             };
