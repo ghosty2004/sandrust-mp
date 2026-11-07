@@ -966,7 +966,7 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   code changes 0 (no build, test or game run needed: the compiled code is the same).
 - Internal ids in comments 514 → 0 (one remaining match is a doc section title); comment lines with samp.dll
   addresses 1,329 → 507 (at most one per item, `Mirrors samp.dll 0x….`); every removed address is in
-  docs/re/addresses/<module>.md (66 tables). Module headers 2–8 lines. Stale comments fixed (docs on the wrong
+  docs/re/addresses/<module>.md (62 tables). Module headers 2–8 lines. Stale comments fixed (docs on the wrong
   item, "not implemented" for implemented features, wrong return descriptions).
 - Spec/code mismatches found while reading, code unchanged, to check: samp.saa ReadFile last error 38 on a
   full read (docs/re/samp-saa.md "8. Redirection layer" vs `FakeFiles::read`); `nohudscalefix` cleared for
