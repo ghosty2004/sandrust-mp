@@ -3,6 +3,13 @@
 Screenshots of this client (not the original), taken on an isolated test display during the end-to-end
 and parity runs. Many scenes are test scenarios, so the chat often shows test lines.
 
+## Starting and connecting
+
+| | |
+|---|---|
+| <img src="img/gallery/boot-loading.jpg" width="100%"><br>SA:MP loading screen, read from samp.saa | <img src="img/gallery/boot-connecting.jpg" width="100%"><br>Connecting to the server |
+| <img src="img/gallery/boot-joining.jpg" width="100%"><br>Connected, joining the game | |
+
 ## Joining and class selection
 
 | | |
