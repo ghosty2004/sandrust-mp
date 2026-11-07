@@ -7,7 +7,7 @@ and parity runs. Many scenes are test scenarios, so the chat often shows test li
 
 | | |
 |---|---|
-| <img src="img/gallery/m1-headless.jpg" width="100%"><br>Game started by the client | <img src="img/gallery/saa-spawn.jpg" width="100%"><br>Spawned with files served from samp.saa |
+| <img src="img/gallery/saa-spawn.jpg" width="100%"><br>Spawned with files served from samp.saa | |
 | <img src="img/gallery/m2-class.jpg" width="100%"><br>Class selection | <img src="img/gallery/m2-spawn.jpg" width="100%"><br>Spawned |
 | <img src="img/gallery/m2-walk.jpg" width="100%"><br>Walking (on-foot sync) | <img src="img/gallery/ui-class.jpg" width="100%"><br>Class selection panel |
 | <img src="img/gallery/ui-classpanel.jpg" width="100%"><br>Class selection after the join dialog | <img src="img/gallery/ui-classdlg.jpg" width="100%"><br>Join dialog during class selection |
