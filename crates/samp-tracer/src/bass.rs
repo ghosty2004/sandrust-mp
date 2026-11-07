@@ -1,4 +1,4 @@
-//! TRACE-8: decoding of the BASS audio library calls a SA:MP client makes (audio streams,
+//! Decoding of the BASS audio library calls a SA:MP client makes (audio streams,
 //! RPC 41/42). The original samp.dll imports 17 functions from `bass.dll` (BASS 2.4); the
 //! Windows side (`win/audio.rs`) redirects the client module's import-table slots for them to
 //! logging wrappers. This module turns the raw stack arguments into record fields, so the

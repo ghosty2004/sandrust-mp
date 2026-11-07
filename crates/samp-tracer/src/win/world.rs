@@ -1,18 +1,11 @@
-//! TRACE-6: world entities and combat.
-//!
-//! * `robj` record per client object (samp marks its objects with entity flag bit 31) whenever
-//!   its sampled state changes between two frames (position, rotation, move/turn speed, RW
-//!   object present, area, flags, attachment): the per-frame trajectory of a moving object,
-//!   stream-in/out of its RW object and building removal can be read from it. `robj_gone` when
-//!   it leaves the pool.
-//! * `orender` record: which objects `CObject::Render` drew in the last frame and from which
-//!   GTA code path (first GTA return addresses on the stack), written when that set changes.
-//!   GTA's render list goes through `CRenderer`; the client's own passes return straight into
-//!   `RenderScene`.
-//! * `hp` record when the health/armour/state/weapon of the local ped, a remote player's ped
-//!   or another (non-player) ped changes (actors).
-//! * `los` record for every `CWorld::ProcessLineOfSight` call made by a client module, with
-//!   its result.
+//! World entities and combat records:
+//! * `robj` per client object whenever its sampled state changes between frames (position, rotation,
+//!   speeds, RW object, area, flags, attachment); `robj_gone` when it leaves the pool.
+//! * `orender`: which objects `CObject::Render` drew last frame and from which GTA code path (GTA's render
+//!   list goes through `CRenderer`; a client's own passes return straight into `RenderScene`).
+//! * `hp` when health/armour/state/weapon of the local ped, a remote player's ped or an actor changes.
+//! * `los` for every `CWorld::ProcessLineOfSight` call made by a client module, with its result.
+//! * Opt-in: `bones` (attached-object placement) and `wmodel` (watched building models).
 
 use std::collections::BTreeMap;
 
@@ -24,7 +17,8 @@ const OBJECT_SIZE: u32 = 0x19C;
 /// `CPools::ms_pPedPool`; element size = sizeof(CCopPed) (gta-reversed Pools.cpp).
 const PED_POOL: u32 = 0xB74490;
 const PED_SIZE: u32 = 0x7C4;
-/// samp's marker on its own objects (world-entities.md RE-10 §2).
+/// samp's marker on its own objects, entity flag bit 31 (world-entities.md, "Object streaming and
+/// the two render paths").
 const CLIENT_OBJECT_FLAG: u32 = 0x8000_0000;
 
 mod ooff {
@@ -269,7 +263,7 @@ pub fn on_los_call(r: &Regs) {
 type LosFn = extern "C" fn(u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) -> u32;
 pub type LosWrapFn = LosFn;
 
-/// Continuation of the inline hook at 0x56BA00 (cdecl, 12 arguments, bool result in AL).
+/// Continuation of the inline hook on `CWorld::ProcessLineOfSight` (cdecl, 12 arguments, bool result in AL).
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn los_wrap(
     start: u32,
@@ -320,7 +314,7 @@ pub extern "C" fn los_wrap(
 //
 // `SAMP_TRACER_BONES=2,6,…` (`ePedNode` ids, = SA:MP bone ids 1..18): per frame, a `bones`
 // record per player ped with the world LTM of those bones (the RpHAnim hierarchy matrix of
-// `CPed::m_apBones[id]`'s node), to check attached-object placement (MR-6.4).
+// `CPed::m_apBones[id]`'s node), to check attached-object placement.
 
 /// `GetAnimHierarchyFromSkinClump(RpClump*)` (gta-reversed AnimManager / plugin-sdk).
 const GET_ANIM_HIERARCHY_FROM_SKIN_CLUMP: u32 = 0x734A40;
@@ -387,12 +381,15 @@ fn sample_bones(m: &ProcMem) {
 
 // ------------------------------------------------------------- watched models (opt-in) --
 //
-// `SAMP_TRACER_WATCH_MODELS=4019,…`: every 25 frames the building (0xB74498), dummy (0xB744A0)
-// and object pools are scanned for entities of those models; a `wmodel` record is written when
-// one appears, disappears or changes area / position (RemoveBuildingForPlayer, MR-6.5).
+// `SAMP_TRACER_WATCH_MODELS=4019,…`: every 25 frames the building, dummy and object pools are
+// scanned for entities of those models; a `wmodel` record is written when one appears,
+// disappears or changes area / position (to see what RemoveBuildingForPlayer does).
 
+/// `CPools::ms_pBuildingPool` (gta-reversed Pools.cpp).
 const BUILDING_POOL: u32 = 0xB74498;
+/// `CPools::ms_pDummyPool` (gta-reversed Pools.cpp).
 const DUMMY_POOL: u32 = 0xB744A0;
+/// sizeof(CBuilding), also used for the dummy pool's elements.
 const BUILDING_SIZE: u32 = 0x38;
 
 static WATCH_MODELS: OnceLock<Vec<i16>> = OnceLock::new();

@@ -1,16 +1,11 @@
-//! TRACE-8: BASS calls of the client (audio streams, RPC 41/42), opt-in with `SAMP_TRACER_BASS=1`.
-//!
-//! The client module's import-address-table slots for `bass.dll` are pointed at logging
-//! wrappers (the client's code and bass.dll itself are not modified). Installed once, from the
-//! first hooked GTA call or frame that sees the client module (the launcher loads both DLLs
-//! before the game's main thread runs, so this is before the client's own boot code).
-//!
-//! Every call is written as a `bass` record: function, decoded arguments (`crate::bass`),
-//! return value, `dur_ms` for calls that took ≥ 1 ms (e.g. the blocking `BASS_StreamCreateURL`)
-//! and `thread` (`main` = the thread that runs `CGame::Process`, else `worker`). A call whose
-//! arguments and result equal the previous call of the same function is not written; the next
-//! written record of that function carries `repeats_before` and the time span of the repeats, so
-//! the 20 ms volume loop shows up as one record per volume change.
+//! BASS calls of the client (audio streams, RPC 41/42), opt-in with `SAMP_TRACER_BASS=1`.
+//! The client module's import-table slots for `bass.dll` are pointed at logging wrappers (neither the
+//! client's code nor bass.dll is modified), once, from the first hooked call or frame that sees the
+//! client module, i.e. before the client's own boot code runs.
+//! Each call becomes a `bass` record: function, decoded arguments (`crate::bass`), return value,
+//! `dur_ms` when ≥ 1 ms, and `thread` (`main` or `worker`). A call identical to the previous call of the
+//! same function is folded into the next record's `repeats_before`, so a polling loop (e.g. samp's
+//! volume updates) shows up as one record per change.
 
 use std::sync::atomic::AtomicU32;
 

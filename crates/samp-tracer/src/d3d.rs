@@ -1,17 +1,11 @@
-//! Direct3D9 / D3DX call-stream logger: the platform-independent part (TRACE-3).
-//!
-//! The Windows side (`win::d3d`) patches the vtables of the objects the game really draws
-//! with: the **real** `IDirect3DDevice9` (reached through the swap chain of whatever device
-//! pointer sits in `_RwD3DDevice` 0xC97C28, so a client's proxy in that slot is bypassed),
-//! the D3DX font, sprite, render-to-surface and vertex-buffer classes, and inline-hooks the
-//! D3DX factory exports (`D3DXCreateFont*`, `D3DXCreateSprite`, texture loaders, …) of every
-//! loaded `d3dx9_NN.dll`. This module holds the method tables, argument rendering, vertex
-//! decoding and the `d3d` control command, so they can be tested on the host.
-//!
-//! Records go to `d3d.jsonl` next to the trace. Factory calls, cursor calls, resets and
-//! state-block recordings are always written ("always" methods); everything else only
-//! while logging is switched on through the control channel (`d3d ui|all|text [FRAMES]`,
-//! `d3d off`), for whole frames (Present to Present).
+//! Direct3D9 / D3DX call-stream logger, platform-independent part: method tables, argument
+//! rendering, vertex decoding and the `d3d` control command, tested on the host.
+//! The Windows side (`win::d3d`) patches the vtables of the real device (bypassing a client's proxy
+//! in `_RwD3DDevice`) and of the D3DX font, sprite, render-to-surface and vertex-buffer classes, and
+//! hooks the D3DX factory exports of every loaded `d3dx9_NN.dll`.
+//! Records go to `d3d.jsonl` next to the trace. Factory, cursor, reset and state-block calls are always
+//! written; everything else only for the whole frames (Present to Present) requested with
+//! `d3d ui|all|text [FRAMES]`.
 
 use crate::json::Val;
 use crate::mem::Mem;

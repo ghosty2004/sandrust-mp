@@ -1,27 +1,23 @@
-//! TRACE-4: vehicles.
-//!
-//! * `CAutomobile::ProcessControl` is wrapped twice, like `CPlayerPed::ProcessControl` for
-//!   remote players: the inline hook at 0x6B1880 (inner) sees the game context the client set
-//!   up for the car; once a client module has redirected the CAutomobile vtable slot
-//!   (0x871148), an outer wrapper in front of the client's function samples the context before
-//!   the client changes it and after it restores it. One `vpc` record per call on a mission
-//!   car (samp's cars are mission cars): `pre.before` / `pre.after` (around the client's
-//!   function), `in` / `out` (around GTA's), or `orig_called: false` when the client skipped
-//!   GTA's function.
-//! * `rveh` record per mission car per frame: position, move/turn speed, forward vector,
-//!   driver, status, health, flags at the frame start and around `CWorld::Process`.
-//!   Records are written only while a client module is loaded.
+//! Vehicle records (only while a client module is loaded):
+//! * `vpc`: `CAutomobile::ProcessControl` is wrapped twice, like `CPlayerPed::ProcessControl` for remote
+//!   players. The inline hook (inner) sees the game context the client set up for the car; once a client
+//!   has redirected the vtable slot, an outer wrapper in front of the client's function samples the context
+//!   before the client changes it and after it restores it. One record per call on a mission car (samp's
+//!   cars are): `pre.before` / `pre.after`, `in` / `out`, or `orig_called: false` if GTA's was skipped.
+//! * `rveh` per mission car per frame: position, move/turn speed, forward vector, driver, status, health,
+//!   flags at the frame start and around `CWorld::Process`.
 
 use super::*;
 
-/// `CAutomobile` vtable 0x871120 slot +0x28 (`ProcessControl`, gta-reversed Automobile.cpp).
+/// `CAutomobile` vtable slot +0x28 (`ProcessControl`, gta-reversed Automobile.cpp).
 const VPC_VTABLE_SLOT: u32 = 0x871148;
+/// `CAutomobile::ProcessControl` itself (the inline hook).
 const VPC_ORIGINAL: u32 = 0x6B1880;
 /// `CPools::ms_pVehiclePool`; element size = sizeof(CHeli) (gta-reversed Heli.h).
 const VEHICLE_POOL: u32 = 0xB74494;
 const VEHICLE_SIZE: u32 = 0xA18;
-/// Camera context samp swaps for remote drivers (remote-control-vehicles.md §2.3).
-/// `m_aCams[0].m_bLookingLeft` (0xB6F1A4) and `m_bLookingRight` (0xB6F1A5), read as 2 bytes.
+/// Camera context samp swaps for remote drivers (remote-control-vehicles.md, "The vehicle
+/// `ProcessControl` hook"): `m_aCams[0].m_bLookingLeft` and `m_bLookingRight`, read as 2 bytes.
 const CAM0_LOOK_LR: u32 = 0xB6F1A4;
 
 /// CVehicle / CPhysical offsets (gta-reversed Vehicle.h / Physical.h, layout counted from
@@ -149,7 +145,7 @@ fn emit_vpc(rec: VpcRec, outer: Option<String>) {
     emit(record("vpc", None, None, None, a));
 }
 
-/// Continuation of the inline hook at 0x6B1880 (thiscall, no arguments).
+/// Continuation of the inline hook at `VPC_ORIGINAL` (thiscall, no arguments).
 pub extern "thiscall" fn vpc_inner_wrap(this: u32) {
     let caller = VPC_CALLER.load(Ordering::Relaxed);
     let in_outer = OUTER.with(|o| o.borrow().last().is_some_and(|r| r.veh == this));

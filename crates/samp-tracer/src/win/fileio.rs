@@ -1,17 +1,11 @@
-//! F6 file-I/O records (`SAMP_TRACER_FILEIO=1`, off by default): wraps gta_sa.exe's import slots
-//! of CreateFileA / ReadFile / GetFileSize / SetFilePointer / CloseHandle on top of whatever the
-//! client installed, and records what the game got (`crate::fileio`):
-//!
-//! * `fileio_create` per CreateFileA: `n` (open ordinal), `path` (as the game passed it), `access`,
-//!   `disposition`, `class` = `archive` (samp-style fake handle) / `disk` / `fail`.
-//! * `fileio_close` per CloseHandle of a tracked handle, and `fileio_end` for handles still open
-//!   at quit / exit: `n`, `path`, `class`, `reads`, `bytes`, `extent`, `size` (last GetFileSize
-//!   answer, or null), `sha1` (of the reassembled bytes; archive handles, and read-only disk files
-//!   up to 8 MB), `holes`.
-//!
-//! Armed from WinMain's first import call (SystemParametersInfoA), i.e. after every injected DLL's
-//! attach, so the wrappers see the client's redirection. Only digests are written, never content.
-//! Every wrapper keeps the callee's last-error value.
+//! File-I/O records (`SAMP_TRACER_FILEIO=1`, off by default): wraps gta_sa.exe's import slots of
+//! CreateFileA / ReadFile / GetFileSize / SetFilePointer / CloseHandle on top of whatever the client
+//! installed, and records what the game got (`crate::fileio`): `fileio_create` per open (`class` =
+//! `archive` for a samp-style fake handle, `disk` or `fail`); `fileio_close` per close of a tracked handle
+//! and `fileio_end` for handles still open at exit (reads, bytes, extent, size, `sha1` of the reassembled
+//! bytes for archive handles and read-only disk files up to 8 MB, holes). Armed from WinMain's first
+//! import call, after every injected DLL attached. Only digests are written, never content; every
+//! wrapper keeps the callee's last-error value.
 
 use super::*;
 use crate::fileio::{self as fio, Image};

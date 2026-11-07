@@ -1,13 +1,10 @@
-//! File-I/O view at the Win32 layer (F6, `SAMP_TRACER_FILEIO=1`): what gta_sa.exe's own
+//! File-I/O view at the Win32 layer (`SAMP_TRACER_FILEIO=1`): what gta_sa.exe's own
 //! `CreateFileA` / `ReadFile` / `SetFilePointer` / `GetFileSize` / `CloseHandle` calls get,
 //! whichever layer serves them (disk, samp.dll's samp.saa redirection or ours).
-//!
-//! This part is platform independent: the per-handle reassembly of the bytes the game read
-//! (by offset, so overlapped CdStream reads and seeks land where they belong) and the
-//! classification of samp-style archive handles. The Windows side (`win/fileio.rs`) wraps the
-//! game's import-table slots once the client DLLs have attached and feeds this.
-//!
-//! Only digests leave the process: the reassembled content is hashed (SHA-1), never written.
+//! This part is platform independent: per-handle reassembly of the bytes the game read (by offset,
+//! so overlapped CdStream reads and seeks land where they belong) and classification of samp-style
+//! archive handles. The Windows side (`win/fileio.rs`) wraps the game's import-table slots and feeds
+//! it. Only digests leave the process: the reassembled content is hashed (SHA-1), never written.
 
 /// gta_sa.exe 1.0 US import-address-table slots (kernel32 / user32), checked against the
 /// reference exe's import directory in the tests.
@@ -31,7 +28,8 @@ pub const IAT_SLOTS: [(u32, &str, &str); 6] = [
     (IAT_SYSTEM_PARAMETERS_INFO_A, "USER32.dll", "SystemParametersInfoA"),
 ];
 
-/// samp's fake archive handles start at 0xFF000001 and grow by 2 per open (samp-saa.md §8);
+/// samp's fake archive handles start at 0xFF000001 and grow by 2 per open
+/// (docs/re/samp-saa.md, "Redirection layer");
 /// real Win32 handles are small multiples of 4.
 pub fn is_archive_handle(h: u32) -> bool {
     (0xFF00_0000..=0xFF00_FFFF).contains(&h)

@@ -1,18 +1,11 @@
-//! TRACE-7: projectiles, pad masks, mid-frame ped health.
-//!
-//! * `proj` record when a `gaProjectileInfo` entry becomes active (weapon type, creator, victim,
-//!   the projectile object with its position and move speed) and `proj_end` when it becomes
-//!   inactive again (last sampled position). `CProjectileInfo::AddProjectile` itself cannot be
-//!   hooked (the exe's protection reads its entry bytes), so creation is seen by sampling at
-//!   the frame boundary; `CWeapon::FireProjectile` (hooked) shows who asked for it.
-//! * `pad` record when the local pad's jump / sprint / crouch / fire / aim buttons (new and old
-//!   state of `CPad::Pads[0]`), the local ped's move state or its ducking / in-air flags change.
-//!   Sampled at `CGame::Process` entry, i.e. after the previous frame's ped processing and
-//!   before `CPad::UpdatePads`, so the buttons are what the previous frame's processing left.
-//! * `hp_mid` record: health and ped state of every remote player's ped, sampled at the entry of
-//!   `CCamera::Process` (after `CWorld::Process`, before the client's end-of-frame tick), written
-//!   when health ≤ 0 or the state is a dying/dead state; the one-frame gap of the client's
-//!   per-frame health reset (MR-7.10) shows up here.
+//! Projectiles, pad buttons and mid-frame ped health, sampled at frame boundaries:
+//! * `proj` / `proj_end` when a `gaProjectileInfo` entry becomes active / inactive (sampled, since
+//!   `CProjectileInfo::AddProjectile` cannot be hooked; the hooked `CWeapon::FireProjectile` shows who asked).
+//! * `pad` when the local pad's jump / sprint / crouch / fire / aim buttons, the local ped's move state or
+//!   its ducking / in-air flags change; sampled at `CGame::Process` entry, before `CPad::UpdatePads`.
+//! * `hp_mid`: remote player peds with health ≤ 0 or a dying/dead state, sampled at `CCamera::Process`
+//!   entry (after `CWorld::Process`, before the client's end-of-frame tick), where a client's one-frame
+//!   gap in its per-frame health reset shows up. Findings: docs/phase3/trace-notes.md.
 
 use std::collections::BTreeMap;
 

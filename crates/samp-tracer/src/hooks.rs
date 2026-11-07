@@ -1,14 +1,9 @@
-//! The curated list of gta_sa.exe 1.0 US functions the tracer hooks.
-//!
-//! Each entry has the exact prologue bytes that are moved into the
-//! trampoline (whole instructions, ≥ 5 bytes). Tests check them against
-//! `re/gta/1.0-US/gta_sa.exe`, against the x86 decoder, and against every
-//! site samp.dll 0.3.7-R4 patches or reads (gta-patches-r4-annotated.csv and
-//! the 707-entry model-pointer table), so the hooks never collide with the
-//! original client. At runtime the bytes are compared again before patching.
-//!
-//! Names and signatures are named via gta-reversed (`RH_ScopedInstall` lines)
-//! or plugin-sdk (`Converted from …` comments).
+//! The curated list of gta_sa.exe 1.0 US functions the tracer hooks, and argument rendering.
+//! Each entry has the exact prologue bytes moved into the trampoline (whole instructions, ≥ 5 bytes).
+//! Tests check them against `re/gta/1.0-US/gta_sa.exe`, the x86 decoder, and every site samp.dll
+//! patches or reads (docs/re/data/gta-patches-r4-annotated.csv and the model-pointer table), so the
+//! hooks never collide with the original client; at runtime the bytes are compared again.
+//! Names and signatures come from gta-reversed (`RH_ScopedInstall` lines) or plugin-sdk.
 
 use crate::gta;
 use crate::json::Val;
@@ -48,27 +43,27 @@ pub enum Special {
     FileLoad,
     /// `CPlayerPed::ProcessControl`: wrapped so the swapped game context
     /// (PlayerInFocus, pad, camera mode, …) and the ped's position/speed can be
-    /// sampled at entry and exit (remote players, TRACE-2).
+    /// sampled at entry and exit (remote players).
     PedProcessControl,
     /// `CWorld::Process`: wrapped so remote player peds can be sampled before
     /// and after the world (tasks, physics) runs.
     WorldProcess,
     /// `CAutomobile::ProcessControl`: wrapped so the context the client swaps in for a
-    /// remote driver (PlayerInFocus, pad, camera) and the car's state can be sampled (TRACE-4).
+    /// remote driver (PlayerInFocus, pad, camera) and the car's state can be sampled.
     VehProcessControl,
     /// GTA's window procedure (`__MainWndProc`): only keyboard messages (0x100–0x109) are
-    /// written, to see which keys a client lets through to the game (TRACE-3).
+    /// written, to see which keys a client lets through to the game.
     WndProc,
     /// `CObject::Render`, `CEntity::Render`, `CRenderer::RenderOneNonRoad` (entity = first
     /// argument): not logged per call; for objects, counted per (function, object, render path) and
-    /// summarised once per frame as `orender` (TRACE-6, which objects GTA's render list
-    /// draws and which the client draws itself).
+    /// summarised once per frame as `orender` (which objects GTA's render list draws and which the
+    /// client draws itself).
     ObjRender,
     /// `CWorld::ProcessLineOfSight`: wrapped so calls made by a client module are written
-    /// with their result (hit entity and colpoint) as one `los` record (TRACE-6).
+    /// with their result (hit entity and colpoint) as one `los` record.
     Los,
     /// `CPed::Render`: wrapped so the local player's ped can be left out of the picture on request
-    /// (`hideped on`, DIFF-2 screenshots: the ped's idle animation is not a client reaction and its
+    /// (`hideped on`, for screenshot diffs: the ped's idle animation is not a client reaction and its
     /// phase at the screenshot differs run to run). Nothing is logged; game state is not touched.
     PedRender,
 }
@@ -403,14 +398,14 @@ pub static HOOKS: &[HookSpec] = &[
     ),
     h("CCamera::SetWideScreenOn", 0x50C140, &[0xC6, 0x41, 0x3D, 0x01, 0xC6, 0x41, 0x3C, 0x00], Always, &[]),
     h("CCamera::SetWideScreenOff", 0x50C150, &[0x80, 0x79, 0x3D, 0x01, 0x0F, 0x94, 0xC0], Always, &[]),
-    // --- single-player systems: ambient population, traffic, police (TRACE-4) -------------------
+    // --- single-player systems: ambient population, traffic, police --------------------------
     // Per-frame managers are `Count` (on/off in `watch`); anything that creates a ped/vehicle,
     // changes the wanted level or plays a police-scanner report is logged on every call.
     // CCarCtrl::GenerateOneRandomCar (0x430050) and GenerateOneEmergencyServicesCar (0x42B7D0)
-    // are not hooked: the exe's obfuscated stubs read their entry bytes as data (0x403796 reads
-    // 0x42B7D3; a hook there crashed SET_PLAYER_CONTROL); vehicle creation is covered by the
-    // CVehicle constructor and the per-frame generator flags.
-    // CPopulation::AddPed (0x612710) itself cannot be hooked: samp rewrites its entry (CSV row 185);
+    // are not hooked: the exe's obfuscated stubs read their entry bytes as data, so a hook there
+    // crashes; vehicle creation is covered by the CVehicle constructor and the per-frame generator
+    // flags.
+    // CPopulation::AddPed (0x612710) itself cannot be hooked: samp rewrites its entry;
     // ped creation is covered by the CPed / CCopPed constructors (CCivilianPed's ctor can't be
     // hooked: a rel32 at 0x5D1A03 points into its first 7 bytes).
     h("CCopPed::CCopPed", 0x5DDC60, &[0x6A, 0xFF, 0x68, 0x88, 0xD7, 0x83, 0x00], Always, &[I32(0, "cop_type")]),
@@ -487,7 +482,7 @@ pub static HOOKS: &[HookSpec] = &[
         Always,
         &[I32(0, "event"), I32(1, "crime"), VecPtr(2, "pos")],
     ),
-    // --- UI (TRACE-3) ------------------------------------------------------------------
+    // --- UI ----------------------------------------------------------------------------
     h(
         "CMessages::AddBigMessage",
         0x69F2B0,
@@ -510,7 +505,7 @@ pub static HOOKS: &[HookSpec] = &[
         Always,
         &[],
     ),
-    // --- world entities and combat (TRACE-6) ---------------------------------------------
+    // --- world entities and combat ------------------------------------------------------
     HookSpec {
         name: "CObject::Render",
         addr: 0x59F180,
@@ -668,7 +663,7 @@ pub static HOOKS: &[HookSpec] = &[
     ),
     // CProjectileInfo::AddProjectile (0x737C80) cannot be hooked: the exe's protection code reads its
     // entry bytes (a 32-bit value 0x737C82 in the image).
-    // --- projectiles, explosions, mid-frame health (TRACE-7) -----------------------------
+    // --- projectiles, explosions, mid-frame health --------------------------------------
     h(
         "CWeapon::FireProjectile",
         0x741360,
@@ -703,7 +698,7 @@ pub static HOOKS: &[HookSpec] = &[
     ),
     // Sampling point after CWorld::Process (`hp_mid` records, win/combat.rs); counted only.
     h("CCamera::Process", 0x52B730, &[0x81, 0xEC, 0xA0, 0x00, 0x00, 0x00], Count, &[]),
-    // World / material requests (TRACE-7 follow-ups): TXD loads by file name (samp's material textures,
+    // World / material requests: TXD loads by file name (samp's material textures,
     // `SAMP\blanktex.txd`), TXD slot creation, and ground-height queries (SetPlayerPosFindZ).
     h(
         "CTxdStore::LoadTxd(file)",
@@ -720,7 +715,7 @@ pub static HOOKS: &[HookSpec] = &[
         Always,
         &[VecVal(0, "pos")],
     ),
-    // --- TRACE-8: sounds, radio, shop name, crime reports, enex transitions, scripted camera ----------
+    // --- sounds, radio, shop name, crime reports, enex transitions, scripted camera ------------------
     h(
         "CAEAmbienceTrackManager::PlaySpecialMissionAmbienceTrack",
         0x4D6D50,
@@ -979,7 +974,7 @@ mod tests {
                 }
             }
         }
-        // Auth handler reads 20 bytes at 0x4D3AA0 (gta-patches.md §4).
+        // Auth handler reads 20 bytes at 0x4D3AA0 (gta-patches.md, "Notable structured patches").
         out.push((0x4D3AA0, 20, "auth read".into()));
         // samp-client's extra CdStreamSync patch (not in the CSV).
         out.push((0x156CDAE, 6, "samp-client cdstream".into()));
@@ -1004,7 +999,8 @@ mod tests {
 
     #[test]
     fn no_overlap_with_samp_model_pointer_table() {
-        // 707 records {u32 code address, u8 opcode} at samp.dll A .data 0x10114B10 (gta-patches.md §4.4).
+        // 707 records {u32 code address, u8 opcode} at samp.dll A .data 0x10114B10
+        // (gta-patches.md, "4.4 Model-info pointer array").
         let p = root().join("re/samp-dll/0.3.7-R4_fv0.3.7.4_2021-05-07/samp.dll");
         let Some(pe) = Pe::open(&p) else {
             eprintln!("{} not present; skipping", p.display());

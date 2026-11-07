@@ -1,23 +1,11 @@
-//! COV-1 first-hit coverage (Windows side; formats and rules in `crate::cov`).
-//!
-//! `SAMP_TRACER_COV=<arm list>` (Windows path; `tools/cov/inventory.sh` writes
-//! `target/cov/arm.txt`) enables it: at attach — after the tracer's own hooks, before the
-//! client DLL loads — every listed entry whose live byte is still the exe's byte gets an
-//! `int3`, in window `SAMP_TRACER_COV_WINDOW` (default `boot`). A vectored handler records
-//! the first hit (frame, ms, thread, return address), writes the original byte back and
-//! resumes at the entry. Control commands: `cov start NAME` (close the window, re-arm all),
-//! `cov dump PATH`, `cov status`.
-//!
-//! Module mode (FEAT-SWEEP): `SAMP_TRACER_COV_MOD=<arm list of RVAs>` (written by
-//! `tools/cov/samp-inventory.sh`) arms a second set of entries inside a client module
-//! (`SAMP_TRACER_COV_MOD_NAME`, default `samp.dll`). A poller thread waits for the module to
-//! load, rebases the RVAs and arms them into the current window; later windows re-arm both
-//! sets. Hits are absolute addresses; the dump starts with a `# module NAME base=0x…` line.
-//! `SAMP_TRACER_COV_DUMP=<path>` additionally rewrites the dump every 10 s (and on every
-//! window start; `{pid}` in the path becomes the process id), so scenarios that never send
+//! First-hit coverage, Windows side (formats and rules in `crate::cov`). `SAMP_TRACER_COV=<arm list>`
+//! arms, at attach (after the tracer's hooks, before the client loads), an `int3` on every listed gta_sa.exe
+//! entry whose byte is unmodified, in window `SAMP_TRACER_COV_WINDOW` (default `boot`). The vectored handler
+//! records the first hit, restores the byte and resumes; it takes no locks and allocates nothing.
+//! Module mode: `SAMP_TRACER_COV_MOD=<RVA list>` arms a second set inside a client module
+//! (`SAMP_TRACER_COV_MOD_NAME`, default `samp.dll`) once it loads. `SAMP_TRACER_COV_DUMP=<path>` rewrites
+//! the dump every 10 s and at each window start (`{pid}` = process id), so scenarios that never send
 //! `cov dump` still leave their coverage behind.
-//!
-//! The handler takes no locks and allocates nothing: per-entry atomics only.
 
 use super::*;
 use crate::cov::{self as model, ArmEntry, Hit, Skip, Window};

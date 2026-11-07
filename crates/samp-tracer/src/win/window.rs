@@ -1,7 +1,6 @@
-//! `window` control command (FEAT-B): the top-level windows of the game process as one line, so a
+//! `window` control command: the top-level windows of the game process as one line, so a
 //! scenario can compare what both clients show (game window title and class style, the crash and
 //! message-box dialogs with their control ids and texts).
-//!
 //! * `window` — `window N | hwnd=0x… class="…" title="…" style=0x… cstyle=0x… [ctl ID "CLASS" "TEXT" …] | …`
 //!   (`cstyle` = the window class style, GCL_STYLE; control texts with CR/LF escaped as `\r` / `\n`).
 //! * `window click ID` — posts `WM_COMMAND(ID, BN_CLICKED)` to every dialog (`#32770`) of the process that has a

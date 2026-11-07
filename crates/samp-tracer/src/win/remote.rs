@@ -1,21 +1,11 @@
-//! TRACE-2: remote players.
-//!
-//! * `CPlayerPed::ProcessControl` is wrapped twice. The inline hook at
-//!   0x60EA90 (inner) sees the game context the client set up for the ped;
-//!   once a client module has redirected the CPlayerPed vtable slot
-//!   (0x86D190), an outer wrapper is put in front of the client's function,
-//!   so the context is also sampled before the client changes it and after it
-//!   restores it. One `pc` record per call: `pre` (before the client's
-//!   wrapper), `in`/`out` (around GTA's function), `post`.
-//! * At every frame boundary `CWorld::Players[0..210].m_pPed` is scanned
-//!   (`players` record on change) and the memory of `Players[2..209]` is
-//!   diffed against the previous frame (`players_mem` for offsets that change
-//!   for the first time, `players_mem_summary` every 300 frames).
-//! * `SAMP_TRACER_GUARD=<budget>`: the pages of `Players[2..209]` (the former
-//!   sector array) get PAGE_GUARD; a vectored handler records the instruction
-//!   address of every access (`guard` record per new site, `guard_summary`
-//!   every 300 frames), single-steps it and re-arms the page, up to <budget>
-//!   accesses per frame.
+//! Remote player records:
+//! * `pc`: `CPlayerPed::ProcessControl` is wrapped twice. The inline hook (inner) sees the game context
+//!   the client set up for the ped; once a client has redirected the vtable slot, an outer wrapper in front
+//!   of the client's function samples the context before it changes and after it is restored.
+//! * `players` / `players_mem` / `players_mem_summary`: per frame, `CWorld::Players[0..210].m_pPed` is
+//!   scanned and the memory of `Players[2..209]` (the former sector array) diffed against the last frame.
+//! * `guard` / `guard_summary` (`SAMP_TRACER_GUARD=<budget>`): PAGE_GUARD on those pages records the
+//!   instruction address of every access, up to `<budget>` accesses per frame.
 
 use super::*;
 use std::cell::Cell;
@@ -23,12 +13,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use windows_sys::Win32::System::Diagnostics::Debug::{AddVectoredExceptionHandler, EXCEPTION_POINTERS};
 use windows_sys::Win32::System::Memory::PAGE_READWRITE;
 
-/// `CPlayerPed` vtable slot of `ProcessControl` (vtable 0x86D168 + 10 × 4; gta-reversed PlayerPed.cpp).
+/// `CPlayerPed` vtable slot of `ProcessControl` (slot 10; gta-reversed PlayerPed.cpp).
 const PC_VTABLE_SLOT: u32 = 0x86D190;
+/// `CPlayerPed::ProcessControl` itself (the inline hook).
 const PC_ORIGINAL: u32 = 0x60EA90;
 /// Call site of `CPed::UpdatePosition` inside `CPed::ProcessControl` and the two
 /// `m_fAimingRotation` stores samp toggles around remote/local processing
-/// (remote-control-combat.md §1.3); sampled as raw bytes.
+/// (remote-control-combat.md, "Where the swap is applied"); sampled as raw bytes.
 const UPDATE_POSITION_CALL: u32 = 0x5E92F4;
 const AIM_ROT_STORE_A: u32 = 0x6884C4;
 const AIM_ROT_STORE_B: u32 = 0x688200;
@@ -149,7 +140,7 @@ fn emit_pc(rec: PcRec, outer_caller: Option<String>) {
     emit(record("pc", None, None, None, a));
 }
 
-/// Continuation of the inline hook at 0x60EA90 (thiscall, no arguments).
+/// Continuation of the inline hook at `PC_ORIGINAL` (thiscall, no arguments).
 pub extern "thiscall" fn pc_inner_wrap(this: u32) {
     let caller = PC_CALLER.load(Ordering::Relaxed);
     let in_outer = OUTER.with(|o| o.borrow().last().is_some_and(|r| r.ped == this));

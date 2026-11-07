@@ -1,23 +1,11 @@
-//! DIFF-3 queries that need the original client's own data: `bubbles` (the chat bubbles samp holds
-//! for each player) and `synced` (the health/armour samp keeps for each remote player, i.e. what its
-//! nametag bars show; the GTA ped of a remote player always keeps 1000/0). samp-client answers the
-//! same commands from its own state with the same line format, so the cross-client driver reads
-//! both sides through one parser.
+//! Control queries that read the original client's own data, for the cross-client comparison:
+//! `bubbles` (the chat bubbles samp holds for each player) and `synced` (the health/armour samp keeps
+//! for each remote player, i.e. what its nametag bars show; the GTA ped of a remote player always
+//! keeps 1000/0). samp-client answers the same commands from its own state in the same line format.
 //!
-//! Only data is read (never code), at offsets measured in samp.dll 0.3.7-R4 build B
-//! (fv0.3.7.3, the build of the diff lanes):
-//! * bubble pool: pointer at B 0x1026e9f0 (RPC 59 handler B 0x1000f960 → add B 0x10066dd0);
-//!   1004 slots of 0x118 bytes: +0 active (u32), +4 text (wrapped, NUL-terminated, 256 bytes),
-//!   +0x104 start tick, +0x108 duration (ms), +0x10c colour (ARGB), +0x110 distance (f32),
-//!   +0x114 line count. Field order from the add function's stores and the handler's reads
-//!   (wire order colour, distance, expire time).
-//! * remote players: netgame pointer at B 0x1026ea0c, pools at netgame+0x3de, player pool at
-//!   pools+8; slot `id` used: u32 at pool+0xfde+4·id; entry at [pool+0x2e+4·id], remote player at
-//!   [entry+0x10] (B 0x100010b0 / 0x100010f0). Synced health = remote+0x1b0, armour = remote+0x1ac
-//!   (f32; 207 store B 0x1001725d/0x10017390, spawn sets 100 at B 0x100171b4; UR §16.2).
-//!
-//! Build A's player-pool layout differs (player-state.md "PlayerPool"); it is not used in any lane
-//! that needs these queries, so build A answers an error rather than a guessed layout.
+//! Only data is read, never code, and only for samp.dll build B (the build of the diff lanes); build A's
+//! player-pool layout differs, so it answers an error. Layouts and their sources:
+//! docs/re/addresses/samp-tracer.md, "Chat bubbles and synced health".
 
 use crate::efx::Build;
 use crate::mem::Mem;
@@ -25,9 +13,13 @@ use crate::mem::Mem;
 /// Player slots of samp's pools (ids < 1004).
 pub const MAX_PLAYERS: u32 = 1004;
 
+/// Build B address of samp's pointer to the chat-bubble pool.
 pub const B_BUBBLE_POOL: u32 = 0x1026_e9f0;
+/// Build B address of samp's netgame pointer (the pools hang off it).
 pub const B_NETGAME: u32 = 0x1026_ea0c;
+/// Size of one bubble slot; field offsets in `bubble`.
 pub const BUBBLE_SLOT: u32 = 0x118;
+/// Offsets inside one bubble slot.
 pub mod bubble {
     pub const ACTIVE: u32 = 0x0;
     pub const TEXT: u32 = 0x4;
@@ -37,6 +29,7 @@ pub mod bubble {
     pub const DISTANCE: u32 = 0x110;
     pub const LINES: u32 = 0x114;
 }
+/// Offsets along the netgame → player pool → remote player chain (build B).
 pub mod pool {
     pub const NETGAME_POOLS: u32 = 0x3de;
     pub const POOLS_PLAYER: u32 = 0x8;

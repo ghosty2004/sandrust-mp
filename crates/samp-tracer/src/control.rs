@@ -1,13 +1,9 @@
-//! Control channel, same line protocol as samp-client (`ping`, `state`,
-//! `quit`, `peek ADDR LEN`, `remote`) plus tracer-only `mark TEXT` (writes a
-//! marker record into the trace, used by scenario scripts to label steps).
-//! `hideped on|off` hides the local player ped from rendering (DIFF-2 screenshots).
-//! `remote` answers a header line plus one line per remote player ped, like
-//! samp-client's (DIFF-3). `bubbles` / `synced` read samp.dll's chat bubbles and synced
-//! health/armour (`crate::sampstate`), same reply format as samp-client's.
-//!
-//! Served from a background thread with blocking sockets, so it also answers
-//! while the game is loading or paused.
+//! Control channel: the same line protocol as samp-client (`ping`, `state`, `quit`, `peek ADDR LEN`,
+//! `remote`, `bubbles`, `synced`, with the same reply formats) plus tracer-only commands such as
+//! `mark TEXT` (a marker record scenario scripts use to label steps) and `hideped on|off` (leave the
+//! local ped out of rendering, for screenshot diffs); `Command` lists them all.
+//! Served from a background thread with blocking sockets, so it also answers while the game is
+//! loading or paused.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -27,9 +23,9 @@ pub enum Command {
     },
     Mark(String),
     Remote,
-    /// `bubbles`: the chat bubbles samp holds per player (DIFF-3, `crate::sampstate`).
+    /// `bubbles`: the chat bubbles samp holds per player (`crate::sampstate`).
     Bubbles,
-    /// `synced`: samp's synced health/armour per remote player (DIFF-3, `crate::sampstate`).
+    /// `synced`: samp's synced health/armour per remote player (`crate::sampstate`).
     Synced,
     /// `d3d off|on|ui|all|text [FRAMES]` (Direct3D call-stream logger, `crate::d3d`).
     D3d(String),
@@ -44,9 +40,9 @@ pub enum Command {
     /// `cov start NAME|dump PATH|status` (first-hit coverage, `crate::cov`). Arguments keep
     /// their case (paths, window names).
     Cov(String),
-    /// `window [click ID]` (top-level windows of the process, FEAT-B; `win/window.rs`).
+    /// `window [click ID]` (top-level windows of the process; `win/window.rs`).
     Window(String),
-    /// `hideped on|off`: leave the local player's ped out of rendering (DIFF-2 screenshots).
+    /// `hideped on|off`: leave the local player's ped out of rendering (for screenshot diffs).
     HidePed(bool),
     /// `xform`: last device VIEW / PROJECTION matrices and viewport (`win/d3d.rs`).
     Xform,

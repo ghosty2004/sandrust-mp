@@ -1,14 +1,9 @@
-//! EFX-1 — effect tracer, Windows side (see `crate::efx` for the idea and the record format,
-//! and docs/phase3/efx-notes.md for the design).
-//!
-//! * One vectored exception handler serves both modes: `int3` hits (armed targets, window
-//!   call hooks, the return stub), single-step traps and guard-page faults.
-//! * **Return stub**: to find out when a function returns (the armed target, a game call that
-//!   is stepped over, a foreign call), the return address on the stack is replaced with the
-//!   address of a one-byte `int3` stub. When it is reached, the real return address (kept in a
-//!   per-thread LIFO) is put back into EIP. No code outside the stub is patched for this.
-//! * Output: `<GTA_DIR>/efx.jsonl` (`SAMP_TRACER_EFX_OUT`), written when a capture or a
-//!   window ends.
+//! Effect tracer, Windows side (idea and record format in `crate::efx`; design in
+//! docs/phase3/efx-notes.md). One vectored exception handler serves both modes: `int3` hits (armed
+//! targets, window call hooks, the return stub), single-step traps and guard-page faults.
+//! Return stub: to see a function return, the return address on the stack is replaced with a one-byte
+//! `int3` stub; when it is reached, the real address (kept in a per-thread LIFO) goes back into EIP.
+//! Output: `<GTA_DIR>/efx.jsonl` (`SAMP_TRACER_EFX_OUT`), written when a capture or a window ends.
 
 use super::*;
 use crate::efx::{self as fx, Access, ArmOpts, Cpu, EfxCmd, Flow, SpecLine, Target, WatchOpts, World};

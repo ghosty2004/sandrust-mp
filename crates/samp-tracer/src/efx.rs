@@ -1,25 +1,11 @@
-//! EFX-1 — effect tracer, platform-independent part.
-//!
-//! "Capture everything a function does end to end and compare it with our client." Two modes:
-//!
-//! * **step** (`efx arm TARGET`): a one-shot `int3` at the entry of a client function (an RPC
-//!   handler of samp.dll from `docs/re/rpc-ids.md`, an RVA, a named event or a GTA function).
-//!   When it is hit, the tracer single-steps that thread (trap flag, vectored handler) through
-//!   the client code and every gta_sa.exe function it calls, until the target returns. Every
-//!   instruction is decoded with iced-x86 here (`analyse`) to get its memory operands, so the
-//!   Windows side can log each write into game memory (old and new bytes), each call into
-//!   gta_sa.exe (arguments, return value), reads of game memory that decide a branch, and the
-//!   client-internal calls for context.
-//! * **window** (`efx watch FRAMES SPEC`): for a client we do not single-step (our own
-//!   samp_client.dll has no symbol for its RPC dispatch, and samp-client must not be changed for
-//!   the tracer): guard pages on the game pages a step capture of the original wrote, plus
-//!   one-shot `int3` call hooks on the game functions it called, for a window of frames. The
-//!   records use the same names and symbolic addresses, so `tools/efx/efx_diff.py` can align
-//!   the two.
-//!
-//! Addresses of game objects are written symbolically (`World::sym`): `player_ped+0x540`,
-//! `player_ped.matrix+0x30`, `veh#12+0x4c0`, `gta:0xb7cd98`, so that captures of two clients
-//! (different heaps) can be compared.
+//! Effect tracer, platform-independent part: captures what one client function does to the game.
+//! Step mode (`efx arm TARGET`) single-steps a client function and the game code it calls, logging
+//! game-memory writes, game calls and branch-deciding reads; `analyse` decodes each instruction's
+//! memory operands with iced-x86. Window mode (`efx watch …`) watches the same game pages and
+//! functions for a window of frames, for a client we do not single-step (our own).
+//! Game-object addresses are written symbolically (`World::sym`, e.g. `player_ped+0x540`) so captures
+//! of two clients with different heaps line up in `tools/efx/efx_diff.py`.
+//! Design and findings: docs/phase3/efx-notes.md.
 
 use crate::mem::Mem;
 use iced_x86::{
@@ -103,14 +89,16 @@ pub fn rpc_handler(id: u8, build: Build) -> Option<u32> {
 /// Named entry points found from the game side (so they work for any client module).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
-    /// Target of the `Render2dStuff` call in `Idle` (0x53EB12), which both clients retarget
-    /// to their per-frame entry (gta-patches CSV row 6).
+    /// Target of the `Render2dStuff` call in `Idle`, which both clients retarget to their
+    /// per-frame entry (docs/re/subsystems/gta-patches.md, "Full table").
     Frame,
-    /// Target of the `CGame::Process` call in `Idle` (0x53E981, CSV row 10).
+    /// Target of the `CGame::Process` call in `Idle` (also retargeted by both clients).
     GameProcess,
 }
 
+/// Call site of `Render2dStuff` in `Idle`.
 pub const IDLE_RENDER_2D_CALL: u32 = 0x53EB12;
+/// Call site of `CGame::Process` in `Idle`.
 pub const IDLE_GAME_PROCESS_CALL: u32 = 0x53E981;
 
 impl Event {
@@ -497,7 +485,7 @@ pub const POOLS: &[(&str, u32, u32)] = &[
     ("noderoute", 0xB744B8, 0x24),
 ];
 
-/// `gMatrixList.m_pObjects` (0xB74288 + 6 × 0x54; gta-reversed MatrixLinkList.h),
+/// `gMatrixList.m_pObjects` (gta-reversed MatrixLinkList.h),
 /// `CPlaceable::NUM_MATRICES_TO_CREATE` and `sizeof(CMatrixLink)`.
 pub const MATRIX_LIST_OBJECTS: u32 = 0xB74288 + 6 * 0x54;
 pub const MATRIX_COUNT: u32 = 900;

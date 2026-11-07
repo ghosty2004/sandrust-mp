@@ -1,14 +1,11 @@
-//! Windows side: DllMain, hook installation (thunks + trampolines), the call
-//! dispatcher, the trace writer and the control-channel thread.
-//!
-//! Hook shape (one 64-byte slot per hook in an RWX block):
+//! Windows side: DllMain, hook installation, the call dispatcher, the trace writer and the
+//! control-channel thread. Each hook is one 64-byte slot in an RWX block:
 //! ```text
 //! thunk:  pushad; push esp; push idx; call dispatch; add esp,8; popad; jmp cont
 //! tramp:  <relocated prologue>; jmp addr+len
 //! ```
-//! The function entry gets `jmp thunk` (+ NOPs). `cont` is the trampoline,
-//! except for `CRunningScript::ProcessOneCommand`, which continues into a
-//! typed wrapper so the script-command context can be closed after the call.
+//! The function entry gets `jmp thunk` (+ NOPs). `cont` is the trampoline, or a typed wrapper for
+//! hooks that need data after the call (script commands, file reads, ped/vehicle processing, …).
 
 use std::ffi::c_void;
 use std::fs::File;
@@ -321,7 +318,7 @@ fn client_origin(esp: u32) -> Option<String> {
 }
 
 /// Up to `n` gta_sa.exe return addresses found on the stack above `esp` (heuristic, like
-/// `client_origin`): which GTA code path led to a ped/vehicle creation (TRACE-4).
+/// `client_origin`): which GTA code path led to a ped/vehicle creation.
 fn gta_stack(esp: u32, n: usize) -> Option<String> {
     let (_, top) = stack_bounds();
     let end = top.min(esp.saturating_add(0x2000));
@@ -820,18 +817,17 @@ fn install_table_thunks() -> Result<u32, String> {
 
 // ------------------------------------------------- optional stock boot (no client) ----------
 //
-// `SAMP_TRACER_BOOT=1` (only for runs WITHOUT a client DLL): boot straight
-// into a new single-player game the same way samp-client M1 does
-// (gta-patches CSV rows 120, 377, 378): gGameState := 5 at attach; at
-// state 7 the three FrontEndMenuManager flags and gGameState := 8. Gives a
-// stock baseline trace of main.scm on the same boot path. Row 121 (keep
-// gGameState in psInitialize) is applied too, otherwise the 5 is overwritten.
+// `SAMP_TRACER_BOOT=1` (only for runs WITHOUT a client DLL): boot straight into a new
+// single-player game the way samp.dll and samp-client do (the start-up patches in
+// docs/re/subsystems/gta-patches.md, "Startup / intro"): gGameState := 5 at attach; at state 7
+// the three FrontEndMenuManager flags and gGameState := 8. Gives a stock baseline trace of
+// main.scm on the same boot path.
 
 fn stock_boot_attach() -> bool {
     if std::env::var("SAMP_TRACER_BOOT").ok().as_deref() != Some("1") {
         return false;
     }
-    // CSV row 121: psInitialize would reset gGameState to 0; NOP that store (6 bytes).
+    // psInitialize would reset gGameState to 0 and undo the 5; NOP that store (6 bytes).
     const PS_INIT_STORE: u32 = 0x747483;
     if ProcMem.u8(PS_INIT_STORE + 1) == Some(0x35) {
         let mut old = 0u32;
@@ -1184,7 +1180,7 @@ fn attach() {
 /// `SAMP_TRACER_MODE=watch`: only the control channel (`peek`, `efx watch|status|disarm`) and the
 /// vectored handler of the effect tracer. No game code byte is changed (no inline hook, no thunk
 /// table, no D3D/audio wrapper, no coverage int3s), so a client loaded next to it keeps exactly the
-/// bytes it wrote itself (F5 runs the tracer this way next to our client). Without the frame hook,
+/// bytes it wrote itself (the mode used next to our client). Without the frame hook,
 /// a thread closes `efx watch` windows on `CTimer::m_FrameCounter` changes.
 fn attach_watch_only(dir: &std::path::Path, port: u16) {
     efx::init(dir);

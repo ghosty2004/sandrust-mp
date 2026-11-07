@@ -59,12 +59,11 @@ pub fn collect<M: Mem>(m: &M, extra: &[(&'static str, String)]) -> Snap {
     s
 }
 
-/// Single-player population / police state (TRACE-4, SP-OFF baseline). Addresses from
-/// gta-reversed: `CPools::ms_pPedPool` / `ms_pVehiclePool`, `CPopulation::ms_nTotalPeds` /
-/// `ms_nNumCop`, `CCarCtrl::NumRandomCars` / `NumLawEnforcerCars` / `NumParkedCars` /
-/// `NumMissionCars`, `CWanted::MaximumWantedLevel`, the density multipliers, and the local
-/// player's `CWanted` (`CPlayerPed::m_pPlayerData` +0x480 → `m_pWanted` +0x0; chaos +0x0,
-/// wanted level +0x2C).
+/// Single-player population / police state, to see whether a client switches ambient peds, traffic
+/// and police off. Addresses from gta-reversed: `CPools::ms_pPedPool` / `ms_pVehiclePool`,
+/// `CPopulation::ms_nTotalPeds` / `ms_nNumCop`, `CCarCtrl::NumRandomCars` / `NumLawEnforcerCars` /
+/// `NumParkedCars` / `NumMissionCars`, `CWanted::MaximumWantedLevel`, the density multipliers, and the
+/// local player's `CWanted` (`CPlayerPed::m_pPlayerData` → `m_pWanted` +0x0; chaos +0x0, wanted level +0x2C).
 pub mod pop {
     pub const PED_POOL: u32 = 0xB74490;
     pub const VEHICLE_POOL: u32 = 0xB74494;

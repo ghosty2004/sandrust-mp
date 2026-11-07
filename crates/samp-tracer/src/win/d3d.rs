@@ -1,19 +1,10 @@
-//! TRACE-3: Direct3D9 / D3DX call-stream logger (runtime side; tables and formatting in
-//! `crate::d3d`).
-//!
-//! Installed from the first `CGame::Process` that finds a device in `_RwD3DDevice`
-//! (0xC97C28):
-//! * the **real** device is reached through `GetSwapChain(0)` → `GetDevice` on whatever
-//!   object sits in 0xC97C28 (a client's proxy forwards these), so the hooks see the calls
-//!   that reach the driver no matter who makes them (GTA through a proxy, the client's own
-//!   UI code, D3DX). Calls made by d3d9.dll itself are ignored;
-//! * the device, D3DX font, sprite, render-to-surface and vertex-buffer vtables are patched
-//!   (the class vtables are shared, so objects created before or after are covered; the
-//!   tracer creates one throw-away object of each D3DX class to find them);
-//! * the D3DX factory exports of the loaded `d3dx9_NN.dll` are inline-hooked (hot-patch
-//!   prologue `mov edi,edi; push ebp; mov ebp,esp`) to log creation arguments and to label
-//!   textures/fonts by file name / face.
-//!
+//! Direct3D9 / D3DX call-stream logger, runtime side (tables and formatting in `crate::d3d`), installed
+//! from the first `CGame::Process` that finds a device in `_RwD3DDevice`:
+//! * the real device is reached through `GetSwapChain(0)` → `GetDevice` on whatever object sits there (a
+//!   client's proxy forwards these), so the hooks see every call that reaches the driver, whoever makes it;
+//! * the device, D3DX font, sprite, render-to-surface and vertex-buffer class vtables are patched (one
+//!   throw-away object of each D3DX class is created to find them);
+//! * the D3DX factory exports of the loaded `d3dx9_NN.dll` are inline-hooked at their hot-patch prologue.
 //! Output: `d3d.jsonl` next to `trace.jsonl` (`SAMP_TRACER_D3D_OUT`).
 
 use super::*;
@@ -22,8 +13,10 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
 
+/// `_RwD3DDevice`: the device pointer RenderWare draws through (a client may put a proxy here).
 const RW_D3D_DEVICE: u32 = 0xC97C28;
-/// `FrontEndMenuManager.m_bHudOn` (believed) and `CHud::bScriptDontDisplayRadar` (ui-rendering.md §2.3).
+/// `FrontEndMenuManager.m_bHudOn` (believed) and `CHud::bScriptDontDisplayRadar`
+/// (ui-rendering.md, "Present: per-frame draw order").
 const HUD_ON: u32 = 0xBA6769;
 const HUD_NO_RADAR: u32 = 0xBAA3FB;
 const DT_CALCRECT: u32 = 0x400;
@@ -132,7 +125,7 @@ pub fn init(dir: &std::path::Path) {
 
 // ------------------------------------------------------------------ boot logging ----------
 //
-// UX-1: `SAMP_TRACER_D3D_BOOT=MODE [FRAMES]` logs from the first Present of the process (the
+// `SAMP_TRACER_D3D_BOOT=MODE [FRAMES]` logs from the first Present of the process (the
 // loading screen), long before the first `CGame::Process`. A helper thread waits for a device
 // in `_RwD3DDevice` and points the Present slot of its vtable at `boot_present`; that runs on
 // the game thread, puts the slot back, installs the normal hooks and starts logging. With

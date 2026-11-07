@@ -1,13 +1,13 @@
 //! gta_sa.exe 1.0 US globals and field offsets the tracer reads, plus the
 //! `state` line of the control channel (same format as samp-client).
 //!
-//! Names are given "named via" gta-reversed (`re/gta-reversed`) or plugin-sdk
-//! (`re/plugin-sdk`), which also give the addresses/offsets.
+//! Names, addresses and offsets come from gta-reversed (`re/gta-reversed`) or plugin-sdk
+//! (`re/plugin-sdk`); each constant says which.
 
 use crate::json::Val;
 use crate::mem::Mem;
 
-/// Byte probed to identify 1.0 US (gta-patches.md §2).
+/// Byte probed to identify 1.0 US (docs/re/subsystems/gta-patches.md, "When patches are applied").
 pub const VERSION_PROBE_ADDR: u32 = 0x747483;
 pub const VERSION_PROBE_US10: u8 = 0x89;
 
@@ -47,7 +47,7 @@ pub const HUD_SCRIPT_NO_RADAR: u32 = 0xBAA3FB;
 pub const SCRIPTS_DISPLAY_HUD: u32 = 0xA444A0;
 /// `TheCamera.m_aCams[0].m_nMode` (u16), `TheCamera.m_PlayerWeaponMode.m_nMode` (u16),
 /// `m_aCams[0].m_fFOV`, `m_aCams[0].m_vecFront` (plugin-sdk CCamera/CCam VALIDATE_OFFSET;
-/// the same addresses samp's remote-ped context swap writes, remote-control-combat.md §1.2).
+/// the same addresses samp's remote-ped context swap writes: remote-control-combat.md, "Per-slot tables").
 pub const CAM0_MODE: u32 = THE_CAMERA + CAM_CAMS + CAM_MODE;
 pub const CAM_WEAPON_MODE: u32 = 0xB6F858;
 pub const CAM0_FOV: u32 = 0xB6F250;
@@ -57,7 +57,7 @@ pub const ASPECT_RATIO: u32 = 0xC3EFA4;
 /// `CStats::StatTypesFloat[69]` (pistol skill, first of the 11 weapon-skill stats; gta-reversed Stats.h).
 pub const STAT_PISTOL_SKILL: u32 = 0xB79380 + 0x114;
 /// Number of `CWorld::Players` entries samp 0.3.7 indexes (slot 0 local, 2..209 remote;
-/// remote-control-onfoot.md §1.3). GTA itself has 2.
+/// remote-control-onfoot.md, "Why a player index above 1 does not corrupt memory"). GTA itself has 2.
 pub const SAMP_PLAYER_SLOTS: u32 = 210;
 /// `CWorld::ms_aSectors` (gta-reversed World.h): directly after `Players[1]`.
 pub const CWORLD_SECTORS: u32 = 0xB7D0B8;
@@ -230,8 +230,8 @@ pub fn snapshot<M: Mem>(m: &M) -> Option<Snapshot> {
     Some(Snapshot { game_state, player })
 }
 
-/// Same text as samp-client's `game::format_state` (DIFF-1: identical `state`
-/// output on both clients); the caller appends ` frame_hook=…`.
+/// Same text as samp-client's `game::format_state`, so `state` reads the same on both
+/// clients; the caller appends ` frame_hook=…`.
 pub fn format_state(s: &Snapshot, ticks: u64) -> String {
     let mut out = format!("state game_state={} ({}) ticks={ticks}", s.game_state, game_state_name(s.game_state));
     match &s.player {
@@ -244,7 +244,7 @@ pub fn format_state(s: &Snapshot, ticks: u64) -> String {
     out
 }
 
-/// `remote` reply of the control channel (DIFF-3 cross-client): a header line
+/// `remote` reply of the control channel (cross-client comparison): a header line
 /// `remote count=N`, then one line per remote player ped `(slot, CPed*)` from
 /// the frame-boundary cache. Like samp-client's `remote` (header + one line per
 /// player), but the tracer only sees GTA: no player id or name, just the slot
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn player_slots_overlap_sector_array() {
-        // Players[2] starts exactly where CWorld::ms_aSectors starts (remote-control-onfoot.md §1.3).
+        // Players[2] starts exactly where CWorld::ms_aSectors starts (see `SAMP_PLAYER_SLOTS`).
         assert_eq!(player_info(2), CWORLD_SECTORS);
         assert_eq!(player_info(SAMP_PLAYER_SLOTS), 0xB915B8);
         let mut m = FakeMem::default();
