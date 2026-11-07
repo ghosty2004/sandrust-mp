@@ -5,8 +5,12 @@ A clean-room reimplementation of the **SA:MP 0.3.7-R4 client** in Rust. It joins
 `samp.dll`, call by call.
 
 <p align="center">
+  <img src="docs/img/modshop.jpg" width="49%" alt="A paintjob in a mod shop">
+  <img src="docs/img/driving.jpg" width="49%" alt="Driving through the desert">
+</p>
+<p align="center">
+  <img src="docs/img/remote-player.jpg" width="49%" alt="Another player jumping, synced from the server">
   <img src="docs/img/nametags.jpg" width="49%" alt="Remote players with nametags and health bars">
-  <img src="docs/img/dialog.jpg" width="49%" alt="A list dialog">
 </p>
 <p align="center">
   <img src="docs/img/model-previews.jpg" width="49%" alt="Model-preview textdraws: skins, a vehicle and an object">
