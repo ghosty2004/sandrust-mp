@@ -192,9 +192,9 @@ pub fn report(r: &ReportInput, with_modules: bool) -> String {
 /// The dialog's static text: samp's first sentence, then where the report was saved (no upload button).
 pub fn static_text(file: Option<&str>) -> String {
     match file {
-        Some(f) => format!(
-            "SA:MP has crashed. The error report has been generated below.\r\n\r\nIt was also saved to {f}."
-        ),
+        Some(f) => {
+            format!("SA:MP has crashed. The error report has been generated below.\r\n\r\nIt was also saved to {f}.")
+        }
         None => "SA:MP has crashed. The error report has been generated below.".into(),
     }
 }
@@ -271,11 +271,12 @@ pub use imp::install;
 #[cfg(windows)]
 mod imp {
     use super::*;
+    use crate::patch::{Memory, ProcessMemory};
     use std::ffi::c_void;
     use std::sync::Mutex;
     use windows_sys::Win32::Foundation::{HWND, LPARAM, WPARAM};
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
     use windows_sys::Win32::System::Diagnostics::Debug::{EXCEPTION_POINTERS, SetUnhandledExceptionFilter};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DestroyWindow, DialogBoxIndirectParamA, EndDialog, GetDlgItem, IDC_ARROW, LoadCursorW, SW_HIDE, SW_MINIMIZE,
         SetCursor, SetDlgItemTextA, ShowWindow, WM_COMMAND, WM_DESTROY, WM_INITDIALOG,
@@ -307,8 +308,7 @@ mod imp {
     }
 
     fn gta_hwnd() -> HWND {
-        // SAFETY: the game's HWND global (.bss of gta_sa.exe).
-        unsafe { std::ptr::read_volatile(GTA_HWND as usize as *const usize) as HWND }
+        ProcessMemory.read_u32(GTA_HWND).unwrap_or(0) as usize as HWND
     }
 
     fn modules() -> Vec<(String, u32, u32, String)> {
@@ -316,7 +316,8 @@ mod imp {
         use windows_sys::Win32::System::Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, MODULEENTRY32, Module32First, Module32Next, TH32CS_SNAPMODULE,
         };
-        let cstr = |b: &[u8]| String::from_utf8_lossy(&b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]).into_owned();
+        let cstr =
+            |b: &[u8]| String::from_utf8_lossy(&b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]).into_owned();
         let mut out = Vec::new();
         // SAFETY: ToolHelp snapshot of our own process; the entry struct is sized before each call.
         unsafe {
@@ -378,8 +379,7 @@ mod imp {
             in_command: crate::script::in_command(),
             last_render_model: 0,
             game_version: "US 1.0",
-            // SAFETY: byte global of gta_sa.exe.
-            ped_context: Some(unsafe { std::ptr::read_volatile(crate::game::PLAYER_IN_FOCUS as usize as *const u8) }),
+            ped_context: Some(ProcessMemory.read_u8(crate::game::PLAYER_IN_FOCUS).unwrap_or(0)),
             modules: modules(),
             exception: {
                 // SAFETY: the record comes from the system's exception dispatcher.
@@ -474,11 +474,16 @@ mod tests {
             ..ReportInput::default()
         };
         let d = report(&r, false);
-        assert!(d.starts_with("samp-rs 0.1.0 (SA-MP 0.3.7-R4 compatible)\r\nException At Address: 0x0072B850\r\nBase: 0x02F80000\r\n"));
+        assert!(d.starts_with(
+            "samp-rs 0.1.0 (SA-MP 0.3.7-R4 compatible)\r\nException At Address: 0x0072B850\r\nBase: 0x02F80000\r\n"
+        ));
         assert!(d.contains("EFLAGS: 0x00000246\r\n\r\nStack:\r\n+0000: 0x00000000   0x00000001   0x00000002   0x00000003\r\n+0010: 0x00000004   0x00000005   0x00000000   0x00000000\r\n"));
         assert!(d.contains("\r\nSCM Op: 0x9BA, lDbg: 0 LastRendObj: 0\r\n\r\nGame Version: US 1.0\r\n\r\nState Information: Ped Context: 0\r\n"));
         assert!(!d.contains("Loaded Modules"));
-        assert!(report(&r, true).ends_with("\r\nLoaded Modules:\r\ngta_sa.exe\tB: 0x00400000\tS: 0x00100000\t(C:\\gta_sa.exe)\r\n"));
+        assert!(
+            report(&r, true)
+                .ends_with("\r\nLoaded Modules:\r\ngta_sa.exe\tB: 0x00400000\tS: 0x00100000\t(C:\\gta_sa.exe)\r\n")
+        );
     }
 
     #[test]

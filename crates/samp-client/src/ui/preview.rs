@@ -200,7 +200,9 @@ pub fn init_env() {
     c3(g::RW_FRAME_TRANSLATE, frame, pos.as_ptr() as u32, 1);
     rotate(g::RW_FRAME_ROTATE, frame, &AXES[0], 90.0);
     if camera == 0 || frame == 0 || raster == 0 || zraster == 0 {
-        crate::log!("preview: camera set incomplete (camera {camera:#x} frame {frame:#x} raster {raster:#x} z {zraster:#x})");
+        crate::log!(
+            "preview: camera set incomplete (camera {camera:#x} frame {frame:#x} raster {raster:#x} z {zraster:#x})"
+        );
         return;
     }
     set_camera_rasters(camera, raster, zraster);
@@ -223,7 +225,9 @@ pub fn init_env() {
 fn create_raster(flags: i32) -> u32 {
     // SAFETY: RwRasterCreate(width, height, depth, flags), cdecl.
     unsafe {
-        std::mem::transmute::<usize, extern "C" fn(i32, i32, i32, i32) -> u32>(g::RW_RASTER_CREATE)(SIZE, SIZE, 0, flags)
+        std::mem::transmute::<usize, extern "C" fn(i32, i32, i32, i32) -> u32>(g::RW_RASTER_CREATE)(
+            SIZE, SIZE, 0, flags,
+        )
     }
 }
 
@@ -397,7 +401,11 @@ fn set_position(ent: u32, pos: [f32; 3]) {
     }
     let f: u32 = rd(vt + e::VT_TELEPORT);
     // SAFETY: CEntity::Teleport (thiscall: x, y, z, bool) on a live entity.
-    unsafe { std::mem::transmute::<usize, extern "thiscall" fn(u32, f32, f32, f32, u32)>(f as usize)(ent, pos[0], pos[1], pos[2], 0) };
+    unsafe {
+        std::mem::transmute::<usize, extern "thiscall" fn(u32, f32, f32, f32, u32)>(f as usize)(
+            ent, pos[0], pos[1], pos[2], 0,
+        )
+    };
 }
 
 /// The flags samp gives a preview entity: |= 0x80000002, then bit 0 cleared.

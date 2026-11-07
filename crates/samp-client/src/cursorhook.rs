@@ -26,7 +26,8 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Result<(), Str
         .ok_or("gta_sa.exe does not import ShowCursor from user32")?;
     let orig = mem.read_u32(slot).map_err(|e| e.to_string())?;
     let stub = show_cursor_stub as extern "system" fn(i32) -> i32 as usize as u32;
-    patcher.write(mem, "user32 ShowCursor import", slot, &stub.to_le_bytes(), Some(&orig.to_le_bytes()))
+    patcher
+        .write(mem, "user32 ShowCursor import", slot, &stub.to_le_bytes(), Some(&orig.to_le_bytes()))
         .map_err(|e| e.to_string())?;
     crate::log!("early: ShowCursor import at {slot:#x}: {orig:#x} -> {stub:#x} (counter left alone)");
     Ok(())

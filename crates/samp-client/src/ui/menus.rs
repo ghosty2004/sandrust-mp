@@ -117,9 +117,7 @@ extern "C" fn gxt_lookup(key: *const u8) -> u32 {
     let rest = &k[4..];
     let n = rest.iter().position(|&b| b == 0).unwrap_or(4);
     let Ok(g) = GXT.try_lock() else { return 0 };
-    g.iter()
-        .find(|(key, _)| key[..n] == rest[..n] && key[n] == 0)
-        .map_or(0, |(_, b)| b.as_ptr() as u32)
+    g.iter().find(|(key, _)| key[..n] == rest[..n] && key[n] == 0).map_or(0, |(_, b)| b.as_ptr() as u32)
 }
 
 fn handler_code(lookup: u32, result: u32) -> Vec<u8> {

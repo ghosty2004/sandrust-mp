@@ -211,7 +211,8 @@ pub fn draw_text_w(sprite: &Sprite, font: &Font, text: &[u16], count: i32, rect:
 
 /// `CDXUTDialog::DrawRect`.
 pub fn draw_rect(sprite: &Sprite, rect: Rect, colour: u32) {
-    let (l, t, r, b) = (rect.left as f32 - 0.5, rect.top as f32 - 0.5, rect.right as f32 - 0.5, rect.bottom as f32 - 0.5);
+    let (l, t, r, b) =
+        (rect.left as f32 - 0.5, rect.top as f32 - 0.5, rect.right as f32 - 0.5, rect.bottom as f32 - 0.5);
     let v = [
         ScreenVertex { x: l, y: t, z: 0.5, rhw: 1.0, colour, u: 0.0, v: 0.0 },
         ScreenVertex { x: r, y: t, z: 0.5, rhw: 1.0, colour, u: 0.0, v: 0.0 },
@@ -326,7 +327,14 @@ pub struct EditView<'a> {
 
 /// `CDXUTEditBox::Render` for the box `rect` (border 5, spacing 4). `width_of` measures
 /// UTF-16 text like DXUT's Uniscribe buffer (GDI, not a D3DX call).
-pub fn edit_box(sprite: &Sprite, tex: *mut c_void, font: &Font, rect: Rect, e: &EditView, width_of: &dyn Fn(&[u16]) -> i32) {
+pub fn edit_box(
+    sprite: &Sprite,
+    tex: *mut c_void,
+    font: &Font,
+    rect: Rect,
+    e: &EditView,
+    width_of: &dyn Fn(&[u16]) -> i32,
+) {
     let t = Rect { left: rect.left + 5, top: rect.top + 5, right: rect.right - 5, bottom: rect.bottom - 5 };
     let dst = [
         t,
@@ -350,12 +358,8 @@ pub fn edit_box(sprite: &Sprite, tex: *mut c_void, font: &Font, rect: Rect, e: &
     if e.caret != e.anchor {
         let sel_x = x_of(e.anchor);
         let (a, b) = if caret_x <= sel_x { (caret_x, sel_x) } else { (sel_x, caret_x) };
-        let mut r = Rect {
-            left: a + area.left - x_first,
-            top: area.top,
-            right: b + area.left - x_first,
-            bottom: area.bottom,
-        };
+        let mut r =
+            Rect { left: a + area.left - x_first, top: area.top, right: b + area.left - x_first, bottom: area.bottom };
         r.left = r.left.max(area.left);
         r.right = r.right.min(area.right);
         if r.right > r.left {

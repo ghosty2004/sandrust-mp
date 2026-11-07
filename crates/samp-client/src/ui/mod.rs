@@ -16,17 +16,17 @@ mod d3d;
 #[cfg(windows)]
 mod dxut;
 #[cfg(windows)]
-mod menus;
-#[cfg(windows)]
-mod textdraws;
-#[cfg(windows)]
 mod glue;
 #[cfg(windows)]
 pub mod mattext;
 #[cfg(windows)]
+mod menus;
+#[cfg(windows)]
 mod preview;
 #[cfg(windows)]
 mod render;
+#[cfg(windows)]
+mod textdraws;
 #[cfg(windows)]
 mod wndproc;
 

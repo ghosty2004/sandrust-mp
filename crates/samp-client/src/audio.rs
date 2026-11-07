@@ -174,9 +174,9 @@ pub fn split_tag_list(bytes: &[u8]) -> Vec<&[u8]> {
 /// order. Mirrors samp.dll 0x100a2300.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SoundCmd {
-    /// `CAEAmbienceTrackManager::StopSpecialMissionAmbienceTrack()` (0x4D6D60).
+    /// `CAEAmbienceTrackManager::StopSpecialMissionAmbienceTrack()` (`gta::STOP_MISSION_TRACK`).
     StopMissionTrack,
-    /// `CAEAmbienceTrackManager::PlaySpecialMissionAmbienceTrack(id)` (0x4D6D50).
+    /// `CAEAmbienceTrackManager::PlaySpecialMissionAmbienceTrack(id)` (`gta::PLAY_MISSION_TRACK`).
     PlayMissionTrack(i32),
     /// `0x018C ADD_ONE_OFF_SOUND(x, y, z, id)`.
     OneOff([f32; 3], i32),

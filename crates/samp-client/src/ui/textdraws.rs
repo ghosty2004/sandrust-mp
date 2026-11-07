@@ -46,8 +46,10 @@ mod txd {
     pub const SPRITE_SET_TEXTURE: usize = 0x727270;
     pub const SPRITE_DRAW: usize = 0x728350;
     pub const SPRITE_DELETE: usize = 0x7281E0;
-    /// `RwEngineInstance`; `+0x20` = `fpRenderStateSet`.
+    /// `RwEngineInstance`.
     pub const RW_ENGINE: u32 = 0xC97B24;
+    /// Offset of the `RwRenderStateSet` function pointer in the engine instance.
+    pub const RW_ENGINE_RENDER_STATE_SET: u32 = 0x20;
 }
 
 fn cstr(s: &[u8]) -> Vec<u8> {
@@ -186,16 +188,17 @@ fn draw_sprite(tex: u32, t: &mut samp_ui::textdraw::TextDraw, hover: u32, w: i32
         let rect = [r[0], r[3], r[2], r[1]];
         let colour = if t.hovered { hover } else { t.data.letter_colour };
         let mut sprite = tex;
-        // SAFETY: RwRenderStateSet through RwEngineInstance and CSprite2d::Draw (thiscall).
-        unsafe {
-            let eng = std::ptr::read_volatile(txd::RW_ENGINE as usize as *const u32);
-            if eng != 0 {
-                let rs: extern "C" fn(u32, u32) -> i32 = std::mem::transmute(*((eng + 0x20) as usize as *const u32) as usize);
-                rs(9, 2);
-            }
-            let draw: extern "thiscall" fn(*mut u32, *const [f32; 4], *const u32) = std::mem::transmute(txd::SPRITE_DRAW);
-            draw(&mut sprite, &rect, &colour);
+        let eng = ProcessMemory.read_u32(txd::RW_ENGINE).unwrap_or(0);
+        if eng != 0 {
+            let f = ProcessMemory.read_u32(eng + txd::RW_ENGINE_RENDER_STATE_SET).unwrap_or(0);
+            // SAFETY: the engine's cdecl `RwRenderStateSet(state, value)`.
+            let rs: extern "C" fn(u32, u32) -> i32 = unsafe { std::mem::transmute(f as usize) };
+            rs(9, 2);
         }
+        // SAFETY: CSprite2d::Draw (thiscall) on a sprite holding a live RwTexture, main thread.
+        let draw: extern "thiscall" fn(*mut u32, *const [f32; 4], *const u32) =
+            unsafe { std::mem::transmute(txd::SPRITE_DRAW) };
+        draw(&mut sprite, &rect, &colour);
     }
     t.hit = Some(textdraw::sprite_hit_rect(&t.data, w, h, ux, uy));
 }

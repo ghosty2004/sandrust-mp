@@ -15,9 +15,11 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CallWindowProcA, GCL_STYLE, GWL_WNDPROC, GetClassLongA, SPI_GETWHEELSCROLLLINES, SetClassLongA,
-    SetCursor, SetWindowLongA, SetWindowTextA, SystemParametersInfoA, WM_CHAR,
-    WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONUP, WM_MOUSEWHEEL, WM_SETCURSOR, WM_SYSKEYUP, WNDPROC,
+    SetCursor, SetWindowLongA, SetWindowTextA, SystemParametersInfoA, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
+    WM_LBUTTONUP, WM_MOUSEWHEEL, WM_SETCURSOR, WM_SYSKEYUP, WNDPROC,
 };
+
+use crate::patch::{Memory, ProcessMemory};
 
 /// GTA main window handle.
 const GTA_HWND: u32 = 0xC97C1C;
@@ -26,9 +28,9 @@ static OLD_PROC: AtomicUsize = AtomicUsize::new(0);
 static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
 pub fn install() -> Result<(), String> {
-    // SAFETY: the game's HWND global; SetWindowLongA on our own process's window.
+    let hwnd = ProcessMemory.read_u32(GTA_HWND).unwrap_or(0) as usize as HWND;
+    // SAFETY: SetWindowLongA and the class / cursor calls on our own process's window.
     unsafe {
-        let hwnd = std::ptr::read_volatile(GTA_HWND as usize as *const usize) as HWND;
         if hwnd.is_null() {
             return Err("no GTA window yet".into());
         }

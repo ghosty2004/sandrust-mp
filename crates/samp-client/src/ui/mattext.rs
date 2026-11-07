@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use samp_ui::colour;
 
 use super::d3d::{self, D3dx, Font, FontArgs, Rect, Sprite, dt};
+use crate::patch::{Memory, ProcessMemory};
 
 /// One text slot as RPC 44 gave it.
 #[derive(Clone, Debug)]
@@ -280,8 +281,17 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
         }
         return Err(format!("D3DXCreateRenderToSurface failed {hr:#x}"));
     }
-    let font = Font::create(
-        &d3dx,
+    let font = sign_font(&d3dx, spec)?;
+    let sprite = std::mem::ManuallyDrop::new(Sprite { ptr: sprite_ptr as usize as *mut c_void });
+    draw_text(rts, surf, &font, &sprite, spec, (w, h));
+    drop(font);
+    Ok(tex as u32)
+}
+
+/// The sign font (`spec`'s face, size and weight); on failure samp's debug chat line naming the face.
+fn sign_font(d3dx: &D3dx, spec: &TextSpec) -> Result<Font, String> {
+    Font::create(
+        d3dx,
         FontArgs {
             height: i32::from(spec.font_size),
             width: 0,
@@ -294,8 +304,12 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
     .inspect_err(|_| {
         // Like samp: a debug chat line naming the face that failed.
         super::glue::print_debug_later(format!("SignText: Can't create font {}", String::from_utf8_lossy(&spec.font)));
-    })?;
-    let sprite = std::mem::ManuallyDrop::new(Sprite { ptr: sprite_ptr as usize as *mut c_void });
+    })
+}
+
+/// One render-to-surface scene on `surf`: clear to the background, then the text through the colour-code wrapper.
+/// Releases `surf` and `rts`.
+fn draw_text(rts: *mut c_void, surf: *mut c_void, font: &Font, sprite: &Sprite, spec: &TextSpec, (w, h): (u32, u32)) {
     // SAFETY: COM calls on objects created above: ID3DXRenderToSurface::BeginScene (slot 5) / EndScene (slot 6),
     // IDirect3DDevice9::Clear / SetRenderState.
     unsafe {
@@ -318,8 +332,8 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
                     colour::glyph_colours(&spec.text, spec.font_colour).iter().map(|g| g.colour).collect();
                 let mut r = Rect { left: 0, top: 0, right: w as i32, bottom: h as i32 };
                 d3d::draw_glyph_coloured(
-                    &font,
-                    &sprite,
+                    font,
+                    sprite,
                     &stripped,
                     &mut r,
                     draw_format(spec.alignment),
@@ -333,25 +347,24 @@ fn render(spec: &TextSpec) -> Result<u32, String> {
         }
         d3d::release(rts);
     }
-    drop(font);
-    Ok(tex as u32)
 }
 
-/// The D3D texture behind an RW texture (`RwTexture.raster` → D3D9 raster extension at `_RwD3D9RasterExtOffset`
-/// 0xB4E9E0 → `IDirect3DTexture9*` first field; gta-reversed `WindowedMode.cpp`).
+/// `_RwD3D9RasterExtOffset`: offset of the D3D9 extension inside an `RwRaster`.
+const RW_D3D9_RASTER_EXT_OFFSET: u32 = 0xB4E9E0;
+
+/// The D3D texture behind an RW texture (`RwTexture.raster` → the raster's D3D9 extension → its
+/// `IDirect3DTexture9*` first field; gta-reversed `WindowedMode.cpp`).
 pub fn d3d_texture_of(rw_texture: u32) -> u32 {
     if rw_texture == 0 {
         return 0;
     }
-    // SAFETY: reads of live RenderWare objects and a gta_sa.exe global.
-    unsafe {
-        let raster = std::ptr::read_unaligned(rw_texture as usize as *const u32);
-        if raster == 0 {
-            return 0;
-        }
-        let off = std::ptr::read_unaligned(0xB4E9E0usize as *const i32);
-        std::ptr::read_unaligned((raster as i32 + off) as usize as *const u32)
+    let m = ProcessMemory;
+    let raster = m.read_u32(rw_texture).unwrap_or(0);
+    if raster == 0 {
+        return 0;
     }
+    let off = m.read_u32(RW_D3D9_RASTER_EXT_OFFSET).unwrap_or(0) as i32;
+    m.read_u32((raster as i32 + off) as u32).unwrap_or(0)
 }
 
 #[cfg(test)]
