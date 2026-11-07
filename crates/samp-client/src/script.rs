@@ -251,7 +251,8 @@ mod runner {
             // well-formed instruction that outlives the call; faults are caught by the shared SEH guard.
             LAST_OPCODE.store(opcode, Ordering::SeqCst);
             IN_COMMAND.store(true, Ordering::SeqCst);
-            let code = unsafe { crate::swap::guarded_thiscall(PROCESS_ONE_COMMAND as u32, self.thread.as_mut_ptr() as u32) };
+            let code =
+                unsafe { crate::swap::guarded_thiscall(PROCESS_ONE_COMMAND as u32, self.thread.as_mut_ptr() as u32) };
             IN_COMMAND.store(false, Ordering::SeqCst);
             if code != 0 {
                 let component = match (opcode, args.get(1)) {

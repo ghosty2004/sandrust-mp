@@ -3,6 +3,14 @@
 //! main thread suspended until LoadLibrary returns), then wait for `gGameState == 7`, apply the main block and
 //! the per-frame hooks, then `gGameState := 8` plus the three menu flags.
 //! Spec: docs/re/subsystems/gta-patches.md, "When patches are applied" and "What the Rust client must do at startup".
+//!
+//! Layout: this file holds the entry point, the attach-time work, the hooks and the per-frame tick; `init` the init
+//! thread (one function per install step); `service` the control-channel commands.
+
+mod init;
+mod service;
+
+pub(crate) use service::readable;
 
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -17,7 +25,7 @@ use windows_sys::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
 
 use crate::client::Client;
-use crate::control::{self, Command};
+use crate::control;
 use crate::game;
 use crate::log;
 use crate::patch::{Memory, Patcher, ProcessMemory};
@@ -172,7 +180,7 @@ fn attach() {
     }
     *PATCHER.lock().unwrap_or_else(|e| e.into_inner()) = Some(patcher);
 
-    if let Err(e) = std::thread::Builder::new().name("samp-init".into()).spawn(init_thread) {
+    if let Err(e) = std::thread::Builder::new().name("samp-init".into()).spawn(init::init_thread) {
         crate::log!("cannot start init thread: {e}");
     }
 }
@@ -195,310 +203,6 @@ fn physical_ram_mb() -> u64 {
             return 0;
         }
         st.ullTotalPhys / (1024 * 1024)
-    }
-}
-
-fn init_thread() {
-    // samp imports d3dx9_25.dll (loaded with samp.dll, before the game's first Present) and registers its fonts
-    // at attach (docs/re/subsystems/ui-rendering.md, "Font assets"): done first thing here, outside the loader lock.
-    crate::ui::preload();
-    let mem = ProcessMemory;
-    let t0 = Instant::now();
-    let mut last_state = -1;
-    let mut last_report = Instant::now();
-    // Wait for FRONTEND_IDLE, like samp's init thread.
-    loop {
-        let s = mem.read_i32(game::G_GAME_STATE).unwrap_or(-1);
-        if s != last_state {
-            crate::log!("gGameState = {s} ({}) after {:.2}s", game::game_state_name(s), t0.elapsed().as_secs_f32());
-            last_state = s;
-        }
-        if s == 7 {
-            break;
-        }
-        if s > 7 {
-            crate::log!("game passed state 7 without us seeing it; continuing anyway");
-            break;
-        }
-        if last_report.elapsed() > Duration::from_secs(10) {
-            crate::log!("still waiting for gGameState 7 (now {s})");
-            last_report = Instant::now();
-            // Rare long stalls before state 7: record where the threads are.
-            if t0.elapsed() < Duration::from_secs(35) {
-                crate::diag::dump_threads("slow start");
-            }
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-
-    let mut mem = ProcessMemory;
-    {
-        let mut g = PATCHER.lock().unwrap_or_else(|e| e.into_inner());
-        let patcher = g.get_or_insert_with(Patcher::new);
-        // Sector grid first (samp moves it before everything else in its main block); remote peds depend on it.
-        let buffer: &'static mut [u8] = Box::leak(vec![0u8; crate::sectors::BUFFER_BYTES as usize].into_boxed_slice());
-        match crate::sectors::relocate(patcher, &mut mem, buffer.as_mut_ptr() as u32) {
-            Ok(n) => {
-                SECTORS_RELOCATED.store(true, Ordering::SeqCst);
-                crate::log!(
-                    "main: sector grid relocated to {:#x} ({n} references), original zeroed",
-                    buffer.as_ptr() as u32
-                );
-            }
-            Err(e) => crate::log!("main: sector relocation FAILED, remote players disabled: {e}"),
-        }
-        // Enlarged model-info stores, needed by samp.saa's IDE files.
-        for store in crate::stores::STORES {
-            let buf: &'static mut [u8] = Box::leak(crate::stores::new_entries(store).into_boxed_slice());
-            match crate::stores::relocate(patcher, &mut mem, store, buf.as_ptr() as u32) {
-                Ok(()) => crate::log!(
-                    "main: {} moved to {:#x} ({} entries, {} references)",
-                    store.name,
-                    buf.as_ptr() as u32,
-                    store.entries,
-                    store.refs.len()
-                ),
-                Err(e) => crate::log!("main: {} relocation FAILED: {e}", store.name),
-            }
-        }
-        let r = patches::apply_phase(patcher, &mut mem, Phase::Main, 0);
-        log_report("main", &r);
-        // samp's CJ-walk gate over the move-anim-group store that the main block NOPs.
-        match crate::pedhooks::install(patcher, &mut mem) {
-            Ok(()) => crate::log!("main: ProcessAnimGroups CJ-walk gate at {:#x}", crate::pedhooks::STORE_SITE),
-            Err(e) => crate::log!("main: ProcessAnimGroups CJ-walk gate FAILED: {e}"),
-        }
-        // Remote-player context switch (docs/re/subsystems/remote-control-onfoot.md,
-        // "`CPlayerPed::ProcessControl` hook").
-        match crate::swap::install(patcher, &mut mem) {
-            Ok(()) if SECTORS_RELOCATED.load(Ordering::SeqCst) => {
-                REMOTE_PEDS_READY.store(true, Ordering::SeqCst);
-                crate::log!("main: CPlayerPed::ProcessControl / CTaskSimpleUseGun::SetPedPosition hooks installed");
-            }
-            Ok(()) => crate::log!("main: swap hooks installed, but remote peds stay disabled (no sector relocation)"),
-            Err(e) => crate::log!("main: swap hooks FAILED, remote players disabled: {e}"),
-        }
-        // Combat: the start-up part of the damage / projectile / weapon-render hooks.
-        let combat = crate::combathooks::install_main(patcher, &mut mem);
-        let failed: Vec<String> =
-            combat.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
-        crate::log!("main: combat rows: {} applied, failed: {failed:?}", combat.len() - failed.len());
-        // HUD scale fix around the radar, Idle Sleep(1), no cheats.
-        let hooks = crate::mainhooks::install(patcher, &mut mem);
-        let failed: Vec<String> =
-            hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
-        crate::log!("main: main hooks: {} installed, failed: {failed:?}", hooks.len() - failed.len());
-        // samp's custom script opcodes 0x09C6 / 0x09D3 (used by samp.saa's scripts).
-        match crate::scmops::install(patcher, &mut mem) {
-            Ok(()) => crate::log!("main: script opcodes 0x09C6 / 0x09D3 installed"),
-            Err(e) => crate::log!("main: script opcodes 0x09C6 / 0x09D3 FAILED: {e}"),
-        }
-        // The police scanner's FindPlayerPed call gets a zeroed stand-in ped (samp: a zeroed static of the same
-        // size), so scanner reports never refer to the player.
-        let dummy: &'static mut [u8] = Box::leak(vec![0u8; game::SCANNER_DUMMY_PED_BYTES].into_boxed_slice());
-        SCANNER_DUMMY_PED.store(dummy.as_ptr() as u32, Ordering::SeqCst);
-        let hook = scanner_find_player_ped as extern "C" fn(i32) -> u32 as usize as u32;
-        match patcher.retarget_branch(
-            &mut mem,
-            "police scanner FindPlayerPed",
-            game::POLICE_SCANNER_FIND_PLAYER_CALL,
-            hook,
-            Some(game::FIND_PLAYER_PED),
-        ) {
-            Ok(_) => crate::log!(
-                "main: police scanner FindPlayerPed at {:#x} -> stand-in ped",
-                game::POLICE_SCANNER_FIND_PLAYER_CALL
-            ),
-            Err(e) => crate::log!("main: police scanner hook FAILED: {e}"),
-        }
-        // CGame::Shutdown: like samp, never run the game's own shutdown; give the network ~2 s and end the process
-        // (CModelInfo::ShutDown does not know the enlarged model-info stores and would walk past the stock ped
-        // array). Same form as samp: `jmp dword [slot]` + NOP, the handler stored in the padding slot in front
-        // of the function.
-        match crate::worldhooks::jmp_indirect(
-            patcher,
-            &mut mem,
-            "CGame::Shutdown -> exit",
-            game::CGAME_SHUTDOWN,
-            game::CGAME_SHUTDOWN_SLOT,
-            game_shutdown_hook as extern "C" fn() as usize as u32,
-            &game::CGAME_SHUTDOWN_ORIGINAL,
-        ) {
-            Ok(()) => crate::log!("main: CGame::Shutdown at {:#x} -> exit after 2 s", game::CGAME_SHUTDOWN),
-            Err(e) => crate::log!("main: CGame::Shutdown hook FAILED: {e}"),
-        }
-        // The CGame::Process call in Idle: runs every frame, also while the screen is faded out (samp.saa's
-        // main.scm keeps it faded for the first frames).
-        let hook = game_process_hook as extern "C" fn() as usize as u32;
-        match patcher.retarget_branch(
-            &mut mem,
-            "Idle -> CGame::Process hook",
-            game::IDLE_GAME_PROCESS_CALL,
-            hook,
-            Some(game::CGAME_PROCESS),
-        ) {
-            Ok(old) => {
-                ORIGINAL_GAME_PROCESS.store(old, Ordering::SeqCst);
-                crate::log!("main: CGame::Process call at {:#x} -> {hook:#x}", game::IDLE_GAME_PROCESS_CALL);
-            }
-            Err(e) => crate::log!("main: CGame::Process hook FAILED: {e}"),
-        }
-        // Vehicles: start-up byte patches, the 256-colour palette and the hooks.
-        let r = crate::vehpatches::apply(patcher, &mut mem, crate::vehpatches::INIT);
-        let c = crate::vehpatches::apply_colour_table(patcher, &mut mem);
-        for (row, addr, e) in r.failed.iter().chain(c.failed.iter()) {
-            crate::log!("main: vehicle row {row} at {addr:#x} SKIPPED: {e}");
-        }
-        crate::log!(
-            "main: vehicle rows applied: {} byte patches, {} colour-table operands",
-            r.applied.len(),
-            c.applied.len()
-        );
-        let hooks = crate::vehhooks::install(patcher, &mut mem);
-        let failed: Vec<String> =
-            hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
-        crate::log!("main: vehicle hooks: {} installed, failed: {failed:?}", hooks.len() - failed.len());
-        // Number plates.
-        let hooks = crate::plates::install(patcher, &mut mem);
-        let failed: Vec<String> =
-            hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
-        crate::log!("main: plate rows: {} installed, failed: {failed:?}", hooks.len() - failed.len());
-        // Weather audio muted while PlayerPlaySound(1)'s flag is set.
-        match crate::audio::install_weather_hook(patcher, &mut mem) {
-            Ok(()) => crate::log!("main: weather audio hook (row 95) installed"),
-            Err(e) => crate::log!("main: weather audio hook (row 95) FAILED: {e}"),
-        }
-        // World entities: byte patches and hooks.
-        let hooks = crate::worldhooks::install(patcher, &mut mem);
-        let failed: Vec<String> =
-            hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
-        crate::log!("main: world rows: {} applied, failed: {failed:?}", hooks.len() - failed.len());
-        // Behaviour: the anim recorders, and the camera follow before CCamera::Process.
-        let hooks = crate::behaviourclient::install(patcher, &mut mem);
-        let failed: Vec<String> =
-            hooks.iter().filter_map(|(row, r)| r.as_ref().err().map(|e| format!("row {row}: {e}"))).collect();
-        crate::log!("main: behaviour rows: {} applied, failed: {failed:?}", hooks.len() - failed.len());
-        let hook = camera_process_hook as extern "thiscall" fn(u32) as usize as u32;
-        match patcher.retarget_branch(
-            &mut mem,
-            "CGame::Process -> CCamera::Process hook",
-            CAMERA_PROCESS_CALL,
-            hook,
-            Some(CAMERA_PROCESS),
-        ) {
-            Ok(old) => ORIGINAL_CAMERA_PROCESS.store(old, Ordering::SeqCst),
-            Err(e) => crate::log!("main: CCamera::Process hook (row 9) FAILED: {e}"),
-        }
-        // Retarget the Render2dStuff call in Idle to our per-frame entry.
-        let hook = frame_hook as extern "C" fn() as usize as u32;
-        match patcher.retarget_branch(
-            &mut mem,
-            "Idle -> frame hook",
-            game::IDLE_RENDER_2D_CALL,
-            hook,
-            Some(game::RENDER_2D_STUFF),
-        ) {
-            Ok(old) => {
-                ORIGINAL_RENDER_2D.store(old, Ordering::SeqCst);
-                crate::log!(
-                    "main: per-frame hook at {:#x} -> {hook:#x} (original {old:#x})",
-                    game::IDLE_RENDER_2D_CALL
-                );
-            }
-            Err(e) => crate::log!("main: per-frame hook FAILED: {e}"),
-        }
-        // Fallback only: our own replacement for the story script (scm.rs), served instead of data\script\main.scm
-        // through the open call in CTheScripts::Init. With samp.saa the game opens samp's own main.scm.
-        if crate::filehook::archive_active() {
-            crate::log!("main: main.scm comes from samp.saa (samp's script); our replacement script is not used");
-        } else {
-            match write_main_scm() {
-                Ok(path) => {
-                    let hook = open_main_scm_hook as extern "C" fn(*const u8, *const u8) -> *mut c_void as usize as u32;
-                    match patcher.retarget_branch(
-                        &mut mem,
-                        "CTheScripts::Init main.scm open",
-                        game::MAIN_SCM_OPEN_CALL,
-                        hook,
-                        Some(game::CFILEMGR_OPEN_FILE),
-                    ) {
-                        Ok(_) => {
-                            crate::log!("main: main.scm open at {:#x} -> our script {}", game::MAIN_SCM_OPEN_CALL, path)
-                        }
-                        Err(e) => crate::log!("main: main.scm redirect FAILED: {e}"),
-                    }
-                }
-                Err(e) => crate::log!("main: cannot write our main.scm: {e}; the stock story script will run"),
-            }
-        }
-    }
-
-    let ctl_port = control::port_from_env();
-    match control::Server::bind(ctl_port) {
-        Ok(s) => {
-            crate::log!("control: listening on 127.0.0.1:{ctl_port}");
-            *CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Some(s);
-        }
-        Err(e) => crate::log!("control: bind 127.0.0.1:{ctl_port} failed: {e}"),
-    }
-
-    // Leave the frontend, like samp: menu flags, then gGameState := 8 (LOADING_STARTED).
-    let mm = game::FRONTEND_MENU_MANAGER;
-    let writes: [(u32, &[u8], &str); 4] = [
-        (mm + 0xE9, &[1], "FrontEndMenuManager.m_bMainMenuSwitch := 1"),
-        (mm + 0x5C, &[0], "FrontEndMenuManager.m_bMenuActive := 0"),
-        (mm + 0x33, &[0], "FrontEndMenuManager.m_bActivateMenuNextFrame := 0"),
-        (game::G_GAME_STATE, &8i32.to_le_bytes(), "gGameState := 8"),
-    ];
-    for (addr, bytes, what) in writes {
-        match mem.write(addr, bytes) {
-            Ok(()) => crate::log!("main: {what}"),
-            Err(e) => crate::log!("main: {what} FAILED: {e}"),
-        }
-    }
-    crate::log!("init done after {:.2}s", t0.elapsed().as_secs_f32());
-
-    // Service the control channel from here while the game is not ticking (loading, paused, frontend), so tests
-    // can always query the state.
-    let mut last_state = 8;
-    let mut since_state9: Option<Instant> = None;
-    let mut hook_checked = false;
-    let mut load_checked = false;
-    while !QUIT.load(Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(50));
-        let s = mem.read_i32(game::G_GAME_STATE).unwrap_or(-1);
-        if s != last_state {
-            crate::log!("gGameState = {s} ({}) after {:.2}s", game::game_state_name(s), t0.elapsed().as_secs_f32());
-            last_state = s;
-        }
-        if s == 8 && !load_checked && t0.elapsed() > Duration::from_secs(30) {
-            load_checked = true;
-            crate::log!("still loading (gGameState 8) {:.0} s after start", t0.elapsed().as_secs_f32());
-            crate::diag::dump_threads("slow load");
-        }
-        if s == 9 && since_state9.is_none() {
-            since_state9 = Some(Instant::now());
-        }
-        if let Some(t9) = since_state9
-            && !hook_checked
-            && TICKS.load(Ordering::SeqCst) == 0
-            && t9.elapsed() > Duration::from_secs(10)
-        {
-            hook_checked = true;
-            let mut b = [0u8; 5];
-            let _ = mem.read(game::IDLE_RENDER_2D_CALL, &mut b);
-            crate::log!(
-                "no frame tick 10 s after IDLE; call site {:#x} = {} (hook {})",
-                game::IDLE_RENDER_2D_CALL,
-                crate::patch::hex(&b),
-                if frame_hook_installed() { "installed" } else { "ABSENT" }
-            );
-            crate::diag::dump_threads("no frame tick");
-        }
-        let last = LAST_TICK_MS.load(Ordering::SeqCst);
-        if last == 0 || since_start_ms().saturating_sub(last) > 1000 {
-            service_control("bg");
-        }
     }
 }
 
@@ -804,7 +508,7 @@ fn tick() {
     // In-game UI: first-frame setup, input restore, queued UI work.
     crate::ui::frame_entry(false);
     quit_tick();
-    service_control("tick");
+    service::service_control("tick");
 }
 
 /// Starts the session once the world is up, then runs it every frame.
@@ -840,101 +544,6 @@ fn client_tick() {
     if let Some(c) = g.as_mut() {
         c.tick();
     }
-}
-
-fn service_control(_from: &str) {
-    let mut g = match CONTROL.try_lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    let Some(server) = g.as_mut() else { return };
-    let handled = server.poll(|cmd| match cmd {
-        Command::Ping => "pong".into(),
-        Command::State => match game::snapshot(&ProcessMemory) {
-            Ok(s) => format!(
-                "{} frame_hook={}",
-                game::format_state(&s, TICKS.load(Ordering::SeqCst)),
-                if frame_hook_installed() { "installed" } else { "absent" }
-            ),
-            Err(e) => format!("error {e}"),
-        },
-        Command::DevReset(n) => {
-            crate::ui::force_device_lost(*n);
-            format!("ok device reports lost for {n} checks")
-        }
-        Command::Peek { addr, len } => {
-            if !readable(*addr, *len) {
-                format!("error {addr:#x}+{len} is not readable")
-            } else {
-                let mut buf = vec![0u8; *len];
-                match ProcessMemory.read(*addr, &mut buf) {
-                    Ok(()) => format!("peek {addr:#x} {}", crate::patch::hex(&buf)),
-                    Err(e) => format!("error {e}"),
-                }
-            }
-        }
-        Command::Net => match CLIENT.try_lock() {
-            Ok(g) => g.as_ref().map(|c| c.status_line()).unwrap_or_else(|| "net phase=none".into()),
-            Err(_) => "error client busy".into(),
-        },
-        Command::Remote => match CLIENT.try_lock() {
-            Ok(g) => g.as_ref().map(|c| c.remote_lines()).unwrap_or_else(|| "remote count=0 streamed=0".into()),
-            Err(_) => "error client busy".into(),
-        },
-        Command::Files => crate::filehook::report(),
-        Command::Vehicles => match CLIENT.try_lock() {
-            Ok(g) => g.as_ref().map(|c| c.vehicle_lines()).unwrap_or_else(|| "vehicles count=0".into()),
-            Err(_) => "error client busy".into(),
-        },
-        Command::World => match CLIENT.try_lock() {
-            Ok(g) => g.as_ref().map(|c| c.world_lines()).unwrap_or_else(|| "world count=0".into()),
-            Err(_) => "error client busy".into(),
-        },
-        Command::Behaviour => match CLIENT.try_lock() {
-            Ok(g) => g.as_ref().map(|c| c.behaviour_line()).unwrap_or_else(|| "behaviour none".into()),
-            Err(_) => "error client busy".into(),
-        },
-        Command::Spawn => match CLIENT.try_lock() {
-            Ok(mut g) => g.as_mut().map(|c| c.request_debug_spawn()).unwrap_or_else(|| "error no session".into()),
-            Err(_) => "error client busy".into(),
-        },
-        Command::Combat => crate::combathooks::status_line(),
-        Command::Chat(n) => crate::ui::control_chat(*n),
-        Command::Input => crate::ui::control_input(),
-        Command::Ui => crate::ui::control_ui(),
-        Command::Bubbles => crate::ui::control_bubbles(),
-        Command::Synced => match CLIENT.try_lock() {
-            Ok(g) => g.as_ref().map(|c| c.synced_lines()).unwrap_or_else(|| "synced count=0".into()),
-            Err(_) => "error client busy".into(),
-        },
-        Command::Say(t) => crate::ui::control_say(t),
-        Command::Audio => crate::audio::status(),
-        Command::Quit => "bye".into(),
-        Command::Unknown(c) => format!("error unknown command {c:?}"),
-    });
-    drop(g);
-    if handled.contains(&Command::Quit) {
-        request_quit();
-    }
-}
-
-/// True if every page of `addr..addr+len` is committed and readable.
-pub(crate) fn readable(addr: u32, len: usize) -> bool {
-    use windows_sys::Win32::System::Memory::{
-        MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS, VirtualQuery,
-    };
-    let end = addr as usize + len;
-    let mut p = addr as usize;
-    while p < end {
-        // SAFETY: VirtualQuery only inspects the address space.
-        let mut mbi: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
-        let n = unsafe { VirtualQuery(p as *const c_void, &mut mbi, std::mem::size_of::<MEMORY_BASIC_INFORMATION>()) };
-        if n == 0 || mbi.State != MEM_COMMIT || mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD) != 0 {
-            return false;
-        }
-        p = mbi.BaseAddress as usize + mbi.RegionSize;
-    }
-    true
 }
 
 /// Whether the `Render2dStuff` call in `Idle` still targets our frame hook.

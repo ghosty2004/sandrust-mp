@@ -3,6 +3,7 @@
 //!   from combathooks.rs), switchable through sa-mp.cfg `nohudscalefix` and `/hudscalefix` ([`set_enabled`]);
 //! * `Sleep(1)` before the first time read of Idle's 14 ms busy-wait;
 //! * typed single-player cheats do nothing (`CCheat::AddToCheatString`).
+//!
 //! Spec: docs/re/subsystems/ui-rendering.md, "Other hooks that matter for UI"; docs/re/subsystems/gta-patches.md.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

@@ -4,6 +4,7 @@
 //! without reading the parameters and leaves the script's instruction pointer inside them.
 //! * 0x09C6 `(type, a, b, c)`: types 1–4 send the SCM-event RPC (96) for samp vehicle handle `a`.
 //! * 0x09D3 (condition): false while the local player drives a vehicle that is not a train carriage.
+//!
 //! Spec: docs/re/subsystems/gta-patches.md, "Other"; docs/phase3/saa2-notes.md and feata-notes.md.
 
 /// Jump-table slot of opcode 0x09C6 in `CRunningScript::ProcessCommands2500To2599`'s table.

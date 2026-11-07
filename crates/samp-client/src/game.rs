@@ -173,6 +173,16 @@ pub mod off {
     pub const PED_FLAGS: u32 = 0x46C;
     /// `CPed::m_pIntelligence`.
     pub const PED_INTELLIGENCE: u32 = 0x47C;
+    /// `CPed::m_pPlayerData` (CPlayerPedData; its first field is the `CWanted*`).
+    pub const PED_PLAYER_DATA: u32 = 0x480;
+    /// `CPed::m_pVehicle`.
+    pub const PED_VEHICLE: u32 = 0x58C;
+    /// `CVehicle::m_pDriver`.
+    pub const VEHICLE_DRIVER: u32 = 0x460;
+    /// `CVehicle::m_pFire`.
+    pub const VEHICLE_FIRE: u32 = 0x490;
+    /// `CPed::m_pFire`.
+    pub const PED_FIRE: u32 = 0x730;
     /// Primary task slot in `CPedIntelligence` (docs/re/subsystems/remote-control-onfoot.md, "Keys → shadow pad").
     pub const INTELLIGENCE_PRIMARY_TASK: u32 = 0x10;
     /// `CPed::m_ePedState`.

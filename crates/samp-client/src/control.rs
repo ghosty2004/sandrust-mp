@@ -104,7 +104,9 @@ pub fn parse(line: &str) -> Option<Command> {
     }
     match words.as_slice() {
         ["devreset"] => return Some(Command::DevReset(15)),
-        ["devreset", n] if n.parse::<u32>().is_ok() => return Some(Command::DevReset(n.parse::<u32>().unwrap_or(15).min(600))),
+        ["devreset", n] if n.parse::<u32>().is_ok() => {
+            return Some(Command::DevReset(n.parse::<u32>().unwrap_or(15).min(600)));
+        }
         _ => {}
     }
     if let ["chat", n] = words.as_slice()
