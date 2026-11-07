@@ -122,4 +122,7 @@ listed in the roadmap.
 This is an independent, clean-room project for interoperability with existing servers. Specifications
 are written in our own words from observed behaviour; no SA:MP or RakNet source code is used, and no
 SA:MP, GTA or other third-party files are distributed. It is not affiliated with SA:MP, open.mp or
-Rockstar Games. A licence has not been chosen yet.
+Rockstar Games.
+
+The source code is licensed under the [Mozilla Public License 2.0](LICENSE). The licence covers this
+project's code and documentation only, not SA:MP's or GTA's files.

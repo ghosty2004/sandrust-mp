@@ -4,4 +4,4 @@ members = ["crates/samp-proto", "crates/samp-bot", "crates/samp-dump", "crates/s
 
 [workspace.package]
 edition = "2024"
-license = "MIT"
+license = "MPL-2.0"

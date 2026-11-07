@@ -121,6 +121,7 @@ audit's 12 observable gaps (class A) are fixed and covered by F3 / F4 / combatve
 |---|---|---|
 | D-1 | SA:MP assets (`SAMP/` folder, loading screen) | **resolved (2026-11-04): load from the user's existing SA:MP install, never redistribute** (user asked for the SA:MP loading screen; confirm if this reading is wrong) |
 | D-2 | Legal review before any public release | licence (f) "no derivative works" vs EU interoperability right |
+| D-5 | Licence of this project | **resolved (2026-11-07): MPL-2.0** (user), as open.mp; covers our code and docs only. The legal review of D-2 is still open before a wide public release. |
 | D-3 | Git commits | **resolved (2026-11-04): Claude (main session) commits; plain messages, no task IDs, no session/attribution trailers; push only on request; remote ghosty2004/sandrust-mp** |
 | D-4 | samp.saa data overrides (10 of 23 files differ; handling/weapon identical) | **resolved (2026-11-04): option A — read ALL redirected files from the user's samp.saa at runtime, exactly like the original (user: "I want 1:1"); never redistribute; fallback to our own minimal script when SA:MP isn't installed** |
 
