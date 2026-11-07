@@ -2011,3 +2011,17 @@ an ambulance, two forced device losses (TestCooperativeLevel stub as `objmap_dev
   all ten measuring points and the same per-Reset call block (17 vs 18 Resets per 0.3 s stub window: RenderWare's
   retry timing).
 
+
+## Samples moved out of crates/samp-ui comments
+
+Dialogs (see "Dialogs (centred in the 1280x720 client rect, C = 20)" above):
+- Dialog position is centred with rounding, not truncation: style 2 (H 265) at 1280x720 gives
+  Y = (720 − 265)/2 = 227.5 → 228 (list top 253 = Y + C + 5).
+- Tablist column widths count up to 4 cells of every row, header included, even beyond the drawn
+  column count: style 4 with the first row `x\ty\tz` (3 columns) and a later row `x\ty\tz\tw\tv`
+  drew its columns 215 and 83 px wide (cells at x 456 / 671 / 754), i.e. raw width + 20 + 33
+  (the 33 is the (360 − total) / (n − 1) spread of the 400-px minimum width).
+
+Nametags (see "Nametags, scoreboard, death window, bubbles" above):
+- Name rect sample at width 1280: "Bot1 (1)" measured w 45, h 14 at anchor x 826, y 278 →
+  rect [804, 281, 848, 278] (top = y + 17 − h, bottom = y).

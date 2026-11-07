@@ -1,6 +1,7 @@
-//! Font settings and the pluggable text-measure interface (UR §3).
+//! Font sizes, weights, faces and outline patterns, plus the pluggable text-measure interface
+//! (docs/re/subsystems/ui-rendering.md, "Fonts and the text renderer").
 
-/// The fonts the layouts measure with (UR §3.2 table).
+/// The fonts the layouts measure with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FontId {
     /// Font renderer main font (chat lines, net stats).
@@ -27,18 +28,18 @@ pub struct Size {
 /// Text metrics supplied by the renderer (D3DX `DrawText` with `DT_CALCRECT`).
 ///
 /// `text` never contains colour codes: callers strip them first, as the original
-/// does (UR §3.3).
+/// does.
 pub trait TextMeasure {
     /// Size of a single line (`DT_SINGLELINE`).
     fn measure(&self, font: FontId, text: &[u8]) -> Size;
 
-    /// Height of `"Y"`, the line height every layout uses (UR §3.1 +0x20/+0x24, §7.2).
+    /// Height of `"Y"`, the line height every layout uses.
     fn line_height(&self, font: FontId) -> i32 {
         self.measure(font, b"Y").h
     }
 
-    /// Width of the chat's timestamp sample (`[19:58:34]`, main font), measured once by samp's
-    /// chat window at construction; hosts that cached it override this.
+    /// Width of the chat's timestamp sample (`[19:58:34]`, main font). samp's chat window measures
+    /// it once at construction; hosts that cached it override this.
     fn timestamp_width(&self) -> i32 {
         self.measure(FontId::Main, crate::chat::TIMESTAMP_SAMPLE).w
     }
@@ -69,12 +70,12 @@ impl TextMeasure for MonoMeasure {
     }
 }
 
-/// Default `fontface` (UR §3.2, A 0x100c53b0).
+/// Default `fontface`.
 pub const DEFAULT_FACE: &str = "Arial";
-/// `/fontsize` range (UCA local commands).
+/// `/fontsize` range.
 pub const FONT_SIZE_RANGE: std::ops::RangeInclusive<i32> = -3..=5;
 
-/// Main font height for video-mode width `w` and config `fontsize` `fs` (A 0x100c52d0).
+/// Main font height for video-mode width `w` and config `fontsize` `fs`. Mirrors samp.dll 0x100c52d0.
 pub fn main_height(w: i32, fs: i32) -> i32 {
     let base = if w < 1024 {
         14
@@ -88,38 +89,38 @@ pub fn main_height(w: i32, fs: i32) -> i32 {
     base + 2 * fs
 }
 
-/// Small font height: main − 2 (UR §3.2 table).
+/// Small font height: main − 2.
 pub fn small_height(w: i32, fs: i32) -> i32 {
     main_height(w, fs) - 2
 }
 
-/// Aux height (death window names) (A 0x100c5320): never below its base.
+/// Aux font height (death-window names); never below its base. Mirrors samp.dll 0x100c5320.
 pub fn aux_height(w: i32, fs: i32) -> i32 {
     let base = if w < 1024 { 12 } else { 14 };
     (base + 2 * fs).max(base)
 }
 
-/// GUI font 0 height, independent of resolution (A 0x100c5360). GUI font 1 is 2 less.
+/// GUI font 0 height, independent of resolution; GUI font 1 is 2 less. Mirrors samp.dll 0x100c5360.
 pub fn gui_height(fs: i32) -> i32 {
     20 + 2 * fs
 }
 
-/// Font weight from config `fontweight` (A 0x100c5380): 1 → 400, anything else → 700.
+/// Font weight from config `fontweight`: 1 → 400, anything else → 700. Mirrors samp.dll 0x100c5380.
 pub fn weight(fontweight: Option<i32>) -> u32 {
     if fontweight == Some(1) { 400 } else { 700 }
 }
 
-/// Font face from config `fontface` (A 0x100c53b0).
+/// Font face from config `fontface`. Mirrors samp.dll 0x100c53b0.
 pub fn face(fontface: Option<&str>) -> &str {
     fontface.unwrap_or(DEFAULT_FACE)
 }
 
-/// Four-direction outline (UR §3.4).
+/// Four-direction outline.
 pub const OUTLINE_4: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
-/// Eight-offset outline used by chat lines when the video width is above 1280 (UR §3.4).
+/// Eight-offset outline used by chat lines when the video width is above 1280.
 pub const OUTLINE_8: [(i32, i32); 8] = [(0, -2), (-1, -1), (1, -1), (0, 2), (-1, 1), (1, 1), (-2, 0), (2, 0)];
 
-/// Chat line outline offsets for video-mode width `w` (UR §3.4).
+/// Chat line outline offsets for video-mode width `w`.
 pub fn chat_outline(w: i32) -> &'static [(i32, i32)] {
     if w <= 1280 { &OUTLINE_4 } else { &OUTLINE_8 }
 }

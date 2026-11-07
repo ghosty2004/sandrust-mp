@@ -1,5 +1,6 @@
-//! Chat input line: open/close, editing, history and what Enter does (UR §8; UCA
-//! "Local chat input").
+//! Chat input line: open/close, editing, history and what Enter does ([`ChatInput::submit`]).
+//! Specs: docs/re/subsystems/ui-rendering.md ("Chat input") and ui-chat-audio.md ("Local chat
+//! input and built-in commands").
 
 use std::collections::VecDeque;
 
@@ -9,20 +10,20 @@ use crate::commands::{LocalCommand, split_command};
 use crate::edit::{CharResult, EditKey, LineEdit, Mods};
 use crate::{Rect, round_i};
 
-/// Characters taken from the edit box on Enter (UCA step 1).
+/// Characters taken from the edit box on Enter.
 pub const MAX_LINE: usize = 128;
-/// Unknown (notes U-INPUT-CAP): whether the edit box itself stops at 128 chars or only
-/// Enter truncates. Assumed: the box stops accepting characters at this length.
+/// Assumed: the edit box stops accepting characters at this length (the original might only
+/// truncate on Enter; the bytes sent are the same either way).
 pub const EDIT_CAPACITY: usize = MAX_LINE;
-/// History entries (UR §8: 10 × 129 bytes).
+/// History entries (10 × 129 bytes in samp).
 pub const HISTORY_SIZE: usize = 10;
 /// Characters kept per history entry (129 bytes incl. NUL).
 pub const HISTORY_ENTRY_MAX: usize = 128;
-/// Unknown (notes U-HISTORY-DUP): whether a line equal to the newest entry is pushed again.
+/// Whether a line equal to the newest entry is skipped; the original pushes it again.
 pub const HISTORY_SKIPS_DUPLICATES: bool = false;
-/// Maximum input box width (UR §8).
+/// Maximum input box width.
 pub const MAX_WIDTH: i32 = 800;
-/// Input box x (UR §8).
+/// Input box x.
 pub const BOX_X: i32 = 40;
 
 /// What Enter produced (the input is closed afterwards in every case).
@@ -42,7 +43,7 @@ pub enum Submit {
     Nothing,
 }
 
-/// The chat input (global A 0x1026e9fc).
+/// The chat input. Mirrors the samp.dll global at 0x1026e9fc.
 #[derive(Clone, Debug)]
 pub struct ChatInput {
     open: bool,
@@ -76,7 +77,7 @@ impl ChatInput {
         self.history.iter().map(Vec::as_slice)
     }
 
-    /// Open (A 0x10069480): show, enable, focus. Returns false if already open.
+    /// Open: show, enable, focus. Returns false if already open. Mirrors samp.dll 0x10069480.
     /// Opening does not touch the scoreboard or the chat mode. While open the host
     /// requests cursor mode 2 every frame.
     pub fn open(&mut self) -> bool {
@@ -87,11 +88,9 @@ impl ChatInput {
         true
     }
 
-    /// Close (A 0x10069580): focus out, disable and hide the edit box, cursor mode 0
-    /// with immediate restore. The text and the history position are kept: the
-    /// close routine does not touch them (2021 build), and the original client was
-    /// seen to keep "not sent" after ESC and send it with the next line typed after T.
-    /// Enter clears the text itself ([`Self::submit`]).
+    /// Close: focus out, disable and hide the edit box, cursor mode 0 with immediate restore. The
+    /// text and the history position are kept, as on the original (reopening shows the unsent
+    /// text); Enter clears the text itself ([`Self::submit`]). Mirrors samp.dll 0x10069580.
     pub fn close(&mut self) {
         self.open = false;
     }
@@ -111,8 +110,7 @@ impl ChatInput {
         self.edit.set_text(t);
     }
 
-    /// Up: older entries (A 0x10069630). TRACE-3 U-HISTORY-RESET: the live line is
-    /// not saved.
+    /// Up: older entries; the live line is not saved. Mirrors samp.dll 0x10069630.
     pub fn history_older(&mut self) {
         let next = self.index + 1;
         if (next as usize) < self.history.len() {
@@ -122,8 +120,7 @@ impl ChatInput {
         }
     }
 
-    /// Down: newer entries; past the newest shows an empty line (A 0x100696a0;
-    /// TRACE-3 U-HISTORY-RESET).
+    /// Down: newer entries; past the newest shows an empty line. Mirrors samp.dll 0x100696a0.
     pub fn history_newer(&mut self) {
         match self.index {
             -1 => {}
@@ -148,16 +145,17 @@ impl ChatInput {
         self.history.truncate(HISTORY_SIZE);
     }
 
-    /// Enter (input processor A 0x100699d0): take up to 128 chars; a non-empty line is
+    /// Enter: take up to 128 chars; a non-empty line is
     /// pushed to the history (the position is kept) and classified; then
     /// the edit box is cleared and the input closed. The caller also scrolls the chat
-    /// (position 90, clamped by the scrollbar) when the input was open.
+    /// (position 90, clamped by the scrollbar) when the input was open. Mirrors samp.dll
+    /// 0x100699d0.
     pub fn submit(&mut self, netgame: bool, debug_mode: bool) -> Submit {
         let line = self.edit.text()[..self.edit.text().len().min(MAX_LINE)].to_vec();
         let out = if line.is_empty() {
             Submit::Empty
         } else {
-            // TRACE-3 U-HISTORY-RESET: the history position survives sending.
+            // The history position survives sending.
             self.push_history(&line);
             if split_command(&line).is_none() {
                 if netgame { Submit::Chat(PlayerRequestChatMessage { message: line }) } else { Submit::Nothing }
@@ -175,7 +173,7 @@ impl ChatInput {
     }
 }
 
-/// Input box rect (UR §8): width `min(800, round(0.6 · clientWidth))` at
+/// Input box rect: width `min(800, round(0.6 · clientWidth))` at
 /// `(40, chatBottom)`, height `14 + round(1.5 · h0)` with `h0` = GUI font 0 height.
 pub fn box_rect(client_w: i32, chat_bottom: i32, gui0_h: i32) -> Rect {
     let w = MAX_WIDTH.min(round_i(0.6 * f64::from(client_w)));
@@ -255,7 +253,7 @@ mod tests {
         for _ in 0..9 {
             i.history_newer();
         }
-        // TRACE-3 U-HISTORY-RESET: past the newest entry the line is empty.
+        // Past the newest entry the line is empty.
         assert_eq!(i.text(), b"");
         i.history_newer();
         assert_eq!(i.text(), b"");

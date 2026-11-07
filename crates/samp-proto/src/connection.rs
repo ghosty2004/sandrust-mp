@@ -1,46 +1,11 @@
-//! Sans-IO RakNet connection: reliability, acks, resends, ordering,
-//! sequencing, split packets, internal ping/pong and keep-alive.
+//! Sans-IO RakNet connection: reliability, acks, resends, ordering, sequencing, split packets,
+//! internal ping/pong, keep-alive and the dead-connection test, with the timings of samp's RakNet.
 //!
-//! The caller feeds received datagrams to [`Connection::handle_datagram`],
-//! calls [`Connection::poll`] regularly to obtain plaintext datagrams to send
-//! (client→server datagrams must then go through `cipher::encrypt`), and
-//! queues application messages with [`Connection::send`].
-//!
-//! Spec: docs/re/handshake.md §3. The rules below are those of samp's RakNet (A = 2021 build
-//! addresses; measured on the original client in docs/phase3/net6-notes.md and m10-notes.md):
-//! * one [`Connection::poll`] is one reliability-layer update (A 0x10049ae0). samp's RakNet runs
-//!   it on its own thread every 2 ms (`threadSleepTimer` 2, A 0x10008988); the caller decides the
-//!   cadence (`samp-client` runs a 2 ms network thread, the bots poll per loop);
-//! * datagram generation (A 0x10048070): pending acks first, then the due resends (oldest first;
-//!   a resend that does not fit ends the datagram), then the new messages by priority
-//!   (0 system, 1 high, 2 medium, 3 low; FIFO inside a priority; a message that does not fit
-//!   waits and the next priority is tried); as many datagrams as needed per update. A message fits
-//!   when the datagram's bits + its header estimate + its payload bits stay within
-//!   (MTU − 28) × 8; MTU 576 (samp never calls SetMTUSize);
-//! * resend timeout (A 0x10045c00 / 0x10044070): 3 × ping, ping = the last accepted internal-ping
-//!   sample (at least 30 ms; 500 when above the timeout), 1000 before the first sample, so
-//!   3000 ms. No backoff: a resent message is due again one timeout later;
-//! * split packets (A 0x10046b00 / 0x10045800): a message whose payload exceeds
-//!   MTU − 28 − ⌈header estimate / 8⌉ bytes is cut into pieces of that size; the first piece keeps
-//!   the message number, the others take the next numbers, all share the ordering index;
-//! * internal ping (A 0x10041450): the application pings once on `0x22`; the update cycle pings
-//!   again (5 s apart) only while no pong has been accepted yet, so normally once more right
-//!   after connecting and never again. Pings are answered with a pong; both go out with the
-//!   NEXT update (they are handled after the update in RakNet's cycle);
-//! * keep-alive (A 0x10041853): a reliable `0x17` (low priority) when connected, nothing awaits an
-//!   ack and more than 5000 ms passed since the last reliable send; the next base is moved to
-//!   now + timeout, i.e. 15 s apart while idle (send A 0x1003cbf9);
-//! * duplicate filter (A 0x10049250, docs/re/handshake.md §3): a window over the peer's single
-//!   16-bit message-number counter (every message, reliable or not), with a base and holes that are
-//!   given up after [`TIMEOUT`]; robust across the counter's wrap;
-//! * dead connection ([`Connection::is_dead`]): the "ack timer" starts when a reliable message
-//!   is first transmitted while none is awaiting an ack, is moved to the receive time of every
-//!   ack that leaves messages pending and is cleared when none are; the connection is dead when
-//!   messages are pending and the timer is more than 10000 ms old (A 0x10049b8b, 0x10045b70,
-//!   0x10049390).
-//!
-//! Not reproduced: RakNet's bandwidth bucket (A 0x10049ae0; floor 144400 bit/s, a 1-second
-//! burst): the client's traffic stays far below it (docs/phase3/net6-notes.md).
+//! Feed received datagrams to [`Connection::handle_datagram`], queue application messages with
+//! [`Connection::send`], and call [`Connection::poll`] (one reliability-layer update; samp runs one
+//! every 2 ms) to get the plaintext datagrams to send; client→server datagrams then go through
+//! `cipher::encrypt`. RakNet's bandwidth limiter is not reproduced: the client stays far below it.
+//! Spec: docs/re/handshake.md §3; samp.dll addresses in docs/re/addresses/samp-proto.md.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -48,35 +13,36 @@ use std::time::{Duration, Instant};
 use crate::bitstream::BitWriter;
 use crate::raknet::{AckRange, Datagram, Message, Ordering, Reliability, Split, ack_ranges, id};
 
-/// RakNet's default MTU (A 0x1003de50); samp never changes it.
+/// RakNet's default MTU; samp never changes it. Mirrors samp.dll 0x1003de50.
 pub const MTU: usize = 576;
 /// IP + UDP header bytes RakNet subtracts from the MTU.
 const UDP_HEADER: usize = 28;
-/// Message bits a datagram may carry: (MTU − 28) × 8 (A 0x10048070).
+/// Message bits one datagram may carry.
 const DATAGRAM_BITS: usize = (MTU - UDP_HEADER) * 8;
-/// Ack bits a datagram may carry (MTU × 8 − 0xE1, A 0x10048070).
+/// Ack-list bits one datagram may carry.
 const ACK_BITS: usize = MTU * 8 - 0xE1;
-/// Keep-alive after more than this many ms since the last reliable send (A 0x10041853 `5000 <`),
-/// compared on RakNet's whole-millisecond clock (µs time / 1000, A 0x1003cc13 / 0x10041660).
+/// A keep-alive is sent after more than this many ms without a reliable send, compared on
+/// RakNet's whole-millisecond clock (microseconds / 1000). Mirrors samp.dll 0x10041853.
 const KEEP_ALIVE_AFTER_MS: u64 = 5000;
-/// RakNet's timeout (default of the reliability layer, A 0x10048e10; samp never changes it): the
-/// dead-connection limit, and the extra delay of the keep-alive after a keep-alive.
+/// RakNet's timeout (samp keeps the default): the dead-connection limit, and the extra delay
+/// added after each keep-alive, so idle keep-alives are 15 s apart.
 pub const TIMEOUT: Duration = Duration::from_millis(10000);
-/// The update cycle's ping interval while no pong was accepted (A 0x10041a2c `+ 5000`).
+/// How often the update cycle pings while no pong has been accepted yet.
 const PING_INTERVAL: Duration = Duration::from_millis(5000);
-/// Ping before the first sample (reliability-layer reset A 0x10047780: SetPing(1000)).
+/// The reliability layer's ping before the first sample (so the first resend timeout is 3 s).
 const INITIAL_PING_MS: u32 = 1000;
-/// Lowest ping the resend timeout uses (A 0x10045c00).
+/// Lowest ping the resend timeout uses.
 const MIN_PING_MS: u32 = 30;
-/// Ping used when a sample exceeds the timeout (A 0x10045c00).
+/// Ping used when a sample exceeds [`TIMEOUT`].
 const OVER_TIMEOUT_PING_MS: u32 = 500;
-/// Pong samples at or above this are ignored unless their ring slot is empty (A 0x10041ee0).
+/// Pong samples at or above this are ignored unless their ring slot is empty.
 const MAX_PING_SAMPLE_MS: u32 = 1200;
-/// Samples in the ping ring (A 0x10041f40).
+/// Samples in the ping ring.
 const PING_RING: usize = 5;
 /// Largest forward distance (16-bit wrapping) of a received message number from the window base
-/// that still counts as new; anything further is behind the base, i.e. a duplicate (A 0x10049250).
+/// that still counts as new; anything further lies behind the base and is a duplicate.
 const MAX_AHEAD: u16 = 0x8000;
+/// Ordering / sequencing channels per connection.
 const CHANNELS: usize = 32;
 
 /// RakNet send priorities (PacketPriority).
@@ -120,7 +86,7 @@ pub struct Connection {
     deferred: Vec<(Vec<u8>, Reliability, u8)>,
     /// Message numbers to acknowledge in the next datagram.
     acks_due: Vec<u16>,
-    /// Received-number window (A 0x10049250): the lowest number not yet accounted for ...
+    /// Duplicate-filter window: the lowest received message number not yet accounted for ...
     recv_base: u16,
     /// ... and one slot per number from `recv_base` on: `None` = received, `Some(t)` = a hole that
     /// is given up at `t` (receive time + [`TIMEOUT`]).
@@ -129,7 +95,7 @@ pub struct Connection {
     ordered_buffer: [HashMap<u16, Delivered>; CHANNELS],
     sequenced_last: [Option<u16>; CHANNELS],
     splits: HashMap<u16, Vec<Option<Delivered>>>,
-    /// RakNet's "connected" state (8): keep-alives and the update cycle's ping run only then.
+    /// RakNet's "connected" state: keep-alives and the update cycle's ping run only then.
     connected: bool,
     /// RakNet ms ([`Self::clock_ms`]) of the update that took the last reliable message into the
     /// layer (keep-alive base; lies in the future after a keep-alive).
@@ -180,8 +146,9 @@ fn newer(a: u16, b: u16) -> bool {
     (a.wrapping_sub(b) as i16) > 0
 }
 
-/// RakNet's per-message header estimate in bits (A 0x10043ec0): 4 reliability bits + 32,
-/// + 21 for ordered/sequenced messages, + 97 when split, else + 17.
+/// RakNet's estimate of a message header in bits, used to decide what fits in a datagram:
+/// 4 reliability bits + 32, + 21 for ordered/sequenced messages, + 97 when split, else + 17.
+/// Mirrors samp.dll 0x10043ec0.
 fn header_estimate(reliability: Reliability, split: bool) -> usize {
     let base = 4 + if reliability.is_ordered_or_sequenced() { 0x35 } else { 0x20 };
     base + if split { 0x61 } else { 0x11 }
@@ -236,7 +203,7 @@ impl Connection {
         }
     }
 
-    /// RakNet's state 8 (connected, after `0x22`): keep-alives start and the update cycle pings
+    /// Enter RakNet's connected state (after `0x22`): keep-alives start and the update cycle pings
     /// from the next update on while no pong has been accepted.
     pub fn mark_connected(&mut self, now: Instant) {
         if !self.connected || self.next_ping.is_none() {
@@ -261,7 +228,7 @@ impl Connection {
         self.ping_ms
     }
 
-    /// Resend timeout: 3 × ping (A 0x10044070).
+    /// Resend timeout: 3 × ping, with no backoff. Mirrors samp.dll 0x10044070.
     pub fn resend_timeout(&self) -> Duration {
         Duration::from_millis(u64::from(self.ping_ms) * 3)
     }
@@ -275,7 +242,7 @@ impl Connection {
     /// Queue a message with an explicit RakNet priority (0..=3, see [`priority`]).
     pub fn send_with(&mut self, data: &[u8], bit_len: usize, reliability: Reliability, channel: u8, prio: u8) {
         if bit_len == 0 {
-            return; // RakNet drops empty sends (A 0x10046b2e).
+            return; // RakNet drops empty sends.
         }
         let prio = usize::from(prio).min(PRIORITIES - 1);
         let c = usize::from(channel) % CHANNELS;
@@ -301,7 +268,9 @@ impl Connection {
             self.enqueue(msg, prio);
             return;
         }
-        // Split (A 0x10045800): pieces of MTU − 28 − ⌈split header estimate / 8⌉ bytes.
+        // Too large for one datagram: split into pieces of MTU − 28 − ⌈split header estimate / 8⌉
+        // bytes. The first piece keeps the message number, the others take the next numbers, and
+        // all share one ordering index.
         let piece = MTU - UDP_HEADER - header_estimate(reliability, true).div_ceil(8);
         let count = (bytes - 1) / piece + 1;
         let split_id = self.next_split_id;
@@ -360,7 +329,7 @@ impl Connection {
                 } else {
                     self.stats.duplicate_acks_received += 1;
                 }
-                // Every acked number moves the ack timer (A 0x10049390).
+                // Every acked number moves the ack timer, or clears it when nothing is pending.
                 self.ack_timer = if self.awaiting_ack() > 0 { Some(now) } else { None };
                 if n == max {
                     break;
@@ -385,12 +354,13 @@ impl Connection {
     }
 
     /// Duplicate filter over every received message number, reliable or not (the sender numbers all
-    /// its messages from one 16-bit counter). Rule of A 0x10049250: with d = number − base (wrapping),
+    /// its messages from one 16-bit counter). With d = number − base (wrapping),
     /// d == 0 takes the base slot; 1 ≤ d ≤ 0x8000 is new unless its slot was already received (a
     /// number beyond the window opens holes up to it, each given up [`TIMEOUT`] after it opened);
     /// d > 0x8000 lies behind the base and is dropped. The base then advances over received slots
     /// and expired holes. Unlike a set of recently seen numbers this stays correct across the
     /// counter's wrap (every 65536 messages), so a new message is never taken for an old one.
+    /// Mirrors samp.dll 0x10049250.
     fn accept_number(&mut self, number: u16, now: Instant) -> bool {
         let d = number.wrapping_sub(self.recv_base);
         if d == 0 {
@@ -471,7 +441,9 @@ impl Connection {
         }
     }
 
-    /// Returns true if the message was internal and consumed.
+    /// Answers internal pings and applies pong samples. Returns true if the message was internal
+    /// and consumed. Replies are deferred: RakNet handles received messages after its update, so
+    /// the pong goes out with the next update.
     fn handle_internal(&mut self, d: &Delivered, now: Instant) -> bool {
         match d.data.as_slice() {
             [id::INTERNAL_PING, a, b, c, e] if d.bit_len == 40 => {
@@ -491,8 +463,9 @@ impl Connection {
         }
     }
 
-    /// A pong's round-trip sample (A 0x10041ea0): accepted when its ring slot is empty, or when
-    /// it is below 3 × the slot's sample and below 1200 ms; then it becomes the layer's ping.
+    /// A pong's round-trip sample: accepted when its ring slot is empty, or when it is below
+    /// 3 × the slot's sample and below 1200 ms; then it becomes the layer's ping (at least 30 ms,
+    /// 500 ms when above the timeout). Mirrors samp.dll 0x10041ea0.
     fn ping_sample(&mut self, sample: u32) {
         let slot = u32::from(self.ping_ring[self.ping_slot]);
         if slot != 0 && !(sample < slot * 3 && sample < MAX_PING_SAMPLE_MS) {
@@ -516,7 +489,10 @@ impl Connection {
         self.send_with(&p, p.len() * 8, Reliability::Unreliable, 0, priority::SYSTEM);
     }
 
-    /// One reliability-layer update: the plaintext datagrams to send now.
+    /// One reliability-layer update: the plaintext datagrams to send now. Also sends the
+    /// keep-alive (a reliable `0x17`, low priority) when connected, nothing awaits an ack and more
+    /// than 5 s passed since the last reliable send, and the update cycle's ping while no pong has
+    /// been accepted. Mirrors samp.dll 0x10049ae0.
     pub fn poll(&mut self, now: Instant) -> Vec<Vec<u8>> {
         // Reliable messages queued since the last update count as sent at this update's time
         // (RakNet stores the cycle's time, in whole ms, when it takes a buffered send).
@@ -553,7 +529,9 @@ impl Connection {
         datagrams
     }
 
-    /// One datagram (A 0x10048070).
+    /// Builds one datagram: pending acks first, then due resends oldest first (one that does not
+    /// fit ends the datagram), then new messages by priority, FIFO within a priority (one that does
+    /// not fit waits and the next priority is tried). Mirrors samp.dll 0x10048070.
     fn generate(&mut self, now: Instant) -> Datagram {
         let mut dg = Datagram::default();
         let mut bits = 1usize;
@@ -661,8 +639,10 @@ impl Connection {
         self.outgoing.values().filter(|p| p.sent && p.msg.reliability.is_reliable()).count()
     }
 
-    /// RakNet's dead-connection test (A 0x10049b8b): messages await an ack and the ack timer is
-    /// more than [`TIMEOUT`] old. The caller reports the connection lost (`0x21`).
+    /// RakNet's dead-connection test: messages await an ack and the ack timer is more than
+    /// [`TIMEOUT`] old. The timer starts when a reliable message is sent while none awaits an ack,
+    /// moves to the receive time of every ack that leaves messages pending, and is cleared when
+    /// none are. The caller then reports the connection lost (`0x21`). Mirrors samp.dll 0x10049b8b.
     pub fn is_dead(&self, now: Instant) -> bool {
         self.awaiting_ack() > 0 && self.ack_timer.is_some_and(|t| now > t && now - t > TIMEOUT)
     }
@@ -788,8 +768,8 @@ mod tests {
     /// The sender numbers every message (syncs included) from one 16-bit counter, so it wraps every
     /// 65536 messages. A reliable ordered RPC whose number equals that of an RPC received one wrap
     /// earlier must still be delivered: one dropped as a "duplicate" leaves a hole in its ordering
-    /// channel and holds back every later RPC for good (the 2-hour derby soak lost all RPCs after
-    /// ~173000 messages that way). Here: 3 wraps of unreliable syncs with an RPC at irregular numbers
+    /// channel and holds back every later RPC for good. Here: 3 wraps of unreliable syncs with an RPC
+    /// at irregular numbers
     /// (about 1 in 40, from a fixed xorshift), so the numbers of later RPCs meet those of earlier ones.
     #[test]
     fn message_numbers_wrap_without_false_duplicates() {
@@ -992,8 +972,8 @@ mod tests {
         }
     }
 
-    /// Keep-alive after > 5 s without a reliable send, then 15 s apart while idle (A 0x10041853),
-    /// only while nothing awaits an ack.
+    /// Keep-alive after > 5 s without a reliable send, then 15 s apart while idle, only while
+    /// nothing awaits an ack.
     #[test]
     fn keep_alive_cadence() {
         let (mut a, mut b, t) = pair();
@@ -1031,8 +1011,8 @@ mod tests {
         assert_eq!(keep_alives(c.poll(ms(60_000))), 0);
     }
 
-    /// The 5 s rule runs on whole RakNet milliseconds: a send at 0.9 ms is "ms 0"; the
-    /// keep-alive is due at the first update in ms 5001 (5000.1 ms later), not at 5000.95 ms.
+    /// The 5 s rule runs on whole RakNet milliseconds: a send at 0.9 ms counts as ms 0, so the
+    /// keep-alive is due at the first update in ms 5001, not at 5000.95 ms.
     #[test]
     fn keep_alive_on_whole_milliseconds() {
         let (mut a, _, t) = pair();

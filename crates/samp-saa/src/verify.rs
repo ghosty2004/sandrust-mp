@@ -1,13 +1,14 @@
 //! Archive signature check: RSA-1024 / PKCS#1 v1.5 over a SHA-1 digest, with the
 //! digest placed in the padding block without an ASN.1 DigestInfo prefix (the
-//! CryptoAPI "no hash OID" form). Spec: `docs/re/samp-saa.md` §4.
+//! CryptoAPI "no hash OID" form). Spec: `docs/re/samp-saa.md`, "6. Signature".
 
 /// RSA public exponent of the archive key.
 pub const RSA_EXPONENT: u32 = 65_537;
 
 /// RSA-1024 modulus of the archive key, little-endian (CryptoAPI blob order).
-/// Source: PUBLICKEYBLOB at 0x100E9998 in samp.dll 0.3.7-R4 (both builds), stored
-/// XORed with 0xAA; this is the de-obfuscated modulus field (blob offset 20..148).
+/// samp.dll stores the key as a PUBLICKEYBLOB XORed with 0xAA (same address in both
+/// 0.3.7-R4 builds); this is its de-obfuscated modulus field (blob offset 20..148).
+/// Mirrors samp.dll 0x100E9998.
 pub const RSA_MODULUS_LE: [u8; 128] = [
     0xef, 0xd5, 0x47, 0x67, 0xa9, 0xa0, 0x80, 0x93, 0x52, 0x6b, 0x64, 0x1b, 0x36, 0x6f, 0x2c, 0xf0, 0x08, 0xb7, 0xa1,
     0x14, 0x4e, 0x5f, 0x5e, 0x0c, 0x48, 0xee, 0xb8, 0xac, 0x44, 0xe6, 0x6d, 0xe0, 0xdc, 0x13, 0x46, 0x46, 0xda, 0x6c,

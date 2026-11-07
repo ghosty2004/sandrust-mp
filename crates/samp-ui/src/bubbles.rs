@@ -1,22 +1,23 @@
-//! Chat bubbles above players (UR §11; UCA §59).
+//! Chat bubbles above players: one slot per player id, set by RPC 59, expired per frame.
+//! Specs: docs/re/subsystems/ui-rendering.md ("Chat bubbles") and ui-chat-audio.md
+//! ("59 SetPlayerChatBubble").
 
 use crate::colour::rgba_to_argb;
 use crate::text::{c_str, wrap_lines};
 
-/// Bubble slots (UR §11: 1004 slots of 0x118 bytes); RPC 59 accepts ids below this.
+/// Bubble slots (1004 slots of 0x118 bytes in samp); RPC 59 accepts ids below this.
 pub const SLOTS: usize = 1004;
-/// RPC 59 texts longer than this are ignored (UCA §59).
+/// RPC 59 texts longer than this are ignored.
 pub const MAX_TEXT_LEN: usize = 144;
-/// First argument of the wrap helper A 0x10017690 (UCA §59).
+/// First argument of samp's wrap helper: the line width. Mirrors samp.dll 0x10017690.
 pub const WRAP_WIDTH: usize = 36;
-/// Second argument of the wrap helper. Unknown (notes U-BUBBLE-WRAP): UCA believes it is
-/// the maximum line count; with ≤ 144 chars and 36-char lines that limit could never
-/// apply, so it is implemented as the look-back distance for a space, the same rule as
-/// the 72/12 player-chat wrap.
+/// Second argument of the wrap helper, used as the look-back distance for a space (the same
+/// rule as the 72/12 player-chat wrap). ui-chat-audio.md reads it as a maximum line count, but
+/// with ≤ 144 chars in 36-char lines such a limit could never apply.
 pub const WRAP_BACKTRACK: usize = 12;
-/// Draw flags `DT_CENTER | DT_NOCLIP` (UR §11).
+/// Draw flags `DT_CENTER | DT_NOCLIP`.
 pub const DRAW_FLAGS: u32 = 0x101;
-/// Head bone used as the anchor (UR §11).
+/// Head bone used as the anchor.
 pub const ANCHOR_BONE: u32 = 8;
 
 /// One active bubble.
@@ -39,7 +40,7 @@ impl Bubble {
     }
 
     /// Height above the head bone: `0.2 + 0.02·(lines − 1) + (0.065 + 0.0125·(lines − 1))·d`
-    /// with `d` the camera distance (UR §11).
+    /// with `d` the camera distance.
     pub fn anchor_raise(&self, camera_distance: f32) -> f32 {
         anchor_raise(self.lines, camera_distance)
     }
@@ -63,11 +64,11 @@ pub struct BubbleTarget {
     pub streamed_in_with_ped: bool,
     /// Player state ≠ 0.
     pub active_state: bool,
-    /// Distance from the local player (A 0x1009f120).
+    /// Distance from the local player. Mirrors samp.dll 0x1009f120.
     pub distance: f32,
 }
 
-/// The bubble pool (global A 0x1026e9f0).
+/// The bubble pool. Mirrors the samp.dll global at 0x1026e9f0.
 #[derive(Clone, Debug)]
 pub struct ChatBubbles {
     slots: Vec<Option<Bubble>>,
@@ -88,7 +89,7 @@ impl ChatBubbles {
         self.slots.get(usize::from(player)).and_then(Option::as_ref)
     }
 
-    /// RPC 59 (UCA §59): accepted if `player < 1004` (the caller checks that the
+    /// RPC 59: accepted if `player < 1004` (the caller checks that the
     /// player exists) and the text is ≤ 144 chars. Replaces any previous bubble.
     pub fn set(
         &mut self,

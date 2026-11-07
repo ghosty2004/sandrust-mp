@@ -13,7 +13,7 @@ pub enum Shape {
     /// Endless left-hand circle of this radius.
     Circle { radius: f32 },
     /// `straight` metres ahead, a 90° left turn of radius `turn_radius`, then
-    /// straight on (measurement profile P-BOT-DRIVE).
+    /// straight on.
     LineTurn { straight: f32, turn_radius: f32 },
 }
 

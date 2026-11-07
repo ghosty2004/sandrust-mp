@@ -1,5 +1,5 @@
 //! UDP transport: the per-port cipher and the unconnected cookie handshake
-//! (docs/re/handshake.md §1–§2).
+//! (docs/re/handshake.md, sections 1 "Connection establishment" and 2 "Datagram encryption").
 
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};

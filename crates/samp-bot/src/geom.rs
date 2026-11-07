@@ -1,8 +1,8 @@
 //! Small vector helpers and the GTA heading conventions.
 //!
 //! Heading `h` (radians, counter-clockwise from +y) faces `(-sin h, cos h)`.
-//! Heading ↔ sync quaternion: `h ↔ (cos h/2, 0, 0, −sin h/2)` (verified live,
-//! docs/re/subsystems/remote-control-onfoot.md).
+//! Heading ↔ sync quaternion: `h ↔ (cos h/2, 0, 0, −sin h/2)`
+//! (docs/re/subsystems/remote-control-onfoot.md).
 
 use samp_proto::types::{Quat, Vec3};
 

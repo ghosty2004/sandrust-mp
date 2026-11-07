@@ -1,20 +1,17 @@
 //! Quantised encodings used by the compact server→client sync forms.
 //!
-//! Spec: docs/re/subsystems/remote-players-sync.md §0.2. The client only ever
-//! *decodes* these (it sends raw structs); the encoders here are the implied
-//! inverses (stock RakNet behaviour) and are marked as such. They exist so a
-//! test harness or server tool can build S→C packets and round-trip them.
-//!
-//! The wire types keep the quantised values exactly as transmitted (so a
-//! decoded packet re-encodes to the same bits); conversion to floats uses the
-//! client's own constants.
+//! The client only ever *decodes* these (it sends raw structs); the encoders here are the implied
+//! inverses (stock RakNet behaviour), marked as such, so tests and server tools can build S→C
+//! packets. The wire types keep the quantised values exactly as transmitted (a decoded packet
+//! re-encodes to the same bits); conversion to floats uses the client's own constants.
+//! Spec: docs/re/subsystems/remote-players-sync.md §0.2.
 
 use crate::bitstream::{BitReader, BitWriter};
 use crate::types::{Quat, Vec3};
 
-/// `1/65535` as the client's quaternion reader uses it (A 0x10009680).
+/// `1/65535` as the client's quaternion reader uses it. Mirrors samp.dll 0x10009680.
 pub const QUAT_COMPONENT_SCALE: f32 = 1.525_902_2e-5;
-/// `1/32767.5` as the client's compressed-vector reader uses it (A 0x1000a3b0).
+/// `1/32767.5` as the client's compressed-vector reader uses it. Mirrors samp.dll 0x1000a3b0.
 pub const VEC_COMPONENT_SCALE: f32 = 3.051_804_4e-5;
 /// Magnitude gate of the compressed vector: at or below it no components follow.
 pub const VEC_MAGNITUDE_EPSILON: f32 = 1e-5;

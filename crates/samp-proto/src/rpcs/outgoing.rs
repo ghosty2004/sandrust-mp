@@ -192,9 +192,9 @@ mod tests {
         (184, 9),
     ];
 
-    /// Sends the table lacks (docs/re/README.md "Gaps" 1): 27 (A 0x1006dcd0,
-    /// world-entities.md §27) and the dormant variable-ID site A 0x1000d800
-    /// (181/182, session-misc.md).
+    /// Sends the rpc-ids.md table lacks (docs/re/README.md, "Gaps"): 27
+    /// (world-entities.md §27) and 181/182 from the dormant variable-ID send
+    /// site (session-misc.md). Send sites: docs/re/addresses/samp-proto-rpcs.md.
     const MISSING_FROM_TABLE: [(u8, u32); 3] = [(27, 9), (181, 9), (182, 9)];
 
     /// C→S RPCs seen in a capture of the original R4 client

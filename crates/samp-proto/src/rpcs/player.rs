@@ -973,30 +973,29 @@ incoming! {
 
 outgoing! {
     Player;
-    /// RPC 128: send site A 0x100058d0 / B 0x100058c0, reliability 8
-    /// (RELIABLE), priority 1, channel 0 (player-state.md "128
-    /// PlayerRequestClass (C→S)"). **Captured**: the original client sent it
-    /// rel 8 (captures/selftest.log; channel/priority are not on the wire for
-    /// rel 8).
+    /// RPC 128: reliability 8 (RELIABLE), priority 1, channel 0
+    /// (player-state.md "128 PlayerRequestClass (C→S)"). Mirrors samp.dll
+    /// 0x100058d0.
     PlayerRequestClass => Reliable;
-    /// RPC 129: send site A/B 0x10003b60, reliability 8, priority 1, channel 0
-    /// (player-state.md "129 PlayerRequestSpawn (C→S)"). **Captured** rel 8.
+    /// RPC 129: reliability 8 (RELIABLE), priority 1, channel 0
+    /// (player-state.md "129 PlayerRequestSpawn (C→S)"). Mirrors samp.dll
+    /// 0x10003b60.
     PlayerRequestSpawn => Reliable;
-    /// RPC 52: sent from the spawn routine A 0x10003c20 / B 0x10003c10,
-    /// reliability 9 (RELIABLE_ORDERED), priority 1, channel 0 (player-state.md
-    /// "Local Spawn routine and 52 PlayerSpawn (C→S)"). **Captured** rel 9 ch 0.
+    /// RPC 52: sent at the end of the local spawn routine, reliability 9
+    /// (RELIABLE_ORDERED), priority 1, channel 0 (player-state.md "Local Spawn
+    /// routine and 52 PlayerSpawn (C→S)"). Mirrors samp.dll 0x10003c20.
     PlayerSpawn => ReliableOrdered;
-    /// RPC 53: send site A 0x10005810 / B 0x10005800, reliability 9, priority 1,
-    /// channel 0 (player-state.md "53 OnPlayerDeath (C→S)"). Static analysis;
-    /// not yet captured.
+    /// RPC 53: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (player-state.md "53 OnPlayerDeath (C→S)"). Mirrors samp.dll 0x10005810.
     OnPlayerDeath => ReliableOrdered;
-    /// RPC 118: send site A 0x10005970 / B 0x10005960, reliability 8,
-    /// priority 1, channel 0 (player-state.md "118 OnPlayerInteriorChange
-    /// (C→S)"). Static analysis; not yet captured.
+    /// RPC 118: reliability 8 (RELIABLE), priority 1, channel 0
+    /// (player-state.md "118 OnPlayerInteriorChange (C→S)"). Mirrors samp.dll
+    /// 0x10005970.
     OnPlayerInteriorChange => Reliable;
-    /// RPC 115: send sites A 0x100068a0 / 0x100069b0 (B 0x10006890 /
-    /// 0x100069a0), both reliability 9, priority 1, channel 0 (player-state.md
-    /// "115 OnPlayerGiveTakeDamage (C→S)"). Static analysis; not yet captured.
+    /// RPC 115: sent from two sites (damage given, damage taken), both
+    /// reliability 9 (RELIABLE_ORDERED), priority 1, channel 0 (player-state.md
+    /// "115 OnPlayerGiveTakeDamage (C→S)"; both sites in
+    /// docs/re/addresses/samp-proto-rpcs.md).
     OnPlayerGiveTakeDamage => ReliableOrdered;
 }
 

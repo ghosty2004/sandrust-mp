@@ -1,7 +1,7 @@
 //! Client send policy for sync packets, as constants only (no timers).
 //!
 //! Spec: docs/re/subsystems/remote-players-sync.md §0.1 (send parameters) and
-//! §0.4 (send-rate machinery, local player tick A 0x100074c0).
+//! §0.4 (send-rate machinery of the local player's tick).
 
 use super::ids;
 use crate::raknet::Reliability;

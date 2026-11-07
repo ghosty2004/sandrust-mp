@@ -907,25 +907,23 @@ impl Incoming {
 
 outgoing! {
     Vehicle;
-    /// RPC 26: sender A 0x10005AD0 / B 0x10005AC0, reliability 10
-    /// (RELIABLE_SEQUENCED), priority 1, channel 0 (vehicles.md "26
-    /// OnPlayerEnterVehicle (C→S)"). Static analysis; not yet captured.
+    /// RPC 26: reliability 10 (RELIABLE_SEQUENCED), priority 1, channel 0
+    /// (vehicles.md "26 OnPlayerEnterVehicle (C→S)"). Mirrors samp.dll
+    /// 0x10005AD0.
     OnPlayerEnterVehicle => ReliableSequenced;
-    /// RPC 154: sender A 0x10005BF0 / B 0x10005BE0, reliability 10, priority 1,
-    /// channel 0 (vehicles.md "154 OnPlayerExitVehicle (C→S)"). Static
-    /// analysis; not yet captured.
+    /// RPC 154: reliability 10 (RELIABLE_SEQUENCED), priority 1, channel 0
+    /// (vehicles.md "154 OnPlayerExitVehicle (C→S)"). Mirrors samp.dll
+    /// 0x10005BF0.
     OnPlayerExitVehicle => ReliableSequenced;
-    /// RPC 106 (C→S direction): sender A 0x10005DE0 / B 0x10005DD0, reliability
-    /// 8 (RELIABLE), priority 1, channel 0 (vehicles.md "106
-    /// SetVehicleDamageStatus"). Static analysis; not yet captured.
+    /// RPC 106 (C→S direction): reliability 8 (RELIABLE), priority 1, channel 0
+    /// (vehicles.md "106 SetVehicleDamageStatus"). Mirrors samp.dll 0x10005DE0.
     SetVehicleDamageStatus => Reliable;
-    /// RPC 136: sender A 0x1001F230 / B 0x1001F1E0, reliability 10, priority 1,
-    /// channel 0 (vehicles.md "136 VehicleDeath"). Static analysis; not yet
-    /// captured.
+    /// RPC 136: reliability 10 (RELIABLE_SEQUENCED), priority 1, channel 0
+    /// (vehicles.md "136 VehicleDeath"). Mirrors samp.dll 0x1001F230.
     VehicleDeath => ReliableSequenced;
-    /// RPC 96: sender A/B 0x10001CE0, reliability 10, priority 1, channel 0
-    /// (vehicles.md "96 SCMEvent (C→S)", player-state.md). Static analysis;
-    /// not yet captured.
+    /// RPC 96: reliability 10 (RELIABLE_SEQUENCED), priority 1, channel 0
+    /// (vehicles.md "96 SCMEvent (C→S)", player-state.md). Mirrors samp.dll
+    /// 0x10001CE0.
     OnPlayerScmEvent => ReliableSequenced;
 }
 

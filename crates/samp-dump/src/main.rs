@@ -8,7 +8,7 @@
 //! actions can be compared with `diff`. `--raw` keeps transport details.
 //!
 //! Client→server datagrams are de-obfuscated with the port-keyed cipher
-//! (docs/re/handshake.md §2); server→client datagrams are plaintext.
+//! (docs/re/handshake.md, "2. Datagram encryption / obfuscation"); server→client datagrams are plaintext.
 
 mod capture;
 

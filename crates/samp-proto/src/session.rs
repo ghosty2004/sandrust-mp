@@ -124,11 +124,11 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
     out
 }
 
-/// samp's client serial (handshake.md §5, A 0x1005ffa0): SHA-1 of `input` (the string at game address
-/// 0x00C9236C, without its NUL), the five state words taken in memory order (little-endian), each byte's
-/// nibbles rewritten so that the larger 2-bit half is high, 40 uppercase hex digits, × 1001 in base 16.
-/// Verified against the original's RPC 25 (`orig-20261105-064601`: input
-/// `sers\<user>\Documents\GTA San Andreas User Files`).
+/// samp's client serial: SHA-1 of `input` (GTA's user-files path from its fifth character on, e.g.
+/// `sers\<user>\Documents\GTA San Andreas User Files`, without its NUL), the five state words taken
+/// in memory order (little-endian), each byte's nibbles rewritten so that the larger 2-bit half is
+/// high, 40 uppercase hex digits, × 1001 in base 16 (docs/re/handshake.md §5, "Client serial").
+/// Mirrors samp.dll 0x1005ffa0.
 pub fn samp_serial(input: &[u8]) -> String {
     let d = sha1(input);
     let nib = |n: u8| {

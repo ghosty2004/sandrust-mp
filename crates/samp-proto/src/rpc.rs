@@ -6,7 +6,8 @@
 use crate::bitstream::{BitReader, BitWriter};
 use crate::raknet::{id, strip_timestamp};
 
-/// RPC IDs used so far (names follow open.mp's NetCode where one exists).
+/// RPC IDs the handshake and the bots refer to by name (names follow open.mp's NetCode); every
+/// RPC has a typed payload with its id in [`crate::rpcs`].
 pub mod ids {
     pub const PLAYER_CONNECT: u8 = 25;
     pub const CONNECTION_REJECTED: u8 = 130;
@@ -38,8 +39,7 @@ pub fn encode(rpc_id: u8, payload: &BitWriter) -> BitWriter {
     w.write_compressed_u32(payload.bit_len() as u32);
     w.write_bits_from(payload.as_bytes(), payload.bit_len());
     if payload.bit_len() == 0 {
-        // Observed quirk of the original sender: an empty payload is followed
-        // by a second compressed zero.
+        // The original sender writes a second compressed zero after an empty payload.
         w.write_compressed_u32(0);
     }
     w

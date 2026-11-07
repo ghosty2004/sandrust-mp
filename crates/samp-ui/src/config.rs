@@ -1,10 +1,8 @@
-//! `sa-mp.cfg` in the user files directory: read, typed values, rewrite, and the UI
-//! settings derived from it (UR §9; UCA local commands).
-//!
-//! The writer (A 0x10066080) rewrites the whole file with one line per key, using the
-//! format strings `"%s=%d\n"` (int), `"%s=\"%s\"\n"` (string) and `"%s=%f\n"` (float)
-//! (string table next to the writer, A ≈ 0x100e9b88). Reader: loader B 0x10066230,
-//! classifier B 0x10065f20 (static) and TRACE-8 "sa-mp.cfg" (measured).
+//! `sa-mp.cfg` in the user files directory: [`SampCfg`] reads it into typed values and rewrites it,
+//! and [`UiSettings`] holds the UI settings derived from it. Like samp's writer, every store
+//! rewrites the whole file with one line per key, using the format strings `"%s=%d\n"` (int),
+//! `"%s=\"%s\"\n"` (string) and `"%s=%f\n"` (float). Specs: docs/re/subsystems/ui-rendering.md
+//! ("Local commands — UI effects and persistence") and docs/phase3/trace-notes.md ("sa-mp.cfg").
 
 use crate::chat::PAGE_SIZE_SETTER_RANGE;
 use crate::text::atoi;
@@ -12,14 +10,14 @@ use crate::text::atoi;
 /// File name in the user files directory.
 pub const FILE_NAME: &str = "sa-mp.cfg";
 /// Line terminator on disk. The writer opens the file with mode `"w"` (text mode),
-/// so the CRT turns `\n` into CR LF [I] (notes U-CFG-CRLF).
+/// so the CRT turns `\n` into CR LF (inferred).
 pub const LINE_END: &[u8] = b"\r\n";
-/// Value `fpslimit` is created with when missing at start-up (UR §9).
+/// Value `fpslimit` is created with when missing at start-up.
 pub const DEFAULT_FPS_LIMIT: i32 = 48;
-/// `/fpslimit` and start-up accept this range (UR §9).
+/// `/fpslimit` and start-up accept this range.
 pub const FPS_LIMIT_RANGE: std::ops::RangeInclusive<i32> = 20..=90;
 
-/// Config keys (UR §9).
+/// Config keys.
 pub mod keys {
     pub const PAGESIZE: &str = "pagesize";
     pub const FONTSIZE: &str = "fontsize";
@@ -47,7 +45,7 @@ pub enum CfgValue {
 }
 
 impl CfgValue {
-    /// Integer view: ints as is, floats truncated, strings through `atoi` [I].
+    /// Integer view: ints as is, floats truncated, strings through `atoi` (inferred).
     pub fn as_int(&self) -> i32 {
         match self {
             Self::Int(v) => *v,
@@ -97,9 +95,9 @@ fn atof(v: &[u8]) -> f32 {
     std::str::from_utf8(&v[start..i]).ok().and_then(|t| t.parse::<f64>().ok()).unwrap_or(0.0) as f32
 }
 
-/// Value type (classifier B 0x10065f20): first and last character `"` → string (without the
-/// quotes), else a `.` anywhere → float (`atof`), else integer (`atol`). So an unquoted
-/// `fontface=Courier New` is the integer 0 (measured: the client later wrote `fontface=0`).
+/// Value type: first and last character `"` → string (without the quotes), else a `.` anywhere →
+/// float (`atof`), else integer (`atol`). So an unquoted `fontface=Courier New` is the integer 0,
+/// and the original writes it back as `fontface=0`. Mirrors samp.dll B 0x10065f20 (2019 build).
 fn parse_value(v: &[u8]) -> CfgValue {
     if v.len() >= 2 && v[0] == b'"' && v[v.len() - 1] == b'"' {
         return CfgValue::Str(v[1..v.len() - 1].to_vec());
@@ -118,11 +116,11 @@ fn parse_value(v: &[u8]) -> CfgValue {
 const LINE_BUF: usize = 255;
 
 impl SampCfg {
-    /// Parses the file like the loader B 0x10066230: per line (at most 255 bytes), leading
-    /// spaces/tabs skipped; lines starting with `;`, `[`, or empty are ignored; the key runs up
-    /// to a space, tab, `=`, `;` or the line end and is lower-cased; then optional blanks, a
-    /// required `=`, optional blanks, the value up to the line end with trailing spaces, tabs
-    /// and CRs removed; empty keys or values are ignored. A later duplicate key wins.
+    /// Parses the file like samp's loader: per line (at most 255 bytes), leading spaces/tabs are
+    /// skipped; lines starting with `;`, `[`, or empty are ignored; the key runs up to a space, tab,
+    /// `=`, `;` or the line end and is lower-cased; then optional blanks, a required `=`, optional
+    /// blanks, the value up to the line end with trailing spaces, tabs and CRs removed; empty keys
+    /// or values are ignored. A later duplicate key wins. Mirrors samp.dll B 0x10066230 (2019 build).
     pub fn parse(bytes: &[u8]) -> Self {
         let mut cfg = Self::default();
         let mut lines = Vec::new();
@@ -201,7 +199,7 @@ impl SampCfg {
         out
     }
 
-    /// Key lookup; keys are compared lower-cased (lookup B 0x10065c50 lower-cases the name).
+    /// Key lookup; keys are compared lower-cased, as samp's lookup lower-cases the name.
     pub fn get(&self, key: &str) -> Option<&CfgValue> {
         let key = key.to_ascii_lowercase();
         self.entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v)
@@ -234,13 +232,13 @@ impl SampCfg {
         self.entries.iter().map(|(k, _)| k.as_str())
     }
 
-    /// Keys the client creates at start-up (first frame A 0x100c4e4c; confirmed by a file the
-    /// original wrote: `fpslimit=48`, `multicore=1`, then `audioproxyoff=0` from the audio set-up):
-    /// - `fpslimit` = 48 when its integer value is 0 or the key is missing (UR §9);
+    /// Keys the client creates on its first frame (a file the original wrote has `fpslimit=48`,
+    /// `multicore=1`, then `audioproxyoff=0` from the audio set-up):
+    /// - `fpslimit` = 48 when its integer value is 0 or the key is missing;
     /// - `multicore` = 1 when the key is missing.
     ///
     /// `audioproxyoff` is not created here: samp adds it only after a successful `BASS_Init`
-    /// ([`Self::ensure_audio_proxy_key`], A 0x100664f2).
+    /// ([`Self::ensure_audio_proxy_key`]).
     ///
     /// Returns true if the file must be rewritten.
     pub fn apply_startup_defaults(&mut self) -> bool {
@@ -256,8 +254,8 @@ impl SampCfg {
         changed
     }
 
-    /// The audio set-up after a successful `BASS_Init` (A 0x10066480): `audioproxyoff` = 0 when the
-    /// key is missing (UCA §41). Returns true if the file must be rewritten.
+    /// The audio set-up after a successful `BASS_Init`: `audioproxyoff` = 0 when the key is missing.
+    /// Returns true if the file must be rewritten. Mirrors samp.dll 0x10066480.
     pub fn ensure_audio_proxy_key(&mut self) -> bool {
         if self.contains(keys::AUDIOPROXYOFF) {
             return false;
@@ -272,7 +270,7 @@ impl SampCfg {
 pub struct UiSettings {
     /// Chat page size (10..100 accepted from the file through the setter).
     pub page_size: u32,
-    /// `fontsize` (not range-checked at start-up, notes U-FONTSIZE-STARTUP).
+    /// `fontsize` (assumed not range-checked at start-up).
     pub font_size: i32,
     pub timestamps: bool,
     /// Frame limiter; `None` when the stored value is outside 20..90 (ignored).
@@ -290,8 +288,8 @@ pub struct UiSettings {
     pub ime: bool,
     pub multicore: bool,
     pub audio_proxy_off: bool,
-    /// `/togobjlight` flag (A 0x101166c0). Unknown (notes U-TOGOBJLIGHT): initial value
-    /// and visible effect.
+    /// `/togobjlight` flag; starts false (assumed), visible effect unknown. Mirrors the samp.dll
+    /// global at 0x101166c0.
     pub object_light_flag: bool,
     /// `/dl` vehicle debug labels.
     pub vehicle_labels: bool,
@@ -379,8 +377,9 @@ mod tests {
         assert_eq!(c2.keys().next(), Some("pagesize"));
     }
 
-    /// TRACE-8 "sa-mp.cfg": an unquoted string is the integer 0 and is rewritten as such;
-    /// quoted strings, floats, case-insensitive keys, comments and blanks (loader B 0x10066230).
+    /// Expected values from docs/phase3/trace-notes.md ("sa-mp.cfg"): an unquoted string is the
+    /// integer 0 and is rewritten as such; quoted strings, floats, case-insensitive keys, comments
+    /// and blanks.
     #[test]
     fn trace8_cfg_value_types_and_rewrite() {
         let mut c = SampCfg::parse(b"fontface=Courier New\r\n");
@@ -403,7 +402,7 @@ mod tests {
         let mut c = SampCfg::parse(b"pagesize=12\n");
         assert!(c.apply_startup_defaults());
         assert_eq!(c.get_int("fpslimit"), Some(48));
-        // Not before BASS started (A 0x10066480).
+        // Not before BASS started.
         assert!(!c.contains("audioproxyoff"));
         assert!(c.ensure_audio_proxy_key());
         assert_eq!(c.get_int("audioproxyoff"), Some(0));

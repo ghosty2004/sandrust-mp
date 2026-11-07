@@ -1,20 +1,18 @@
-//! Local `/commands` of the chat input: table, parser and effects (UCA "Local chat
-//! input and built-in commands", UR §9).
-//!
-//! Lookup is case-insensitive (A 0x10069710). The debug-only commands are registered
-//! only when the client runs with `-d`. Printed texts are the client's own strings;
-//! all command feedback is a type-4 info line (UR §7.1) except "I don't know that
-//! command." (type 8).
+//! Local `/commands` typed into the chat input: the table, the parser ([`LocalCommand::parse`])
+//! and [`execute`], which updates settings and returns host effects. Lookup is case-insensitive.
+//! Debug-only commands are registered only when the client runs with `-d`. Printed texts are the
+//! client's own strings. Specs: docs/re/subsystems/ui-chat-audio.md ("Local chat input and
+//! built-in commands") and ui-rendering.md ("Local commands — UI effects and persistence").
 
 use crate::chat::PAGE_SIZE_COMMAND_RANGE;
 use crate::config::{FPS_LIMIT_RANGE, SampCfg, UiSettings, keys};
 use crate::fonts::FONT_SIZE_RANGE;
 use crate::text::{atoi, scan_ints};
 
-/// Command names are shorter than this (UCA).
+/// Command names are shorter than this.
 pub const MAX_NAME_LEN: usize = 32;
 
-/// Printed texts (samp.dll string table, A ≈ 0x100e9e00..0x100ea2ec).
+/// Printed texts, as in samp.dll's string table.
 pub mod msg {
     pub const PAGESIZE_USAGE: &str = "pagesize [10-20] (lines)";
     pub const FONTSIZE_USAGE: &str = "Valid fontsize: -3 to 5";
@@ -32,7 +30,7 @@ pub mod msg {
     pub const SAVE_OPEN_FAILED: &str = "I can't open the savepositions.txt file for append.";
     pub const RAW_SAVED_IN_CAR: &str = "-> InCar pos saved";
     pub const RAW_SAVED_ON_FOOT: &str = "-> OnFoot pos saved";
-    /// Unknown (notes U-RS-ERROR): the only raw-save error string; assumed for both files.
+    /// The only raw-save error string in samp.dll; assumed for both raw files.
     pub const RAW_OPEN_FAILED: &str = "I can't open the rawvehicles.txt file for append.";
     pub const UNKNOWN_COMMAND: &str = "I don't know that command.";
     pub const USAGE_V: &str = "Usage: /v (vehicle id).";
@@ -50,15 +48,15 @@ pub mod msg {
     pub fn interior(v: u32) -> String {
         format!("Current Interior: {v}")
     }
-    /// Widescreen RPC 111 debug line (UCA §111).
+    /// Widescreen RPC 111 debug line.
     pub fn widescreen(v: i32) -> String {
         format!("Widescreen = {v}")
     }
-    /// Audio stream line (UCA §41), suppressed by `/audiomsg`.
+    /// Audio stream line (RPC 41), suppressed by `/audiomsg`.
     pub fn audio_stream(url: &str) -> String {
         format!("Audio stream: {url}")
     }
-    /// Screenshot feedback (UR §6.4).
+    /// Screenshot feedback.
     pub fn screenshot_taken(n: u32) -> String {
         format!("Screenshot Taken - sa-mp-{n:03}.png")
     }
@@ -97,7 +95,7 @@ pub enum CommandKind {
     SetTime,
 }
 
-/// Name → command, `true` = registered only in debug mode (UCA table).
+/// Name → command, `true` = registered only in debug mode.
 pub const TABLE: &[(&str, CommandKind, bool)] = &[
     ("quit", CommandKind::Quit, false),
     ("q", CommandKind::Quit, false),
@@ -258,13 +256,12 @@ pub enum Effect {
     Debug(DebugAction),
 }
 
-/// Type-4 line (helper A 0x10068070).
+/// Type-4 feedback line.
 fn info(s: impl Into<String>) -> Effect {
     Effect::Print(MessageKind::Info, s.into().into_bytes())
 }
 
-/// Type-8 line (helper A 0x100680f0). Which feedback string goes through which helper
-/// was read from the call after each string push in the 2021 build.
+/// Type-8 feedback line. Which feedback string is type 4 and which type 8 follows the 2021 build.
 fn debug(s: impl Into<String>) -> Effect {
     Effect::Print(MessageKind::Debug, s.into().into_bytes())
 }
@@ -274,8 +271,8 @@ fn persist(cfg: &mut SampCfg, out: &mut Vec<Effect>, key: &str, v: i32) {
     out.push(Effect::WriteConfig);
 }
 
-/// `AddStaticVehicle(...)` / `AddPlayerClass(...)` line of `/save` (format strings A ≈
-/// 0x100e9f78 / 0x100e9fcc). Floats `%.4f`, ints `%u`.
+/// `AddStaticVehicle(...)` / `AddPlayerClass(...)` line of `/save`, with samp's format strings:
+/// floats `%.4f`, ints `%u`.
 pub fn save_line(pos: &PlayerPosition, comment: &[u8]) -> Vec<u8> {
     let mut s = match *pos {
         PlayerPosition::InCar { model, x, y, z, heading, colour1, colour2 } => format!(
@@ -326,7 +323,7 @@ pub fn execute(cmd: &LocalCommand, settings: &mut UiSettings, cfg: &mut SampCfg,
     match cmd.kind {
         CommandKind::Quit => out.push(Effect::Quit { disconnect: game.connected() }),
         CommandKind::Save | CommandKind::RawSave => {
-            // Unknown (notes U-SAVE-NOPED): behaviour without a local ped; nothing is done.
+            // Assumed: without a local ped nothing is done.
             if let Some(pos) = game.position() {
                 let in_car = matches!(pos, PlayerPosition::InCar { .. });
                 let e = if cmd.kind == CommandKind::Save {
@@ -434,7 +431,7 @@ pub fn execute(cmd: &LocalCommand, settings: &mut UiSettings, cfg: &mut SampCfg,
         CommandKind::CmpStat => {}
         CommandKind::TestDw => out.push(Effect::FillTestDeathWindow),
         CommandKind::Vsel => out.push(Effect::Debug(DebugAction::VehicleSelector)),
-        // Unknown (notes U-DEBUGCMDS): argument checks of the debug commands.
+        // Assumed argument checks for the debug commands: usage text when the number is missing.
         CommandKind::V | CommandKind::Vehicle => match scan_ints(args, 1).first() {
             Some(&id) => out.push(Effect::Debug(DebugAction::SpawnVehicle(id))),
             None => out.push(debug(msg::USAGE_V)),

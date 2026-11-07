@@ -1,19 +1,11 @@
-//! Renderer-independent logic of the SA:MP 0.3.7-R4 client UI (milestone M4-core).
+//! Renderer-independent logic of the SA:MP 0.3.7-R4 client UI.
 //!
-//! This crate decides *what* the UI shows and *what* user input does; the in-game
-//! renderer (samp-client, milestones M4/M8a) only draws the result. No Windows or
-//! Direct3D dependency: everything here is host-testable.
-//!
-//! Specs (clean room, our own words):
-//! - `docs/re/subsystems/ui-rendering.md` (RE-5, primary; cited as "UR §n"),
-//! - `docs/re/subsystems/ui-chat-audio.md` (RPC payloads; cited as "UCA §n" or by
-//!   section name). Where RE-5 corrects UCA, RE-5 wins.
-//!
-//! Pixel metrics are pluggable: every layout function takes a [`fonts::TextMeasure`]
-//! so the renderer supplies real D3DX text sizes. Behaviour the specs mark unknown
-//! is implemented behind named constants listed in `docs/phase3/m4-core-notes.md`.
-//!
-//! Text is handled as raw bytes in the Windows ANSI code page, like the original.
+//! This crate decides *what* the UI shows and *what* user input does; the in-game renderer
+//! (samp-client) only draws the result. No Windows or Direct3D dependency, so everything here is
+//! host-testable. Specs: `docs/re/subsystems/ui-rendering.md` (layout and behaviour; wins where the
+//! two disagree) and `docs/re/subsystems/ui-chat-audio.md` (RPC payloads). Pixel metrics come from
+//! the renderer through [`fonts::TextMeasure`]; assumed behaviour is listed in
+//! `docs/phase3/m4-core-notes.md`. Text is raw bytes in the Windows ANSI code page, like the original.
 
 pub mod bubbles;
 pub mod chat;
@@ -64,7 +56,7 @@ impl Rect {
 
 /// C `round()` for the layout formulas (half away from zero).
 ///
-/// Unknown (notes U-ROUND): the original may use a different float→int conversion.
+/// Assumption: the original may use a different float→int conversion here.
 pub fn round_i(v: f64) -> i32 {
     v.round() as i32
 }

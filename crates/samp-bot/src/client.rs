@@ -101,8 +101,8 @@ impl Client {
                 }
                 w.write_u16(self.net.server.port());
                 self.conn.send_bits(&w, Reliability::Reliable, 0);
-                // Same order as the original client (docs/re/handshake.md §1,
-                // differential capture): ping, empty static data, keep-alive.
+                // Same order as the original client: ping, empty static data, keep-alive
+                // (docs/re/handshake.md, "1. Connection establishment at the UDP level").
                 self.conn.ping(Instant::now());
                 self.conn.send_bytes(&[id::RECEIVED_STATIC_DATA], Reliability::Reliable, 0);
                 self.conn.send_bytes(&[id::KEEP_ALIVE], Reliability::Reliable, 0);

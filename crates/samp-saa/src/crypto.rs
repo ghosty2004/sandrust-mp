@@ -1,7 +1,7 @@
 //! Primitive algorithms used by the archive: the word mask applied to directory
 //! fields, the name hash, and the chained XTEA variant. Spec: `docs/re/samp-saa.md`.
 
-/// XOR constant of the directory word mask (§3.2 of the spec). samp.dll stores it
+/// XOR constant of the directory word mask (docs/re/samp-saa.md, "4.2 Slot format"). samp.dll stores it
 /// split over two immediates (0x3D3E7 for the low 19 bits, 0xC107FFFF for the high 13
 /// bits); combined they are this single 32-bit value.
 pub const WORD_MASK_XOR: u32 = 0xC103_D3E7;
@@ -19,15 +19,15 @@ pub fn mask_word(y: u32) -> u32 {
     y.rotate_right(WORD_MASK_ROT) ^ WORD_MASK_XOR
 }
 
-/// XTEA delta. samp.dll keeps it masked (0x0CCF225C at 0x101027B4, unmasked with
-/// [`unmask_word`] on first use); the result is the usual golden-ratio constant.
+/// XTEA delta: the usual golden-ratio constant. samp.dll keeps it masked as 0x0CCF225C and
+/// unmasks it with [`unmask_word`] on first use. Mirrors samp.dll 0x101027B4.
 pub const XTEA_DELTA: u32 = 0x9E37_79B9;
 
-/// Number of XTEA cycles (0x101027B0 = 32).
+/// Number of XTEA cycles. Mirrors samp.dll 0x101027B0.
 pub const XTEA_ROUNDS: u32 = 32;
 
 /// Name hash: Bob Jenkins' 1996 "lookup2" hash with initial value 0x12345678.
-/// The golden-ratio seed is stored masked at 0x10102790 (same value as the XTEA delta).
+/// samp.dll stores the golden-ratio seed masked, like the XTEA delta. Mirrors samp.dll 0x10102790.
 pub fn name_hash(key: &[u8]) -> u32 {
     const INITVAL: u32 = 0x1234_5678;
     let mut a: u32 = XTEA_DELTA;
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn masked_constants_unmask_to_golden_ratio() {
-        // Values as stored in samp.dll (0x10102790 / 0x101027B4).
+        // The masked value samp.dll stores for both the hash seed and the XTEA delta.
         assert_eq!(unmask_word(0x0CCF_225C), XTEA_DELTA);
         // The split-immediate form used by samp is the same function.
         let x = 0xDEAD_BEEFu32;
@@ -180,7 +180,7 @@ mod tests {
     fn lookup2_known_values() {
         // The hash is case-sensitive; samp lowercases before hashing.
         assert_ne!(name_hash(b"main.scm"), name_hash(b"MAIN.SCM"));
-        // Values observed as directory keys in a genuine 0.3.7-R4 samp.saa.
+        // Directory keys of these names in a genuine 0.3.7-R4 samp.saa.
         assert_eq!(name_hash(b"main.scm"), 0xD83F_24DD);
         assert_eq!(name_hash(b"stream.ini"), 0x4633_BCEB);
         assert_eq!(name_hash(b"logo.png"), 0xBADD_EA6B);

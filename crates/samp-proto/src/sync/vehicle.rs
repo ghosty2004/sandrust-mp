@@ -10,8 +10,8 @@ use crate::types::{Quat, Vec3};
 // ---------------------------------------------------------------------------
 // 200 PlayerVehicleSync (driver)
 
-/// 200 PlayerVehicleSync (driver), client→server (spec §2 "200"; send A
-/// 0x10007080): `u8 200` + raw[63]; unreliable-sequenced, channel 1.
+/// 200 PlayerVehicleSync (driver), client→server (spec §2 "200"):
+/// `u8 200` + raw[63]; unreliable-sequenced, channel 1. Mirrors samp.dll 0x10007080.
 ///
 /// Client behaviour: sent every in-car interval only while the local vehicle
 /// id is valid (< 2000); one forced send on death while driving; identical
@@ -86,7 +86,7 @@ impl VehicleSync {
 raw_sync_packet!(VehicleSync, ids::VEHICLE_SYNC);
 
 /// 200 PlayerVehicleSync (driver), server→client compact form (spec §2 "200",
-/// S→C table; reader A 0x1000aa10). May carry a `0x28` timestamp prefix.
+/// S→C table). May carry a `0x28` timestamp prefix. Mirrors samp.dll 0x1000aa10.
 ///
 /// Wire: `u16 playerId`, `u16 vehicleId, leftRight, upDown, keys`, normalised
 /// quaternion, position raw[12], compressed velocity, `u16 vehicleHealth`,
@@ -170,7 +170,7 @@ impl SyncPacket for RemoteVehicleSync {
 impl RemoteVehicleSync {
     /// Build the compact form from a raw driver struct, the way a server would
     /// (presence bits for non-zero extra/trailer; vehicle health truncated and
-    /// saturated to u16; implied encoders). Not observed in the client.
+    /// saturated to u16; implied encoders, since the client never builds this form).
     pub fn from_raw(player_id: u16, s: &VehicleSync) -> Self {
         Self {
             player_id,
@@ -195,8 +195,8 @@ impl RemoteVehicleSync {
 // ---------------------------------------------------------------------------
 // 211 PlayerPassengerSync
 
-/// 211 PlayerPassengerSync (spec §2 "211"; send A 0x10005590): `u8 211` +
-/// raw[24]; unreliable-sequenced, channel 1, every in-car interval.
+/// 211 PlayerPassengerSync (spec §2 "211"): `u8 211` + raw[24];
+/// unreliable-sequenced, channel 1, every in-car interval. Mirrors samp.dll 0x10005590.
 ///
 /// Byte 2 packs `seat` (low 6 bits), `drive_by` (bit 6) and `cuffed` (bit 7).
 /// open.mp reads bytes 2–3 as one u16 and bytes 4–5 as its "percent pair",
@@ -258,10 +258,9 @@ impl PassengerSync {
 raw_sync_packet!(PassengerSync, ids::PASSENGER_SYNC);
 
 remote_raw_sync!(
-    /// 211 PlayerPassengerSync, server→client (reader A 0x10009d30): `u16
-    /// playerId` + raw[24] as [`PassengerSync`]; no timestamp handling. The
-    /// client takes the seat from `byte2 & 0x3f` and applies drive-by and cuff
-    /// state; it does not check timestamps for passengers.
+    /// 211 PlayerPassengerSync, server→client: `u16 playerId` + raw[24] as
+    /// [`PassengerSync`]; no timestamp handling. The client takes the seat from
+    /// `byte2 & 0x3f` and applies drive-by and cuff state. Mirrors samp.dll 0x10009d30.
     RemotePassengerSync,
     PassengerSync
 );
@@ -269,8 +268,8 @@ remote_raw_sync!(
 // ---------------------------------------------------------------------------
 // 209 PlayerUnoccupiedSync
 
-/// 209 PlayerUnoccupiedSync (spec §2 "209"; send A 0x10004d30): `u8 209` +
-/// raw[67]; unreliable-sequenced, channel 1.
+/// 209 PlayerUnoccupiedSync (spec §2 "209"): `u8 209` + raw[67];
+/// unreliable-sequenced, channel 1. Mirrors samp.dll 0x10004d30.
 ///
 /// `seat` is 0 when nobody is in the car, `k + 1` when the local player sits
 /// in passenger seat `k`. `roll` is the vehicle matrix right vector and
@@ -321,7 +320,7 @@ impl UnoccupiedSync {
 raw_sync_packet!(UnoccupiedSync, ids::UNOCCUPIED_SYNC);
 
 remote_raw_sync!(
-    /// 209 PlayerUnoccupiedSync, server→client (reader A 0x10009a40): `u16
+    /// 209 PlayerUnoccupiedSync, server→client (mirrors samp.dll 0x10009a40): `u16
     /// playerId` + raw[67] as [`UnoccupiedSync`]. Client validation (not
     /// applied here): vehicle 1..1999, exists, no driver, not towed; roll and
     /// direction components in [−1, 1]; position x, y in (−20000, 20000), z in
@@ -334,12 +333,12 @@ remote_raw_sync!(
 // ---------------------------------------------------------------------------
 // 210 PlayerTrailerSync
 
-/// 210 PlayerTrailerSync (spec §2 "210"; send A 0x100053d0): `u8 210` +
-/// raw[54]; unreliable-sequenced, channel 1, sent right after each 200 while
-/// a trailer is attached; duplicate suppression as for 200.
+/// 210 PlayerTrailerSync (spec §2 "210"): `u8 210` + raw[54];
+/// unreliable-sequenced, channel 1, sent right after each 200 while a trailer
+/// is attached; duplicate suppression as for 200. Mirrors samp.dll 0x100053d0.
 ///
-/// The quaternion is (w, x, y, z), normalised. open.mp's component order for
-/// this VEC4 could not be checked (SDK absent); the client expects w first.
+/// The quaternion is (w, x, y, z), normalised; the client expects w first
+/// (open.mp's component order for this field is unverified).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TrailerSync {
     pub trailer_id: u16,
@@ -374,7 +373,7 @@ impl TrailerSync {
 raw_sync_packet!(TrailerSync, ids::TRAILER_SYNC);
 
 remote_raw_sync!(
-    /// 210 PlayerTrailerSync, server→client (reader A 0x10009e20): `u16
+    /// 210 PlayerTrailerSync, server→client (mirrors samp.dll 0x10009e20): `u16
     /// playerId` + raw[54] as [`TrailerSync`]. Applied only if the remote
     /// player has a vehicle and the trailer id (1..1999) is a towable model.
     RemoteTrailerSync,

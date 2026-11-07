@@ -1,33 +1,18 @@
-//! RakNet-style Huffman string compression ("compressed string", cstr).
+//! RakNet-style Huffman string compression ("compressed string", cstr), used by dialog bodies
+//! (RPC 61, client buffer 4096), 3D text labels (RPC 36, 2048) and object material text (44/84, 2048).
 //!
-//! Spec: docs/re/subsystems/ui-chat-audio.md "Shared: compressed string" and
-//! docs/re/subsystems/world-entities.md ("cstr"). Used by ShowDialog (61, body,
-//! client buffer 4096), PlayerShowTextLabel (36, text, 2048) and object
-//! material text (44/84, 2048).
-//!
-//! Wire format: a compressed u16 bit count, then that many Huffman-coded bits
-//! (MSB-first), one code per output byte. The encoder pads its output to a
-//! whole number of bytes (counted from the start of the coded bits, not from
-//! the start of the enclosing stream) with a *prefix* of a longer code, so the
-//! padding never decodes to a byte; the bit count includes that padding.
-//!
-//! Tree: built from a fixed 256-entry frequency table (A 0x10101de8; entries
-//! 128..255 are zero), zero weights replaced by 1. Construction keeps a list
-//! of nodes sorted by ascending weight. A node is inserted *before* the first
-//! node whose weight is greater than or equal to its own (i.e. after all
-//! strictly lighter nodes), so among equal weights the most recently inserted
-//! node comes first. Leaves are inserted in byte order 0..=255. Then the two
-//! front nodes are repeatedly removed: the first becomes the 0-branch, the
-//! second the 1-branch, and their parent (sum of weights) is inserted back by
-//! the same rule. The tie-break was confirmed against the client's insertion
-//! routine (A 0x10026ea0: advances while the listed weight is strictly less)
-//! and by decoding live open.mp traffic (see the golden tests below).
+//! Wire format: a compressed u16 bit count, then that many Huffman-coded bits (MSB-first), one
+//! code per byte. The encoder pads to whole bytes (counted from the start of the coded bits) with a
+//! prefix of a longer code, so the padding never decodes to a byte; the bit count includes it.
+//! Entry points: [`encode`], [`decode`]. Spec: docs/re/subsystems/ui-chat-audio.md "Shared:
+//! compressed string" and docs/re/subsystems/world-entities.md ("cstr").
 
 use std::sync::OnceLock;
 
 use crate::bitstream::{BitReader, BitWriter};
 
-/// Byte frequencies for values 0..=127 (spec table; 128..=255 are all 0).
+/// Byte frequencies the Huffman tree is built from, for values 0..=127 (128..=255 are all 0).
+/// Interop constant. Mirrors samp.dll 0x10101de8.
 const FREQUENCIES_LOW: [u32; 128] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 722, 0, 0, 2, 0, 0, //
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
@@ -64,12 +49,18 @@ impl Tree {
         self.children.len() - 1
     }
 
+    /// Builds the tree from [`FREQUENCIES_LOW`], zero weights replaced by 1. Nodes are kept in a
+    /// list sorted by ascending weight; a node is inserted before the first node whose weight is
+    /// greater than or equal to its own, so among equal weights the most recently inserted comes
+    /// first. Leaves go in byte order 0..=255; then the two front nodes are removed repeatedly
+    /// (first = 0-branch, second = 1-branch) and their parent (sum of weights) is inserted by the
+    /// same rule. This tie-break matches the client's insertion routine and decodes live open.mp
+    /// traffic (see the golden tests below).
     fn build() -> Self {
         let mut weights: Vec<u32> = (0..256).map(|b| FREQUENCIES_LOW.get(b).copied().unwrap_or(0).max(1)).collect();
         let mut children: Vec<Option<[u16; 2]>> = vec![None; 256];
 
-        // Sorted (ascending weight) list of node indices; see module docs for
-        // the insertion rule.
+        // Sorted (ascending weight) list of node indices; see above for the insertion rule.
         let mut list: Vec<usize> = Vec::with_capacity(256);
         let insert = |list: &mut Vec<usize>, weights: &[u32], node: usize| {
             let at = list.partition_point(|&n| weights[n] < weights[node]);
@@ -113,7 +104,7 @@ fn tree() -> &'static Tree {
 
 /// Decode a compressed string; `max_len` is the receiver's buffer limit in bytes.
 ///
-/// Mirrors the client decoder (A 0x100542d0): reads the compressed u16 bit
+/// Mirrors samp.dll 0x100542d0: reads the compressed u16 bit
 /// count; if fewer bits remain the decode fails (`None`). Otherwise *all*
 /// `count` bits are consumed, and the decoded bytes are truncated to
 /// `max_len - 1` (the client NUL-terminates inside a `max_len` buffer; empty

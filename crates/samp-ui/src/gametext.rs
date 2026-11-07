@@ -1,11 +1,9 @@
-//! Game text (RPC 73): acceptance rules and the GTA big-message style model
-//! (UCA §73, UR §12).
+//! Game text (RPC 73): acceptance rules and a model of GTA's big-message styles
+//! (docs/re/subsystems/ui-chat-audio.md, "73 SendGameText").
 //!
-//! samp only hands the text to GTA (`CMessages::AddBigMessage`, GTA 0x69F2B0) after
-//! clearing prints (opcode 0x00BE). Position, font, colour and animation are GTA's
-//! (`CHud`, see `re/gta-reversed` `eMessageStyle`); the table below describes them so a
-//! headless or non-GTA renderer can approximate, and so the DLL build knows what GTA
-//! will do. Exact screen metrics belong to GTA and are not re-specified here.
+//! samp only clears prints (opcode 0x00BE) and hands the text to GTA's
+//! `CMessages::AddBigMessage`; position, font, colour and animation are GTA's (`CHud`). The
+//! style table lets a headless or non-GTA renderer approximate them.
 
 use samp_proto::rpcs::ui::SendGameText;
 
@@ -18,7 +16,7 @@ pub const STYLE_LIMIT: i32 = 201;
 /// Size of the static text buffer the text is copied into.
 pub const BUFFER_LEN: usize = 512;
 /// The client passes any style below 201 to GTA, which only has 7 slots. A hardened
-/// client ignores styles outside 0..=6 (UCA §73 quirk).
+/// client ignores styles outside 0..=6.
 pub const HARDEN_STYLE_RANGE: bool = true;
 
 /// GTA big-message styles (`eMessageStyle`).
@@ -48,7 +46,7 @@ pub enum Align {
     Right,
 }
 
-/// How long a style stays (GTA behaviour, notes U-GAMETEXT-DURATION).
+/// How long a style stays (GTA behaviour; not confirmed visually).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Duration {
     /// Shown until the message time runs out.
@@ -102,7 +100,7 @@ pub enum GameText {
 }
 
 impl GameText {
-    /// Applies the client's acceptance rules (UCA §73).
+    /// Applies the client's acceptance rules.
     pub fn from_rpc(rpc: &SendGameText) -> Self {
         if rpc.text.is_empty() || rpc.text.len() > MAX_TEXT_LEN || rpc.style >= STYLE_LIMIT {
             return Self::Ignored;

@@ -12,8 +12,8 @@ pub fn c_str(s: &[u8]) -> &[u8] {
     &s[..c_strlen(s)]
 }
 
-/// Replaces control characters 1..=31 with spaces (UCA "chat window model",
-/// A 0x10067420).
+/// Replaces control characters 1..=31 with spaces (ui-chat-audio.md, "Shared: chat window model").
+/// Mirrors samp.dll 0x10067420.
 pub fn replace_control_chars(s: &mut [u8]) {
     for b in s.iter_mut() {
         if (1..=31).contains(b) {
@@ -27,7 +27,7 @@ pub fn truncate(s: &[u8], max: usize) -> &[u8] {
     &s[..s.len().min(max)]
 }
 
-/// Splits `text` once at `width` characters, preferring a space (UCA "Type-2 wrapping").
+/// Splits `text` once at `width` characters, preferring a space (the type-2 chat line wrap).
 ///
 /// If `text` is longer than `width`, look backwards from index `width` for a space.
 /// A space at most `backtrack` characters before `width` splits there (the space is
@@ -57,7 +57,8 @@ pub fn wrap_lines(mut text: &[u8], width: usize, backtrack: usize) -> Vec<&[u8]>
 }
 
 /// GTA's key-name substitution (`~k~~ACTION~` → key name), supplied by the game layer.
-/// The DLL build calls GTA 0x69E160; a headless build may return the text unchanged.
+/// The DLL build calls the game's own routine (gta_sa.exe 0x69E160); a headless build may
+/// return the text unchanged.
 pub trait KeyNameExpander {
     fn expand(&self, text: &[u8]) -> Vec<u8>;
 }
@@ -72,17 +73,16 @@ impl KeyNameExpander for NoExpansion {
     }
 }
 
-/// Texts this long or longer are never expanded (UCA "Key-name expansion").
+/// Texts this long or longer are never expanded.
 pub const KEY_EXPANSION_MAX_INPUT: usize = 400;
-/// The expanded text is kept only if it fits in this many characters.
-/// Kept when its length is `<= 255`: A 0x100b6140 rejects with a signed `>` against the
-/// caller's limit (the chat caller A 0x10068190 passes 255).
+/// The expanded text is kept only if it fits in this many characters (`len <= limit`); this is
+/// the limit the chat passes.
 pub const KEY_EXPANSION_MAX_OUTPUT: usize = 255;
-/// 3D text labels (RPC 36 store, A 0x100011d0) pass 399 as the limit.
+/// The limit 3D text labels (RPC 36) pass. Mirrors samp.dll 0x100011d0.
 pub const LABEL_KEY_EXPANSION_MAX_OUTPUT: usize = 399;
 
-/// Runs `~k~` expansion like A 0x100b6140: only if the text contains `~k~` and is
-/// shorter than 400 chars; the result is kept only if it fits in 255 chars.
+/// Runs `~k~` expansion only if the text contains `~k~` and is shorter than 400 chars; the result
+/// is kept only if it fits in 255 chars. Mirrors samp.dll 0x100b6140.
 pub fn expand_key_names(text: &[u8], expander: &dyn KeyNameExpander) -> Vec<u8> {
     expand_key_names_limit(text, expander, KEY_EXPANSION_MAX_OUTPUT)
 }

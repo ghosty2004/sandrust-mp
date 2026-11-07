@@ -1,8 +1,8 @@
 //! Local weapon inventory (RPCs 21/22/67/145 and spawn weapons), clip/reload
 //! simulation for shooting, and the 204 delta encoder.
 //!
-//! Spec: docs/re/subsystems/player-state.md (22/21/67/145),
-//! remote-players-sync.md §204 (+ RE-10 "204 target fields").
+//! Spec: docs/re/subsystems/player-state.md (RPCs 22/21/67/145) and
+//! docs/re/subsystems/remote-players-sync.md ("204 PlayerWeaponsUpdate", "204 target fields").
 //! GTA weapon numbers (damage, rate, clip) are plausible values, listed in
 //! docs/phase3/bot2-notes.md; they are not taken from the client.
 

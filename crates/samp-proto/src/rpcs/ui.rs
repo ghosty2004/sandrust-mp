@@ -874,27 +874,26 @@ impl Incoming {
 
 outgoing! {
     Ui;
-    /// RPC 101: sender A 0x10005a10 / B 0x10005a00, reliability 8 (RELIABLE),
-    /// priority 1, channel 0 (ui-chat-audio.md §101 and its C→S preamble).
-    /// Static analysis; not yet captured.
+    /// RPC 101: reliability 8 (RELIABLE), priority 1, channel 0
+    /// (ui-chat-audio.md §101 and its C→S preamble). Mirrors samp.dll
+    /// 0x10005a10.
     PlayerRequestChatMessage => Reliable;
-    /// RPC 50: sender A 0x10069900 / B 0x100698c0, reliability 8, priority 1,
-    /// channel 0 (ui-chat-audio.md §50). Static analysis; not yet captured.
+    /// RPC 50: reliability 8 (RELIABLE), priority 1, channel 0
+    /// (ui-chat-audio.md §50). Mirrors samp.dll 0x10069900.
     PlayerRequestCommandMessage => Reliable;
-    /// RPC 83: sender A 0x100714e0 / B 0x100714b0, reliability 9
-    /// (RELIABLE_ORDERED), priority 1, channel 0 (ui-chat-audio.md §83).
-    /// Static analysis; not yet captured.
+    /// RPC 83: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (ui-chat-audio.md §83). Mirrors samp.dll 0x100714e0.
     OnPlayerSelectTextDraw => ReliableOrdered;
-    /// RPC 62: sender A 0x10070690 / B 0x10070660, reliability 9, priority 1,
-    /// channel 0 (ui-chat-audio.md §62). Static analysis; not yet captured.
+    /// RPC 62: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (ui-chat-audio.md §62). Mirrors samp.dll 0x10070690.
     OnPlayerDialogResponse => ReliableOrdered;
-    /// RPC 132: menu poll A 0x10008200 / B 0x100081f0, reliability 8,
-    /// priority 1, channel 0 (ui-chat-audio.md §132/§140). Static analysis;
-    /// not yet captured.
+    /// RPC 132: sent from the per-frame menu poll, reliability 8 (RELIABLE),
+    /// priority 1, channel 0 (ui-chat-audio.md §132/§140). Mirrors samp.dll
+    /// 0x10008200.
     OnPlayerSelectedMenuRow => Reliable;
-    /// RPC 140: menu poll A 0x10008200 / B 0x100081f0, reliability 8,
-    /// priority 1, channel 0 (ui-chat-audio.md §132/§140). Static analysis;
-    /// not yet captured.
+    /// RPC 140: sent from the same menu poll as RPC 132, reliability 8
+    /// (RELIABLE), priority 1, channel 0 (ui-chat-audio.md §132/§140). Mirrors
+    /// samp.dll 0x10008200.
     OnPlayerExitedMenu => Reliable;
 }
 

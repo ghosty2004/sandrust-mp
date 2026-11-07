@@ -1,10 +1,9 @@
 //! Single-line edit box used by the chat input and the dialog edit box.
 //!
-//! Both are DXUT IME edit boxes (UR §4.1, §8, §13.1). RE-5 does not describe the
-//! editing keys; this follows the stock DXUT edit box behaviour [I] (notes
-//! U-EDITKEYS): Home/End, Left/Right (Ctrl = word), Shift extends the selection,
-//! Delete/Backspace, Insert toggles overwrite, Ctrl+Insert copies, Shift+Insert
-//! pastes, Ctrl+A/C/X/V, other control characters ignored.
+//! Both are DXUT IME edit boxes in samp. The keys follow the stock DXUT edit box: Home/End,
+//! Left/Right (Ctrl = word), Shift extends the selection, Delete/Backspace, Insert toggles
+//! overwrite, Ctrl+Insert copies, Shift+Insert pastes, Ctrl+A/C/X/V, other control characters
+//! ignored (docs/re/subsystems/ui-rendering.md, "Chat input").
 
 /// Keys the edit box handles on key-down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,8 +36,8 @@ pub enum CharResult {
     Ignored,
 }
 
-/// Masking character for password edit boxes (dialog style 3): U+25CF `●`, drawn
-/// with `DrawTextW` (TRACE-3 U-MASK).
+/// Masking character for password edit boxes (dialog style 3): U+25CF `●`, drawn with
+/// `DrawTextW`.
 pub const PASSWORD_MASK: u16 = 0x25CF;
 
 /// The edit buffer: bytes in the ANSI code page, caret and selection anchor.
@@ -221,8 +220,8 @@ impl LineEdit {
 }
 
 /// DXUT edit box `PlaceCaret`: the first visible character after moving the caret to
-/// `caret` (TRACE-3 U-EDIT-SCROLL: the view scrolls only when the caret leaves the
-/// text rect). `x_of(cp)` = pixel x of the leading edge of character `cp` (width of
+/// `caret`: the view scrolls only when the caret leaves the
+/// text rect. `x_of(cp)` = pixel x of the leading edge of character `cp` (width of
 /// the text before it); `len` = text length; `width` = text rect width.
 pub fn place_caret(first_visible: usize, caret: usize, len: usize, width: i32, x_of: &dyn Fn(usize) -> i32) -> usize {
     let first = first_visible.min(len);

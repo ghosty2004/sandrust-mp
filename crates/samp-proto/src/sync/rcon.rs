@@ -6,11 +6,10 @@ use super::{SyncPacket, ids};
 use crate::bitstream::{BitReader, BitWriter};
 use crate::types::{read_str32, write_str32};
 
-/// 201 RCON command, client→server only (send A 0x10069030, the "/rcon" chat
-/// command): `u8 201, u32 length, raw[length]` with no NUL terminator; sent
-/// RELIABLE on channel 0. The client does not send it without an argument.
-/// No receive path exists in the client. open.mp reads it as a u32-prefixed
-/// string — agrees.
+/// 201 RCON command, client→server only (the "/rcon" chat command):
+/// `u8 201, u32 length, raw[length]` with no NUL terminator; sent RELIABLE on
+/// channel 0, never without an argument. The client has no receive path for it;
+/// open.mp reads it as a u32-prefixed string. Mirrors samp.dll 0x10069030.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RconCommand {
     /// Command text (Windows code page bytes), e.g. `b"login secret"`.

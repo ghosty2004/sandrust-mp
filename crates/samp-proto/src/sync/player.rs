@@ -119,9 +119,9 @@ pub struct Surf {
     pub offset: Vec3,
 }
 
-/// 207 PlayerFootSync, server→client compact form (spec §2 "207", S→C table;
-/// reader A 0x1000a740). May carry a `0x28` timestamp prefix (see
-/// [`super::decode`]).
+/// 207 PlayerFootSync, server→client compact form (spec §2 "207", S→C table).
+/// May carry a `0x28` timestamp prefix (see [`super::decode`]).
+/// Mirrors samp.dll 0x1000a740.
 ///
 /// Wire: `u16 playerId`, `hasLR bit [+ u16]`, `hasUD bit [+ u16]`, `u16 keys`,
 /// position raw[12], normalised quaternion, packed health/armour, weapon byte,
@@ -203,7 +203,7 @@ impl SyncPacket for RemoteFootSync {
 impl RemoteFootSync {
     /// Build the compact form from a raw foot struct, the way a server would
     /// (presence bits set for non-zero values; implied encoders for the
-    /// quaternion, velocity and health/armour). Not observed in the client.
+    /// quaternion, velocity and health/armour; the client never builds this form).
     pub fn from_raw(player_id: u16, s: &FootSync) -> Self {
         let nz = |v: i16| (v != 0).then_some(v);
         Self {
@@ -273,7 +273,7 @@ impl AimSync {
 raw_sync_packet!(AimSync, ids::AIM_SYNC);
 
 remote_raw_sync!(
-    /// 203 PlayerAimSync, server→client (reader A 0x10009c40): `u16 playerId`
+    /// 203 PlayerAimSync, server→client (mirrors samp.dll 0x10009c40): `u16 playerId`
     /// + raw[31] as [`AimSync`]; no timestamp handling. The client stores zoom
     /// as `zoom/63`, aspect as `aspect/255`, and maps weapon state 3 to
     /// RELOADING. Agrees with open.mp.
@@ -339,7 +339,7 @@ impl BulletSync {
 raw_sync_packet!(BulletSync, ids::BULLET_SYNC);
 
 remote_raw_sync!(
-    /// 206 PlayerBulletSync, server→client (reader A 0x10009b40): `u16
+    /// 206 PlayerBulletSync, server→client (mirrors samp.dll 0x10009b40): `u16
     /// playerId` + raw[40] as [`BulletSync`]. Client checks: shooter id
     /// `< 1004`; when `hit_type != 0` every offset component must lie in
     /// [−300, 300] or the bullet is dropped. Agrees with open.mp.
@@ -396,8 +396,8 @@ pub struct WeaponSlot {
     pub ammo: u16,
 }
 
-/// 204 PlayerWeaponsUpdate, client→server only (spec §2 "204"; send A
-/// 0x10006290): `u8 204, u16 targetPlayer, u16 targetActor`, then
+/// 204 PlayerWeaponsUpdate, client→server only (spec §2 "204"; mirrors
+/// samp.dll 0x10006290): `u8 204, u16 targetPlayer, u16 targetActor`, then
 /// `slot u8, weaponId u8, ammo u16` per changed slot (0–13 records).
 ///
 /// Client behaviour: evaluated every tick, delta-encoded against the last
@@ -438,9 +438,9 @@ impl SyncPacket for WeaponsUpdate {
 // ---------------------------------------------------------------------------
 // 205 PlayerStatsSync
 
-/// 205 PlayerStatsSync, client→server only (spec §2 "205"; send A
-/// 0x10005d00): `u8 205, i32 money, i32 drunkLevel`; unreliable, channel 0,
-/// every > 1000 ms. Agrees with open.mp.
+/// 205 PlayerStatsSync, client→server only (spec §2 "205"):
+/// `u8 205, i32 money, i32 drunkLevel`; unreliable, channel 0,
+/// every > 1000 ms. Agrees with open.mp. Mirrors samp.dll 0x10005d00.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StatsSync {
     pub money: i32,
@@ -473,8 +473,8 @@ pub struct Marker {
     pub position: Option<[i16; 3]>,
 }
 
-/// 208 PlayerMarkersSync, server→client only (spec §2 "208"; reader A
-/// 0x10009f10). No player id after the packet id.
+/// 208 PlayerMarkersSync, server→client only (spec §2 "208"). No player id
+/// after the packet id. Mirrors samp.dll 0x10009f10.
 ///
 /// Wire: `u32 count`, then per record `u16 playerId, hasPos bit [+ i16 x, y,
 /// z]`.

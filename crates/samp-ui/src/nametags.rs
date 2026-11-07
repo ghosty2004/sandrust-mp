@@ -1,8 +1,7 @@
-//! Nametags: health/armour bars, the name text and the AFK icon (UR §16, TRACE-3).
-//!
-//! `x`, `y` are the truncated (`_ftol2`) screen coordinates of the projected anchor
-//! `(px, py, pz + 0.0475·d + 0.2)` (A 0x1006d0a0, constants at A 0x100ea648 /
-//! A 0x100e9c90); a tag is drawn only when the projected z ≤ 1.
+//! Nametags: health/armour bars ([`bars`]), the name rect and the AFK icon. `x`, `y` are the
+//! truncated (`_ftol2`) screen coordinates of the projected anchor `(px, py, pz + 0.0475·d + 0.2)`;
+//! a tag is drawn only when the projected z ≤ 1. Spec: docs/re/subsystems/ui-rendering.md
+//! ("Nametags and health/armour bars"); measured pixels in docs/phase3/trace-notes.md.
 
 /// Anchor raise: `0.0475·d + 0.2` above the ped (d = camera distance).
 pub const RAISE_PER_METRE: f32 = 0.0475;
@@ -17,7 +16,7 @@ pub const ARMOUR_FILL: u32 = 0xFFC8_C8C8;
 /// AFK glyph colours (SAMPAUX3 22 `C` backdrop, SAMPAUX3 20 `E`).
 pub const AFK_BACKDROP: u32 = 0xFF00_0000;
 pub const AFK_ICON: u32 = 0xFFE3_E1E3;
-/// No update for this long → paused (AFK icon), A remote +0x1c5.
+/// No update for this long → paused (AFK icon); the flag is remote-player field +0x1c5 in samp.
 pub const AFK_AFTER_MS: u64 = 3000;
 
 /// A filled quad (screen pixels, pre-transformed).
@@ -41,7 +40,7 @@ fn bar(x: f32, y: f32, value: f32, bg: u32, fill: u32) -> [Quad; 3] {
 
 /// Bar groups in draw order (one `SetFVF` + three fans per group). Health moves down
 /// 8 px when armour is shown; armour is drawn after it at the original height.
-/// Nothing is drawn for `hp < 0`.
+/// Nothing is drawn for `hp < 0`. Mirrors samp.dll 0x1006d0a0.
 pub fn bars(x: i32, y: i32, hp: f32, armour: f32) -> Vec<[Quad; 3]> {
     if hp < 0.0 {
         return Vec::new();
@@ -56,15 +55,14 @@ pub fn bars(x: i32, y: i32, hp: f32, armour: f32) -> Vec<[Quad; 3]> {
     }
 }
 
-/// Name rect: centred on `x` with the measured width, top `y + 17 − h`, bottom `y`
-/// (TRACE-3: "Bot1 (1)" w 45 h 14 at x 826, y 278 → [804, 281, 848, 278]).
+/// Name rect: centred on `x` with the measured width, top `y + 17 − h`, bottom `y`.
 pub fn name_rect(x: i32, y: i32, w: i32, h: i32) -> [i32; 4] {
     [x - w / 2, y + 17 - h, x + w / 2, y]
 }
 
 /// AFK glyph rects from the `C` measure (`DT_CALCRECT|DT_CENTER|DT_VCENTER` of an
 /// empty rect, e.g. [−7, −11, 8, 11]): backdrop `C` at [nameLeft + l, y + 17 + b, +1, +2],
-/// icon `E` one px left and two up (TRACE-3, one sample at W 1280).
+/// icon `E` one px left and two up (measured once, at width 1280).
 pub fn afk_rects(name_left: i32, y: i32, measure: [i32; 4]) -> ([i32; 4], [i32; 4]) {
     let l = name_left + measure[0];
     let t = y + 17 + measure[3];
@@ -77,7 +75,7 @@ mod tests {
 
     #[test]
     fn trace3_bars_with_and_without_armour() {
-        // TRACE-3: X 826, Y 278, hp 56, armour 100.
+        // Values measured on the original: X 826, Y 278, hp 56, armour 100.
         let g = bars(826, 278, 56.0, 100.0);
         assert_eq!(g.len(), 2);
         assert_eq!((g[0][0].x0, g[0][0].y0, g[0][0].x1, g[0][0].y1), (806.0, 304.0, 847.0, 310.0));

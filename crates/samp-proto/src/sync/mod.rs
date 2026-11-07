@@ -1,31 +1,10 @@
-//! Sync packets 200–212 (RakNet user packets, not RPCs).
-//!
+//! Sync packets 200–212 (RakNet user packets, not RPCs). Client→server sync is the packet id plus
+//! a fixed-size raw copy of a client struct (types named after open.mp: `FootSync`, `VehicleSync`, …).
+//! Server→client foot (207) and driver (200) sync use the compact [`encoding`]s; the other S→C forms
+//! (`Remote*`) are a player id plus the same raw struct, and markers (208) have their own layout.
+//! Entry points: the [`SyncPacket`] trait and [`decode`]; send rates and channels are in [`policy`].
+//! Decoders are faithful to the wire: client-side validation is documented, never applied.
 //! Spec: docs/re/subsystems/remote-players-sync.md (§0 conventions, §2 packets).
-//!
-//! Shape of the protocol:
-//! - **Client→server** sync is `u8 packetId` followed by a fixed-size raw copy
-//!   of a client struct (68/63/24/31/40/67/54/18 bytes for 207/200/211/203/206/
-//!   209/210/212). Nothing is aligned: after the id byte the stream happens to
-//!   be byte-aligned, but the raw blocks would be copied bit-wise otherwise.
-//! - **Server→client** foot (207) and driver (200) sync use compact encodings
-//!   (conditional fields, packed health/armour nibbles, normalised quaternion,
-//!   compressed velocity; see [`encoding`]). The other S→C sync packets are
-//!   `u8 id, u16 playerId` + the same raw struct as C→S. Markers (208) have
-//!   their own layout and no player id.
-//! - Only 207 and 200 honour an optional leading `0x28 + u32` RakNet timestamp
-//!   on receive (§0.1); [`decode`] rejects a timestamp prefix on any other id.
-//!
-//! Conventions in this module:
-//! - Each packet type implements [`SyncPacket`]: `PACKET_ID`, `read` (starting
-//!   after the id byte) and `write` (including the id byte).
-//! - C→S raw types are named after open.mp (`FootSync`, `VehicleSync`, ...)
-//!   and also expose `SIZE` plus `read_body`/`write_body` for the raw block.
-//!   S→C forms are `Remote*` (player id + data) and [`MarkersSync`].
-//! - Decoders are faithful to the wire: quantised values are kept as
-//!   transmitted, and client-side validation (player-id bounds, range checks)
-//!   is documented, never applied.
-//! - Send policy (rates, duplicate suppression, reliabilities, channels) is in
-//!   [`policy`] as constants.
 
 use crate::bitstream::{BitReader, BitWriter};
 use crate::raknet::id::TIMESTAMP;

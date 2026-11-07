@@ -1,4 +1,4 @@
-//! TRACE-4 driving bot: samp-bot's join → spawn → on-foot flow, plus a driver.
+//! Driving bot for trace runs: samp-bot's join → spawn → on-foot flow, plus a driver.
 //! When the server puts it into a vehicle (RPC 70 PutPlayerInVehicle, seat 0) it
 //! sends driver sync (packet 200) instead of on-foot sync, driving a circle
 //! (radius 10 m, 0.5 rad/s, accelerate key held, steering left) that starts at
@@ -251,8 +251,8 @@ fn handle_message(msg: &Delivered, conn: &mut Connection, net: &Net, table: &Aut
             }
             w.write_u16(net.server.port());
             conn.send_bits(&w, Reliability::Reliable, 0);
-            // Same order as the original client (docs/re/handshake.md §1,
-            // differential capture): ping, empty static data, keep-alive.
+            // Same order as the original client: ping, empty static data, keep-alive
+            // (docs/re/handshake.md, "1. Connection establishment at the UDP level").
             conn.ping(Instant::now());
             conn.send_bytes(&[id::RECEIVED_STATIC_DATA], Reliability::Reliable, 0);
             conn.send_bytes(&[id::KEEP_ALIVE], Reliability::Reliable, 0);
@@ -402,7 +402,7 @@ fn send_foot_sync(bot: &mut Bot, conn: &mut Connection, now: Instant) {
     let sync = FootSync {
         up_down: -128, // forward on the left stick
         position,
-        // Heading h <-> quaternion (cos h/2, 0, 0, -sin h/2): remote-control-onfoot.md.
+        // Heading h <-> quaternion (cos h/2, 0, 0, -sin h/2): docs/re/subsystems/remote-control-onfoot.md.
         rotation: Quat { w: (heading / 2.0).cos(), x: 0.0, y: 0.0, z: -(heading / 2.0).sin() },
         health: bot.health.clamp(0.0, 255.0) as u8,
         armour: bot.armour.clamp(0.0, 255.0) as u8,

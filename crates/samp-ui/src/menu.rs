@@ -1,18 +1,9 @@
-//! Menus (RPC 76/77/78, 132/140): data, the GXT keys samp hands to GTA's
-//! `CMenuSystem` and the per-frame selection poll (UR §12; UCA §76–§78, §132/§140).
-//!
-//! Static analysis of samp.dll (A build) gave the exact script sequence of the menu
-//! build (A 0x100a7780) and the `CText::Get` hook (A 0x100a4070 → A 0x10008060):
-//! - 0x08D4 CREATE_MENU(title key, x, y, (col1W + col2W) / columns, columns,
-//!   interactive, 1, 1) → handle;
-//! - 0x08DB SET_MENU_COLUMN(handle, 0, header key, 12 row keys), 0x09DB
-//!   SET_MENU_COLUMN_WIDTH(handle, 0, (int) col1W); for two columns the same with
-//!   column 1, where samp also passes **col1W** as the width (observable quirk);
-//! - 0x08D9 ACTIVATE_MENU_ITEM(handle, row, enabled) for rows 0..11.
-//!
-//! Keys: title `SAMPHED`, headers `SAMPRW1`/`SAMPRW2`, cells `SAMP0rr` / `SAMP1rr`
-//! (rr = 00..11, key table A 0x100fe0c8), `DUMMY` for empty strings. The hook answers a
-//! key starting with `SAMP` from the current menu; anything else goes to GTA.
+//! Menus (RPC 76/77/78, 132/140): menu data, the script commands that build GTA's
+//! `CMenuSystem` menu ([`Menu::build`]), the GXT keys samp answers through its `CText::Get`
+//! hook ([`Menu::gxt`]) and the per-frame selection poll ([`Menus::poll`]). GXT keys starting
+//! with `SAMP` come from the current menu; anything else goes to GTA. Specs:
+//! docs/re/subsystems/ui-rendering.md ("Game text and menus") and ui-chat-audio.md
+//! ("76 PlayerInitMenu" … "132 OnPlayerSelectedMenuRow").
 
 use samp_proto::rpcs::ui::{MAX_MENU_ITEMS, PlayerInitMenu, menu_text_str};
 
@@ -21,7 +12,7 @@ pub const MAX_MENUS: usize = 128;
 pub const DUMMY: &str = "DUMMY";
 pub const TITLE_KEY: &str = "SAMPHED";
 pub const HEADER_KEYS: [&str; 2] = ["SAMPRW1", "SAMPRW2"];
-/// `SAMP0rr` / `SAMP1rr`.
+/// Cell keys `SAMP0rr` / `SAMP1rr` (rr = 00..11). Mirrors the samp.dll key table at 0x100fe0c8.
 pub const CELL_KEYS: [[&str; MAX_MENU_ITEMS]; 2] = [
     [
         "SAMP000", "SAMP001", "SAMP002", "SAMP003", "SAMP004", "SAMP005", "SAMP006", "SAMP007", "SAMP008", "SAMP009",
@@ -35,7 +26,7 @@ pub const CELL_KEYS: [[&str; MAX_MENU_ITEMS]; 2] = [
 /// "No row" from the active-row query (also for display-only menus).
 pub const NO_ROW: u8 = 0xFF;
 
-/// One menu (A 0x100a7460 object).
+/// One menu. Mirrors the samp.dll menu object built at 0x100a7460.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Menu {
     pub title: Vec<u8>,
@@ -85,13 +76,15 @@ impl Menu {
         if text.is_empty() { DUMMY } else { key }
     }
 
-    /// The script commands that build the GTA menu, in order (A 0x100a7780).
+    /// The script commands that build the GTA menu, in order: 0x08D4 CREATE_MENU, then per column
+    /// 0x08DB SET_MENU_COLUMN + 0x09DB SET_MENU_COLUMN_WIDTH, then 0x08D9 ACTIVATE_MENU_ITEM per row.
+    /// Mirrors samp.dll 0x100a7780.
     pub fn build(&self) -> MenuBuild {
         let width = (self.col_widths[1] + self.col_widths[0]) / f32::from(self.columns.max(1));
         let mut columns = Vec::new();
         for c in 0..usize::from(self.columns.min(2)) {
             let rows = std::array::from_fn(|r| Self::key(&self.cells[c][r], CELL_KEYS[c][r]));
-            // Both columns get col1W as their width (samp passes +0x384 twice).
+            // Both columns get col1W as their width: samp passes the same field (+0x384) twice.
             columns.push(MenuColumnBuild {
                 column: c as u8,
                 header: Self::key(&self.headers[c], HEADER_KEYS[c]),
@@ -111,7 +104,7 @@ impl Menu {
         }
     }
 
-    /// The text for the part of a `SAMP…` key after `SAMP` (A 0x10008060).
+    /// The text for the part of a `SAMP…` key after `SAMP`. Mirrors samp.dll 0x10008060.
     pub fn gxt(&self, rest: &[u8]) -> Option<&[u8]> {
         let rest = crate::text::c_str(rest);
         match rest {
@@ -211,7 +204,7 @@ impl Menus {
         true
     }
 
-    /// Per-frame poll (A 0x10008200). `cross`/`triangle` = just pressed (new ≠ 0, old = 0);
+    /// Per-frame poll. Mirrors samp.dll 0x10008200. `cross`/`triangle` = just pressed (new ≠ 0, old = 0);
     /// `active_row` = GET_MENU_ITEM_SELECTED (only asked for interactive menus).
     pub fn poll(&mut self, cross: bool, triangle: bool, active_row: impl FnOnce() -> u8) -> Option<PollAction> {
         let menu = self.current_menu()?;

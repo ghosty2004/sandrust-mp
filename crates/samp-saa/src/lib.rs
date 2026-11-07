@@ -38,8 +38,8 @@ pub const BLOCK: u32 = 2048;
 /// Smallest possible archive (header + check pair, directory, signature).
 pub const MIN_LEN: usize = DATA_START as usize + DIR_LEN + SIG_LEN;
 
-/// Directory key. Source: 16 bytes at 0x100E9A2C in samp.dll 0.3.7-R4 (both
-/// builds), stored XORed with 0xAA; this is the de-obfuscated value.
+/// Directory key: the de-obfuscated value of 16 bytes samp.dll stores XORed with
+/// 0xAA (same address in both 0.3.7-R4 builds). Mirrors samp.dll 0x100E9A2C.
 pub const DIRECTORY_KEY: [u8; 16] =
     [0x13, 0x40, 0xea, 0xa0, 0x09, 0xb5, 0xab, 0x89, 0x1a, 0x40, 0xec, 0xce, 0xd2, 0x05, 0xfa, 0x2a];
 
@@ -91,12 +91,12 @@ pub const KNOWN_ENTRIES: &[KnownEntry] = &[
     KnownEntry { name: "tracks4.dat", game_path: Some("data\\Paths\\tracks4.dat") },
     KnownEntry { name: "vehicle.txd", game_path: Some("models\\generic\\vehicle.txd") },
     KnownEntry { name: "loadscs.txd", game_path: Some("models\\txd\\LOADSCS.txd") },
-    // Read by samp itself through the hash (0x100576A0, 0x10070C20), not a game file.
+    // Not a game file: samp loads it by hash for its own use (logo texture, checksum).
     KnownEntry { name: "logo.png", game_path: None },
 ];
 
 /// Directory key of the one unnamed entry: a binary table that samp only ever
-/// requests by this hash (0x10062390). See the spec, §6.
+/// requests by this hash (docs/re/samp-saa.md, "8. Redirection layer").
 pub const INTEGRITY_TABLE_HASH: u32 = 0xA848_B69A;
 
 /// Errors from opening an archive.

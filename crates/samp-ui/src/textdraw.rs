@@ -1,14 +1,8 @@
-//! Textdraws: pool, text rules, drawing parameters for GTA's `CFont`, hit rectangles
-//! and the selection mode (UR §14; UCA §134, §135, §105, §83).
-//!
-//! Static analysis of samp.dll (A build) settled what RE-5 left open:
-//! - set-text (A 0x100b2fa0): texts of 800 or more characters leave the textdraw
-//!   empty; a `~` code longer than 24 characters or an unmatched `~` replaces the text
-//!   with "Error: unmatched tilde"; a `~k~` text longer than 255 characters becomes
-//!   "Error: can't use k-codes in long string".
-//! - hit rectangles (A 0x100b33f5.., 0x100b3179..) per alignment, see [`hit_rect`]
-//!   (the well-known swap: centred textdraws use `textSizeY` as width and `textSizeX`
-//!   as height).
+//! Textdraws: the pool (RPC 134/135/105), samp's set-text rules ([`set_text`]), drawing
+//! parameters for GTA's `CFont`, hit rectangles ([`hit_rect`]; centred textdraws use `textSizeY`
+//! as width and `textSizeX` as height) and the selection mode (RPC 83). Specs:
+//! docs/re/subsystems/ui-rendering.md ("Textdraws") and ui-chat-audio.md ("134 PlayerShowTextDraw"
+//! … "83 OnPlayerSelectTextDraw").
 
 use samp_proto::rpcs::ui::TextDrawData;
 
@@ -27,7 +21,7 @@ pub const ERR_LONG_K_CODES: &[u8] = b"Error: can't use k-codes in long string";
 /// Hovered id when nothing is hovered / the cancel id sent by RPC 83.
 pub const NONE: u16 = 0xFFFF;
 
-/// Flags byte of the 63-byte block (UCA §134).
+/// Flags byte of the 63-byte RPC 134 block.
 pub mod flags {
     pub const BOX: u8 = 0x01;
     pub const LEFT: u8 = 0x02;
@@ -40,7 +34,7 @@ pub mod flags {
 pub const FONT_SPRITE: u8 = 4;
 pub const FONT_PREVIEW: u8 = 5;
 
-/// Result of the set-text rules (A 0x100b2fa0).
+/// Result of the set-text rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextRules {
     pub text: Vec<u8>,
@@ -48,7 +42,10 @@ pub struct TextRules {
     pub has_keys: bool,
 }
 
-/// Applies samp's set-text rules.
+/// Applies samp's set-text rules: texts of 800 or more characters leave the textdraw empty; a `~`
+/// code longer than 24 characters or an unmatched `~` replaces the text with "Error: unmatched
+/// tilde"; a `~k~` text longer than 255 characters becomes "Error: can't use k-codes in long
+/// string". Mirrors samp.dll 0x100b2fa0.
 pub fn set_text(input: &[u8]) -> TextRules {
     let input = crate::text::c_str(input);
     if input.len() >= TEXT_MAX {
@@ -88,8 +85,8 @@ pub fn set_text(input: &[u8]) -> TextRules {
 }
 
 /// GTA `CFont` parameters of one text textdraw for video mode `w × h`, with the
-/// unit constants `ux` (0x859520, 1/640) and `uy` (0x859524, 1/448) read at draw time
-/// (UR §14.2, A 0x100b31e0).
+/// unit constants `ux` (gta_sa.exe 0x859520, 1/640) and `uy` (0x859524, 1/448) read at draw
+/// time. Mirrors samp.dll 0x100b31e0.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FontParams {
     pub scale: (f32, f32),
@@ -146,7 +143,7 @@ fn ftol(v: f32) -> i32 {
     v as i32
 }
 
-/// Hit rectangle stored after drawing a text textdraw (A 0x100b33f5..0x100b34aa).
+/// Hit rectangle stored after drawing a text textdraw. Mirrors samp.dll 0x100b33f5.
 pub fn hit_rect(p: &FontParams) -> Rect {
     let (x, y) = (p.x, p.y);
     match p.orientation {
@@ -162,7 +159,8 @@ pub fn hit_rect(p: &FontParams) -> Rect {
     }
 }
 
-/// Sprite/model rectangle (A 0x100b30d0): `(x·W·ux, y·H·uy) – ((x + tsx)·W·ux, (y + tsy)·H·uy)`.
+/// Sprite/model rectangle: `(x·W·ux, y·H·uy) – ((x + tsx)·W·ux, (y + tsy)·H·uy)`. Mirrors samp.dll
+/// 0x100b30d0.
 pub fn sprite_rect(d: &TextDrawData, w: i32, h: i32, ux: f32, uy: f32) -> [f32; 4] {
     let sx = w as f32 * ux;
     let sy = h as f32 * uy;
@@ -170,7 +168,7 @@ pub fn sprite_rect(d: &TextDrawData, w: i32, h: i32, ux: f32, uy: f32) -> [f32; 
     [x * sx, y * sy, (x + d.text_size.x) * sx, (y + d.text_size.y) * sy]
 }
 
-/// Hit rectangle of a sprite/model textdraw (A 0x100b3179..0x100b31ce).
+/// Hit rectangle of a sprite/model textdraw. Mirrors samp.dll 0x100b3179.
 pub fn sprite_hit_rect(d: &TextDrawData, w: i32, h: i32, ux: f32, uy: f32) -> Rect {
     let sx = w as f32 * ux;
     let sy = h as f32 * uy;
@@ -189,7 +187,7 @@ pub struct TextDraw {
     pub hovered: bool,
     /// Rectangle of the last draw (selection hit test).
     pub hit: Option<Rect>,
-    /// Creation number: every RPC 134 makes a new textdraw object in samp (A 0x100b3720), even with the same id
+    /// Creation number: every RPC 134 makes a new textdraw object in samp (samp.dll 0x100b3720), even with the same id
     /// and data; per-object resources (model-preview textures) follow it.
     pub serial: u64,
 }
@@ -217,7 +215,7 @@ impl TextDraw {
     }
 }
 
-/// Selection mode state (global A 0x1026e9e0).
+/// Selection mode state. Mirrors the samp.dll global at 0x1026e9e0.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
     pub active: bool,
@@ -317,8 +315,8 @@ impl TextDraws {
         }
     }
 
-    /// Per-frame hit test while selection is on (A 0x10071470): the highest selectable,
-    /// drawn textdraw under the cursor is hovered.
+    /// Per-frame hit test while selection is on: the highest selectable, drawn textdraw under the
+    /// cursor is hovered. Mirrors samp.dll 0x10071470.
     pub fn hover(&mut self, cx: i32, cy: i32) -> Option<u16> {
         if !self.selection.active {
             return None;

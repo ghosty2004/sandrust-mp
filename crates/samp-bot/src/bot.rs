@@ -2,11 +2,11 @@
 //! scripted modes (walk / idle / drive / passenger / shoot), and the sync
 //! senders with the original client's rates and filters.
 //!
-//! Specs: docs/re/subsystems/remote-players-sync.md (§0.4 rates and
-//! duplicate suppression, §2 layouts), vehicles.md (26/154/70/71),
-//! remote-control-vehicles.md §5, remote-control-combat.md §5, player-state.md
-//! (spawn, death, 115). Values the specs leave open are listed in
-//! docs/phase3/bot2-notes.md.
+//! Specs (all under docs/re/subsystems/): remote-players-sync.md ("0.4 Send-rate
+//! machinery", "2. Sync packets"), vehicles.md (RPCs 26/154/70/71),
+//! remote-control-vehicles.md ("5. Enter / exit"), remote-control-combat.md ("5. Local
+//! firing"), player-state.md (spawn, death, RPC 115). Values the specs leave open are
+//! listed in docs/phase3/bot2-notes.md.
 
 use std::f32::consts::TAU;
 use std::time::{Duration, Instant};
@@ -26,7 +26,7 @@ use crate::weapons::{self, Inventory, WeaponsTracker};
 use crate::world::World;
 use crate::{Outbox, Result, send_rpc};
 
-/// Key bits (remote-players-sync.md §0.3).
+/// Key bits (docs/re/subsystems/remote-players-sync.md, "0.3 Key word").
 pub mod keys {
     pub const ACTION: u16 = 1;
     /// In a vehicle: horn.
@@ -47,7 +47,8 @@ const WALK_SPEED: f32 = 0.5;
 /// On-foot speed towards a vehicle door (m/s, running).
 const RUN_SPEED: f32 = 4.0;
 /// Distance to the vehicle at which the bot "presses" enter (driver key /
-/// passenger key). The passenger poll requires < 8.0 (vehicles.md 26 C→S).
+/// passenger key). The passenger poll requires < 8.0
+/// (docs/re/subsystems/vehicles.md, "26 OnPlayerEnterVehicle (C→S)").
 const ENTER_REQUEST_RANGE: f32 = 4.0;
 const PASSENGER_POLL_RANGE: f32 = 8.0;
 /// Duration of the get-in animation once at the door, and of the exit.
@@ -362,7 +363,7 @@ impl Bot {
             Incoming::InitGame(g) => self.init_game(&g, now, out),
             // RPC 40 (gmx): like the client's reset routine, no sync until the server's next InitGame. A sync sent
             // in that gap reaches the restarted gamemode before the class request, the server then takes the
-            // player as on foot and ignores its class request (soak, derby: stuck in class selection for good).
+            // player as on foot and ignores its class request, leaving the bot stuck in class selection.
             Incoming::Session(samp_proto::rpcs::session::Incoming::PlayerClose(_)) => {
                 println!("[game] server restarting; no sync until InitGame");
                 self.phase = Phase::Joining;
@@ -1155,7 +1156,7 @@ impl Bot {
             sync.rotation = self.car_rot.filter(sync.rotation);
             self.send_gated(&sync, now, out);
             if let Some(t) = self.cfg.trailer {
-                // A towed trailer 9 m behind the cab on its heading (measurement input, M6-P).
+                // A towed trailer 9 m behind the cab on its heading.
                 let pose = m.pose();
                 let back = scale(geom::forward(pose.heading), -9.0);
                 let ts = samp_proto::sync::vehicle::TrailerSync {
@@ -1508,7 +1509,7 @@ mod tests {
         assert!(feet.iter().all(|f| f.keys & keys::AIM != 0 && f.weapon.weapon() == 24));
         assert!(feet.iter().any(|f| f.keys & keys::FIRE != 0));
         // Standing still while aiming at a still target, the on-foot struct still changes with the aim sway,
-        // so 207 keeps going out (soak: a fixed heading starved it behind the always-changing 203).
+        // so 207 keeps going out (with a fixed heading it would starve behind the always-changing 203).
         let late =
             rec.syncs(ids::FOOT_SYNC).iter().filter(|f| f.0.duration_since(t0) >= Duration::from_millis(1000)).count();
         assert!(late >= 20, "on-foot syncs after the first second: {late}");

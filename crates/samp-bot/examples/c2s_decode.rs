@@ -1,4 +1,4 @@
-//! TRACE-6 helper: decodes the client→server lines of a `samp-dump --raw` log.
+//! Helper for comparing captures: decodes the client→server lines of a `samp-dump --raw` log.
 //!
 //! samp-dump prints C→S RPC payloads and sync packets as hex; this reads such a log on stdin
 //! and appends the decoded payload (RPCs through `rpcs::decode_outgoing`, sync packets

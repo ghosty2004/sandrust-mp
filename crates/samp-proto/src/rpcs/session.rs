@@ -44,7 +44,7 @@ impl RpcPayload for PlayerClose {
 ///
 /// Spec: session-misc.md "103 ClientCheck" (anti-cheat; layout only — how the
 /// client computes answers is deliberately not implemented here). Matches
-/// open.mp's write order. Observed client limits: the request is dropped
+/// open.mp's write order. Client limits: the request is dropped
 /// without reply when `offset > 256`, `count > 256` or `count < 2`, and only
 /// type codes 0x02, 0x05, 0x45, 0x46, 0x47 and 0x48 are answered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -624,34 +624,29 @@ impl Incoming {
 
 outgoing! {
     Session;
-    /// RPC 25: send site A 0x1000ad80 / B 0x1000ad70, reliability 8 (RELIABLE),
-    /// priority 1, channel 0 (session-misc.md "25 PlayerConnect (C→S)").
-    /// **Captured**: the original client sent it rel 8, 616 bits
-    /// (captures/selftest.log).
+    /// RPC 25: reliability 8 (RELIABLE), priority 1, channel 0
+    /// (session-misc.md "25 PlayerConnect (C→S)"). Mirrors samp.dll 0x1000ad80.
     PlayerConnect => Reliable;
-    /// RPC 103 reply: send site A 0x10011990 / B 0x10011970, reliability 9
-    /// (RELIABLE_ORDERED), priority 1, channel 0 (session-misc.md "103
-    /// ClientCheck"). Static analysis; not yet captured.
+    /// RPC 103 reply: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (session-misc.md "103 ClientCheck"). Mirrors samp.dll 0x10011990.
     ClientCheckResponse => ReliableOrdered;
-    /// RPC 155: send site A 0x10008f10 / B 0x10008f00, reliability 8,
-    /// priority 1, channel 0 (session-misc.md "155", remote-players-sync.md).
-    /// Static analysis; not yet captured.
+    /// RPC 155: reliability 8 (RELIABLE), priority 1, channel 0
+    /// (session-misc.md "155", remote-players-sync.md). Mirrors samp.dll
+    /// 0x10008f10.
     OnPlayerRequestScoresAndPings => Reliable;
-    /// RPC 23: send site A 0x1006ec10 / B 0x1006ebd0, reliability 9, priority 1,
-    /// channel 0 (session-misc.md "23", player-state.md). Static analysis; not
-    /// yet captured.
+    /// RPC 23: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (session-misc.md "23", player-state.md). Mirrors samp.dll 0x1006ec10.
     OnPlayerClickPlayer => ReliableOrdered;
-    /// RPC 119: send site in A 0x10075790 / B 0x10075760, reliability 8,
-    /// priority 1, channel 0 (session-misc.md "119", player-state.md). Static
-    /// analysis; not yet captured.
+    /// RPC 119: reliability 8 (RELIABLE), priority 1, channel 0
+    /// (session-misc.md "119", player-state.md). The send site lies inside
+    /// samp.dll 0x10075790.
     OnPlayerClickMap => Reliable;
-    /// RPC 168: send site A 0x10004700 / B 0x100046e0, reliability 9,
-    /// priority 1, channel 0 (session-misc.md "168", player-state.md). Static
-    /// analysis; not yet captured.
+    /// RPC 168: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (session-misc.md "168", player-state.md). Mirrors samp.dll 0x10004700.
     OnPlayerCameraTarget => ReliableOrdered;
-    /// RPC 97: send site A 0x10013520 / B 0x100134f0, reliability 10
-    /// (RELIABLE_SEQUENCED), priority 1, channel 0 (session-misc.md "97").
-    /// Static analysis; never sent in practice, so it cannot be captured.
+    /// RPC 97: reliability 10 (RELIABLE_SEQUENCED), priority 1, channel 0
+    /// (session-misc.md "97"). The original client never reaches this send in
+    /// practice (see [`PickedUpDroppedWeapon`]). Mirrors samp.dll 0x10013520.
     PickedUpDroppedWeapon => ReliableSequenced;
 }
 

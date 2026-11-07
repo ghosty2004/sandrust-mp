@@ -1,6 +1,8 @@
-//! Chat window model: 100-entry buffer, entry types, paging, F7 display modes,
-//! timestamps, line layout and chatlog lines (UR §7, §10; UCA "chat window model",
-//! §93, §101).
+//! Chat window model: the 100-entry buffer, entry types, paging, F7 display modes, timestamps,
+//! line layout and chatlog lines. Entry points: [`ChatWindow::add_client_message`] (RPC 93),
+//! [`ChatWindow::add_player_chat`] (RPC 101) and [`ChatWindow::layout`]. Specs:
+//! docs/re/subsystems/ui-rendering.md ("Chat window") and ui-chat-audio.md ("Shared: chat window
+//! model", "93 SendClientMessage", "101 PlayerChatMessage").
 
 use std::collections::VecDeque;
 use std::ops::RangeInclusive;
@@ -10,36 +12,36 @@ use crate::colour::{self, rgba_to_argb};
 use crate::fonts::{FontId, TextMeasure, chat_outline};
 use crate::text::{self, KeyNameExpander, c_str, expand_key_names, replace_control_chars, split_line};
 
-/// Scroll-back size: 100 entries, newest last (UCA chat model, UR §7.1).
+/// Scroll-back size: 100 entries, newest last.
 pub const CAPACITY: usize = 100;
 /// Longest accepted prefix (player name); a longer one drops the whole entry.
 pub const MAX_PREFIX_LEN: usize = 24;
 /// Entry text is truncated to this many characters (`strncpy`).
 pub const MAX_TEXT_LEN: usize = 144;
-/// Player chat wraps after this many characters (UCA "Type-2 wrapping").
+/// Player chat wraps after this many characters.
 pub const PLAYER_CHAT_WRAP: usize = 72;
 /// How far back from the wrap column a space is searched.
 pub const PLAYER_CHAT_WRAP_BACKTRACK: usize = 12;
-/// RPC 93 messages this long or longer are dropped (UCA §93).
+/// RPC 93 messages this long or longer are dropped.
 pub const CLIENT_MESSAGE_DROP_LEN: usize = 256;
-/// RPC 93 messages longer than this are read but not shown (UCA §93).
+/// RPC 93 messages longer than this are read but not shown.
 pub const CLIENT_MESSAGE_SHOW_MAX: usize = 144;
 
-/// Default page size (chat +0x00, UR §7.1).
+/// Default page size (chat object field +0x00).
 pub const DEFAULT_PAGE_SIZE: u32 = 10;
-/// Values the page-size setter accepts (A 0x100672a0, UR §7.4); also used at start-up.
+/// Values the page-size setter ([`ChatWindow::set_page_size`]) accepts; also used at start-up.
 pub const PAGE_SIZE_SETTER_RANGE: RangeInclusive<u32> = 10..=100;
-/// Values `/pagesize` accepts (UR §7.4).
+/// Values `/pagesize` accepts.
 pub const PAGE_SIZE_COMMAND_RANGE: RangeInclusive<u32> = 10..=20;
-/// Scrollbar track range start; entry 0 is therefore never visible (UR §7.2, §7.4).
+/// Scrollbar track range start; entry 0 is therefore never visible.
 pub const SCROLL_MIN: u32 = 1;
 /// Scrollbar track range end.
 pub const SCROLL_END: u32 = 100;
-/// Unknown (notes U-PAGESIZE-SCROLL): whether re-laying out the scrollbar after a
-/// page-size change scrolls to the bottom (assumed) or only clamps the position.
+/// Whether re-laying out the scrollbar after a page-size change scrolls to the bottom (assumed)
+/// or only clamps the position; not confirmed on the original.
 pub const PAGESIZE_CHANGE_SCROLLS_TO_BOTTOM: bool = true;
 
-/// Left edge of chat lines (UR §7.2).
+/// Left edge of chat lines.
 pub const LINE_LEFT: i32 = 45;
 /// Right edge of the line rect (unused because of `DT_NOCLIP`).
 pub const LINE_RIGHT: i32 = 550;
@@ -51,19 +53,20 @@ pub const FIRST_LINE_BOTTOM: i32 = 110;
 pub const NAME_GAP: i32 = 5;
 /// With timestamps on, content starts at `timestamp width + 50`.
 pub const TIMESTAMP_CONTENT_OFFSET: i32 = 50;
-/// String measured for the timestamp column width.
+/// Sample string whose width sets the timestamp column.
 pub const TIMESTAMP_SAMPLE: &[u8] = b"[19:58:34]";
 /// Line terminator of chatlog lines (format strings `"%s <%s> %s\r\n"` / `"%s %s\r\n"`).
-/// Unknown (notes U-CHATLOG-MODE): file mode of the append (text mode would write CR CR LF).
+/// The original appends in text mode, so its file holds CR CR LF; the host reproduces that by
+/// converting `\n` to `\r\n` when writing.
 pub const CHATLOG_LINE_END: &[u8] = b"\r\n";
-/// Chatlog file name in the user files directory (UR §7.1).
+/// Chatlog file name in the user files directory.
 pub const CHATLOG_FILE: &str = "chatlog.txt";
-/// Scrollbar geometry (UR §7.4): x, y, width; height is `(h + 1)·pageSize − 60`.
+/// Scrollbar geometry: x, y, width; height is `(h + 1)·pageSize − 60`.
 pub const SCROLLBAR_X: i32 = 10;
 pub const SCROLLBAR_Y: i32 = 40;
 pub const SCROLLBAR_W: i32 = 20;
 
-/// Entry type (UCA chat model).
+/// Entry type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum EntryType {
@@ -105,7 +108,7 @@ pub struct ChatEntry {
 }
 
 impl ChatEntry {
-    /// The prefix as stored and drawn: the name with `:` appended (UR §7.2).
+    /// The prefix as stored and drawn: the name with `:` appended.
     pub fn prefix(&self) -> Vec<u8> {
         if self.name.is_empty() {
             Vec::new()
@@ -116,9 +119,8 @@ impl ChatEntry {
         }
     }
 
-    /// Chatlog line: `[HH:MM:SS] <name> text` for named entries, else `[HH:MM:SS] text`
-    /// (UCA chat model, A 0x100677d0). Unknown (notes U-CHATLOG-NAME): the name is
-    /// logged without the `:`.
+    /// Chatlog line: `[HH:MM:SS] <name> text` for named entries, else `[HH:MM:SS] text`; the name is
+    /// logged without the `:`, as on the original. Mirrors samp.dll 0x100677d0.
     pub fn chatlog_line(&self) -> Vec<u8> {
         let mut out = self.time.timestamp();
         out.push(b' ');
@@ -133,7 +135,7 @@ impl ChatEntry {
     }
 }
 
-/// F7 display modes (UR §7.3).
+/// F7 display modes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DisplayMode {
@@ -160,7 +162,7 @@ impl DisplayMode {
     pub fn outline(self) -> bool {
         self == Self::Outlined
     }
-    /// HUD + radar visibility follows the chat mode (UR §2.3 step 9).
+    /// HUD + radar visibility follows the chat mode.
     pub fn hud_visible(self) -> bool {
         self != Self::Hidden
     }
@@ -195,18 +197,18 @@ pub struct ChatLine {
     pub items: Vec<TextItem>,
 }
 
-/// What the renderer draws for the chat window this frame (UR §7.2, §7.5).
+/// What the renderer draws for the chat window this frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatLayout {
     pub visible: bool,
     pub lines: Vec<ChatLine>,
     /// Black outline offsets to draw (stripped text) before each item; empty in mode 1.
     pub outline: &'static [(i32, i32)],
-    /// Bottom of the last line (chat +0x12e); the input box hangs below it.
+    /// Bottom of the last line (chat object field +0x12e); the input box hangs below it.
     pub bottom: i32,
 }
 
-/// The chat window (global A 0x1026e9f8).
+/// The chat window. Mirrors the samp.dll global at 0x1026e9f8.
 #[derive(Clone, Debug)]
 pub struct ChatWindow {
     entries: VecDeque<Option<ChatEntry>>,
@@ -243,8 +245,8 @@ impl ChatWindow {
         }
     }
 
-    /// Enables chatlog lines. The original enables logging when truncating
-    /// `chatlog.txt` (mode `"w"`) at construction succeeded (UR §7.1).
+    /// Enables chatlog lines. The original enables logging when truncating `chatlog.txt`
+    /// (mode `"w"`) at construction succeeded.
     pub fn set_logging(&mut self, on: bool) {
         self.logging = on;
     }
@@ -262,7 +264,7 @@ impl ChatWindow {
         self.entries.back().and_then(Option::as_ref)
     }
 
-    /// Adds one entry (A 0x10068020 and neighbours). A prefix longer than 24 chars
+    /// Adds one entry. Mirrors samp.dll 0x10068020. A prefix longer than 24 chars
     /// drops the entry silently; control characters become spaces; text is
     /// truncated to 144 chars. Returns the chatlog line if logging is on.
     pub fn add_entry(
@@ -290,8 +292,8 @@ impl ChatWindow {
         log
     }
 
-    /// RPC 93 SendClientMessage (UCA §93, UR §10): limits, `~k~` expansion, type-4 entry
-    /// in the server colour with alpha forced to FF.
+    /// RPC 93 SendClientMessage: length limits, `~k~` expansion, then a type-4 entry in the server
+    /// colour with alpha forced to FF.
     pub fn add_client_message(
         &mut self,
         colour_rgba: u32,
@@ -312,13 +314,13 @@ impl ChatWindow {
         ClientMessageResult::Added(log.into_iter().collect())
     }
 
-    /// RPC 101 PlayerChatMessage (UCA §101): type-2 entry, name in `name_colour`
+    /// RPC 101 PlayerChatMessage: type-2 entry, name in `name_colour`
     /// (already ARGB), text in the player-text colour, wrapped at 72 chars into a
     /// second entry without prefix. The caller checks connection state and resolves
     /// the id to name/colour. No `~k~` expansion.
     pub fn add_player_chat(&mut self, name: &[u8], name_colour: u32, text: &[u8], time: LocalTime) -> Vec<Vec<u8>> {
-        // Unknown (notes U-CHAT-LONGNAME): the two lines are added independently, so a
-        // >24-char name drops only the first one.
+        // Assumed: the two lines are added independently, so a name longer than 24 chars drops
+        // only the first one.
         let text = c_str(text);
         let (first, rest) = split_line(text, PLAYER_CHAT_WRAP, PLAYER_CHAT_WRAP_BACKTRACK);
         let tc = self.player_text_colour;
@@ -330,13 +332,13 @@ impl ChatWindow {
         logs
     }
 
-    /// Local printf-style info line (type 4, A 0x10068070).
+    /// Local printf-style info line (type 4). Mirrors samp.dll 0x10068070.
     pub fn add_info(&mut self, text: &[u8], time: LocalTime) -> Option<Vec<u8>> {
         let c = self.info_colour;
         self.add_entry(EntryType::Info, b"", text, c, c, time)
     }
 
-    /// Local debug line (type 8, A 0x100680f0).
+    /// Local debug line (type 8). Mirrors samp.dll 0x100680f0.
     pub fn add_debug(&mut self, text: &[u8], time: LocalTime) -> Option<Vec<u8>> {
         let c = self.debug_colour;
         self.add_entry(EntryType::Debug, b"", text, c, c, time)
@@ -347,7 +349,7 @@ impl ChatWindow {
     pub fn mode(&self) -> DisplayMode {
         self.mode
     }
-    /// F7 (A 0x100612c0). Not persisted.
+    /// F7: next display mode. Not persisted. Mirrors samp.dll 0x100612c0.
     pub fn cycle_mode(&mut self) -> DisplayMode {
         self.mode = self.mode.next();
         self.dirty = true;
@@ -361,7 +363,7 @@ impl ChatWindow {
         self.dirty = true;
     }
 
-    /// Dirty flag for the render-to-texture cache (UR §7.6).
+    /// Dirty flag for the render-to-texture cache: the renderer redraws the chat texture when set.
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
@@ -384,8 +386,8 @@ impl ChatWindow {
         SCROLL_END.saturating_sub(self.page_size).max(SCROLL_MIN)
     }
 
-    /// Page-size setter (A 0x100672a0): accepts 10..100, re-lays out the scrollbar and
-    /// marks the chat dirty. Returns false (and changes nothing) outside the range.
+    /// Page-size setter: accepts 10..100, re-lays out the scrollbar and marks the chat dirty.
+    /// Returns false (and changes nothing) outside the range. Mirrors samp.dll 0x100672a0.
     pub fn set_page_size(&mut self, n: u32) -> bool {
         if !PAGE_SIZE_SETTER_RANGE.contains(&n) {
             return false;
@@ -401,19 +403,19 @@ impl ChatWindow {
         self.pos >= self.max_pos()
     }
 
-    /// PageUp (A 0x100672d0): `pos := max(1, pos − pageSize)`.
+    /// PageUp: `pos := max(1, pos − pageSize)`. Mirrors samp.dll 0x100672d0.
     pub fn page_up(&mut self) {
         self.pos = self.pos.saturating_sub(self.page_size).max(SCROLL_MIN);
     }
 
-    /// PageDown (A 0x10067330): `pos := pageSize` if `pos == 1`, else `pos + pageSize`,
-    /// capped at 100, then clamped to `100 − pageSize` by the scrollbar.
+    /// PageDown: `pos := pageSize` if `pos == 1`, else `pos + pageSize`, capped at 100, then clamped
+    /// to `100 − pageSize` by the scrollbar. Mirrors samp.dll 0x10067330.
     pub fn page_down(&mut self) {
         let p = if self.pos == SCROLL_MIN { self.page_size } else { self.pos + self.page_size };
         self.pos = p.min(SCROLL_END).min(self.max_pos());
     }
 
-    /// Mouse wheel (A 0x100673c0): scroll by `−(notches × lines_per_notch)` lines.
+    /// Mouse wheel: scroll by `−(notches × lines_per_notch)` lines. Mirrors samp.dll 0x100673c0.
     pub fn wheel(&mut self, notches: i32, lines_per_notch: u32) {
         let delta = -i64::from(notches) * i64::from(lines_per_notch);
         let p = (i64::from(self.pos) + delta).clamp(i64::from(SCROLL_MIN), i64::from(self.max_pos()));
@@ -421,7 +423,7 @@ impl ChatWindow {
     }
 
     /// Sets the scroll position, clamped like the scrollbar (`1..=100 − pageSize`).
-    /// Enter in the chat input sets 90 (A 0x10067390).
+    /// Enter in the chat input sets 90.
     pub fn scroll_to(&mut self, pos: u32) {
         self.pos = pos.clamp(SCROLL_MIN, self.max_pos());
     }
@@ -438,25 +440,24 @@ impl ChatWindow {
         (start..end).map(|i| self.entries[i].as_ref())
     }
 
-    /// Scrollbar shown: mode ≠ 0 and (not at the bottom or the input is open) (UR §7.4).
+    /// Scrollbar shown: mode ≠ 0 and (not at the bottom or the input is open).
     pub fn scrollbar_visible(&self, input_open: bool) -> bool {
         self.mode.chat_visible() && (!self.at_bottom() || input_open)
     }
 
-    /// Scrollbar rect for main-font line height `h` (A 0x10067200).
+    /// Scrollbar rect for main-font line height `h`. Mirrors samp.dll 0x10067200.
     pub fn scrollbar_rect(&self, h: i32) -> Rect {
         Rect::xywh(SCROLLBAR_X, SCROLLBAR_Y, SCROLLBAR_W, (h + 1) * self.page_size as i32 - 60)
     }
 
     // ----- layout -----------------------------------------------------------------------
 
-    /// Bottom of the chat (chat +0x12e) for main-font line height `h`.
+    /// Bottom of the chat (chat object field +0x12e) for main-font line height `h`.
     ///
-    /// The draw loop (A 0x10067940) runs once per page line, filled or not; at the end
-    /// of each iteration it advances the rect (`top += h + 1`, `bottom = top + h + 1`)
-    /// and finally stores the bottom of the rect prepared for the line *after* the
-    /// last one: `10 + (pageSize + 1)·(h + 1)`; 110 with page size 0. Verified against
-    /// a screenshot of the original (input box top at 175 for page size 10, h = 14).
+    /// The draw loop runs once per page line, filled or not; at the end of each iteration it
+    /// advances the rect (`top += h + 1`, `bottom = top + h + 1`) and finally stores the bottom of
+    /// the rect prepared for the line *after* the last one: `10 + (pageSize + 1)·(h + 1)`; 110 with
+    /// page size 0. Mirrors samp.dll 0x10067940.
     pub fn bottom(&self, h: i32) -> i32 {
         match self.page_size {
             0 => FIRST_LINE_BOTTOM,
@@ -464,8 +465,7 @@ impl ChatWindow {
         }
     }
 
-    /// Lays out the visible lines (A 0x10067940 / 0x10067470) for video-mode width
-    /// `video_w`.
+    /// Lays out the visible lines for video-mode width `video_w`. Mirrors samp.dll 0x10067470.
     pub fn layout(&self, m: &dyn TextMeasure, video_w: i32) -> ChatLayout {
         let h = m.line_height(FontId::Main);
         let tw = m.timestamp_width();

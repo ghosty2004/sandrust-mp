@@ -1,5 +1,6 @@
 //! Client-side send filters shared by the sync senders
-//! (docs/re/subsystems/remote-players-sync.md §0.4, §207, §200).
+//! (docs/re/subsystems/remote-players-sync.md, "0.4 Send-rate machinery", "207 PlayerFootSync",
+//! "200 PlayerVehicleSync").
 
 use std::time::{Duration, Instant};
 

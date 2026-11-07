@@ -1296,47 +1296,45 @@ incoming!(
 
 outgoing! {
     World;
-    /// RPC 27: send site A 0x1006dcd0 / B 0x1006dc90 (ID cell A 0x100e5e9c),
-    /// reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
-    /// (world-entities.md §27; missing from rpc-ids.md's send table). Static
-    /// analysis; not yet captured.
+    /// RPC 27: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (world-entities.md §27; missing from rpc-ids.md's send table, see
+    /// docs/re/README.md "Gaps"). Mirrors samp.dll 0x1006dcd0.
     OnPlayerSelectObject => ReliableOrdered;
-    /// RPC 117: send site A 0x10072910 / B 0x100728e0, reliability 9,
-    /// priority 1, channel 0 (world-entities.md §117). Static analysis; not yet
-    /// captured.
+    /// RPC 117: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (world-entities.md §117). Mirrors samp.dll 0x10072910.
     OnPlayerEditObject => ReliableOrdered;
-    /// RPC 116: send site A 0x10072b20 / B 0x10072af0, reliability 9,
-    /// priority 1, channel 0 (world-entities.md §116). Static analysis; not yet
-    /// captured.
+    /// RPC 116: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (world-entities.md §116). Mirrors samp.dll 0x10072b20.
     OnPlayerEditAttachedObject => ReliableOrdered;
-    /// RPC 131, collision-hook path (A 0x10013440 / B 0x10013410): reliability
-    /// 9, priority 1, channel 0 (world-entities.md §131). The type-14 pickup
-    /// poll (A 0x10013520) sends the same payload with reliability 10, see
-    /// [`OnPlayerPickUpPickup::POLL_SEND_PARAMS`]. Static analysis; not yet
-    /// captured.
+    /// RPC 131, collision-hook path: reliability 9 (RELIABLE_ORDERED),
+    /// priority 1, channel 0 (world-entities.md §131). The poll of type-14
+    /// pickups sends the same payload with reliability 10, see
+    /// [`OnPlayerPickUpPickup::POLL_SEND_PARAMS`]. Mirrors samp.dll 0x10013440.
     OnPlayerPickUpPickup => ReliableOrdered;
-    /// RPC 177: send site A 0x10006ac0 / B 0x10006ab0, reliability 9,
-    /// priority 1, channel 0 (world-entities.md §177). Static analysis; not yet
-    /// captured.
+    /// RPC 177: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (world-entities.md §177). Mirrors samp.dll 0x10006ac0.
     OnPlayerDamageActor => ReliableOrdered;
-    /// RPC 181: variable-ID send site A 0x1000d800 (kind 1), reliability 9,
-    /// priority 1, channel 0 (session-misc.md §181/182). Dormant in R4: cannot
-    /// be captured with an R4 client.
+    /// RPC 181: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (session-misc.md §181/182). Sent from a shared send site that takes the
+    /// RPC id as a variable (kind 1); dormant in R4, so the original client
+    /// never sends it. Mirrors samp.dll 0x1000d800.
     RequestDff => ReliableOrdered;
-    /// RPC 182: variable-ID send site A 0x1000d800 (kind 2), reliability 9,
-    /// priority 1, channel 0 (session-misc.md §181/182). Dormant in R4.
+    /// RPC 182: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (session-misc.md §181/182). Same shared send site as RPC 181 (kind 2);
+    /// dormant in R4. Mirrors samp.dll 0x1000d800.
     RequestTxd => ReliableOrdered;
-    /// RPC 184: send site A 0x1000d920 / B 0x1000d910, reliability 9,
-    /// priority 1, channel 0 (world-entities.md "Custom models",
-    /// session-misc.md §184). Dormant in R4.
+    /// RPC 184: reliability 9 (RELIABLE_ORDERED), priority 1, channel 0
+    /// (world-entities.md "Custom models", session-misc.md §184). Dormant in
+    /// R4. Mirrors samp.dll 0x1000d920.
     FinishDownload => ReliableOrdered;
 }
 
 impl OnPlayerPickUpPickup {
     /// Send parameters of RPC 131's second send site, the poll of type-14
-    /// pickups (A 0x10013520, run every ~6 netgame ticks): reliability 10
+    /// pickups (run every ~6 netgame ticks): reliability 10
     /// (RELIABLE_SEQUENCED), priority 1, channel 0 (world-entities.md §131).
     /// [`crate::rpcs::OutgoingRpc::SEND_PARAMS`] is the collision-hook path.
+    /// Mirrors samp.dll 0x10013520.
     pub const POLL_SEND_PARAMS: crate::rpcs::SendParams = crate::rpcs::SendParams {
         priority: crate::rpcs::RPC_PRIORITY,
         reliability: crate::raknet::Reliability::ReliableSequenced,

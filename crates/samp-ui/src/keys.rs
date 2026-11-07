@@ -1,6 +1,7 @@
-//! Window-message routing for the UI keys (UR §6.2–6.3) and the per-frame Present
-//! plan (UR §2.3). Pure decisions: the host translates Windows messages into
-//! [`Event`]s and executes the returned [`Action`]s on the models of this crate.
+//! Window-message routing for the UI keys ([`route`]) and the per-frame Present plan
+//! ([`frame_plan`]). Pure decisions: the host translates Windows messages into [`Event`]s and
+//! executes the returned [`Action`]s on the models of this crate. Spec:
+//! docs/re/subsystems/ui-rendering.md ("Window procedure and keys", "Present: per-frame draw order").
 
 use crate::Rect;
 use crate::chat::DisplayMode;
@@ -168,7 +169,7 @@ impl Routed {
     }
 }
 
-/// Routes one event (UR §6.2 order, §6.3 table).
+/// Routes one event, in the order of samp's window procedure.
 pub fn route(ev: Event, s: &UiState) -> Routed {
     match ev {
         Event::Char(0x1B) => {
@@ -184,7 +185,7 @@ pub fn route(ev: Event, s: &UiState) -> Routed {
                 Routed::none()
             }
         }
-        // samp's edit box ignores a typed CR (`WM_CHAR` 0x0D): Enter acts on its key-up only (INPUT-1),
+        // samp's edit box ignores a typed CR (`WM_CHAR` 0x0D): Enter acts on its key-up only,
         // so neither key auto-repeat nor the character of the Enter that sent a chat line can
         // answer a dialog.
         Event::Char(b'\r') if s.input_open => Routed { actions: Vec::new(), consumed: true },
@@ -210,7 +211,7 @@ pub fn route(ev: Event, s: &UiState) -> Routed {
                 || s.other_modal
                 || s.textdraw_select,
         },
-        // TRACE-3 U-EDITKEY-CONSUME: with the input open no key-down reaches GTA.
+        // With the input open no key-down reaches GTA.
         Event::KeyDown(_) if s.input_open => Routed { actions: Vec::new(), consumed: true },
         Event::KeyDown(k) if s.dialog_open && !s.scoreboard_open && !s.gta_menu => {
             let lk = match k {
@@ -228,7 +229,7 @@ pub fn route(ev: Event, s: &UiState) -> Routed {
             }
         }
         Event::KeyDown(_) => Routed::none(),
-        // TRACE-3 U-EDITKEY-CONSUME: every key-up reaches GTA (actions still run).
+        // Every key-up reaches GTA (actions still run).
         Event::KeyUp(k) => Routed { consumed: false, ..key_up(k, s) },
         Event::SysKeyUp(Vk::Enter) => Routed::one(Action::ToggleWindowed),
         Event::SysKeyUp(_) => Routed::none(),
@@ -257,10 +258,10 @@ pub fn route(ev: Event, s: &UiState) -> Routed {
 
 fn key_up(k: Vk, s: &UiState) -> Routed {
     match k {
-        // Unknown (notes U-F6): no condition besides the input existing.
+        // Assumed: no condition besides the input existing.
         Vk::F6 if s.input_exists => Routed::one(if s.input_open { Action::CloseInput } else { Action::OpenInput }),
         Vk::Escape if s.input_open && !s.ime_composing => Routed::one(Action::CloseInput),
-        // INPUT-1: samp's edit box raises its "string" event on the Enter key-up (A 0x10089380),
+        // samp's edit box raises its "string" event on the Enter key-up (samp.dll 0x10089380),
         // so the chat line is sent on the key-up, never on the key-down or the typed CR. A dialog the
         // server shows in answer arrives after the key-up and stays open.
         Vk::Enter if s.input_open => Routed::one(Action::SubmitInput),
@@ -295,7 +296,7 @@ pub struct FrameInput {
     pub f5_held: bool,
     pub f10_held: bool,
     pub chat_mode: DisplayMode,
-    /// Local ped field +0x2c9 > 5000 (meaning unknown, UR §21 item 6).
+    /// Local ped field +0x2c9 > 5000 (meaning unknown; hides the HUD).
     pub ped_field_over_5000: bool,
 }
 
@@ -314,11 +315,11 @@ pub enum Overlay {
     World,
 }
 
-/// Per-frame decisions of the D3D pass (UR §2.3).
+/// Per-frame decisions of the D3D pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FramePlan {
     pub overlay: Overlay,
-    /// Nametag bars/names, audio title and `/dl` labels (step 4).
+    /// Nametag bars/names, audio title and `/dl` labels (drawn before the overlays).
     pub nametags: bool,
     /// HUD + radar on/off (`None` = left unchanged, GTA menu frames).
     pub hud_on: Option<bool>,
@@ -368,7 +369,7 @@ mod tests {
         // With the input open the character is typed.
         let s = UiState { input_open: true, ..st() };
         assert_eq!(route(Event::Char(b't'), &s).actions, vec![Action::InputChar(b't')]);
-        // INPUT-1: the typed CR does nothing; the Enter key-up sends the line.
+        // The typed CR does nothing; the Enter key-up sends the line.
         let r = route(Event::Char(b'\r'), &s);
         assert!(r.actions.is_empty() && r.consumed);
         assert_eq!(route(Event::KeyUp(Vk::Enter), &s).actions, vec![Action::SubmitInput]);
@@ -428,10 +429,10 @@ mod tests {
         let d = UiState { dialog_open: true, ..st() };
         assert_eq!(route(Event::KeyUp(Vk::Enter), &d).actions, vec![Action::DialogResponse(Button::Ok)]);
         let both = UiState { input_open: true, ..d };
-        // TRACE-3 U-EDITKEY-CONSUME: key-ups always reach GTA; key-downs not while typing.
+        // Key-ups always reach GTA; key-downs not while typing.
         let r = route(Event::KeyUp(Vk::Enter), &both);
         assert!(r.actions == vec![Action::SubmitInput] && !r.consumed);
-        // INPUT-1: a typed CR never answers a dialog (only the Enter key-up does).
+        // A typed CR never answers a dialog (only the Enter key-up does).
         assert!(route(Event::Char(b'\r'), &d).actions.is_empty());
         let de = UiState { dialog_has_edit: true, ..d };
         let r = route(Event::Char(b'\r'), &de);

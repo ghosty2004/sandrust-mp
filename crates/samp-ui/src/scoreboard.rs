@@ -1,14 +1,14 @@
-//! Scoreboard (Tab): rows, sorting, open/close, RPC 155 refresh timing and geometry
-//! (UR §15).
+//! Scoreboard (Tab): rows, sorting, open/close, RPC 155 refresh timing ([`Scoreboard::frame`])
+//! and geometry (docs/re/subsystems/ui-rendering.md, "Scoreboard").
 
 use crate::colour::rgba_to_argb;
 use crate::fonts::{FontId, TextMeasure};
 use crate::{Rect, round_i};
 
-/// RPC 155 (score/ping request) is sent at most this often while open (A 0x10008f10).
+/// RPC 155 (score/ping request) is sent at most this often while open. Mirrors the samp.dll
+/// sender at 0x10008f10.
 pub const REFRESH_INTERVAL_MS: u64 = 3000;
-/// Unknown (notes U-SB-FIRST-REQUEST): whether a request goes out on the first open frame
-/// (assumed: yes, the timer starts expired).
+/// A request goes out on the first open frame (the timer starts expired), as on the original.
 pub const REQUEST_ON_OPEN: bool = true;
 /// Background colour.
 pub const BACKGROUND: u32 = 0x960A_0A0A;
@@ -16,14 +16,14 @@ pub const BACKGROUND: u32 = 0x960A_0A0A;
 pub const TITLE_COLOUR: u32 = 0xFFBE_BEBE;
 /// Column header colour.
 pub const HEADER_COLOUR: u32 = 0xFF95_B0D0;
-/// List item colours (normal / selected [I]).
+/// List item colours (normal / selected; inferred).
 pub const ITEM_COLOURS: (u32, u32) = (0xC8FF_FFFF, 0xC880_8080);
 /// Header texts.
 pub const HEADERS: [&[u8]; 4] = [b"id", b"name", b"score", b"ping"];
-/// String measured to right-align the player count.
+/// Sample string whose width right-aligns the player count.
 pub const PLAYERS_SAMPLE: &[u8] = b"Players: 10000";
 
-/// Sort mode (field +0x40). Nothing in R4 sets anything but `None`.
+/// Sort mode (scoreboard field +0x40). Nothing in 0.3.7-R4 sets anything but `None`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SortMode {
     #[default]
@@ -53,7 +53,7 @@ pub struct Row {
     pub cells: [Vec<u8>; 4],
 }
 
-/// The scoreboard (global A 0x1026e9c4).
+/// The scoreboard. Mirrors the samp.dll global at 0x1026e9c4.
 #[derive(Clone, Debug, Default)]
 pub struct Scoreboard {
     open: bool,
@@ -111,7 +111,7 @@ impl Scoreboard {
     }
 
     /// Rebuilds the rows: local player first, then connected remote players except NPCs,
-    /// in id order (A 0x1006ed30). Selection and scroll position are kept.
+    /// in id order. Selection and scroll position are kept. Mirrors samp.dll 0x1006ed30.
     pub fn rebuild<'a>(&mut self, local: &PlayerInfo, remotes: impl IntoIterator<Item = &'a PlayerInfo>) {
         let mut remotes: Vec<&PlayerInfo> = remotes.into_iter().filter(|p| !p.is_npc).collect();
         remotes.sort_by_key(|p| p.id);
@@ -126,8 +126,7 @@ impl Scoreboard {
             ],
         };
         let mut rows: Vec<Row> = std::iter::once(local).chain(remotes).map(make).collect();
-        // Unknown (notes U-SB-SORT): how sorting treats the local row; sorting is stable
-        // over all rows.
+        // Assumed: sorting is stable over all rows, the local row included.
         match self.sort {
             SortMode::None => {}
             SortMode::ByName => rows.sort_by(|a, b| a.cells[1].cmp(&b.cells[1])),
@@ -161,7 +160,7 @@ impl Scoreboard {
     }
 }
 
-/// Scoreboard geometry for video mode `w × h` (UR §15.1).
+/// Scoreboard geometry for video mode `w × h`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layout {
     pub rect: Rect,

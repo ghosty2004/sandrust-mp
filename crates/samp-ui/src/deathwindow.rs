@@ -1,15 +1,17 @@
-//! Death window: 5 rows, reason → GTAWEAPON3 glyph table and layout (UR §17).
+//! Death window: the last 5 kill / connect rows, the reason → GTAWEAPON3 glyph table and the
+//! per-row layout ([`DeathWindow::layout`])
+//! (docs/re/subsystems/ui-rendering.md, "Death window").
 
 use std::collections::VecDeque;
 
 use crate::fonts::{FontId, TextMeasure};
 use crate::{Rect, round_i};
 
-/// Rows kept (UR §17.1).
+/// Rows kept.
 pub const ROWS: usize = 5;
 /// Name buffers are 25 bytes: at most 24 characters.
 pub const MAX_NAME_LEN: usize = 24;
-/// String measured for the name column width.
+/// Sample string whose width sets the name column.
 pub const NICK_SAMPLE: &[u8] = b"LONGESTNICKNICK_NICKNICK";
 /// Glyph drawn as the black icon backdrop.
 pub const BACKDROP_GLYPH: u8 = b'G';
@@ -18,7 +20,7 @@ pub const ICON_BOX_W: i32 = 35;
 /// Reason glyph colour (white) and backdrop colour (black).
 pub const ICON_COLOUR: u32 = 0xFFFF_FFFF;
 pub const BACKDROP_COLOUR: u32 = 0xFF00_0000;
-/// Connect / disconnect reasons and their glyph colours (UR §17.1).
+/// Connect / disconnect reasons and their glyph colours.
 pub const REASON_CONNECT: u8 = 200;
 pub const REASON_DISCONNECT: u8 = 201;
 pub const CONNECT_COLOUR: u32 = 0xFF11_11AA;
@@ -26,7 +28,7 @@ pub const DISCONNECT_COLOUR: u32 = 0xFFAA_1111;
 /// Glyph for reasons not in the table.
 pub const DEFAULT_GLYPH: u8 = b'J';
 
-/// Reason → glyph (A 0x10069e50, UR §17.2).
+/// Reason → glyph. Mirrors samp.dll 0x10069e50.
 pub fn glyph(reason: u8) -> u8 {
     match reason {
         0 => b'%',
@@ -114,7 +116,7 @@ pub struct RowLayout {
     pub right_name: Option<NamePlacement>,
 }
 
-/// The death window (global A 0x1026ea00).
+/// The death window. Mirrors the samp.dll global at 0x1026ea00.
 #[derive(Clone, Debug)]
 pub struct DeathWindow {
     rows: VecDeque<DeathRow>,
@@ -146,7 +148,7 @@ impl DeathWindow {
         self.rows.iter()
     }
 
-    /// Adds a row at the bottom; the oldest is pushed out (A 0x1006a5d0). No timeout.
+    /// Adds a row at the bottom; the oldest is pushed out. No timeout. Mirrors samp.dll 0x1006a5d0.
     pub fn add(&mut self, killer: &[u8], killer_colour: u32, victim: &[u8], victim_colour: u32, reason: u8) {
         if self.rows.len() == ROWS {
             self.rows.pop_front();
@@ -161,9 +163,8 @@ impl DeathWindow {
         });
     }
 
-    /// Lays out the rows for video mode `w × h` (UR §17.1). Rows are placed in slot
-    /// order from the top. Unknown (notes U-DW-SLOTS): whether empty slots keep their
-    /// space when fewer than 5 rows exist; here the stored rows fill from the top.
+    /// Lays out the rows for video mode `w × h`. Rows are placed in slot order from the top; with
+    /// fewer than 5 rows the stored rows fill from the top (assumed).
     pub fn layout(&self, m: &dyn TextMeasure, w: i32, h: i32) -> Vec<RowLayout> {
         let nick_w = m.measure(FontId::DeathNames, NICK_SAMPLE).w;
         let icon = m.measure(FontId::DeathIcon, &[DEFAULT_GLYPH]);

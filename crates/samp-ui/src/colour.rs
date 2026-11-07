@@ -1,4 +1,5 @@
-//! Embedded colour codes `{RRGGBB}` and colour conversions (UR §3.3).
+//! Embedded colour codes `{RRGGBB}` and colour conversions
+//! (docs/re/subsystems/ui-rendering.md, "Embedded colour codes").
 //!
 //! Colours are D3DCOLOR `0xAARRGGBB` unless a name says otherwise. Wire colours
 //! are RGBA (`0xRRGGBBAA`) and become ARGB with alpha forced to FF.
@@ -6,26 +7,26 @@
 /// Length of one colour code: `{` + six hex digits + `}`.
 pub const CODE_LEN: usize = 8;
 
-/// Player chat text colour (chat object +0x122, UR §7.1).
+/// Player chat text colour (chat object field +0x122).
 pub const CHAT_PLAYER_TEXT: u32 = 0xFFFF_FFFF;
-/// Type-4 info lines: local feedback and command output (UR §7.1).
+/// Type-4 info lines: local feedback and command output.
 pub const CHAT_INFO: u32 = 0xFF88_AA62;
-/// Type-8 debug lines (UR §7.1).
+/// Type-8 debug lines.
 pub const CHAT_DEBUG: u32 = 0xFFA9_C4E4;
-/// Default dialog body / tablist header colour (UR §13.3).
+/// Default dialog body / tablist header colour.
 pub const DIALOG_BODY: u32 = 0xFFA9_C4E4;
-/// Outline colour of every outlined text (UR §3.4).
+/// Outline colour of every outlined text.
 pub const OUTLINE: u32 = 0xFF00_0000;
 
-/// Wire RGBA → ARGB with alpha forced to FF: `(c >> 8) | 0xFF000000` (UCA conventions).
+/// Wire RGBA → ARGB with alpha forced to FF: `(c >> 8) | 0xFF000000`.
 pub const fn rgba_to_argb(rgba: u32) -> u32 {
     (rgba >> 8) | 0xFF00_0000
 }
 
 /// Parses a colour code at the start of `s` and returns its `0xRRGGBB` value.
 ///
-/// A code is exactly `{` + six hex digits + `}` (UR §3.3, A 0x100b5fd0); anything
-/// else is literal text. Hex digits are accepted in both cases (notes U-HEXCASE).
+/// A code is exactly `{` + six hex digits + `}`; anything else is literal text. Hex digits are
+/// accepted in both cases, as on the original. Mirrors samp.dll 0x100b5fd0.
 pub fn parse_code(s: &[u8]) -> Option<u32> {
     if s.len() < CODE_LEN || s[0] != b'{' || s[7] != b'}' {
         return None;
@@ -37,11 +38,11 @@ pub fn parse_code(s: &[u8]) -> Option<u32> {
     Some(v)
 }
 
-/// Removes every valid colour code (UR §3.3, strip helper A 0x100b6100).
+/// Removes every valid colour code. Mirrors samp.dll 0x100b6100.
 ///
 /// Works like an in-place removal: after a code is removed the scan continues at
 /// the same index, so a code that only forms after a removal at that index is
-/// removed too (notes U-STRIP).
+/// removed too (assumed; docs/phase3/m4-core-notes.md).
 pub fn strip_codes(s: &[u8]) -> Vec<u8> {
     let mut out = s.to_vec();
     let mut i = 0;
@@ -55,7 +56,7 @@ pub fn strip_codes(s: &[u8]) -> Vec<u8> {
     out
 }
 
-/// True for the characters D3DX does not emit a glyph for (UR §3.3 step 2).
+/// True for the characters D3DX does not emit a glyph for.
 pub const fn is_blank(c: u8) -> bool {
     matches!(c, b' ' | b'\t' | b'\n' | b'\r')
 }
@@ -69,7 +70,7 @@ pub struct Glyph {
     pub colour: u32,
 }
 
-/// Per-glyph colouring exactly as the colour-code wrapper font does it (UR §3.3).
+/// Per-glyph colouring exactly as samp's colour-code wrapper font does it.
 ///
 /// D3DX draws the *stripped* text and reports every visible glyph (not spaces,
 /// tabs, CR, LF). For each, a cursor in the *original* text skips blanks, consumes

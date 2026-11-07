@@ -1,13 +1,10 @@
-//! Connection auth key (`0x0c`) exchange.
+//! Connection auth key (`0x0c`) exchange (spec: docs/re/handshake.md §4).
 //!
-//! Spec: docs/re/handshake.md §4. The server sends `0x0c, u8 len, len bytes`
-//! (open.mp includes the trailing NUL in `len`); the client answers
-//! `0x0c, u8 len, len bytes` with a 40-char uppercase hex string.
-//!
-//! Servers validate the answer against a fixed table of 256 challenge →
-//! response pairs. That table is NOT part of this repository (its source is
-//! under a third-party license); it is loaded at runtime from a text file with
-//! one `CHALLENGE RESPONSE` pair per line (see tools/extract_auth_table.py).
+//! The server sends `0x0c, u8 len, len bytes` (open.mp counts the trailing NUL in `len`); the
+//! client answers in the same shape with a 40-char uppercase hex string. Servers check the answer
+//! against a fixed table of 256 challenge → response pairs. That table is third-party data and not
+//! part of this repository: it is loaded at runtime from a text file with one
+//! `CHALLENGE RESPONSE` pair per line (generate it with tools/extract_auth_table.py).
 
 use std::collections::HashMap;
 

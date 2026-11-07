@@ -1,5 +1,8 @@
-//! Dialogs: all six styles, list/tablist parsing, keyboard and selection, typed
-//! responses for RPC 62, geometry and the local F1 help dialog (UR §13; UCA §61, §62).
+//! Dialogs: all six styles, list/tablist parsing, keyboard and selection, the RPC 62 response,
+//! geometry and the local F1 help dialog. Entry points: [`Dialogs::show`] (RPC 61),
+//! [`Dialog::layout`] and [`Dialogs::respond`]. Specs: docs/re/subsystems/ui-rendering.md
+//! ("Dialogs") and ui-chat-audio.md ("61 ShowDialog", "62 OnPlayerDialogResponse");
+//! measured geometry in docs/phase3/trace-notes.md ("Dialogs").
 
 use samp_proto::rpcs::ui::{OnPlayerDialogResponse, ShowDialog};
 
@@ -11,7 +14,7 @@ use crate::{Rect, round_i};
 
 /// The client keeps the first 64 title characters.
 pub const TITLE_MAX: usize = 64;
-/// Button size `BW × BH` (object +0x14/+0x18).
+/// Button size `BW × BH` (dialog object fields +0x14/+0x18).
 pub const BUTTON_W: i32 = 100;
 pub const BUTTON_H: i32 = 30;
 /// List rows are lines of at most 256 characters.
@@ -22,32 +25,29 @@ pub const CELL_MAX: usize = 128;
 pub const MAX_COLUMNS: usize = 4;
 /// Response text limit (edit box contents or first list column).
 pub const RESPONSE_TEXT_MAX: usize = 128;
-/// Unknown (notes U-DLG-EDITCAP): characters the dialog edit box accepts.
+/// Characters the dialog edit box accepts (assumed).
 pub const EDIT_CAPACITY: usize = 128;
-/// DXUT list-box border: the first row is drawn at list top + 6 (TRACE-3 U-LIST-BORDER).
+/// DXUT list-box border: the first row is drawn at list top + 6.
 pub const LIST_BORDER: i32 = 6;
-/// DXUT list-box text margin and scrollbar width: row text is drawn from list left
-/// plus 6 + 5 to list right minus 16 + 6 + 5; the selection bar from left + 6 to
-/// right − 22 (TRACE-3: list 445–835, selection 451–813, text 456–808).
+/// DXUT list-box text margin and scrollbar width: row text is drawn from list left plus 6 + 5
+/// to list right minus 16 + 6 + 5; the selection bar from left + 6 to right − 22.
 pub const LIST_MARGIN: i32 = 5;
 pub const LIST_SCROLLBAR_W: i32 = 16;
-/// List height clamp and list/tablist width limits (UR §13.2).
+/// List height clamp and list/tablist width limits.
 pub const LIST_MIN_H: i32 = 200;
 pub const LIST_MAX_H: i32 = 400;
 pub const LIST_MIN_W: i32 = 400;
 pub const LIST_MAX_W: i32 = 800;
 /// Minimum width for all styles: `2·BW + 30`.
 pub const MIN_W: i32 = 2 * BUTTON_W + 30;
-/// Empty lines make no row: neither a trailing `\n` nor an inner empty line
-/// (TRACE-3 U-LIST-TRAILING: `a\n\nb` = 2 rows).
+/// Empty lines make no row: neither a trailing `\n` nor an inner empty line (`a\n\nb` = 2 rows).
 pub const SKIP_EMPTY_ROWS: bool = true;
-/// List rows (styles 2/4/5) are drawn through the colour-code wrapper: `{RRGGBB}`
-/// recolours per glyph, the stripped text is drawn, base colour 0xFFFFFFFF
-/// (TRACE-3 U-LIST-CODES).
+/// List rows (styles 2/4/5) are drawn through the colour-code wrapper: `{RRGGBB}` recolours per
+/// glyph, the stripped text is drawn, base colour 0xFFFFFFFF.
 pub const LIST_ROWS_INTERPRET_COLOUR_CODES: bool = true;
-/// Row text colour (selected and unselected rows, TRACE-3).
+/// Row text colour (selected and unselected rows).
 pub const ROW_COLOUR: u32 = 0xFFFF_FFFF;
-/// Selection bar tint (sampgui (17,269,241,287), TRACE-3).
+/// Selection bar tint (drawn with the sampgui texel rect (17,269,241,287)).
 pub const SELECTION_COLOUR: u32 = 0xFFB9_2228;
 /// Background colour (all four corners) and caption text colour.
 pub const BACKGROUND: u32 = 0xDC05_0505;
@@ -55,11 +55,11 @@ pub const CAPTION_COLOUR: u32 = 0xFFD2_D2D2;
 /// List item colours.
 pub const ITEM_COLOURS: (u32, u32) = (0xC8FF_FFFF, 0xC880_8080);
 
-/// F1 help dialog (UR §13.6): local, id 1, style 0, no button 2, nothing sent.
+/// F1 help dialog: local, id 1, style 0, no button 2, nothing sent.
 pub const HELP_ID: i16 = 1;
 pub const HELP_TITLE: &[u8] = b"SA-MP Keys:";
 pub const HELP_BUTTON: &[u8] = b"OK";
-/// Help body (A string 0x100ea470).
+/// Help body. Mirrors the samp.dll string at 0x100ea470.
 pub const HELP_BODY: &[u8] = b"{BB9999}F1\t{BBBBBB}Display this help dialog\n\
 {BB9999}Tab\t{BBBBBB}Display the scoreboard\n\
 {BB9999}F4\t{BBBBBB}Allows you to change class next time you respawn\n\
@@ -70,7 +70,7 @@ pub const HELP_BODY: &[u8] = b"{BB9999}F1\t{BBBBBB}Display this help dialog\n\
 {BB9999}T/F6\t{BBBBBB}Allows you to enter a chat message\n\
 {BB9999}G\t{BBBBBB}Enter vehicle as passenger\n";
 
-/// Dialog styles (UCA §61).
+/// Dialog styles (the RPC 61 style byte).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Style {
     MsgBox,
@@ -79,8 +79,7 @@ pub enum Style {
     Password,
     Tablist,
     TablistHeaders,
-    /// Style byte above 5. Unknown (notes U-DLG-STYLE): treated as a message box whose
-    /// body is not drawn.
+    /// Style byte above 5: treated as a message box whose body is not drawn (assumed).
     Other(u8),
 }
 
@@ -102,7 +101,7 @@ impl Style {
     pub fn has_edit(self) -> bool {
         matches!(self, Self::Input | Self::Password)
     }
-    /// Body text is drawn for styles 0, 1 and 3 (UR §13.3).
+    /// Body text is drawn for styles 0, 1 and 3.
     pub fn draws_body(self) -> bool {
         matches!(self, Self::MsgBox | Self::Input | Self::Password)
     }
@@ -118,7 +117,7 @@ pub enum Button {
     Ok = 1,
 }
 
-/// List keys (DXUT list box behaviour [I], notes U-LIST-KEYS).
+/// List keys (stock DXUT list-box behaviour, inferred).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListKey {
     Up,
@@ -139,7 +138,7 @@ pub fn split_rows(body: &[u8]) -> Vec<&[u8]> {
 }
 
 /// Splits a tablist row on `\t`: runs of tabs are one separator (leading and trailing
-/// tabs produce no cell, notes U-TAB-EDGES); at most 4 cells of ≤ 128 chars.
+/// tabs produce no cell); at most 4 cells of ≤ 128 chars.
 pub fn split_cells(row: &[u8]) -> Vec<Vec<u8>> {
     row.split(|&b| b == b'\t')
         .filter(|c| !c.is_empty())
@@ -196,7 +195,7 @@ impl Dialog {
             }
             Style::Tablist | Style::TablistHeaders => {
                 let mut rows: Vec<Vec<Vec<u8>>> = split_rows(&d.body).into_iter().map(split_cells).collect();
-                // TRACE-3 U-TAB-COLUMNS: the column count is the first row's cell count
+                // The column count is the first row's cell count
                 // (the header row for style 5); extra cells of later rows are not drawn
                 // (they still count towards the column widths, see `layout`).
                 d.columns = rows.first().map(Vec::len).unwrap_or(0);
@@ -272,7 +271,7 @@ impl Dialog {
         }
     }
 
-    /// The RPC 62 payload for a button (UCA §62): `listItem` = selected data row for
+    /// The RPC 62 payload for a button: `listItem` = selected data row for
     /// list styles (else −1); text = edit box (1, 3), first column of the selected row
     /// with codes stripped (2, 4, 5), or empty; both ≤ 128 chars.
     pub fn response(&self, button: Button) -> OnPlayerDialogResponse {
@@ -293,10 +292,10 @@ impl Dialog {
         OnPlayerDialogResponse { dialog_id: self.id as u16, response: button as u8, list_item, text }
     }
 
-    /// Geometry for a client rect of `client_w × client_h` (UR §13.1–13.3, TRACE-3).
+    /// Geometry for a client rect of `client_w × client_h`. Mirrors samp.dll 0x1006f500.
     pub fn layout(&self, m: &dyn TextMeasure, client_w: i32, client_h: i32) -> DialogLayout {
-        // TRACE-3: C = 20 at W 1280 (main font 16) and 24 at 1920 (main 20): the main
-        // font's "Y" height + 4; the header height is the small font's (14 at 1280).
+        // Caption height C is the main font's "Y" height + 4 (20 at width 1280); the style-5
+        // header height is the small font's.
         let main_h = m.line_height(FontId::Main);
         let small_h = m.line_height(FontId::Small);
         let h0 = m.line_height(FontId::Gui0);
@@ -313,8 +312,8 @@ impl Dialog {
                 ((widest + 20 + 40).clamp(LIST_MIN_W, LIST_MAX_W), c + BUTTON_H + 15 + list_h)
             }
             Style::Tablist | Style::TablistHeaders => {
-                // TRACE-3: widths come from up to 4 cells of every row, header included
-                // (style 4 "x\ty\tz\tw\tv" with 3 columns: 215/83 px = raw + 20 + 33).
+                // Widths come from up to 4 cells of every row, header included, even beyond the
+                // drawn column count.
                 let mut raw = [0i32; MAX_COLUMNS];
                 let all = std::iter::once(&self.header).chain(self.rows.iter());
                 for row in all {
@@ -348,14 +347,14 @@ impl Dialog {
                 let b = m.measure_block(FontId::Small, &strip_codes(&self.body));
                 let mut h = c + b.h + 25 + BUTTON_H;
                 if self.style.has_edit() {
-                    // TRACE-3: 42 at h1 = 18, i.e. trunc(1.6·18 + 14), not rounded.
+                    // Truncated, not rounded: 42 for h1 = 18.
                     h += (1.6 * f64::from(h1) + 14.0) as i32;
                 }
                 (b.w + 40, h)
             }
         };
         w = w.max(MIN_W);
-        // TRACE-3: centred with rounding ((720 − 265)/2 = 227.5 → 228).
+        // Centred with rounding (227.5 → 228).
         let x = round_i(f64::from(client_w - w) / 2.0);
         let y = round_i(f64::from(client_h - h) / 2.0);
         // Control coordinates are relative to the client area below the caption.
@@ -443,7 +442,7 @@ pub struct DialogText {
 pub struct DialogLayout {
     /// Outer rect including the caption, centred in the client rect.
     pub rect: Rect,
-    /// Caption height `C` (small-font `"Y"` height + 4 when the title is non-empty).
+    /// Caption height `C` (main-font `"Y"` height + 4 when the title is non-empty).
     pub caption_h: i32,
     /// Body text (styles 0, 1, 3) at `(X + 20, Y + C + 5)`, colour 0xFFA9C4E4.
     pub body: Option<DialogText>,
@@ -470,7 +469,7 @@ pub enum ShowOutcome {
     Opened,
 }
 
-/// The dialog object (global A 0x1026e9c8).
+/// The dialog object. Mirrors the samp.dll global at 0x1026e9c8.
 #[derive(Clone, Debug, Default)]
 pub struct Dialogs {
     current: Option<Dialog>,
@@ -491,7 +490,7 @@ impl Dialogs {
         self.current.as_mut()
     }
 
-    /// RPC 61 ShowDialog (UCA §61).
+    /// RPC 61 ShowDialog.
     pub fn show(&mut self, rpc: &ShowDialog) -> ShowOutcome {
         if c_str(&rpc.title).is_empty() || c_str(&rpc.body).is_empty() {
             return ShowOutcome::Ignored;
@@ -514,8 +513,8 @@ impl Dialogs {
         true
     }
 
-    /// Answers and closes the dialog (A 0x10070690 then A 0x1006f860: cursor mode 0 with
-    /// the 10-frame restore delay). Returns the RPC 62 payload if the dialog goes to the
+    /// Answers and closes the dialog (cursor mode 0 with the 10-frame restore delay). Mirrors
+    /// samp.dll 0x10070690. Returns the RPC 62 payload if the dialog goes to the
     /// server; the client never waits for the server.
     pub fn respond(&mut self, button: Button) -> Option<OnPlayerDialogResponse> {
         let d = self.current.take()?;

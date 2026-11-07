@@ -50,11 +50,11 @@ pub const RPC_CHANNEL: u8 = 0;
 /// 0.3.7-R4 client uses for it (RakClient `RPC(id, bs, priority, reliability,
 /// channel, shiftTimestamp = 0)`).
 ///
-/// Every C→S send site found so far passes priority [`RPC_PRIORITY`] and
-/// channel [`RPC_CHANNEL`], so only [`OutgoingRpc::RELIABILITY`] has no
-/// default. Each impl's doc comment cites its spec and says whether the value
-/// was also confirmed in a capture of the original client (see
-/// `docs/phase3/net7-notes.md`).
+/// Every C→S send site in the original client passes priority [`RPC_PRIORITY`]
+/// and channel [`RPC_CHANNEL`], so only [`OutgoingRpc::RELIABILITY`] has no
+/// default. Each impl's doc comment cites its spec section; which values were
+/// also confirmed in captures of the original client is recorded in
+/// `docs/phase3/net7-notes.md`.
 ///
 /// Note: the priority never appears on the wire, and the channel is only
 /// encoded for ordered/sequenced reliabilities.
