@@ -1,25 +1,10 @@
-//! Remote players inside the game (Windows only): pool, GTA ped lifecycle and
-//! on-foot sync application. Runs on the game's main thread from the client
-//! tick (samp: netgame tick → player pool → A 0x100166B0 per remote).
+//! Remote players inside the game (Windows only): the player pool, the GTA ped lifecycle (creation, skin, death,
+//! destruction), per-frame on-foot sync application (movement, weapon, animation, special actions, head look,
+//! collision) and the player-marker radar blips. Runs on the game's main thread from the client tick.
 //!
-//! Specs: remote-players-sync.md §1 (137/138/32/163) and §2.1;
-//! remote-control-onfoot.md §1.2 (creation), §1.5 (destruction), §3 (movement);
-//! TRACE-2 (original client: CREATE_PLAYER(slot) → GET_PLAYER_CHAR → 087E,
-//! 02AB, 0446, 03FE ×2 → direct SetModelIndex → heading/matrix/pad by memory
-//! writes, all in one frame).
-//!
-//! Parity pass (docs/phase3/parity-notes.md): special actions duck / hands up
-//! (onfoot §4.2), the one-shot weapon check with GET_CURRENT_CHAR_WEAPON and
-//! the sniper ped state (§4.3), RPC 153 on remote peds, and the streaming-out
-//! of a ped whose ProcessControl faulted (swap.rs).
-//!
-//! Player markers (docs/phase3/fixb-notes.md): the ped blip at spawn and the 208
-//! coordinate blips; their colour index is the player id (radar colour hook, row 51).
-//!
-//! Deviations (docs/phase3/m3-notes.md): no fighting style, no animation sync, the other special actions,
-//! no surfing positions, no vehicles;
-//! `CWorld::Players[slot].m_pPed` is cleared after deletion (samp leaves it
-//! dangling; main-session decision after TRACE-2).
+//! Spec: docs/re/subsystems/remote-players-sync.md §1 and §2.1, remote-control-onfoot.md §1–§5. One deliberate
+//! difference: `CWorld::Players[slot].m_pPed` is cleared after deletion, where samp leaves it dangling
+//! (docs/ROADMAP.md, "Decisions made autonomously"). Background: docs/phase3/m3-notes.md, parity-notes.md.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -39,13 +24,13 @@ use crate::swap;
 
 /// `sizeof(CPlayerInfo)`.
 const PLAYER_INFO_SIZE: u32 = 0x190;
-/// `CPlaceable` vtable: what a deleted entity's vtable reads as (onfoot §1.5).
+/// `CPlaceable` vtable: what a deleted entity's vtable reads as.
 const VTBL_CPLACEABLE: u32 = 0x863C40;
-/// `CPhysical::m_pMovingList` (onfoot §3.1: "live entity in the moving list").
+/// `CPhysical::m_pMovingList` (non-null for a live entity in the moving list).
 const PHYSICAL_MOVING_LIST: u32 = 0xB4;
-/// `CPlayerPed::m_pPlayerData` (CPlayerPedData*), offset read from `ProcessAnimGroups` (0x609BFB).
+/// `CPlayerPed::m_pPlayerData` (CPlayerPedData*), offset as used by `ProcessAnimGroups`.
 const PLAYER_PED_DATA: u32 = 0x480;
-/// Anim-block field of `CPlayerPedData` cleared before deletion (onfoot §1.5).
+/// Anim-block field of `CPlayerPedData` cleared before deletion.
 const PLAYER_DATA_ANIM_BLOCK: u32 = 0x4C;
 /// `CEntity::m_nFlags`.
 const ENTITY_FLAGS: u32 = 0x1C;
@@ -56,13 +41,13 @@ const IK_CHAIN_MANAGER: u32 = 0xC15448;
 /// The server's death-drop amount (InitGame), for peds made outside the pool (the preview ped).
 static DEATH_DROP_MONEY: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
-/// Player slot of samp's model-preview ped (A 0x1006c1a5: the ped constructor with slot 0xD0).
+/// Player slot of samp's model-preview ped.
 pub(crate) const PREVIEW_PED_SLOT: u8 = 0xD0;
 
-/// samp's ped constructor (A 0x100b0d20) as the model-preview render uses it (A 0x1006c1a0: slot 0xD0, skin 0,
-/// position (0, 0, 0), heading 0): the same script sequence as a remote player's ped (CREATE_PLAYER → GET_PLAYER_CHAR
-/// → 087E, 02AB, 0446, 03FE ×2), skin 0, the slot's swap entry bound (A 0x100b4360), matrix z + 0.15. Returns the ped,
-/// `None` when the slot is held by a remote player (samp would overwrite that player's slot; we render nothing).
+/// samp's ped constructor as the model-preview render uses it (slot 0xD0, skin 0, position (0, 0, 0), heading 0):
+/// the same script sequence as a remote player's ped (CREATE_PLAYER → GET_PLAYER_CHAR → 087E, 02AB, 0446,
+/// 03FE ×2), skin 0, the slot's swap entry bound, matrix z + 0.15. Returns the ped, `None` when the slot is held by
+/// a remote player (samp would overwrite that player's slot; we render nothing). Mirrors samp.dll 0x100B0D20.
 pub(crate) fn create_preview_ped(runner: &mut Runner) -> Option<u32> {
     let death_drop_money = DEATH_DROP_MONEY.load(std::sync::atomic::Ordering::Relaxed);
     if !crate::dll::REMOTE_PEDS_READY.load(std::sync::atomic::Ordering::SeqCst) {
@@ -101,8 +86,9 @@ pub(crate) fn create_preview_ped(runner: &mut Runner) -> Option<u32> {
     Some(ped)
 }
 
-/// samp's ped destructor (A 0x100b0fe0) for the preview ped: swap entry released, the player-data anim-block field
-/// cleared, the ped's scalar deleting destructor; `CWorld::Players[slot].m_pPed` cleared like for remote peds.
+/// samp's ped destructor for the preview ped: swap entry released, the player-data anim-block field cleared, the
+/// ped's scalar deleting destructor; `CWorld::Players[slot].m_pPed` cleared like for remote peds.
+/// Mirrors samp.dll 0x100B0FE0.
 pub(crate) fn destroy_preview_ped(ped: u32) {
     let slot = PREVIEW_PED_SLOT;
     swap::with_table(|t| t.unbind(slot));
@@ -124,8 +110,8 @@ pub(crate) fn destroy_preview_ped(ped: u32) {
     poke(game::CWORLD_PLAYERS + u32::from(slot) * PLAYER_INFO_SIZE + off::PLAYER_INFO_PED, 0u32);
 }
 
-/// `g_ikChainMan.LookAt("FollowPedSA", ped, nullptr, time_ms, bone −1, &pos, false, 0.1, 500, 3, false)`
-/// (onfoot §5.2: remotes 1000 ms; the local player 2000 ms, A 0x10002fa0).
+/// `g_ikChainMan.LookAt("FollowPedSA", ped, nullptr, time_ms, bone −1, &pos, false, 0.1, 500, 3, false)`;
+/// samp uses 1000 ms for remotes and 2000 ms for the local player.
 pub(crate) fn look_at(ped: u32, time_ms: u32, pos: &mut [f32; 3]) {
     type LookAt = extern "thiscall" fn(u32, *const u8, u32, u32, u32, i32, *mut f32, u8, f32, i32, i32, u8);
     // SAFETY: GTA's IK chain manager on a live ped, main thread; the strings and vector outlive the call.
@@ -135,7 +121,7 @@ pub(crate) fn look_at(ped: u32, time_ms: u32, pos: &mut [f32; 3]) {
     }
 }
 
-/// PlayerJoin ids are accepted below this (sync §137).
+/// PlayerJoin ids are accepted below this.
 const MAX_PLAYER_ID: u16 = 1004;
 
 fn poke<T: Copy>(addr: u32, v: T) {
@@ -162,7 +148,7 @@ pub struct Players {
     slots: SlotAllocator,
     death_drop_money: i32,
     local_id: Option<u16>,
-    /// InitGame player-marker mode (netgame settings +0x30): 0 off, otherwise a blip on every spawned ped.
+    /// InitGame player-marker mode: 0 off, otherwise a blip on every spawned ped.
     marker_mode: u32,
 }
 
@@ -176,9 +162,9 @@ impl Players {
 
     // ---- player markers (radar blips) -----------------------------------------------------------------------
 
-    /// 208 PlayerMarkersSync (B 0x10009F00): ids below 1004 that are in the pool. A record without a position
-    /// removes the marker blip (B 0x100144B0(0)); a position replaces it, and a new coordinate blip is created
-    /// only while the player is not streamed in (B 0x100144F0).
+    /// 208 PlayerMarkersSync: ids below 1004 that are in the pool. A record without a position removes the marker
+    /// blip; a position replaces it, and a new coordinate blip is created only while the player is not streamed
+    /// in. Blip colour index = player id (the radar colour hook maps it). Mirrors samp.dll B 0x10009F00.
     pub fn on_markers(&mut self, runner: &mut Runner, m: &samp_proto::sync::player::MarkersSync) {
         for rec in &m.markers {
             if rec.player_id >= MAX_PLAYER_ID {
@@ -202,8 +188,8 @@ impl Players {
         }
     }
 
-    /// Spawn part of the stream-in (B 0x10017164…0x100171A1): the 208 marker blip goes, and with markers on the
-    /// ped gets a blip of colour index = player id, display 2 (B 0x100AF740).
+    /// Spawn part of the stream-in: the 208 marker blip goes, and with markers on the ped gets a blip of colour
+    /// index = player id, display 2.
     fn spawn_blips(&mut self, runner: &mut Runner, id: u16, handle: i32) {
         let mode = self.marker_mode;
         let Some(p) = self.players.get_mut(&id) else { return };
@@ -220,8 +206,8 @@ impl Players {
         }
     }
 
-    /// Remote reset (B 0x10015F50: stream-out of a spawned ped, game-mode restart) and destructor
-    /// (B 0x10016610): the marker blip goes and the marker flag is cleared.
+    /// Remote reset (stream-out of a spawned ped, game-mode restart) and destructor: the marker blip goes and the
+    /// marker flag is cleared.
     pub fn reset_marker(&mut self, runner: &mut Runner, id: u16) {
         if let Some(p) = self.players.get_mut(&id) {
             remove_marker_blip(runner, p);
@@ -312,8 +298,7 @@ impl Players {
                     s.facing_angle
                 );
                 self.create_ped(runner, s.player_id, pos, s.facing_angle, skills);
-                // RPC 32 tail (B 0x10010CC9…0x10010CEC): an NPC's ped becomes fire- and explosion-proof
-                // (B 0x100ABD10 → SET_CHAR_PROOFS(0, 1, 1, 0, 0)).
+                // End of RPC 32: an NPC's ped becomes fire- and explosion-proof (SET_CHAR_PROOFS(0, 1, 1, 0, 0)).
                 if let Some(p) = self.players.get(&s.player_id)
                     && p.npc
                     && p.ped != 0
@@ -322,7 +307,7 @@ impl Players {
                     let a = [Arg::Int(h), Arg::Int(0), Arg::Int(1), Arg::Int(1), Arg::Int(0), Arg::Int(0)];
                     runner.run(op::SET_CHAR_PROOFS, &a);
                 }
-                // Spawn (B 0x1001714E): a non-zero colour goes into the colour table once the ped exists.
+                // Spawn: a non-zero colour goes into the colour table once the ped exists.
                 if s.colour != 0 && self.players.get(&s.player_id).is_some_and(|p| p.ped != 0) {
                     crate::worldhooks::with_shared(|t| {
                         t.colours.get_or_insert_with(crate::ui::colours::PlayerColours::new).set(s.player_id, s.colour)
@@ -378,9 +363,8 @@ impl Players {
         }
     }
 
-    /// Session ended: every remote ped goes.
-    /// RPC 40 reset (B 0x1000a540 loop): every remote player's ped is torn down, the players
-    /// stay in the pool (names, colours) until the server streams them in again.
+    /// Session ended or RPC 40 (server restart): every remote player's ped is torn down; the players stay in
+    /// the pool (names, colours) until the server streams them in again.
     pub fn despawn_all(&mut self, runner: &mut Runner) {
         let ids: Vec<u16> = self.players.keys().copied().collect();
         for id in ids {
@@ -406,15 +390,15 @@ impl Players {
         self.destroy_ped(runner, id);
         let Some(slot) = self.slots.alloc() else {
             crate::log!("players: no free ped slot for id {id}");
-            // B 0x10010B9C: the spawn failed (FEAT-B, A17).
+            // The spawn failed: samp prints the same debug line.
             crate::ui::print_debug(&format!("Warning: Couldn't spawn player({id})"));
             return;
         };
         let info = game::CWORLD_PLAYERS + u32::from(slot) * PLAYER_INFO_SIZE;
         // Players[slot] lies in the former (zeroed) sector grid; like samp, it is not
         // cleared again on reuse — GTA's SetupPlayerPed / CPlayerPed ctor fill it.
-        // Like samp (TRACE-2): the slot goes in through local 0, CREATE_PLAYER writes the player index to
-        // local 1, GET_PLAYER_CHAR reads local 0 and writes the handle to local 1.
+        // Like samp: the slot goes in through local 0, CREATE_PLAYER writes the player index to local 1,
+        // GET_PLAYER_CHAR reads local 0 and writes the handle to local 1.
         runner.set_local_i32(0, i32::from(slot));
         runner.run(
             op::CREATE_PLAYER,
@@ -467,7 +451,7 @@ impl Players {
         let mem = ProcessMemory;
         let vtbl = mem.read_u32(ped + off::VTABLE).unwrap_or(0);
         if ped != 0 && vtbl != 0 && vtbl != VTBL_CPLACEABLE {
-            // A ped still in a vehicle is warped out to (100, 100, 10) first (onfoot §1.5), so the vehicle keeps
+            // A ped still in a vehicle is warped out to (100, 100, 10) first, so the vehicle keeps
             // no pointer to the deleted ped.
             if mem.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0
                 && let Some(h) = game::ped_handle(&mem, ped).ok().flatten()
@@ -475,10 +459,10 @@ impl Players {
                 let a = [Arg::Int(h), Arg::Float(100.0), Arg::Float(100.0), Arg::Float(10.0)];
                 runner.run(op::WARP_CHAR_FROM_CAR_TO_COORD, &a);
             }
-            // Parachute object off, held item dropped (B 0x100B0FB0; FEAT-B).
+            // Parachute object off, held item dropped.
             crate::specials::remote_destroyed(runner, id, ped);
-            // m_pPlayerData->+0x4C := 0 (the anim-block field ProcessAnimGroups no longer
-            // maintains, CSV row 167), through the ped's own pointer (TRACE-2 finding 3a).
+            // Clear the anim-block field of the ped's player data (samp patches `ProcessAnimGroups` so it no
+            // longer maintains it), through the ped's own pointer, like samp.
             let data = mem.read_u32(ped + PLAYER_PED_DATA).unwrap_or(0);
             if data != 0 {
                 poke(data + PLAYER_DATA_ANIM_BLOCK, 0u32);
@@ -498,7 +482,7 @@ impl Players {
         crate::log!("players: id={id} ped {ped:#x} (slot {slot}) deleted");
     }
 
-    // ---- per frame (A 0x100166B0, on foot) ----------------------------------
+    // ---- per frame, on foot --------------------------------------------------
 
     pub fn tick(&mut self, runner: &mut Runner, now: Instant) {
         let mem = ProcessMemory;
@@ -519,7 +503,7 @@ impl Players {
                 let surfing = f.surf_id != 0 && f.surf_id != 0xFFFF && f.surf_id < 3000;
                 if p.foot_new {
                     p.foot_new = false;
-                    // One-shot apply (onfoot §3.1): velocity, then the position correction.
+                    // One-shot apply of a newly stored 207: velocity, then the position correction.
                     put_v3(ped + off::MOVE_SPEED, f.velocity);
                     if !surfing && let Some(cur) = v3(&mem, matrix + off::MATRIX_POS) {
                         let vt = mem.read_u32(ped + off::VTABLE).unwrap_or(0);
@@ -536,12 +520,12 @@ impl Players {
                             }
                         }
                     }
-                    // One-shot weapon and ped state (onfoot §4.3, A 0x100166B0).
+                    // One-shot weapon and ped state.
                     if crate::client::ped_in_world(ped) {
                         apply_weapon(runner, ped, slot, f.weapon);
                     }
                     sniper_state(runner, ped, f.keys);
-                    // The synced animation (onfoot §4.1, B 0x100167E4; M8b).
+                    // The synced animation.
                     crate::behaviourclient::remote_anim(runner, p.id, ped, f.animation);
                 }
                 if let Some(v) = v3(&mem, ped + off::MOVE_SPEED) {
@@ -561,7 +545,7 @@ impl Players {
                     poke(ped + off::PED_HEADING, h);
                     poke(ped + off::PED_HEADING_GOAL, h);
                 }
-                // Head look (onfoot §5.2; not for NPCs).
+                // Head look (not for NPCs).
                 if !p.npc {
                     let (refresh, call) = remote::head_look_due(p, now);
                     if refresh {
@@ -577,7 +561,7 @@ impl Players {
                         look_at(ped, 1000, &mut target);
                     }
                 }
-                // Special actions (onfoot §4.2, A 0x10014950).
+                // Special actions.
                 special_actions(runner, p.id, slot, ped, f.special_action, in_vehicle, &mut p.phone);
                 let stale = p.is_stale(now);
                 let intel = mem.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
@@ -596,7 +580,7 @@ impl Players {
                         remote::apply_keys(&mut sh.pad, input);
                     }
                 });
-                // Collision gating (onfoot §3.6).
+                // Collision gating.
                 if let Some(on) = remote::collision_wanted(&f) {
                     let flags = mem.read_u32(ped + ENTITY_FLAGS).unwrap_or(0);
                     poke(ped + ENTITY_FLAGS, remote::collision_flags(flags, on));
@@ -622,7 +606,7 @@ impl Players {
         }
     }
 
-    /// RPC 34 for a remote player (A 0x1000F5E0): stored in the slot's skill table while streamed in.
+    /// RPC 34 for a remote player: stored in the slot's skill table while streamed in. Mirrors samp.dll 0x1000F5E0.
     pub fn set_skill(&mut self, id: u16, skill: u32, level: u16) {
         let Some(slot) = self.players.get(&id).and_then(|p| p.slot) else { return };
         if skill as usize >= SKILLS {
@@ -635,8 +619,8 @@ impl Players {
         });
     }
 
-    /// 206 apply, weapon step (A 0x10016370 step 3): arm the shooter with the bullet's weapon, giving it with
-    /// 9999 rounds if missing. Returns the shooter's (ped, slot).
+    /// Bullet sync (206) apply, weapon step: arm the shooter with the bullet's weapon, giving it with 9999 rounds
+    /// if missing. Returns the shooter's (ped, slot).
     pub fn arm_shooter(&mut self, runner: &mut Runner, id: u16, weapon: u8) -> Option<(u32, u8)> {
         let p = self.players.get(&id)?;
         let (ped, slot) = (p.ped, p.slot?);
@@ -647,9 +631,9 @@ impl Players {
         Some((ped, slot))
     }
 
-    /// RPC 166 (A 0x10017570 → ped helper A 0x100B0010): pad keys cleared, jetpack removed, fires
-    /// extinguished, teleported to its own position, health 0, EXPLODE_CHAR_HEAD under PlayerInFocus = slot;
-    /// state := wasted and the sync caches reset. Measured (TRACE-6): the head stays on.
+    /// RPC 166: pad keys cleared, jetpack removed, fires extinguished, teleported to its own position, health 0,
+    /// EXPLODE_CHAR_HEAD under PlayerInFocus = slot; state := wasted and the sync caches reset. (Despite the
+    /// opcode's name the head stays on, as on the original.) Mirrors samp.dll 0x10017570.
     pub fn kill(&mut self, runner: &mut Runner, id: u16) {
         let Some(p) = self.players.get_mut(&id) else { return };
         if let (Some(slot), ped) = (p.slot, p.ped)
@@ -699,8 +683,8 @@ impl Players {
         }
     }
 
-    /// Streams out every player whose ped faulted inside ProcessControl
-    /// (samp's handler in A 0x100A2800: "Removed player %u due to error.").
+    /// Streams out every player whose ped faulted inside ProcessControl and prints samp's
+    /// "Removed player %u due to error.".
     pub fn handle_faults(&mut self, runner: &mut Runner) {
         for fault in swap::take_faults() {
             crate::ui::print_debug(&swap::fault_line(swap::FaultSite::Named("playerped"), fault.code, fault.address));
@@ -715,7 +699,7 @@ impl Players {
     }
 
     /// `synced` control-channel reply: the synced health/armour held per remote player (what the
-    /// nametag bars show), ascending id. Same format as samp-tracer's `synced` for the original (DIFF-3).
+    /// nametag bars show), ascending id. Same format as samp-tracer's `synced` for the original.
     pub fn synced_lines(&self) -> String {
         let mut out = format!("synced count={}", self.players.len());
         for p in self.players.values() {
@@ -759,8 +743,8 @@ fn remove_marker_blip(runner: &mut Runner, p: &mut RemotePlayer) {
     }
 }
 
-/// samp's coordinate blip (B 0x100A0DA0, style 0 = `ADD_SHORT_RANGE_SPRITE_BLIP_FOR_COORD`) with sprite 0:
-/// colour index, then scale 2 for player ids (3 from 1004 on).
+/// samp's coordinate blip (style 0 = `ADD_SHORT_RANGE_SPRITE_BLIP_FOR_COORD`) with sprite 0: colour index, then
+/// scale 2 for player ids (3 from 1004 on). Mirrors samp.dll B 0x100A0DA0.
 fn add_coord_blip(runner: &mut Runner, pos: [f32; 3], colour: u32) -> i32 {
     let a = [Arg::Float(pos[0]), Arg::Float(pos[1]), Arg::Float(pos[2]), Arg::Int(0), Arg::Local(0)];
     runner.run(op::ADD_SHORT_RANGE_SPRITE_BLIP_FOR_COORD, &a);
@@ -770,15 +754,15 @@ fn add_coord_blip(runner: &mut Runner, pos: [f32; 3], colour: u32) -> i32 {
     blip
 }
 
-/// `GET_CURRENT_CHAR_WEAPON` on a ped (samp A 0x100abc90; 0 without a valid handle).
+/// `GET_CURRENT_CHAR_WEAPON` on a ped (0 without a valid handle). Mirrors samp.dll 0x100ABC90.
 pub(crate) fn current_weapon(runner: &mut Runner, ped: u32) -> u8 {
     let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return 0 };
     runner.run(op::GET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Local(0)]);
     runner.local_i32(0) as u8
 }
 
-/// Runs `f` with `PlayerInFocus` = slot and the slot's weapon skills swapped in
-/// (samp A 0x100ac0a0 / 0x100af7d0); everything is restored afterwards.
+/// Runs `f` with `PlayerInFocus` = slot and the slot's weapon skills swapped in,
+/// like samp's weapon helpers; everything is restored afterwards.
 fn with_focus<R>(slot: u8, f: impl FnOnce() -> R) -> R {
     let skills = swap::with_table(|t| t.shadows.get(usize::from(slot)).map(|s| s.skills)).unwrap_or([999.0; SKILLS]);
     let mem = ProcessMemory;
@@ -799,14 +783,14 @@ fn with_focus<R>(slot: u8, f: impl FnOnce() -> R) -> R {
     r
 }
 
-/// SET_CURRENT_CHAR_WEAPON under the slot's context (A 0x100ac0a0, on foot).
+/// SET_CURRENT_CHAR_WEAPON under the slot's context (on foot). Mirrors samp.dll 0x100AC0A0.
 pub(crate) fn set_weapon(runner: &mut Runner, ped: u32, slot: u8, weapon: u8) {
     let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return };
     with_focus(slot, || runner.run(op::SET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Int(i32::from(weapon))]));
 }
 
 /// The one-shot weapon check: arm the synced weapon; if the ped does not have it,
-/// give it with 9999 rounds and arm it again (A 0x100166B0 → 0x100af7d0).
+/// give it with 9999 rounds and arm it again. Mirrors samp.dll 0x100AF7D0.
 pub(crate) fn apply_weapon(runner: &mut Runner, ped: u32, slot: u8, synced: u8) {
     let synced = synced & 0x3F;
     if current_weapon(runner, ped) == synced {
@@ -833,7 +817,7 @@ pub(crate) fn apply_weapon(runner: &mut Runner, ped: u32, slot: u8, synced: u8) 
 }
 
 /// Aiming a sniper / rocket weapon puts the ped in state 12 (sniper mode), otherwise a
-/// ped in state 12 goes back to 1 (onfoot §4.3).
+/// ped in state 12 goes back to 1.
 fn sniper_state(runner: &mut Runner, ped: u32, keys: u16) {
     const PEDSTATE_IDLE: u32 = 1;
     const PEDSTATE_SNIPER_MODE: u32 = 12;
@@ -846,7 +830,8 @@ fn sniper_state(runner: &mut Runner, ped: u32, keys: u16) {
     }
 }
 
-/// Duck and hands-up edges for a remote ped (onfoot §4.2).
+/// Duck, phone and hands-up edges for a remote ped, then (unless samp's pass ends early) the rest of the pass in
+/// `specials::remote_pass`.
 fn special_actions(runner: &mut Runner, id: u16, slot: u8, ped: u32, action: u8, in_vehicle: bool, phone: &mut bool) {
     let mem = ProcessMemory;
     if !crate::client::ped_in_world(ped) {
@@ -860,7 +845,7 @@ fn special_actions(runner: &mut Runner, id: u16, slot: u8, ped: u32, action: u8,
     let hands_up = !in_vehicle && task != 0 && mem.read_u32(task).ok() == Some(game::VTBL_TASK_HANDS_UP);
     let steps = remote::special_action_steps(action, ducking, *phone, hands_up);
     // Duck start and phone start/stop end samp's pass for this frame; otherwise it goes on with piss, items and
-    // the parachute check (FEAT-B, B 0x10014A38…).
+    // the parachute check.
     let ends = matches!(steps.last(), Some(SpecialStep::StartDuck | SpecialStep::StartPhone | SpecialStep::StopPhone));
     for step in steps {
         match step {
@@ -885,7 +870,7 @@ fn special_actions(runner: &mut Runner, id: u16, slot: u8, ped: u32, action: u8,
             }
             SpecialStep::StopHandsUp => teleport_in_place(ped),
             SpecialStep::StartPhone | SpecialStep::StopPhone => {
-                // A 0x100ae0b0: flag, then TASK_USE_MOBILE_PHONE(ped, flag).
+                // Like samp: the flag, then TASK_USE_MOBILE_PHONE(ped, flag).
                 *phone = step == SpecialStep::StartPhone;
                 runner.run(op::TASK_USE_MOBILE_PHONE, &[Arg::Int(h), Arg::Int(i32::from(*phone))]);
             }
@@ -896,13 +881,13 @@ fn special_actions(runner: &mut Runner, id: u16, slot: u8, ped: u32, action: u8,
     }
 }
 
-/// `CTaskSimpleJetPack` scalar deleting destructor (A 0x100ACDA0).
+/// `CTaskSimpleJetPack` scalar deleting destructor.
 const JETPACK_DELETING_DTOR: u32 = 0x6801D0;
 
 /// `CPed::bIsDucking` (m_nPedFlags bit 26).
 const PED_FLAG_DUCKING: u32 = 1 << 26;
 
-/// Re-sets a ped to its own matrix position through its `Teleport` virtual (A 0x100adb60).
+/// Re-sets a ped to its own matrix position through its `Teleport` virtual. Mirrors samp.dll 0x100ADB60.
 pub(crate) fn teleport_in_place(ped: u32) {
     let mem = ProcessMemory;
     let matrix = mem.read_u32(ped + off::PLACEABLE_MATRIX).unwrap_or(0);

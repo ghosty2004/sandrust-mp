@@ -1,31 +1,12 @@
-//! Held items (special actions 20–23), pissing (68) and the remote parachute object (FEAT-B).
+//! Held items (special actions 20–23: beer, cigar, wine, sprunk), pissing (68) and the parachute object samp
+//! attaches to remote players who use a parachute.
 //!
-//! Static reading of samp.dll build B (behaviour in our own words; constants with their addresses):
-//!
-//! * **Hold item** (ped method B 0x100B02E0; RPC 88 local B 0x100030F0, remote pass B 0x10014A78): a held object
-//!   replaces any previous one; `CREATE_OBJECT` with the item model at the ped's position, then (when the object
-//!   exists) `TASK_PICK_UP_OBJECT(ped, obj, offset, 6, 16, "NULL", "NULL", -1)`. Item kinds 1 beer (1543),
-//!   2 wine (1486), 3 sprunk (1546), 4 cigar (1485), from special actions 20 / 22 / 23 / 21.
-//! * **Drop** (B 0x100ADC10): `TASK_PICK_UP_OBJECT(ped, obj, 0, 0, 0, 6, 16, "NULL", "NULL", 0)` (the object stays
-//!   in the world), the ped re-set to its own position through the `Teleport` virtual, kind 0.
-//! * **Use** (B 0x100ADCB0, every frame while an item is held): the ped is armed with fists (set-armed helper), then —
-//!   local player only — when no primary task runs and the fire button (pad Circle, +0x22) is down: drinks play
-//!   `BAR:dnk_stndM_loop` (or `dnk_stndF_loop`, see [`female_drink`]) delta 4 for the task's own length and raise the
-//!   drunk level by 1250 (not for sprunk; capped at 50000); the cigar plays `GANGS:smkcig_prtl` delta 700, 2750 ms.
-//! * **Local tick** (B 0x1000772C…0x100077AB): while pissing, the enter/exit key (Triangle) or sitting in a vehicle
-//!   ends it; while holding an item, Triangle or a vehicle drops it, otherwise the item is used.
-//! * **Piss** (B 0x100AE110): local only `PAULNMAC:PISS_LOOP` delta 4 looped; then
-//!   `CREATE_FX_SYSTEM_ON_CHAR_WITH_DIRECTION("PETROLCAN", ped, 0, 0.58, −0.08, 0, 0.01, 0, 1)` and `PLAY_FX_SYSTEM`.
-//!   Stop (B 0x100AE1F0): `KILL_FX_SYSTEM`, position self-set.
-//! * **Remote parachute** (B 0x100AD630 after a remote PARACHUTE animation, B 0x100AE7E0): only while the ped's current
-//!   weapon is 46. The helper object (B 0x100AD4E0) is created once: `CREATE_OBJECT(3131)` at the ped,
-//!   `ATTACH_OBJECT_TO_CHAR` with zero offsets, hidden, scale 0, `PLAY_OBJECT_ANIM("PARA_OPEN_O", 1000, 0, 1)`, shown,
-//!   scale 1. PARA_OPEN then plays sound 1039 at local + (remote − local) × 0.1; PARA_DECEL / FLOAT / STEERR / STEERL
-//!   play their `_O` object anim (speed 1, loop); PARA_LAND_WATER its `_O` anim not looped. Every remote pass ends
-//!   with B 0x100AD450: a held parachute object is detached and removed once the ped's weapon is no longer 46; the
-//!   ped's destruction (B 0x100B0FB0) does the same and drops a held item (a piss effect is left alone).
+//! The game-independent rules are the free functions; the `imp` module drives the game through script commands,
+//! for the local player (RPC 88, local tick) and for remotes (the special-action pass of the remote update).
+//! Spec: docs/re/subsystems/remote-control-onfoot.md §4.2; measurements in docs/phase3/featb-notes.md.
+//! samp.dll addresses are build B (table: docs/re/addresses/specials.md).
 
-/// Item kind for a special action (B 0x100030F0 cases 0x14…0x17).
+/// Item kind for a special action: 1 beer, 2 wine, 3 sprunk, 4 cigar.
 pub fn item_for_action(action: u8) -> Option<u8> {
     match action {
         20 => Some(1),
@@ -36,7 +17,7 @@ pub fn item_for_action(action: u8) -> Option<u8> {
     }
 }
 
-/// The special action a held item reports in 207 (B 0x10003410).
+/// The special action a held item reports in 207.
 pub fn action_for_item(kind: u8) -> u8 {
     match kind {
         1 => 20,
@@ -47,7 +28,7 @@ pub fn action_for_item(kind: u8) -> u8 {
     }
 }
 
-/// Object model and hand offset per item kind (B 0x100B02E0; doubles B 0x100ED298…0x100ED2C0).
+/// Object model and hand offset per item kind.
 pub fn item_object(kind: u8) -> Option<(i32, [f32; 3])> {
     match kind {
         1 => Some((1543, [0.05, 0.03, -0.3])),
@@ -58,7 +39,7 @@ pub fn item_object(kind: u8) -> Option<(i32, [f32; 3])> {
     }
 }
 
-/// Drunk-level raise per drink and its cap (B 0x100ADD8F).
+/// Drunk-level raise per drink and its cap.
 pub const DRINK_DRUNK: i32 = 1250;
 pub const DRUNK_CAP: i32 = 50000;
 
@@ -67,16 +48,16 @@ pub fn after_drink(level: i32, kind: u8) -> i32 {
     if kind == 3 { level } else { (level + DRINK_DRUNK).min(DRUNK_CAP) }
 }
 
-/// samp picks the female drinking anim when its "ped type" value is 5 or 22 (B 0x100ADD71). That value is read
-/// by B 0x100B4110 as the 11th entry of the ped model info's *vtable* (`[[info] + 0x28]`, a code address), so it is
-/// never 5 or 22 for a ped model and every ped drinks with `dnk_stndM_loop`. Kept literally.
+/// samp picks the female drinking anim when its "ped type" value is 5 or 22. samp reads that value as the 11th
+/// entry of the ped model info's *vtable* (`[[info] + 0x28]`, a code address), so it is never 5 or 22 and every
+/// ped drinks with `dnk_stndM_loop`. We keep the same read on purpose.
 pub fn female_drink(value: u32) -> bool {
     value == 5 || value == 22
 }
 
-/// The 207 special action of the local player with these states added (B 0x10003410 order: jetpack 2, dance,
-/// hands up 10, phone 11, piss 68, duck 1, enter 3, exit 4, items, cuffs, carry). `base` is what the game state
-/// gives (2, 10, 1 or 0).
+/// The 207 special action of the local player with these states added, in samp's priority order (jetpack 2,
+/// dance, hands up 10, phone 11, piss 68, duck 1, enter 3, exit 4, items, cuffs, carry). `base` is what the game
+/// state gives (2, 10, 1 or 0). Mirrors samp.dll B 0x10003410.
 pub fn local_report(base: u8, phone: bool, piss: bool, item: u8) -> u8 {
     match base {
         2 | 10 => base,
@@ -88,7 +69,7 @@ pub fn local_report(base: u8, phone: bool, piss: bool, item: u8) -> u8 {
     }
 }
 
-/// Parachute anims with an object anim (B 0x100AD630): the `_O` name and whether it loops.
+/// Parachute anims with an object anim: the `_O` name and whether it loops.
 pub fn para_object_anim(name: &str) -> Option<(&'static str, bool)> {
     Some(match name {
         "PARA_DECEL" => ("PARA_DECEL_O", true),
@@ -100,13 +81,12 @@ pub fn para_object_anim(name: &str) -> Option<(&'static str, bool)> {
     })
 }
 
-/// Sound position for PARA_OPEN: a tenth of the way from the local player to the remote one (B 0x100AD6C5).
+/// Sound position for PARA_OPEN: a tenth of the way from the local player to the remote one.
 pub fn para_sound_pos(local: [f32; 3], remote: [f32; 3]) -> [f32; 3] {
     [0, 1, 2].map(|i| (remote[i] - local[i]) * 0.1 + local[i])
 }
 
-/// Per-ped state samp keeps in its ped object (+0x2B9 parachute object, +0x2BD piss effect, +0x2C1 item kind,
-/// +0x2C5 item object, +0x2F2 pissing).
+/// Per-ped state samp keeps in its ped object: held item kind and object, pissing and its effect, parachute object.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PedExtras {
     pub item: u8,
@@ -168,7 +148,8 @@ mod imp {
         );
     }
 
-    /// Hold item `kind` (B 0x100B02E0).
+    /// Hold item `kind`: replaces any held object; `CREATE_OBJECT` with the item model at the ped, then (when it
+    /// exists) `TASK_PICK_UP_OBJECT` with the hand offset. Mirrors samp.dll B 0x100B02E0.
     pub fn start_item(runner: &mut Runner, ped: u32, ex: &mut PedExtras, kind: u8) {
         if ex.item_obj != 0 {
             drop_item(runner, ped, ex);
@@ -187,7 +168,8 @@ mod imp {
         crate::log!("specials: ped {ped:#x} holds item {kind} (object {obj})");
     }
 
-    /// Drop the held item (B 0x100ADC10).
+    /// Drop the held item: `TASK_PICK_UP_OBJECT` with zero offsets (the object stays in the world), then the ped is
+    /// re-set to its own position through the `Teleport` virtual. Mirrors samp.dll B 0x100ADC10.
     pub fn drop_item(runner: &mut Runner, ped: u32, ex: &mut PedExtras) {
         if ex.item_obj != 0 {
             if let Some(h) = handle(ped) {
@@ -199,7 +181,7 @@ mod imp {
         ex.item = 0;
     }
 
-    /// Fists for the ped (samp's set-armed helper B 0x100AC070 with weapon 0): the local context or the slot's.
+    /// Fists for the ped (samp's set-armed helper with weapon 0): the local context or the slot's.
     fn arm_fists(runner: &mut Runner, ped: u32, slot: Option<u8>) {
         match slot {
             None => crate::combatclient::set_armed_local(runner, ped, 0),
@@ -229,8 +211,10 @@ mod imp {
         m.read_u32(vt + 0x28).unwrap_or(0)
     }
 
-    /// Use the held item (B 0x100ADCB0). `drunk` is the local drunk level (`None` for a remote ped: samp only arms
-    /// the fists there). Returns whether an animation started.
+    /// Use the held item, every frame while it is held: fists, then (local player only, no primary task, fire
+    /// down) drinks play `BAR:dnk_stndM_loop` and raise the drunk level, the cigar plays `GANGS:smkcig_prtl`.
+    /// `drunk` is the local drunk level (`None` for a remote ped: samp only arms the fists there). Returns whether
+    /// an animation started. Mirrors samp.dll B 0x100ADCB0.
     pub fn use_item(runner: &mut Runner, ped: u32, ex: &PedExtras, slot: Option<u8>, drunk: Option<&mut i32>) -> bool {
         if ex.item == 0 || ped == 0 || !crate::client::ped_in_world(ped) {
             return false;
@@ -260,7 +244,8 @@ mod imp {
         }
     }
 
-    /// Start pissing (B 0x100AE110); the animation only for the local player.
+    /// Start pissing: `PAULNMAC:PISS_LOOP` (local player only), then the "PETROLCAN" effect on the ped.
+    /// Mirrors samp.dll B 0x100AE110.
     pub fn start_piss(runner: &mut Runner, ped: u32, ex: &mut PedExtras, local: bool) {
         let Some(h) = handle(ped) else { return };
         if ex.piss {
@@ -279,7 +264,7 @@ mod imp {
         ex.piss = true;
     }
 
-    /// Stop pissing (B 0x100AE1F0).
+    /// Stop pissing: the effect is killed and the ped re-set to its own position. Mirrors samp.dll B 0x100AE1F0.
     pub fn stop_piss(runner: &mut Runner, ped: u32, ex: &mut PedExtras) {
         if handle(ped).is_none() || !ex.piss {
             return;
@@ -292,7 +277,8 @@ mod imp {
         ex.piss = false;
     }
 
-    /// The local tick's part (B 0x1000772C…0x100077AB).
+    /// The local tick's part: Triangle (enter/exit) or sitting in a vehicle ends pissing and drops a held item;
+    /// otherwise the item is used.
     pub fn local_tick(runner: &mut Runner, ped: u32, ex: &mut PedExtras, triangle: bool, drunk: &mut i32) {
         let veh = in_vehicle(ped);
         if ex.piss && (triangle || veh) {
@@ -307,8 +293,8 @@ mod imp {
         }
     }
 
-    /// RPC 88 for the local player, the cases this module owns (B 0x100030F0): 0 stops pissing and drops the
-    /// item; 20–23 / 68 start them unless the ped sits in a vehicle.
+    /// RPC 88 for the local player, the cases this module owns: 0 stops pissing and drops the item; 20–23 / 68
+    /// start them unless the ped sits in a vehicle. Mirrors samp.dll B 0x100030F0.
     pub fn local_action(runner: &mut Runner, ped: u32, ex: &mut PedExtras, action: u8) {
         if ped == 0 {
             return;
@@ -342,8 +328,8 @@ mod imp {
         f(g.get_or_insert_with(HashMap::new).entry(id).or_default())
     }
 
-    /// The remote special-action pass after hands up (B 0x10014A38…0x10014B39), then the parachute check that ends
-    /// the pass (B 0x100AD450).
+    /// The remote special-action pass after hands up, then the parachute check that ends the pass: a parachute
+    /// object is detached and removed once the ped's weapon is no longer the parachute.
     pub fn remote_pass(runner: &mut Runner, id: u16, ped: u32, slot: u8, action: u8) {
         let mut ex = with_remote(id, |e| *e);
         if !ex.piss && action == 68 {
@@ -371,14 +357,17 @@ mod imp {
         with_remote(id, |e| *e = ex);
     }
 
-    /// The remote PARACHUTE animation hook (B 0x100AD630), after the animation itself was played.
+    /// After a remote PARACHUTE animation was played (only while the ped holds the parachute): PARA_OPEN creates
+    /// the helper object and plays the opening sound, the other animations play their `_O` object animation.
+    /// Mirrors samp.dll B 0x100AD630.
     pub fn remote_para_anim(runner: &mut Runner, id: u16, ped: u32, name: &str) {
         let mut ex = with_remote(id, |e| *e);
         para_anim(runner, ped, &mut ex, name);
         with_remote(id, |e| *e = ex);
     }
 
-    /// Stream-out / quit of a remote ped (B 0x100B0FB0): parachute object off, item dropped; the state is gone.
+    /// Stream-out / quit of a remote ped: parachute object off, item dropped (a piss effect is left alone, like
+    /// samp); the state is gone.
     pub fn remote_destroyed(runner: &mut Runner, id: u16, ped: u32) {
         let mut ex = {
             let mut g = REMOTE.lock().unwrap_or_else(|e| e.into_inner());
@@ -408,7 +397,9 @@ mod imp {
         }
     }
 
-    /// The parachute helper object (B 0x100AD4E0); `false` when it could not be created.
+    /// The parachute helper object, created once: attached to the ped with zero offsets, opened with
+    /// `PARA_OPEN_O` while hidden at scale 0, then shown. `false` when it could not be created.
+    /// Mirrors samp.dll B 0x100AD4E0.
     fn para_object(runner: &mut Runner, ped: u32, ex: &mut PedExtras) -> bool {
         if ex.para_obj != 0 {
             return true;

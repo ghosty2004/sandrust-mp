@@ -1,23 +1,11 @@
-//! Animations a ped's tasks still hold across a skin change (CRASH: F3 run xclient-20261106-161806).
+//! Keeps the animations a ped's tasks still hold alive across a skin change.
 //!
-//! The skin change (RPC 153, ped method B 0x100AFF90 → 0x1009EFB0) runs the ped's `DeleteRwObject` and
-//! `SetModelIndex`. Deleting the clump frees every animation association in its list, but a running task
-//! keeps its own pointer to the association it started: measured on the original (trace lane, hold session
-//! `orig-20261106-175618`, SetPlayerSpecialAction 10, then 0, then SetPlayerSkin): the hands-up task
-//! (vtable 0x85A29C) stays the primary task and its +0x8 still points at the old association, which is no
-//! longer in the new clump's list. When the task is later aborted (death: EXPLODE_CHAR_HEAD in RPC 166, the
-//! local death, any event) GTA writes the default finish callback (+0x30..+0x38) and a blend delta (+0x1C)
-//! into that freed block. In the original the block happened to stay unused; in our client it was reused (a
-//! vehicle model's material list), and evicting that model faulted in `RpMaterialDestroy` (0x74DA25), the
-//! streaming state stayed broken and the next vehicle models never loaded.
-//!
-//! We keep what the original shows (the task keeps a non-null association with the same contents) but take
-//! the associations held by the ped's tasks out of the clump's list before the clump is deleted, so they are
-//! not freed: the later writes land in live memory. Each such association is leaked (0x3C bytes plus its
-//! node array), only on a skin change while an animation task runs. ROADMAP "Decisions made autonomously".
-//!
-//! Layout (named via gta-reversed): `ClumpOffset` 0xB5F878 (anim blend plugin offset in RpClump);
-//! `CAnimBlendClumpData` +0 = head `CAnimBlendLink {next, prev}`; `CAnimBlendAssociation` +4 = its link.
+//! A skin change (RPC 153) deletes the ped's clump, which frees every animation association in its list, yet a
+//! running task (e.g. hands-up) keeps its own pointer to the association it started and writes into it when it is
+//! later aborted (death, any event). The original gets away with it because the freed block stays unused; in ours it
+//! was reused and the later writes corrupted streaming. So before the clump is deleted we unlink the associations
+//! the ped's tasks point at, which leaks one association per skin change during an animation task.
+//! Background: docs/phase3/m5-notes.md; docs/ROADMAP.md, "Decisions made autonomously".
 
 use crate::patch::{Memory, PatchError};
 
@@ -28,7 +16,8 @@ pub const TASK_SCAN: u32 = 0x40;
 /// Safety bound for list walks.
 const MAX_LINKS: usize = 256;
 
-/// Associations in a clump's animation list (`data` = the clump's `CAnimBlendClumpData*`), head first.
+/// Associations in a clump's animation list (`data` = the clump's `CAnimBlendClumpData*`, whose first field is
+/// the list head link), head first.
 pub fn associations<M: Memory>(mem: &M, data: u32) -> Result<Vec<u32>, PatchError> {
     let mut out = Vec::new();
     let mut link = mem.read_u32(data)?;
@@ -82,7 +71,7 @@ mod imp {
     use crate::game::off;
     use crate::patch::ProcessMemory;
 
-    /// `ClumpOffset` (gta-reversed): the anim blend plugin's offset inside an RpClump.
+    /// `ClumpOffset`: the global holding the anim blend plugin's offset inside an RpClump.
     const CLUMP_OFFSET: u32 = 0xB5F878;
     /// `CEntity::m_pRwObject`.
     const ENTITY_RW_OBJECT: u32 = 0x18;

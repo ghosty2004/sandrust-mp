@@ -1,27 +1,18 @@
-//! Class selection state machine (player-state.md "128 PlayerRequestClass",
-//! "129 PlayerRequestSpawn"), independent of the game so it can be tested.
-//!
-//! Rules from the spec:
-//! * entering class selection: the first tick sends RPC 128 with the current
-//!   index;
-//! * Left/Right arrows are ignored for 2000 ms after entering, need ≥ 250 ms
-//!   between presses and only work once the server answered the last request
-//!   with "selectable"; Right wraps to 0 after the last class, Left wraps to
-//!   `count − 1` before 0; each press clears "class info received", plays
-//!   sound 1052 (Right) / 1053 (Left) at the ped and then sends RPC 128
-//!   (A 0x10005ff0 / 0x10006080);
-//! * Shift sends RPC 129 once 2000 ms have passed, class info was received
-//!   and no spawn request is pending; it sets "request pending";
-//! * RPC 129 response 2, or any non-zero response while a request is
-//!   pending, runs the local spawn routine; otherwise "pending" is cleared.
+//! Class selection state machine, kept free of game calls so it can be tested. Entering selection sends
+//! RPC 128 with the current index; Left/Right (after a 2 s guard, 250 ms apart, only once the server called the
+//! last class selectable) wrap through the classes, play a sound and send RPC 128 again; Shift sends RPC 129
+//! once class info arrived and no spawn request is pending. Spec: docs/re/subsystems/player-state.md,
+//! "128 PlayerRequestClass" and "129 PlayerRequestSpawn".
 
 use std::time::{Duration, Instant};
 
+/// Arrows are ignored for this long after entering class selection (and Shift waits as long).
 pub const ARROW_GUARD: Duration = Duration::from_millis(2000);
+/// Minimum time between two arrow presses.
 pub const ARROW_REPEAT: Duration = Duration::from_millis(250);
-/// Sound of the Right arrow (next class), A 0x1000605e `push 0x41c`.
+/// Sound of the Right arrow (next class). Mirrors samp.dll 0x10005FF0.
 pub const SOUND_NEXT: i32 = 1052;
-/// Sound of the Left arrow (previous class), A 0x100060e1 `push 0x41d`.
+/// Sound of the Left arrow (previous class). Mirrors samp.dll 0x10006080.
 pub const SOUND_PREVIOUS: i32 = 1053;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -35,8 +26,8 @@ pub struct Keys {
 pub enum Action {
     /// Send RPC 128 with this class index (u32 on the wire): the first tick.
     RequestClass(u32),
-    /// An arrow press: play `sound` at the ped's position (the game audio
-    /// object's PlayerPlaySound path, A 0x100a2300), then send RPC 128 with `index`.
+    /// An arrow press: play `sound` at the ped's position (the same path as
+    /// PlayerPlaySound), then send RPC 128 with `index`.
     ChangeClass { index: u32, sound: i32 },
     /// Send RPC 129.
     RequestSpawn,
@@ -49,9 +40,9 @@ pub struct ClassSelection {
     announced: bool,
     entered_at: Instant,
     last_arrow: Instant,
-    /// "class info received" (LocalPlayer+0x143 in the spec).
+    /// "class info received": set by a "selectable" RPC 128 response, cleared by each arrow press.
     info_received: bool,
-    /// "spawn request pending" (LocalPlayer+0x302).
+    /// "spawn request pending": set by Shift, cleared by a refusing RPC 129 response or on leaving.
     request_pending: bool,
     index: u32,
     count: u32,
@@ -153,7 +144,8 @@ impl ClassSelection {
         }
     }
 
-    /// RPC 129 response; returns true when the local spawn routine must run.
+    /// RPC 129 response; returns true when the local spawn routine must run: response 2, or any
+    /// non-zero response while a request is pending. Otherwise the pending flag is cleared.
     pub fn on_spawn_response(&mut self, response: u8) -> bool {
         if response == 2 || (response != 0 && self.request_pending) {
             true

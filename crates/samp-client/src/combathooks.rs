@@ -1,22 +1,11 @@
-//! Combat hooks inside GTA (Windows only, milestone M7).
+//! Combat hooks inside GTA (Windows only): firing (H3 `FireInstantHit` / `FireSniper` call sites, H5 `AddBullet`),
+//! the line-of-sight hook (H4), damage (H6 `ComputeDamageResponse`, H7 `CEventDamage::AffectsPed`, H8
+//! `CVehicle::InflictDamage`), per-slot weapon skills while rendering (H9) and smaller weapon patches. Hook names
+//! H3–H9 are those of docs/re/subsystems/remote-control-combat.md §9.1.
 //!
-//! Specs: remote-control-combat.md §3 (H3 `FireInstantHit` / `FireSniper` call sites, H4 the line-of-sight hook,
-//! H5 `AddBullet`), §6 (H6 `ComputeDamageResponse`, H7 `CEventDamage::AffectsPed`, H8 `CVehicle::InflictDamage`),
-//! §1.3 (H9 `GetWeaponSkill` while rendering weapons) and the CSV rows 4, 5, 8, 22, 45, 46, 53, 56, 57, 80, 98–106,
-//! 191, 200, 201, 210, 240–243, 247. Static details read in samp.dll A for this module:
-//! * the call-site stubs return their 8th / 1st argument ("fired") and only the local ped fires (A 0x100A5820,
-//!   0x100A58E0); a local shot ignores GTA's origin arguments and fires through A 0x100AFAB0;
-//! * the hooks of rows 4/5 and 98–106 are installed by InitGame only for lag-comp 1 and 2 (A 0x10010909);
-//! * the LOS hook returns 0 when it suppresses a hit on the local ped (A 0x100A57D8);
-//! * a satchel whose owner is null is removed in `CProjectileInfo::Update` (A 0x100A3FC0), and the detonator only
-//!   blows charges whose owner is the detonating ped (A 0x100A4000);
-//! * `CVehicle::InflictDamage` is cancelled with `ret 0x18` (A 0x100A53BE).
-//!
-//! Like vehhooks.rs, the hooks never touch the client session: they read [`SHARED`] (written by the client tick)
-//! and queue [`Outgoing`] messages that the client sends in the same frame, in the order they were queued.
-//!
-//! Deviations (docs/phase3/m7-notes.md): stubs keep their state on the stack instead of samp's fixed globals
-//! (spec P1); the remote 206 shot is fired with the shooter's camera swapped and restored to the saved values.
+//! Like `vehhooks.rs`, the hooks never touch the client session: they read [`SHARED`] (written by the client tick)
+//! and queue [`Outgoing`] messages that the client sends in the same frame, in order. Unlike samp, the stubs keep
+//! their state on the stack instead of fixed globals (docs/phase3/m7-notes.md).
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -65,48 +54,49 @@ pub mod g {
     pub const VTBL_CPLACEABLE: u32 = 0x863C40;
 }
 
-/// Call sites (CSV rows).
+/// Call sites and patch locations in gta_sa.exe; the numbers paired with a site are its rows in
+/// docs/re/data/gta-patches-r4.csv.
 pub mod site {
     pub const FIRE_INSTANT_HIT: [(u32, u32); 3] = [(98, 0x742495), (99, 0x7424EC), (100, 0x742548)];
     pub const LOS: [(u32, u32); 3] = [(101, 0x740721), (102, 0x740B69), (103, 0x736247)];
-    pub const FIRE_SNIPER: u32 = 0x7424CB; // row 104
-    pub const ADD_BULLET: u32 = 0x73AC4B; // row 105
-    pub const INFLICT_DAMAGE: u32 = 0x6D7C90; // row 106
+    pub const FIRE_SNIPER: u32 = 0x7424CB; // call FireSniper in CWeapon::Fire
+    pub const ADD_BULLET: u32 = 0x73AC4B; // call AddBullet in FireSniper
+    pub const INFLICT_DAMAGE: u32 = 0x6D7C90; // CVehicle::InflictDamage entry
     pub const INFLICT_DAMAGE_ORIGINAL: [u8; 7] = [0x6A, 0xFF, 0xE9, 0x45, 0xD0, 0xD2, 0xFF];
     /// Target of the original `jmp` at 0x6D7C92.
     pub const INFLICT_DAMAGE_CONTINUE: u32 = 0x404CDC;
-    pub const COMPUTE_DAMAGE_RESPONSE: u32 = 0x4B5AC0; // row 53, `jmp [0x4B5ABC]`
+    pub const COMPUTE_DAMAGE_RESPONSE: u32 = 0x4B5AC0; // `jmp [slot]` at the entry
     pub const COMPUTE_DAMAGE_RESPONSE_SLOT: u32 = 0x4B5ABC;
     pub const COMPUTE_DAMAGE_RESPONSE_ORIGINAL: [u8; 6] = [0x64, 0xA1, 0x00, 0x00, 0x00, 0x00];
     pub const COMPUTE_DAMAGE_RESPONSE_RESUME: u32 = 0x4B5AC6;
-    pub const AFFECTS_PED: u32 = 0x4B35A0; // row 80, `jmp [0x4B3433]`
+    pub const AFFECTS_PED: u32 = 0x4B35A0; // `jmp [slot]` at the entry
     pub const AFFECTS_PED_SLOT: u32 = 0x4B3433;
     pub const AFFECTS_PED_ORIGINAL: [u8; 6] = [0x83, 0xEC, 0x0C, 0x56, 0x8B, 0xF1];
     pub const AFFECTS_PED_RESUME: u32 = 0x4B35A6;
-    pub const RENDER_WEAPON_SKILL: u32 = 0x7330A2; // row 22
-    pub const CROSSHAIRS: u32 = 0x58FBBF; // row 8
-    pub const SNIPER_CAM_SHAKE: u32 = 0x73ACE2; // row 46
+    pub const RENDER_WEAPON_SKILL: u32 = 0x7330A2; // call GetWeaponSkill in RenderWeaponPedsForPC
+    pub const CROSSHAIRS: u32 = 0x58FBBF; // call DrawCrossHairs
+    pub const SNIPER_CAM_SHAKE: u32 = 0x73ACE2; // call CamShakeNoPos in FireSniper
     pub const CAM_SHAKE_NO_POS: u32 = 0x50A970;
-    pub const TAKE_PHOTO: u32 = 0x73C252; // row 45 (jmp over `mov [bPhotographHasBeenTaken], 1`)
+    pub const TAKE_PHOTO: u32 = 0x73C252; // jmp over `mov [bPhotographHasBeenTaken], 1`
     pub const TAKE_PHOTO_ORIGINAL: [u8; 7] = [0xC6, 0x05, 0xC0, 0xA7, 0xC8, 0x00, 0x01];
     pub const TAKE_PHOTO_RESUME: u32 = 0x73C260;
     pub const PHOTO_TAKEN: u32 = 0xC8A7C0;
     pub const PHOTO_TAKEN_2: u32 = 0xC8A7C1;
-    pub const SATCHEL_UPDATE: u32 = 0x738F3A; // row 56, `jmp [0x738B1B]`
+    pub const SATCHEL_UPDATE: u32 = 0x738F3A; // `jmp [slot]` at the type-39 test
     pub const SATCHEL_UPDATE_SLOT: u32 = 0x738B1B;
     pub const SATCHEL_UPDATE_ORIGINAL: [u8; 6] = [0x8B, 0x4B, 0x04, 0x8A, 0x51, 0x36];
     pub const SATCHEL_UPDATE_RESUME: u32 = 0x738F40;
-    pub const DETONATOR: u32 = 0x738877; // row 57, `jmp [0x73885B]`
+    pub const DETONATOR: u32 = 0x738877; // `jmp [slot]` at the type-39 test
     pub const DETONATOR_SLOT: u32 = 0x73885B;
     pub const DETONATOR_ORIGINAL: [u8; 6] = [0x83, 0x7E, 0xE0, 0x27, 0x8B, 0x7D];
     pub const DETONATOR_BLOW: u32 = 0x738880;
     pub const DETONATOR_SKIP: u32 = 0x7388DB;
-    /// Lock-on RETs (rows 4/5, InitGame).
+    /// Lock-on functions patched to return at once (InitGame, lag-comp 1 and 2).
     pub const FIND_LOCK_ON: u32 = 0x60DC50;
     pub const FIND_NEXT_LOCK_ON: u32 = 0x60E530;
 }
 
-/// The pad pad-slot bytes of the `jmp [slot]` rows (gta_sa.exe padding before the function).
+/// Expected bytes of a `jmp [slot]` pointer slot (gta_sa.exe padding before the function).
 const SLOT_PADDING: [u8; 4] = [0x90; 4];
 
 // ---- shared state (written by the client tick) -------------------------------------------------------------
@@ -118,7 +108,7 @@ pub struct RemoteHook {
     pub id: u16,
     pub npc: bool,
     pub team: u8,
-    /// Remote +0x1E7: the vehicle of the last stored driver/passenger sync.
+    /// The vehicle of the last stored driver/passenger sync.
     pub vehicle: Option<u16>,
 }
 
@@ -133,8 +123,8 @@ pub struct Shared {
     pub actors: Vec<(u32, u16)>,
     /// Pool objects: (GTA pointer, id), for the 206 hit type 3.
     pub objects: Vec<(u32, u16)>,
-    /// The GTA entity of the surface in the local surf state (+0x2DA: a pool vehicle or object), `None` when the
-    /// state has no surface.
+    /// The GTA entity of the surface in the local surf state (a pool vehicle or object), `None` when the state has
+    /// no surface.
     pub surface: Option<u32>,
 }
 
@@ -153,8 +143,8 @@ impl Shared {
         self.vehicles.iter().find(|v| v.0 == ptr).map(|v| v.1)
     }
 
-    /// Entity → player (A 0x100A3B20): a remote ped, else the first remote (pool order) whose synced vehicle is
-    /// that pool vehicle.
+    /// Entity → player: a remote ped, else the first remote (pool order) whose synced vehicle is that pool
+    /// vehicle. Mirrors samp.dll 0x100A3B20.
     fn player_of_entity(&self, e: u32) -> Option<&RemoteHook> {
         if let Some(r) = self.remote_by_ped(e) {
             return Some(r);
@@ -275,7 +265,7 @@ pub fn current_weapon(ped: u32) -> u8 {
     rd::<u32>(current_weapon_ptr(ped)) as u8
 }
 
-// ---- the shot (A 0x100AFAB0) --------------------------------------------------------------------------------
+// ---- the shot -----------------------------------------------------------------------------------------------
 
 /// Shooter and record published for the LOS hook while a shot is fired.
 static SHOOTER: AtomicU32 = AtomicU32::new(0);
@@ -289,7 +279,7 @@ pub fn selector() -> u8 {
     SELECTOR.load(Ordering::Relaxed) as u8
 }
 
-/// The camera context of a remote shot (no pad, no PlayerInFocus; A 0x100AFAB0).
+/// The camera context of a remote shot (no pad, no PlayerInFocus).
 struct ShotContext {
     cam_mode: u8,
     weapon_mode: u16,
@@ -337,8 +327,8 @@ fn leave_shot_context(s: &ShotContext) {
     write_floats(sw::WEAPON_SKILLS, &s.skills);
 }
 
-/// Origin and muzzle of a shot (A 0x100AFA00): the right-hand bone, z + fire offset z + 0.15; the muzzle is the
-/// weapon's fire offset transformed by the same bone.
+/// Origin and muzzle of a shot: the right-hand bone, z + fire offset z + 0.15; the muzzle is the weapon's fire
+/// offset transformed by the same bone. Mirrors samp.dll 0x100AFA00.
 fn origin_and_muzzle(ped: u32, weapon: u8) -> (V3, V3) {
     // SAFETY: GTA's weapon-info lookup and bone queries (cdecl / thiscall) on a live ped, main thread.
     unsafe {
@@ -357,8 +347,10 @@ fn origin_and_muzzle(ped: u32, weapon: u8) -> (V3, V3) {
     }
 }
 
-/// Fires one shot for `ped` (A 0x100AFAB0). `slot` 0 = the local ped (no swap). `record` = the remote 206's
-/// target entity and offset (the LOS hook's redirect / suppression input).
+/// Fires one shot for `ped`; a local shot ignores GTA's origin arguments and comes through here too. `slot` 0 =
+/// the local ped (no swap); a remote shot runs with the shooter's camera swapped in and the saved values restored.
+/// `record` = the remote 206's target entity and offset (the line-of-sight hook's redirect / suppression input).
+/// Mirrors samp.dll 0x100AFAB0.
 pub fn fire_shot(ped: u32, slot: u8, record: Option<(u32, V3)>) {
     if ped == 0 {
         return;
@@ -396,8 +388,8 @@ pub fn fire_shot(ped: u32, slot: u8, record: Option<(u32, V3)>) {
     }
 }
 
-/// Before a local instant-hit shot every streamed on-foot remote ped gets collision (A 0x10013C90); the saved
-/// state is put back afterwards (A 0x10013D10).
+/// Before a local instant-hit shot every streamed on-foot remote ped gets collision; the saved state is put back
+/// afterwards. Mirrors samp.dll 0x10013C90.
 fn force_remote_collisions() -> Vec<(u32, bool)> {
     let peds = with_shared(|s| s.remotes.iter().map(|r| r.ped).collect::<Vec<_>>()).unwrap_or_default();
     peds.into_iter()
@@ -417,7 +409,8 @@ fn restore_remote_collisions(saved: Vec<(u32, bool)>) {
     }
 }
 
-/// H3: replaces `call CWeapon::FireInstantHit` in `CWeapon::Fire` (A 0x100A5820). Returns the 8th argument.
+/// H3: replaces `call CWeapon::FireInstantHit` in `CWeapon::Fire`; only the local ped fires. Returns the 8th
+/// argument ("fired"). Mirrors samp.dll 0x100A5820.
 extern "thiscall" fn fire_instant_hit_site(
     _weapon: u32,
     firing: u32,
@@ -441,7 +434,8 @@ extern "thiscall" fn fire_instant_hit_site(
     a8
 }
 
-/// H3: replaces `call CWeapon::FireSniper` in `CWeapon::Fire` (A 0x100A58E0). Returns the shooter.
+/// H3: replaces `call CWeapon::FireSniper` in `CWeapon::Fire`; only the local ped fires. Returns the shooter.
+/// Mirrors samp.dll 0x100A58E0.
 extern "thiscall" fn fire_sniper_site(_weapon: u32, shooter: u32, _victim: u32, _target: u32) -> u32 {
     let local = local_ped();
     if shooter == local && local != 0 {
@@ -453,8 +447,8 @@ extern "thiscall" fn fire_sniper_site(_weapon: u32, shooter: u32, _victim: u32, 
     shooter
 }
 
-/// H5: replaces `call CBulletInfo::AddBullet` in `FireSniper` (A 0x100A5930): velocity × 50, then
-/// `CBulletInfo::Update` at once, while the shooter globals are still set.
+/// H5: replaces `call CBulletInfo::AddBullet` in `FireSniper`: velocity × 50, then `CBulletInfo::Update` at once,
+/// while the shooter globals are still set. Mirrors samp.dll 0x100A5930.
 extern "C" fn add_bullet_site(creator: u32, weapon: u32, px: f32, py: f32, pz: f32, vx: f32, vy: f32, vz: f32) {
     let k = combat::SNIPER_VELOCITY_SCALE;
     // SAFETY: GTA's static bullet functions (cdecl), main thread.
@@ -468,7 +462,8 @@ extern "C" fn add_bullet_site(creator: u32, weapon: u32, px: f32, py: f32, pz: f
 
 type Los = extern "C" fn(*const f32, *mut f32, *mut f32, *mut u32, u32, u32, u32, u32, u32, u32, u32, u32) -> u32;
 
-/// H4: replaces `call CWorld::ProcessLineOfSight` at the three sites (A 0x100A5640).
+/// H4: replaces `call CWorld::ProcessLineOfSight` at the three sites; returns 0 when it suppresses a hit on the
+/// local ped. Mirrors samp.dll 0x100A5640.
 #[allow(clippy::too_many_arguments)]
 extern "C" fn los_site(
     origin: *const f32,
@@ -537,7 +532,7 @@ extern "C" fn los_site(
     r
 }
 
-/// Local capture (A 0x100A5450 → 0x10006BC0): build the record and queue the 206.
+/// Local capture: build the record and queue the 206.
 fn capture_local(s: u8, origin: V3, hit_pos: V3, hit: u32) {
     let m = if hit != 0 { matrix_of(hit) } else { None };
     let rec = combat::capture(s, origin, hit_pos, m.as_ref());
@@ -570,7 +565,7 @@ fn capture_local(s: u8, origin: V3, hit_pos: V3, hit: u32) {
 
 // ---- H6: ComputeDamageResponse -----------------------------------------------------------------------------
 
-/// Decision for `CPedDamageResponseCalculator` `calc` and `victim` (A 0x100A3BF0). Returns 1 = cancel.
+/// Decision for `CPedDamageResponseCalculator` `calc` and `victim`. Returns 1 = cancel. Mirrors samp.dll 0x100A3BF0.
 extern "C" fn damage_decide(calc: u32, victim: u32) -> u32 {
     if calc == 0 || victim == 0 {
         return 0;
@@ -655,7 +650,7 @@ unsafe extern "C" fn damage_stub() {
 // ---- H7: CEventDamage::AffectsPed ---------------------------------------------------------------------------
 
 /// Entry stub of `CEventDamage::AffectsPed(CPed*)` (thiscall): true at once for the local ped while a remote
-/// context is active (A 0x100A53E0).
+/// context is active. Mirrors samp.dll 0x100A53E0.
 #[unsafe(naked)]
 unsafe extern "C" fn affects_ped_stub() {
     std::arch::naked_asm!(
@@ -685,8 +680,8 @@ unsafe extern "C" fn affects_ped_stub() {
 
 // ---- H8: CVehicle::InflictDamage ---------------------------------------------------------------------------
 
-/// A 0x100A5280: cancel when the vehicle is the one the local player drives and the damager maps to a player of
-/// the local team.
+/// Cancel (the stub returns with `ret 0x18`) when the vehicle is the one the local player drives and the damager
+/// maps to a player of the local team. Mirrors samp.dll 0x100A5280.
 extern "C" fn inflict_decide(vehicle: u32, damager: u32) -> u32 {
     let local = local_ped();
     if local == 0 || vehicle == 0 || rd::<u32>(vehicle + g::VEH_DRIVER) != local {
@@ -727,8 +722,8 @@ unsafe extern "C" fn inflict_stub() {
 
 // ---- H9 and small hooks ------------------------------------------------------------------------------------
 
-/// Replaces `call CPed::GetWeaponSkill` in `RenderWeaponPedsForPC` (A 0x100A2D80): a remote ped's skill comes
-/// from its slot's skill table.
+/// Replaces `call CPed::GetWeaponSkill` in `RenderWeaponPedsForPC`: a remote ped's skill comes from its slot's
+/// skill table. Mirrors samp.dll 0x100A2D80.
 extern "thiscall" fn render_weapon_skill(ped: u32) -> u32 {
     // SAFETY: GTA's own function with the same signature.
     let f: extern "thiscall" fn(u32) -> u32 = unsafe { std::mem::transmute(g::GET_WEAPON_SKILL as usize) };
@@ -745,11 +740,11 @@ extern "thiscall" fn render_weapon_skill(ped: u32) -> u32 {
     }
 }
 
-/// Replaces `call CamShakeNoPos` in `FireSniper` (A 0x100A3DA0: a bare `ret`).
+/// Replaces `call CamShakeNoPos` in `FireSniper` with a bare `ret`, like samp.
 extern "C" fn no_cam_shake() {}
 
-/// Crosshair wrapper (row 8, A 0x100A2590): samp's HUD scale fix around the draw while the local camera mode is
-/// 0x35 (mainhooks.rs).
+/// Crosshair wrapper: samp's HUD scale fix around the draw while the local camera mode is 0x35 (`mainhooks.rs`).
+/// Mirrors samp.dll 0x100A2590.
 extern "C" fn crosshairs_site() {
     crate::mainhooks::crosshairs(|| {
         // SAFETY: the original cdecl function.
@@ -760,7 +755,7 @@ extern "C" fn crosshairs_site() {
     });
 }
 
-/// `CWeapon::TakePhotograph` (row 45, A 0x100A3DB0): the photo flags only for the local photographer.
+/// `CWeapon::TakePhotograph`: the photo flags only for the local photographer. Mirrors samp.dll 0x100A3DB0.
 /// Entered with the photographer at [esp+8] (the jmp replaces an instruction inside the function body).
 #[unsafe(naked)]
 unsafe extern "C" fn take_photo_stub() {
@@ -782,8 +777,8 @@ unsafe extern "C" fn take_photo_stub() {
     )
 }
 
-/// `CProjectileInfo::Update` at the type-39 test (row 56, A 0x100A3FC0): ESI = the projectile object, EBX = the
-/// projectile info; an owner-less satchel is removed, then the loop continues with DL = 0xFF.
+/// `CProjectileInfo::Update` at the type-39 (satchel) test: ESI = the projectile object, EBX = the projectile info;
+/// an owner-less satchel is removed, then the loop continues with DL = 0xFF. Mirrors samp.dll 0x100A3FC0.
 #[unsafe(naked)]
 unsafe extern "C" fn satchel_update_stub() {
     std::arch::naked_asm!(
@@ -808,8 +803,8 @@ unsafe extern "C" fn satchel_update_stub() {
     )
 }
 
-/// `CProjectileInfo::RemoveDetonatorProjectiles` at the type-39 test (row 57, A 0x100A4000): only satchels owned
-/// by the detonating ped ([esp]) are blown.
+/// `CProjectileInfo::RemoveDetonatorProjectiles` at the type-39 test: only satchels owned by the detonating ped
+/// ([esp]) are blown. Mirrors samp.dll 0x100A4000.
 #[unsafe(naked)]
 unsafe extern "C" fn detonator_stub() {
     std::arch::naked_asm!(
@@ -829,12 +824,12 @@ unsafe extern "C" fn detonator_stub() {
     )
 }
 
-/// Constants samp points GTA at (rows 210, 240–243).
+/// Constants samp points GTA at (the aim time step and the bullet bounds).
 static TWO: f32 = 2.0;
 static BOUND_MIN: f32 = -20000.0;
 static BOUND_MAX: f32 = 20000.0;
 
-/// Extinguishes the ped's fire and its vehicle's (A 0x100AD130).
+/// Extinguishes the ped's fire and its vehicle's. Mirrors samp.dll 0x100AD130.
 pub fn extinguish(ped: u32) {
     let fire: u32 = rd(ped + g::PED_FIRE);
     let f: extern "thiscall" fn(u32) = unsafe { std::mem::transmute(g::FIRE_EXTINGUISH as usize) };
@@ -856,7 +851,7 @@ fn fn_addr(f: usize) -> u32 {
     f as u32
 }
 
-/// `jmp [slot]` + pointer at `slot` (the samp pattern of rows 53, 56, 57, 80).
+/// `jmp [slot]` + pointer at `slot` (samp's pattern for entry hooks).
 fn jmp_indirect(
     patcher: &mut Patcher,
     mem: &mut ProcessMemory,
@@ -872,8 +867,8 @@ fn jmp_indirect(
     patcher.write(mem, what, at, &b, Some(original))
 }
 
-/// The init-main rows (applied once at start-up). Returns one result per row.
-#[allow(clippy::vec_init_then_push)] // one push per CSV row reads like the table it implements
+/// The start-up patches of this module (applied once). Returns one result per patch-table row.
+#[allow(clippy::vec_init_then_push)] // one push per patch reads like the table it implements
 pub fn install_main(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Result<(), PatchError>)> {
     let mut out = Vec::new();
     out.push((
@@ -961,7 +956,7 @@ pub fn install_main(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32,
         45,
         patcher.write(mem, "TakePhotograph flags", site::TAKE_PHOTO, &jmp[..5], Some(&site::TAKE_PHOTO_ORIGINAL[..5])),
     ));
-    // Byte rows.
+    // Plain byte patches.
     let nops: [(u32, u32, usize, &[u8], &'static str); 4] = [
         (191, 0x56E5AD, 5, &[0xE8, 0xFE, 0x0C, 0x13, 0x00], "KillPlayer: no Wasted message"),
         (200, 0x60F289, 8, &[0x68, 0x00, 0x00, 0x80, 0x3F, 0x50, 0x6A, 0x29], "sniper fire-failed sound"),
@@ -996,9 +991,9 @@ pub fn install_main(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32,
 static INIT_GAME_DONE: AtomicBool = AtomicBool::new(false);
 static FRIENDLY_FIRE_DONE: AtomicBool = AtomicBool::new(false);
 
-/// CSV row 106: InitGame installs the `CVehicle::InflictDamage` jmp (A 0x100A7200, called at A 0x10010A56) only
-/// when the server enables vehicle friendly fire (InitGame's last field, settings +0x1B), independent of the
-/// lag-compensation mode. Installed once (samp rewrites the same bytes on every such InitGame).
+/// InitGame installs the `CVehicle::InflictDamage` jmp only when the server enables vehicle friendly fire
+/// (InitGame's last field), independent of the lag-compensation mode. Installed once (samp rewrites the same bytes
+/// on every such InitGame). Mirrors samp.dll 0x100A7200.
 pub fn install_vehicle_friendly_fire(
     patcher: &mut Patcher,
     mem: &mut ProcessMemory,
@@ -1019,8 +1014,8 @@ pub fn install_vehicle_friendly_fire(
     )]
 }
 
-/// The InitGame rows (A 0x10010909): the selector, then for lag-comp 1/2 the bullet hooks and the lock-on RETs.
-/// Installed once per process (samp never removes them either).
+/// The InitGame patches: the selector, then for lag-comp 1/2 the bullet hooks and the lock-on RETs. Installed once
+/// per process (samp never removes them either). Mirrors samp.dll 0x10010909.
 pub fn install_init_game(
     patcher: &mut Patcher,
     mem: &mut ProcessMemory,

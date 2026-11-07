@@ -1,10 +1,10 @@
-//! Remaining local behaviour inside the game (M8b, Windows only): camera RPCs and the camera attachment, spectating,
-//! world bounds, gravity, interiors, animations (RPC 86/87, the 207 animation field, remote apply), drunk, fighting
-//! style, shop name, money/wanted/stunt/velocity, widescreen, ClientCheck.
+//! The local player's remaining behaviour inside the game (Windows only): camera RPCs and the camera attachment,
+//! spectating, world bounds, gravity, interiors, animations (RPC 86/87, the 207 animation field, remote apply),
+//! drunk, fighting style, shop name, money/wanted/stunt/velocity, widescreen and ClientCheck.
 //!
-//! Spec: player-state.md, remote-players-sync.md §1/§2 "212", remote-control-onfoot.md §4.1, session-misc.md "103",
-//! docs/phase3/trace-notes.md "Remaining behaviour (TRACE-8)"; rules in [`crate::behaviour`] / [`crate::anims`].
-//! samp.dll build B addresses are cited where a detail was read statically.
+//! The game-independent rules live in [`crate::behaviour`] and [`crate::anims`]. Spec: docs/re/subsystems/
+//! player-state.md, remote-players-sync.md ("212"), remote-control-onfoot.md §4.1, session-misc.md ("103").
+//! samp.dll addresses here are build B where only B was read (table: docs/re/addresses/behaviourclient.md).
 
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
@@ -25,46 +25,46 @@ use crate::netclient::NetClient;
 use crate::patch::{Memory, PatchError, Patcher, ProcessMemory};
 use crate::script::{Arg, Runner, op};
 
-/// `TheCamera.m_mCameraMatrix` translation (samp's camera object +4 points at 0xB6F99C; B 0x1009FF92).
+/// `TheCamera.m_mCameraMatrix` translation.
 const CAMERA_MATRIX_POS: u32 = 0xB6F9CC;
-/// Global gravity float (B 0x100A1410; 0.008 by default).
+/// Global gravity float (0.008 by default).
 const GRAVITY: u32 = 0x863984;
-/// Immediate operand in GTA's HUD code: the displayed wanted level (player-state.md 133).
+/// Immediate operand in GTA's HUD code: the displayed wanted level (RPC 133).
 const WANTED_HUD: u32 = 0x58DB60;
-/// GTA's stunt-bonus enable dword (player-state.md 104).
+/// GTA's stunt-bonus enable dword (RPC 104).
 const STUNT_BONUS: u32 = 0xA4A474;
-/// `CShopping::LoadShop(const char*)` (cdecl; player-state.md 33, TRACE-8).
+/// `CShopping::LoadShop(const char*)` (cdecl; RPC 33).
 const LOAD_SHOP: u32 = 0x49BBE0;
-/// `CMessages::AddBigMessage(text, time, style)` (cdecl; B 0x100A0D55).
+/// `CMessages::AddBigMessage(text, time, style)` (cdecl).
 const ADD_BIG_MESSAGE: u32 = 0x69F2B0;
-/// `CKeyGen::GetUppercaseKey(const char*)` (cdecl; samp's table hashing B 0x1009CF30 → 0x100B4490).
+/// `CKeyGen::GetUppercaseKey(const char*)` (cdecl; samp hashes its animation table with it).
 const GET_UPPERCASE_KEY: u32 = 0x53CF30;
-/// `CAnimManager::GetAnimAssociation(group, id)` (cdecl; B 0x100B4440).
+/// `CAnimManager::GetAnimAssociation(group, id)` (cdecl).
 const GET_ANIM_ASSOCIATION: u32 = 0x4D3A60;
-/// `CPed` shop-name pointer (B 0x100AE43E).
+/// `CPed` shop-name pointer.
 const PED_SHOP_NAME: u32 = 0x78C;
 /// `CPed::m_pVehicle`, `CVehicle::m_pDriver`, `CVehicle` primary/secondary colours.
 const PED_VEHICLE: u32 = 0x58C;
 const VEH_DRIVER: u32 = 0x460;
 /// `CPhysical::m_vecTurnSpeed`.
 const TURN_SPEED: u32 = 0x58;
-/// `CEntity::m_pRwObject` (the clump the anim hooks compare, B 0x100A4220).
+/// `CEntity::m_pRwObject` (the clump the animation recorders compare).
 const ENTITY_RW_OBJECT: u32 = 0x18;
-/// `CPhysical::m_nPhysicalFlags`-word samp reports for ClientCheck type 2 (entity +0x40, B 0x10011BB7).
+/// `CPhysical::m_nPhysicalFlags`, the word samp reports for ClientCheck type 2.
 const ENTITY_CHECK_WORD: u32 = 0x40;
 const VTBL_CPLACEABLE: u32 = 0x863C40;
-/// Train models samp moves with the mission-train command instead of `Teleport` (B 0x1009F086).
+/// Train models samp moves with the mission-train command instead of `Teleport`.
 const TRAIN_MODELS: [u16; 3] = [0x21A, 0x219, 0x1C1];
-/// Task types samp's anim encoder accepts (B 0x100AE711): 401 named anim, 934.
+/// Task types samp's animation encoder accepts: 401 (named anim) and 934.
 const TASK_NAMED_ANIM: u32 = 0x191;
 const TASK_NAMED_ANIM_2: u32 = 0x3A6;
-/// `CTaskSimpleRunNamedAnim` fields read by B 0x100AE600: anim name, group name, delta, time, flags.
+/// `CTaskSimpleRunNamedAnim` fields samp reads: anim name, group name, delta, time, flags.
 const TASK_ANIM_NAME: u32 = 0x10;
 const TASK_ANIM_GROUP: u32 = 0x28;
 const TASK_ANIM_DELTA: u32 = 0x38;
 const TASK_ANIM_TIME: u32 = 0x40;
 const TASK_ANIM_FLAGS: u32 = 0x5C;
-/// samp's model-anim block poll: 15 × Sleep(1) after the request (B 0x100AD2B3).
+/// samp polls an animation block this many times, `Sleep(1)` apart, after requesting it.
 const ANIM_LOAD_POLLS: u32 = 15;
 
 fn rd<T: Copy + Default>(a: u32) -> T {
@@ -104,7 +104,8 @@ fn entity_live(e: u32) -> bool {
     e != 0 && rd::<u32>(e) != VTBL_CPLACEABLE
 }
 
-/// samp's teleport wrapper (B 0x1009F070): the entity's `Teleport` virtual (vtable +0x38) with `false`.
+/// samp's teleport wrapper: the entity's `Teleport` virtual (vtable +0x38) with `false`.
+/// Mirrors samp.dll B 0x1009F070.
 pub(crate) fn teleport_entity(e: u32, p: [f32; 3]) {
     if !entity_live(e) || TRAIN_MODELS.contains(&rd::<u16>(e + off::ENTITY_MODEL)) {
         return;
@@ -120,12 +121,12 @@ pub(crate) fn teleport_entity(e: u32, p: [f32; 3]) {
     }
 }
 
-/// `CPed` is in a vehicle (flag bit 8 of +0x46C, B 0x100ABE80).
+/// `CPed` is in a vehicle (bit 8 of the ped flags).
 fn in_vehicle(ped: u32) -> bool {
     rd::<u32>(ped + off::PED_FLAGS) & (1 << 8) != 0
 }
 
-/// samp's "passenger" test (B 0x100ABFD0): in a vehicle and not its driver, or in a train carriage (569/570).
+/// samp's "passenger" test: in a vehicle and not its driver, or in a train carriage (569/570).
 fn is_passenger(ped: u32) -> bool {
     let veh: u32 = rd(ped + PED_VEHICLE);
     if veh == 0 || !in_vehicle(ped) {
@@ -137,7 +138,7 @@ fn is_passenger(ped: u32) -> bool {
     matches!(rd::<u16>(veh + off::ENTITY_MODEL), 0x23A | 0x239)
 }
 
-/// A task's virtual (B 0x100B4060 / 0x100B40B0): only for vtables in 0x800000..=0x900000.
+/// A task's virtual, read only for vtables inside gta_sa.exe (0x800000..=0x900000), like samp.
 fn task_virtual(task: u32, slot: u32) -> u32 {
     if task == 0 {
         return 0;
@@ -154,8 +155,8 @@ fn task_virtual(task: u32, slot: u32) -> u32 {
     }
 }
 
-/// First task of the primary chain (intelligence +0x10, then sub-tasks) whose type is in `types`
-/// (B 0x100AE6F0 for the encoder, B 0x100ADA50 with 401 only for the remote stop).
+/// First task of the primary chain (intelligence +0x10, then sub-tasks) whose type is in `types`. The encoder
+/// accepts 401 and 934, the remote stop only 401.
 fn find_task(ped: u32, types: &[u32]) -> u32 {
     let intel: u32 = rd(ped + off::PED_INTELLIGENCE);
     if intel == 0 {
@@ -183,8 +184,8 @@ fn c_str_at(a: u32, max: usize) -> Vec<u8> {
     out
 }
 
-/// A static text buffer handed to GTA (it keeps the pointer): the shop name (B 0x1026B260, 32 bytes) and the
-/// big-message text (B 0x101501AC → 0x200 bytes).
+/// A static text buffer handed to GTA (it keeps the pointer): the shop name (32 bytes) and the big-message text
+/// (0x200 bytes), sized like samp's.
 struct StaticText<const N: usize>(UnsafeCell<[u8; N]>);
 // SAFETY: only touched on the game's main thread.
 unsafe impl<const N: usize> Sync for StaticText<N> {}
@@ -206,7 +207,7 @@ impl<const N: usize> StaticText<N> {
 static SHOP_NAME: StaticText<32> = StaticText::new();
 static BIG_MESSAGE: StaticText<0x200> = StaticText::new();
 
-/// `CMessages::AddBigMessage` after `CLEAR_PRINTS` (B 0x100A0D10; only for styles ≤ 200).
+/// `CMessages::AddBigMessage` after `CLEAR_PRINTS` (only for styles ≤ 200). Mirrors samp.dll B 0x100A0D10.
 pub(crate) fn big_message(runner: &mut Runner, text: &str, ms: u32, style: u32) {
     if style > 200 {
         return;
@@ -220,10 +221,10 @@ pub(crate) fn big_message(runner: &mut Runner, text: &str, ms: u32, style: u32) 
     }
 }
 
-// ---- the AddAnimation / BlendAnimation recorders (CSV rows 17 / 18) ---------------------------------------------
+// ---- the AddAnimation / BlendAnimation recorders ------------------------------------------------------------------
 
-/// Last recorded call on the local clump (B globals 0x101514D0/D4/D8): group, id, blend delta (samp also keeps
-/// the kind, 1 add / 2 blend, at 0x101514CC; the encoder does not read it).
+/// Last recorded animation call on the local clump: group, id, blend delta. (samp also records whether it was an
+/// add or a blend; its encoder never reads that, so we do not keep it.)
 static REC_GROUP: AtomicU32 = AtomicU32::new(0);
 static REC_ID: AtomicU32 = AtomicU32::new(0);
 static REC_DELTA: AtomicU32 = AtomicU32::new(0);
@@ -290,8 +291,8 @@ unsafe extern "C" fn blend_animation_stub() {
     )
 }
 
-/// CSV row 54 (A 0x100A3E00): `CAnimManager::UncompressAnimation(hier)` returns at once for a NULL hierarchy,
-/// otherwise it runs the two displaced instructions and continues at 0x4D41C5.
+/// `CAnimManager::UncompressAnimation(hier)` guard: returns at once for a NULL hierarchy, otherwise runs the two
+/// displaced instructions and continues in the original. Mirrors samp.dll 0x100A3E00.
 #[unsafe(naked)]
 unsafe extern "C" fn uncompress_animation_stub() {
     core::arch::naked_asm!(
@@ -308,10 +309,11 @@ unsafe extern "C" fn uncompress_animation_stub() {
     )
 }
 
-/// CSV rows 198 (below) and 17 / 18: `jmp dword [slot]` at the entries, the handler addresses in the NOP padding before them.
+/// Installs this module's patches; each result is tagged with its row in docs/re/data/gta-patches-r4.csv. The
+/// recorders are `jmp dword [slot]` at the function entries, with the handler addresses in the NOP padding before them.
 pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Result<(), PatchError>)> {
     let mut out = Vec::new();
-    // CSV row 198: POINT_CAMERA_AT_CHAR always takes the non-player branch (spectating remote CPlayerPeds).
+    // POINT_CAMERA_AT_CHAR always takes the non-player branch, so spectating a remote CPlayerPed works.
     out.push((198, patcher.write(mem, "POINT_CAMERA_AT_CHAR ped mode", 0x47C477, &[0xEB], Some(&[0x74]))));
     type Row = (u32, u32, u32, &'static [u8], u32, &'static str);
     let rows: [Row; 2] = [
@@ -353,18 +355,18 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
 
 pub struct Behaviour {
     pub bounds: Bounds,
-    /// Local drunk level (local ped object +0x2C9).
+    /// Local drunk level (RPC 35).
     pub drunk: i32,
     rand: bh::MsvcRand,
-    /// GetTickCount of the last wobble decision (B 0x1026B284; 0 = never).
+    /// GetTickCount of the last wobble decision (0 = never).
     wobble_tick: u32,
     pub spectate: Spectate,
     last_212: Option<Instant>,
-    /// Camera attachment (samp's camera object +0): the object id of RPC 81.
+    /// Camera attachment: the object id of RPC 81.
     pub attached: Option<u16>,
-    /// The 207 animation field (LocalPlayer +0xFC / +0x100).
+    /// The 207 animation field.
     pub anim: Latch,
-    /// `CKeyGen::GetUppercaseKey` of every record's NAME part (B 0x10149190).
+    /// `CKeyGen::GetUppercaseKey` of every animation record's NAME part.
     hashes: Vec<u32>,
 }
 
@@ -389,7 +391,7 @@ impl Behaviour {
         }
     }
 
-    /// Control-channel line (M8b e2e): samp-side state plus the GTA values the RPCs change.
+    /// Status line for the end-to-end tests' control channel: samp-side state plus the GTA values the RPCs change.
     pub fn status_line(&self, spawned: bool) -> String {
         const CAM: u32 = 0xB6F028;
         let active = u32::from(rd::<u8>(CAM + 0x59).min(2));
@@ -442,7 +444,8 @@ impl Behaviour {
         )
     }
 
-    /// samp hashes the table at start-up (B 0x1009CF30, called from B 0x100A091F); here once per session.
+    /// Hashes the animation table (samp does it at start-up; we do it once per session).
+    /// Mirrors samp.dll B 0x1009CF30.
     pub fn hash_table(&mut self) {
         if !self.hashes.is_empty() {
             return;
@@ -462,8 +465,7 @@ impl Behaviour {
 
     // ---- InitGame, world state ---------------------------------------------------------------------------------
 
-    /// InitGame (B 0x100109E9 → 0x100088E0, then 0x100A1410): bounds back to ±20000, the gravity applied.
-    /// InitGame (A 0x100109E8 / 0x10010A24): the stunt-bonus flag (CSV row 359) and the gravity (CSV row 358).
+    /// InitGame: bounds back to ±20000, then the stunt-bonus flag and the gravity applied.
     pub fn on_init_game(&mut self, gravity: f32, stunt_bonus: bool) {
         self.bounds = Bounds::default();
         set_stunt_bonus(stunt_bonus);
@@ -472,8 +474,8 @@ impl Behaviour {
 
     // ---- camera ------------------------------------------------------------------------------------------------
 
-    /// RPC 82 (B 0x1001A0A0 → 0x1009D5C0 / 0x1009D630): time ≤ 0 → ignored; the camera counts as "applied" for the
-    /// spectator tick (LocalPlayer +0x314).
+    /// RPC 82 (InterpolateCamera): a time ≤ 0 is ignored; the camera counts as "applied" for the spectator tick.
+    /// Mirrors samp.dll B 0x1001A0A0.
     pub fn interpolate(&mut self, runner: &mut Runner, position: bool, from: [f32; 3], to: [f32; 3], ms: i32, cut: u8) {
         if ms <= 0 {
             return;
@@ -490,7 +492,8 @@ impl Behaviour {
         }
     }
 
-    /// RPC 81 (B 0x10019FA0 → 0x1009D690): ids ≤ 1000 of existing objects; snap with a 100 ms move to itself.
+    /// RPC 81 (AttachCameraToObject): ids ≤ 1000 of existing objects; snaps with a 100 ms move to itself.
+    /// Mirrors samp.dll B 0x10019FA0.
     pub fn attach_camera(&mut self, runner: &mut Runner, objects: &crate::objects::Objects, id: u16) {
         if id > 1000 {
             return;
@@ -501,7 +504,7 @@ impl Behaviour {
         self.follow_entity(runner, ptr);
     }
 
-    /// Every frame before `CCamera::Process` (CSV row 9, B 0x100A2640 → 0x1009D6E0).
+    /// Every frame before `CCamera::Process`: the camera follows the attached object. Mirrors samp.dll B 0x1009D6E0.
     pub fn camera_follow(&mut self, runner: &mut Runner, objects: &crate::objects::Objects) {
         let Some(id) = self.attached else { return };
         if let Some(ptr) = objects.gta_ptr(id) {
@@ -520,16 +523,17 @@ impl Behaviour {
         }
     }
 
-    // ---- spectating (B 0x100041A0, 0x10004260, 0x10004210, tick 0x10006530) ------------------------------------
+    // ---- spectating ----------------------------------------------------------------------------------------------
 
     /// RPC 124. Returns true when the spawn routine has to run (leaving spectator mode while spectating).
+    /// Mirrors samp.dll B 0x100041A0.
     pub fn toggle_spectating(&mut self, enable: bool) -> bool {
         let spawn = self.spectate.on && !enable;
         self.spectate = Spectate { on: enable, target: SpecTarget::None, applied: false, mode: self.spectate.mode };
         spawn
     }
 
-    /// RPC 126: id < 1004, slot in use, state neither 0 nor 32 (B 0x10004260).
+    /// RPC 126: id < 1004, slot in use, state neither 0 nor 32. Mirrors samp.dll B 0x10004260.
     pub fn spectate_player(&mut self, players: &crate::players::Players, id: u16, mode: u8) {
         self.spectate.mode = mode;
         if id >= 1004 {
@@ -541,7 +545,7 @@ impl Behaviour {
         }
     }
 
-    /// RPC 127: id < 2000 and the vehicle exists (B 0x10004210).
+    /// RPC 127: id < 2000 and the vehicle exists. Mirrors samp.dll B 0x10004210.
     pub fn spectate_vehicle(&mut self, vehicles: &crate::vehicles::Vehicles, id: u16, mode: u8) {
         self.spectate.mode = mode;
         if id < 2000 && vehicles.script_handle(id).is_some() {
@@ -550,8 +554,8 @@ impl Behaviour {
         }
     }
 
-    /// One spectator tick (B 0x10006530): 212 at the on-foot interval (then `after_212`, the 203 attempt), HUD off, the ped parked 20 m above the camera
-    /// with 100 health, then the view (once per target).
+    /// One spectator tick: a 212 at the on-foot interval (then `after_212`, the 203 attempt), HUD off, the ped
+    /// parked 20 m above the camera with 100 health, then the view (once per target). Mirrors samp.dll B 0x10006530.
     #[allow(clippy::too_many_arguments)]
     pub fn spectator_tick(
         &mut self,
@@ -578,7 +582,7 @@ impl Behaviour {
                     keys,
                     position: Vec3 { x: cam[0], y: cam[1], z: cam[2] },
                 });
-                // The spectator 203 is tried only right after a 212 (A 0x10006620).
+                // Like samp, the spectator 203 is tried only right after a 212.
                 after_212(net);
             }
         }
@@ -632,14 +636,14 @@ impl Behaviour {
         }
     }
 
-    /// RPC 157 / samp's camera method B 0x1009D7B0: 0x0925, attachment off, 0x015F.
+    /// RPC 157: opcode 0x0925, attachment off, then 0x015F. Mirrors samp.dll B 0x1009D7B0.
     pub fn camera_position(&mut self, runner: &mut Runner, p: [f32; 3]) {
         runner.run(op::CAMERA_RESET_NEW_SCRIPTABLES, &[]);
         self.attached = None;
         runner.run(op::SET_FIXED_CAMERA_POSITION, &[p[0], p[1], p[2], 0.0, 0.0, 0.0].map(Arg::Float));
     }
 
-    /// RPC 158 / B 0x1009D810: 0x0925, attachment off, 0x0160 with the cut.
+    /// RPC 158: opcode 0x0925, attachment off, then 0x0160 with the cut. Mirrors samp.dll B 0x1009D810.
     pub fn camera_look_at(&mut self, runner: &mut Runner, p: [f32; 3], cut: u8) {
         runner.run(op::CAMERA_RESET_NEW_SCRIPTABLES, &[]);
         self.attached = None;
@@ -649,9 +653,10 @@ impl Behaviour {
         );
     }
 
-    // ---- world bounds (B 0x10003F40 on foot, 0x10003FB0 driving) -----------------------------------------------
+    // ---- world bounds --------------------------------------------------------------------------------------------
 
-    /// On foot, every frame before the 207 (B 0x10007C2E); only outside interiors (GET_AREA_VISIBLE = 0).
+    /// On foot, every frame before the 207; only outside interiors (GET_AREA_VISIBLE = 0).
+    /// Mirrors samp.dll B 0x10003F40.
     pub fn bounds_on_foot(&mut self, runner: &mut Runner, ped: u32) {
         if area_visible(runner) != 0 {
             return;
@@ -666,13 +671,13 @@ impl Behaviour {
         }
     }
 
-    /// Driving (B 0x1000793D): the vehicle of the pool the driver sits in.
+    /// Driving: pushes back the pool vehicle the driver sits in. Mirrors samp.dll B 0x10003FB0.
     pub fn bounds_driver(&mut self, runner: &mut Runner, vehicles: &crate::vehicles::Vehicles, ped: u32) {
         let veh: u32 = rd(ped + PED_VEHICLE);
         if is_passenger(ped) || veh == 0 {
             return;
         }
-        // samp reads the area first, then needs a pool vehicle (B 0x10003FD3).
+        // samp reads the area first, then needs a pool vehicle.
         if area_visible(runner) != 0 || vehicles.id_of(veh).is_none() {
             return;
         }
@@ -681,9 +686,9 @@ impl Behaviour {
         }
     }
 
-    // ---- drunk (B 0x100ADE00) ----------------------------------------------------------------------------------
+    // ---- drunk -------------------------------------------------------------------------------------------------
 
-    /// Every alive frame of the local tick (B 0x100077B0).
+    /// Every alive frame of the local tick. Mirrors samp.dll B 0x100ADE00.
     pub fn drunk_tick(&mut self, runner: &mut Runner, ped: u32) {
         if self.drunk > bh::DRUNK_THRESHOLD {
             let v = bh::drunk_value(self.drunk);
@@ -711,7 +716,7 @@ impl Behaviour {
         }
     }
 
-    /// Not spawned (B 0x10007A70): a positive level is reset to 0 and the routine runs once (drunkenness 0).
+    /// Not spawned: a positive level is reset to 0 and the routine runs once (drunkenness 0).
     pub fn drunk_not_spawned(&mut self, runner: &mut Runner) {
         if self.drunk > 0 {
             self.drunk = 0;
@@ -721,13 +726,13 @@ impl Behaviour {
 
     // ---- animations ------------------------------------------------------------------------------------------
 
-    /// Every alive frame (B 0x100077EF): the local encoder into the 207 latch.
+    /// Every alive frame: the local animation encoder feeds the 207 latch.
     pub fn anim_tick(&mut self, ped: u32) {
         let v = self.encode_local(ped);
         self.anim.update(v);
     }
 
-    /// B 0x100AE7A0.
+    /// The local animation encoder. Mirrors samp.dll B 0x100AE7A0.
     fn encode_local(&mut self, ped: u32) -> u32 {
         if !entity_live(ped) || rd::<u32>(ped + ENTITY_RW_OBJECT) == 0 {
             return 0;
@@ -756,7 +761,8 @@ impl Behaviour {
         anims::encode_plain(index, f32::from_bits(REC_DELTA.load(Ordering::Relaxed)))
     }
 
-    /// RPC 86 (B 0x1001A900): the local ped, or a streamed-in remote ped (marked as animated by the server).
+    /// RPC 86: the local ped, or a streamed-in remote ped (marked as animated by the server).
+    /// Mirrors samp.dll B 0x1001A900.
     pub fn apply_animation(
         &mut self,
         runner: &mut Runner,
@@ -780,7 +786,8 @@ impl Behaviour {
         play(runner, ped, &a.name, &a.lib, a.delta, [a.looping, a.lock_x, a.lock_y, a.freeze], a.time as i32);
     }
 
-    /// RPC 87 (B 0x10018530): the ped re-set to its own position (flushes its tasks); a remote loses the RPC mark.
+    /// RPC 87: the ped is re-set to its own position (which flushes its tasks); a remote loses the RPC mark.
+    /// Mirrors samp.dll B 0x10018530.
     pub fn clear_animations(&mut self, players: &crate::players::Players, local_id: Option<u16>, player_id: u16) {
         let ped = if Some(player_id) == local_id {
             local_ped()
@@ -799,19 +806,18 @@ impl Behaviour {
         }
     }
 
-    /// A remote player streamed in or out: its animation state starts over (remote constructor B 0x100165E0).
+    /// A remote player streamed in or out: its animation state starts over, as in samp's remote constructor.
     pub fn forget_remote(&mut self, id: u16) {
         remote_states(|m| m.remove(&id));
     }
 
-    // ---- ClientCheck (RPC 103, B 0x10011A40) -------------------------------------------------------------------
+    // ---- ClientCheck (RPC 103) ---------------------------------------------------------------------------------
 
-    /// ClientCheck (RPC 103, A 0x10011A60). Every reply is computed from this client's own state
-    /// and memory, with samp's algorithm on the real data: type 2 the entity flags word; 5 the
-    /// checksum of gta_sa.exe memory as it is in this process (our patches included); 0x45 the
-    /// checksum of this client's own module image (samp_client.dll, the module that answers; samp
-    /// reads its own image here); 0x46 / 0x47 of GTA's model info / collision data; 0x48 the clock.
-    /// Nothing is replayed or substituted: memory we changed answers as changed.
+    /// ClientCheck (RPC 103). Every reply is computed with samp's algorithm on this client's real state and memory:
+    /// type 2 the entity flags word; 5 the checksum of gta_sa.exe memory as it is in this process (our patches
+    /// included); 0x45 the checksum of this client's own module image (samp_client.dll, as samp reads its own);
+    /// 0x46 / 0x47 GTA's model info / collision data; 0x48 the clock. Nothing is replayed or substituted: memory we
+    /// changed answers as changed. Mirrors samp.dll 0x10011A60.
     pub fn client_check(&mut self, net: &mut NetClient, runner: &mut Runner, r: &ClientCheckRequest) {
         crate::log!(
             "behaviour: ClientCheck request type {:#x} arg {:#x} offset {} count {}",
@@ -866,7 +872,7 @@ impl Behaviour {
     }
 }
 
-/// `CModelInfo::ms_modelInfoPtrs[model]` for 0 ≤ model ≤ 20000 (samp A 0x100A7A80), else 0.
+/// `CModelInfo::ms_modelInfoPtrs[model]` for 0 ≤ model ≤ 20000 (samp's bounds), else 0.
 fn model_info(model: u32) -> u32 {
     if model > game::MODEL_INFO_COUNT - 1 {
         return 0;
@@ -886,9 +892,9 @@ fn checksum(addr: u32, count: u16) -> Option<u8> {
     Some(bh::client_check_sum(&buf))
 }
 
-/// Type 0x47 (A 0x10011B4C): the model is requested and loaded when it is not (HAS_MODEL_LOADED polled
-/// up to 1000 times, `Sleep(1)` apart), the checksum taken over its collision model (`CBaseModelInfo`
-/// +0x14), and the model marked as no longer needed when nothing uses it (+8 reference count 0).
+/// Type 0x47: the model is requested when it is not loaded (HAS_MODEL_LOADED polled up to 1000 times, `Sleep(1)`
+/// apart), the checksum taken over its collision model (`CBaseModelInfo` +0x14), and the model marked as no longer
+/// needed when nothing uses it (+8 reference count 0).
 fn collision_checksum(runner: &mut Runner, model: i32, mi: u32, offset: u16, count: u16) -> Option<u8> {
     const MI_COL_MODEL: u32 = 0x14;
     const MI_REF_COUNT: u32 = 8;
@@ -917,7 +923,7 @@ fn collision_checksum(runner: &mut Runner, model: i32, mi: u32, offset: u16, cou
     Some(result)
 }
 
-/// One stored 207 of a remote player (B 0x100167E4); called from the one-shot apply in players.rs.
+/// Applies the animation field of one stored 207 of a remote player; called from the one-shot apply in players.rs.
 pub fn remote_anim(runner: &mut Runner, id: u16, ped: u32, anim: u32) {
     let actions = remote_states(|m| m.entry(id).or_default().step(anim, || find_task(ped, &[TASK_NAMED_ANIM]) != 0));
     for a in actions {
@@ -933,7 +939,7 @@ pub fn remote_anim(runner: &mut Runner, id: u16, ped: u32, anim: u32) {
                     [d.looping, d.lock_x, d.lock_y, d.freeze],
                     d.time,
                 );
-                // B 0x100AE7E0 → 0x100AD630: the parachute object follows PARACHUTE anims (FEAT-B).
+                // The parachute object follows the ped's PARACHUTE animations.
                 if lib == "PARACHUTE" {
                     crate::specials::remote_para_anim(runner, id, ped, name);
                 }
@@ -944,7 +950,7 @@ pub fn remote_anim(runner: &mut Runner, id: u16, ped: u32, anim: u32) {
     }
 }
 
-/// Remote animation state per player (remote +0x1B4 / +0x1C1); shared with the one-shot apply in players.rs.
+/// Remote animation state per player; shared with the one-shot apply in players.rs.
 static REMOTE_ANIMS: std::sync::Mutex<Option<HashMap<u16, RemoteState>>> = std::sync::Mutex::new(None);
 
 fn remote_states<R>(f: impl FnOnce(&mut HashMap<u16, RemoteState>) -> R) -> R {
@@ -952,7 +958,7 @@ fn remote_states<R>(f: impl FnOnce(&mut HashMap<u16, RemoteState>) -> R) -> R {
     f(g.get_or_insert_with(HashMap::new))
 }
 
-/// `CAMERA_RESET_NEW_SCRIPTABLES`, `CAMERA_PERSIST_POS(1)`, `CAMERA_SET_VECTOR_MOVE` (B 0x1009D5C0).
+/// `CAMERA_RESET_NEW_SCRIPTABLES`, `CAMERA_PERSIST_POS(1)`, `CAMERA_SET_VECTOR_MOVE`. Mirrors samp.dll B 0x1009D5C0.
 fn vector_move(runner: &mut Runner, from: [f32; 3], to: [f32; 3], ms: i32, cut: i32) {
     runner.run(op::CAMERA_RESET_NEW_SCRIPTABLES, &[]);
     runner.run(op::CAMERA_PERSIST_POS, &[Arg::Int(1)]);
@@ -966,21 +972,19 @@ fn area_visible(runner: &mut Runner) -> i32 {
     runner.local_i32(0) & 0xFF
 }
 
-/// The world bounds while the local player is spawned (samp: local player +0xF0), published by the client tick
-/// for the `CPlayerPed::ProcessControl` hook ([`bounds_jump`]).
+/// The world bounds while the local player is spawned, published by the client tick for the
+/// `CPlayerPed::ProcessControl` hook ([`bounds_jump`]).
 static LOCAL_BOUNDS: std::sync::Mutex<Option<Bounds>> = std::sync::Mutex::new(None);
 
 pub fn publish_bounds(b: Option<Bounds>) {
     *LOCAL_BOUNDS.lock().unwrap_or_else(|e| e.into_inner()) = b;
 }
 
-/// samp's local branch of the `CPlayerPed::ProcessControl` hook (B 0x100A2AF9, measured with the effect tracer:
-/// `Pads[0]` Square written by samp B+0xA2B70 one frame before `CTaskComplexJump` is created from
-/// `PlayerControlZelda`): while the local player is spawned, the local ped is outside the bounds (same strict
-/// compares as the push-back, B 0x1009F5F0), the area is 0 (GET_AREA_VISIBLE, B 0x100A0EF0) and the ped is not in a
-/// vehicle and stands (flags +0x46C: bit 8 clear, bit 0 or 1 set), the pad gets a fresh jump press
-/// (NewState.Square := 0xFF, OldState.Square := 0) before GTA processes the ped. Runs before the special-action
-/// masks, like samp.
+/// samp's local branch of the `CPlayerPed::ProcessControl` hook: while the local player is spawned, outside the
+/// bounds (same strict compares as the push-back), in area 0, not in a vehicle and standing (ped flags: bit 8 clear,
+/// bit 0 or 1 set), the pad gets a fresh jump press (NewState.Square = 0xFF, OldState.Square = 0) before GTA
+/// processes the ped. Runs before the special-action masks, like samp. Measurement: docs/phase3/fixa-notes.md.
+/// Mirrors samp.dll B 0x100A2AF9.
 pub fn bounds_jump(ped: u32) {
     let Some(b) = *LOCAL_BOUNDS.lock().unwrap_or_else(|e| e.into_inner()) else { return };
     let Some(p) = matrix_pos(ped) else { return };
@@ -1002,7 +1006,7 @@ pub fn bounds_jump(ped: u32) {
     poke(game::PAD0 + (pad::OLD_STATE + pad::SQUARE) as u32, 0i16);
 }
 
-/// B 0x1009F450 on a live entity: speed, then the matrix rows written back with z + 0.04.
+/// [`bh::push_back`] on a live entity: speed, then the matrix rows written back with z + 0.04.
 fn push_back_entity(e: u32, b: &Bounds) -> bool {
     let m: u32 = rd(e + off::PLACEABLE_MATRIX);
     if !entity_live(e) || m == 0 {
@@ -1016,8 +1020,8 @@ fn push_back_entity(e: u32, b: &Bounds) -> bool {
     true
 }
 
-/// samp's animation player (B 0x100AD240): "SEX" refused; an unloaded library is requested and polled with
-/// `Sleep(1)` 15 times, then given up; else `TASK_PLAY_ANIM_NON_INTERRUPTABLE`.
+/// samp's animation player: "SEX" is refused; an unloaded library is requested and polled with `Sleep(1)` 15 times,
+/// then given up; otherwise `TASK_PLAY_ANIM_NON_INTERRUPTABLE`. Mirrors samp.dll B 0x100AD240.
 pub(crate) fn play(runner: &mut Runner, ped: u32, name: &[u8], lib: &[u8], delta: f32, flags: [bool; 4], time: i32) {
     let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return };
     if anims::refused_library(lib) {
@@ -1055,7 +1059,7 @@ pub(crate) fn play(runner: &mut Runner, ped: u32, name: &[u8], lib: &[u8], delta
 
 // ---- small RPCs ------------------------------------------------------------------------------------------------
 
-/// RPC 146 and InitGame (B 0x100A1410): the global gravity float (CSV row 358).
+/// RPC 146 and InitGame: the global gravity float. Mirrors samp.dll B 0x100A1410.
 pub fn set_gravity(g: f32) {
     let _ = ProcessMemory.write(GRAVITY, &g.to_le_bytes());
 }
@@ -1065,7 +1069,7 @@ pub fn set_wanted(level: u8) {
     let _ = ProcessMemory.write(WANTED_HUD, &[level]);
 }
 
-/// RPC 104 and InitGame (A 0x100A1580): GTA's stunt-bonus dword (CSV row 359).
+/// RPC 104 and InitGame: GTA's stunt-bonus dword. Mirrors samp.dll 0x100A1580.
 pub fn set_stunt_bonus(on: bool) {
     let _ = ProcessMemory.write(STUNT_BONUS, &u32::from(on).to_le_bytes());
 }
@@ -1082,21 +1086,21 @@ pub fn reset_money(runner: &mut Runner) {
     }
 }
 
-/// RPC 111 (B 0x10018A70): the debug chat line, then `SWITCH_WIDESCREEN`.
+/// RPC 111: the debug chat line, then `SWITCH_WIDESCREEN`. Mirrors samp.dll B 0x10018A70.
 pub fn widescreen(runner: &mut Runner, on: u8) {
     crate::ui::print_debug(&format!("Widescreen = {on}"));
     runner.run(op::SWITCH_WIDESCREEN, &[Arg::Int(i32::from(on))]);
 }
 
-/// RPC 89 (B 0x100AE0E0): `GIVE_MELEE_ATTACK_TO_CHAR(ped, style, 6)`.
+/// RPC 89: `GIVE_MELEE_ATTACK_TO_CHAR(ped, style, 6)`. Mirrors samp.dll B 0x100AE0E0.
 pub fn fighting_style(runner: &mut Runner, ped: u32, style: u8) {
     if let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() {
         runner.run(op::GIVE_MELEE_ATTACK_TO_CHAR, &[Arg::Int(h), Arg::Int(i32::from(style)), Arg::Int(6)]);
     }
 }
 
-/// RPC 33 (B 0x10017E00 → 0x100AE390 / 0x100AE310): the ped's shop-name pointer (an empty name clears only its low
-/// byte, like samp), then `CShopping::LoadShop` for names of ≤ 8 characters (the empty one included).
+/// RPC 33: the ped's shop-name pointer (an empty name clears only its low byte, like samp), then
+/// `CShopping::LoadShop` for names of ≤ 8 characters (the empty one included). Mirrors samp.dll B 0x10017E00.
 pub fn shop_name(name: &[u8]) {
     let ped = local_ped();
     if ped == 0 || game::ped_handle(&ProcessMemory, ped).ok().flatten().is_none() {
@@ -1119,7 +1123,8 @@ pub fn shop_name(name: &[u8]) {
     }
 }
 
-/// RPC 90 (B 0x10018800): ground bits (low two of +0x46C) flipped when set, then the move speed written.
+/// RPC 90: the ground bits (low two of the ped flags) are flipped when set, then the move speed is written.
+/// Mirrors samp.dll B 0x10018800.
 pub fn set_velocity(v: [f32; 3]) {
     let ped = local_ped();
     if ped == 0 {
@@ -1134,8 +1139,8 @@ pub fn set_velocity(v: [f32; 3]) {
     }
 }
 
-/// RPC 156 (B 0x100199B0 → 0x100AD350 with refresh): `SET_AREA_VISIBLE`, `SET_CHAR_AREA_VISIBLE`, then
-/// `REQUEST_COLLISION` at the ped's x, y.
+/// RPC 156: `SET_AREA_VISIBLE`, `SET_CHAR_AREA_VISIBLE`, then `REQUEST_COLLISION` at the ped's x, y.
+/// Mirrors samp.dll B 0x100199B0.
 pub fn set_interior(runner: &mut Runner, interior: u8) {
     let ped = local_ped();
     let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return };
@@ -1152,7 +1157,7 @@ fn tick_count() -> u32 {
     unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount() }
 }
 
-/// samp's ms clock for ClientCheck 0x48 (B 0x1002E7A0): QueryPerformanceCounter · 1000 / frequency.
+/// samp's ms clock for ClientCheck 0x48: QueryPerformanceCounter · 1000 / frequency. Mirrors samp.dll B 0x1002E7A0.
 fn qpc_ms() -> u64 {
     use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
     let (mut c, mut f) = (0i64, 0i64);

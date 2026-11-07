@@ -1,13 +1,10 @@
-//! Remote players on foot: the platform-independent part (milestone M3).
+//! Remote players on foot, the platform-independent part: ped slots, the per-slot shadow state the context switch
+//! writes into GTA, key injection, rotation and position correction, and the store rules of 207.
 //!
-//! Specs: remote-control-onfoot.md (§1 ped slots, §2 the per-player context
-//! switch, §3 movement application), remote-players-sync.md (§1 lifecycle RPCs
-//! 137/138/32/163, §207, §2.1 store/apply rules) and remote-control-combat.md
+//! Pure data and arithmetic, unit-tested on the host; the GTA side (ped creation, hooks, memory writes) lives in
+//! `players.rs` and `swap.rs`. Spec: docs/re/subsystems/remote-control-onfoot.md (§1 ped slots, §2 context switch,
+//! §3 movement), remote-players-sync.md (§1 lifecycle RPCs, "207", §2.1 store/apply) and remote-control-combat.md
 //! §1.2 (per-slot tables and their defaults).
-//!
-//! Everything here is pure data and arithmetic so it can be unit-tested on the
-//! host; the GTA side (ped creation, hooks, memory writes) lives in
-//! `players.rs` / `swap.rs` (Windows only).
 
 use std::time::{Duration, Instant};
 
@@ -17,7 +14,7 @@ use samp_proto::types::Quat;
 use crate::footsync::Rotation;
 
 /// Ped slots = GTA player indices. 0 is the local player, 1 (GTA's second
-/// player) is never used, remote players get 2…209 (onfoot §1.1).
+/// player) is never used, remote players get 2…209.
 pub const PED_SLOTS: usize = 210;
 pub const FIRST_REMOTE_SLOT: usize = 2;
 /// `sizeof(CPad)` (gta-reversed `Pad.h`).
@@ -29,9 +26,9 @@ pub const SKILLS: usize = 11;
 /// Camera vectors Front/Source/SourceBeforeLookBehind/Up (12 floats).
 pub const AIM_FLOATS: usize = 12;
 
-/// Position nudge gain per received 207 (A 0x100FE4B0).
+/// Position nudge gain per received 207. Mirrors samp.dll 0x100FE4B0 (the constant).
 pub const NUDGE_GAIN: f32 = 0.1;
-/// Teleport thresholds (per axis) and dead zone (onfoot §3.4).
+/// Teleport thresholds (per axis) and dead zone of the position correction.
 pub const TELEPORT_XY: f32 = 2.0;
 pub const TELEPORT_Z: f32 = 1.0;
 pub const DEAD_ZONE: f32 = 1e-5;
@@ -41,7 +38,7 @@ pub const SLERP_KEEP: f32 = 0.75;
 pub const STALE: Duration = Duration::from_millis(3000);
 /// Health forced on every remote ped each frame (state ≠ wasted).
 pub const REMOTE_PED_HEALTH: f32 = 1000.0;
-/// Head look (onfoot §5.2): refresh and call intervals, look distance.
+/// Head look: refresh and call intervals, look distance.
 pub const LOOK_REFRESH: Duration = Duration::from_millis(1000);
 pub const LOOK_INTERVAL: Duration = Duration::from_millis(200);
 pub const LOOK_DISTANCE: f32 = 20.0;
@@ -52,8 +49,8 @@ pub fn head_look_due(p: &RemotePlayer, now: Instant) -> (bool, bool) {
     (due(p.look_refresh, LOOK_REFRESH), due(p.look_last, LOOK_INTERVAL))
 }
 
-/// Collision helpers per frame on foot (onfoot §3.6): `Some(true)` on,
-/// `Some(false)` off, `None` unchanged.
+/// Collision helpers per frame on foot: `Some(true)` on, `Some(false)` off,
+/// `None` unchanged.
 pub fn collision_wanted(f: &FootData) -> Option<bool> {
     let surfing = f.surf_id != 0 && f.surf_id != 0xFFFF && f.surf_id < 3000;
     if !surfing {
@@ -65,17 +62,16 @@ pub fn collision_wanted(f: &FootData) -> Option<bool> {
     }
 }
 
-/// `CEntity::m_nFlags` after samp's two collision helpers (A 0x1009F6E0 and
-/// 0x1009F690): on clears bit 31 (samp's "skip collision" marker) and bit 1
-/// (`m_bCollisionProcessed`) and sets bit 0 (`m_bUsesCollision`); off does the reverse.
+/// `CEntity::m_nFlags` after samp's two collision helpers: on clears bit 31 (samp's "skip collision" marker) and
+/// bit 1 (`m_bCollisionProcessed`) and sets bit 0 (`m_bUsesCollision`); off does the reverse.
 pub fn collision_flags(flags: u32, on: bool) -> u32 {
     if on { (flags & 0x7FFF_FFFD) | 1 } else { (flags | 0x8000_0002) & !1 }
 }
 
-/// z offset of the matrix translation right after creation (onfoot §1.2).
+/// z offset of the matrix translation right after creation.
 pub const CREATE_Z_OFFSET: f32 = 0.15;
 
-/// Remote state byte (remote-players-sync §2.1).
+/// Remote state byte.
 pub mod state {
     pub const NONE: u8 = 0;
     pub const ON_FOOT: u8 = 17;
@@ -85,7 +81,7 @@ pub mod state {
 
 // ---- ped slots -------------------------------------------------------------
 
-/// Allocation of ped slots 2…209 (first free, like A 0x100A0170).
+/// Allocation of ped slots 2…209, first free. Mirrors samp.dll 0x100A0170.
 #[derive(Clone)]
 pub struct SlotAllocator {
     used: [bool; PED_SLOTS],
@@ -110,7 +106,7 @@ impl SlotAllocator {
         }
     }
 
-    /// Slots 2…209 in use: the N of the on-foot send interval (sync §0.4).
+    /// Slots 2…209 in use: the N of the on-foot send interval (`footsync::on_foot_interval`).
     pub fn count(&self) -> u32 {
         self.used[FIRST_REMOTE_SLOT..].iter().filter(|&&u| u).count() as u32
     }
@@ -118,8 +114,8 @@ impl SlotAllocator {
 
 // ---- per-slot shadow state (shared with the ProcessControl hook) ----------
 
-/// What the context switch writes into GTA for one slot
-/// (remote-control-combat.md §1.2, defaults from the same table).
+/// What the context switch writes into GTA for one slot; defaults as in
+/// docs/re/subsystems/remote-control-combat.md §1.2.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct SlotShadow {
     pub pad: [u8; PAD_SIZE],
@@ -160,7 +156,7 @@ impl SlotShadow {
         (u8::from(pad_word(&self.pad, 5) != 0), u8::from(pad_word(&self.pad, 7) != 0))
     }
 
-    /// Aim sync 203 → camera tables (remote-players-sync §203 store, combat §1.2).
+    /// Stores an aim sync (203) into the slot's camera state.
     pub fn apply_aim(&mut self, cam_mode: u8, front: [f32; 3], pos: [f32; 3], zoom_byte: u8, aspect_byte: u8) {
         self.cam_mode = cam_mode;
         let up = up_from_front(front);
@@ -196,8 +192,8 @@ impl Default for SwapTable {
 }
 
 impl SwapTable {
-    /// Reverse lookup ped → remote slot (A 0x100B43A0); `None` for the local
-    /// player and unknown peds.
+    /// Reverse lookup ped → remote slot; `None` for the local player and
+    /// unknown peds. Mirrors samp.dll 0x100B43A0.
     pub fn slot_of(&self, ped: u32) -> Option<usize> {
         if ped == 0 {
             return None;
@@ -223,7 +219,7 @@ impl SwapTable {
     }
 }
 
-// ---- keys → shadow pad (onfoot §2.1) ---------------------------------------
+// ---- keys → shadow pad -----------------------------------------------------
 
 pub fn pad_word(pad: &[u8; PAD_SIZE], word: usize) -> i16 {
     i16::from_le_bytes([pad[2 * word], pad[2 * word + 1]])
@@ -286,9 +282,9 @@ pub fn apply_keys(pad: &mut [u8; PAD_SIZE], i: PadInput) {
     }
 }
 
-// ---- rotation and movement (onfoot §3) -----------------------------------
+// ---- rotation and movement -----------------------------------------------
 
-/// Receiver formula (onfoot §3.3): quaternion (w, x, y, z) → matrix rows.
+/// Receiver formula: quaternion (w, x, y, z) → matrix rows (remote-control-onfoot.md §3.3).
 pub fn rows_from_quat(q: Quat) -> Rotation {
     let Quat { w, x, y, z } = q;
     Rotation {
@@ -325,8 +321,8 @@ pub fn normalise(q: Quat) -> Quat {
     }
 }
 
-/// samp's degrees → radians (A 0x100B59B0): 0…180° → 0…π, (180°, 360°] →
-/// (−π, 0], anything else → 0.
+/// samp's degrees → radians: 0…180° → 0…π, (180°, 360°] → (−π, 0], anything
+/// else → 0. Mirrors samp.dll 0x100B59B0.
 pub fn samp_deg_to_rad(deg: f32) -> f32 {
     if (0.0..=180.0).contains(&deg) {
         deg.to_radians()
@@ -337,7 +333,7 @@ pub fn samp_deg_to_rad(deg: f32) -> f32 {
     }
 }
 
-/// Heading written to both ped heading fields after the slerp (onfoot §3.2).
+/// Heading written to both ped heading fields after the slerp.
 pub fn heading_from_forward(fwd: [f32; 3]) -> f32 {
     let mut deg = (-fwd[0]).atan2(fwd[1]).to_degrees();
     if deg < 0.0 {
@@ -349,7 +345,7 @@ pub fn heading_from_forward(fwd: [f32; 3]) -> f32 {
     samp_deg_to_rad(deg)
 }
 
-/// Result of the per-packet position correction (A 0x10014C40).
+/// Result of the per-packet position correction. Mirrors samp.dll 0x10014C40.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Correction {
     /// Within the dead zone on every axis.
@@ -383,7 +379,7 @@ pub fn correct_position(current: [f32; 3], target: [f32; 3], speed: [f32; 3], in
 
 // ---- stored sync -------------------------------------------------------------
 
-/// The decoded fields of the last accepted 207 (remote-players-sync §207).
+/// The decoded fields of the last accepted 207.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FootData {
     pub left_right: i16,
@@ -462,17 +458,17 @@ pub struct RemotePlayer {
     pub foot_late: u32,
     /// |move speed| written by the last one-shot apply (diagnostics).
     pub last_speed: f32,
-    /// Head look (onfoot §5.2): offset refreshed every 1000 ms, LookAt every 200 ms.
+    /// Head look: offset refreshed every 1000 ms, LookAt every 200 ms.
     pub look_offset: [f32; 3],
     pub look_refresh: Option<Instant>,
     pub look_last: Option<Instant>,
-    /// Phone special action active (ped object +0x48 in samp).
+    /// Phone special action active.
     pub phone: bool,
-    /// Radar blip handle of the 208 marker (remote +0x1F9 in samp; 0 = none).
+    /// Radar blip handle of the 208 marker (0 = none).
     pub marker_blip: i32,
-    /// The last 208 record had a position (remote +0x1E9).
+    /// The last 208 record had a position.
     pub marker_active: bool,
-    /// Radar blip handle on the ped (samp ped object +0x2CD; 0 = none). GTA's `CPed` destructor clears it.
+    /// Radar blip handle on the ped (0 = none). GTA's `CPed` destructor clears it.
     pub ped_blip: i32,
 }
 
@@ -508,7 +504,7 @@ impl RemotePlayer {
         }
     }
 
-    /// Store rule for 207 (A 0x10017260). Returns false for a late packet.
+    /// Store rule for 207. Returns false for a late packet. Mirrors samp.dll 0x10017260.
     pub fn store_foot(&mut self, ts: Option<u32>, s: &RemoteFootSync, now: Instant) -> bool {
         self.foot_rx = self.foot_rx.wrapping_add(1);
         if !accept_timestamp(self.last_ts, ts) {
@@ -578,11 +574,9 @@ pub mod special {
     pub const PHONE_STOP: u8 = 13;
 }
 
-/// One step of the per-frame special-action pass for a remote ped (onfoot §4.2,
-/// A 0x10014950), restricted to the actions this client reproduces (duck,
-/// phone, hands up); the other branches (jetpack, dance, piss, drinks, cuffs,
-/// carry) need state we never create, so they are no-ops here as in samp when
-/// their state is absent.
+/// One step of the first part of the per-frame special-action pass for a remote
+/// ped: duck, phone and hands up. Piss, held items and the parachute follow in
+/// `specials::remote_pass`. Mirrors samp.dll 0x10014950.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecialStep {
     /// `CPedIntelligence::SetTaskDuckSecondary(0)` (then samp ends the pass for this frame).
@@ -629,9 +623,9 @@ pub fn special_action_steps(action: u8, ducking: bool, phone: bool, hands_up: bo
     out
 }
 
-/// Weapons whose aiming puts a remote ped into the sniper ped state (onfoot §4.3).
+/// Weapons whose aiming puts a remote ped into the sniper ped state.
 pub const SNIPER_STATE_WEAPONS: [u8; 3] = [34, 35, 36];
-/// Key bit of the synced key word that marks aiming on foot (§0.3).
+/// Key bit of the synced key word that marks aiming on foot.
 pub const KEY_AIM: u16 = 0x80;
 
 #[cfg(test)]

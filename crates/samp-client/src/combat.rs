@@ -1,33 +1,27 @@
-//! Combat (milestone M7): the platform-independent part.
+//! Combat, the platform-independent part: bullet sync (206) capture and apply, the damage decision behind RPC 115,
+//! the killer and reason of RPC 53, aim sync (203), weapons update (204) and the carry / cuffs pad masks.
 //!
-//! Specs: remote-control-combat.md (§3.3 bullet apply, §3.4 the line-of-sight hook and the lag-comp selector,
-//! §6.1 the damage decision table, §7 death), its RE-10 additions, remote-players-sync.md §0.4 (send rates),
-//! §203/§204/§206 and player-state.md 53/115/34/145. Measured on the original client: docs/phase3/trace-notes.md
-//! "Combat (TRACE-6)" and "TRACE-7 additions".
-//!
-//! Static details confirmed in samp.dll A for this module: the 203 builder (A 0x10005210: zoom
-//! `trunc((FOV − 35) / 35 × 63)`, aspect `trunc((ratio − 1) × 255)`, weapon state 3 while the weapon state is 2
-//! (reloading), else `min(clip, 2)`), the 206 record (A 0x100A5450 / 0x10006BC0), the killer derivation
-//! (A 0x100AC890, weapon read as a byte) and the damage decision (A 0x100A3BF0).
-//!
-//! Everything here is plain data and arithmetic; the GTA side lives in `combathooks.rs` and `client.rs`.
+//! Plain data and arithmetic; the GTA side lives in `combathooks.rs`, `combatclient.rs` and `client.rs`.
+//! Spec: docs/re/subsystems/remote-control-combat.md (§3.3–3.4 bullets and the lag-comp selector, §6.1 damage, §7
+//! death), remote-players-sync.md ("203", "204", "206", §0.4 send rates), player-state.md; measurements in
+//! docs/phase3/trace-notes.md, "Combat".
 
 use std::time::{Duration, Instant};
 
 use samp_proto::sync::player::{AimSync, BulletSync, WeaponSlot, WeaponsUpdate, hit_type};
 use samp_proto::types::Vec3;
 
-/// 115 reports GTA's damage × 0.33 for player victims (A 0x100068A0 / 0x100069B0, constant A 0x100E5900).
+/// RPC 115 reports GTA's damage × 0.33 for player victims. Mirrors samp.dll 0x100E5900 (the constant).
 pub const DAMAGE_SCALE: f32 = 0.33;
 /// No player / actor / target.
 pub const NONE_ID: u16 = 0xFFFF;
-/// Offsets of a remote 206 with a hit entity must lie in ±300 (A 0x10016370).
+/// Offsets of a remote 206 with a hit entity must lie in ±300.
 pub const MAX_OFFSET: f32 = 300.0;
-/// The AddBullet hook multiplies the sniper bullet's velocity by this (A 0x100A5930, constant A 0x100EA63C).
+/// The AddBullet hook multiplies the sniper bullet's velocity by this. Mirrors samp.dll 0x100EA63C (the constant).
 pub const SNIPER_VELOCITY_SCALE: f32 = 50.0;
-/// Origin z offset added to the hand bone besides the weapon's fire offset z (A 0x100AFA00, constant 0.15).
+/// Origin z offset added to the hand bone besides the weapon's fire offset z.
 pub const ORIGIN_Z_EXTRA: f32 = 0.15;
-/// Bones used for the shot origin (A 0x100AFA00: 24 normally, 34 for its other caller).
+/// Bones used for the shot origin: 24 normally, 34 for samp's other caller. Mirrors samp.dll 0x100AFA00.
 pub const BONE_RIGHT_HAND: u32 = 24;
 
 /// Weapon ids with a fixed meaning here.
@@ -42,7 +36,8 @@ pub mod weapon {
     pub const COLLISION: u8 = 54;
 }
 
-/// Lag-comp selector S (A 0x10118990): InitGame lag-comp 1 → 0, 2 → 1, anything else → 2 (off).
+/// Lag-comp selector S: InitGame lag-comp 1 → 0, 2 → 1, anything else → 2 (off). Mirrors samp.dll 0x10118990
+/// (the global).
 pub fn lag_comp_selector(init_game_lag_comp: u32) -> u8 {
     match init_game_lag_comp {
         1 => 0,
@@ -51,8 +46,8 @@ pub fn lag_comp_selector(init_game_lag_comp: u32) -> u8 {
     }
 }
 
-/// With S = 2 samp installs none of its bullet hooks (InitGame A 0x10010909: the installer A 0x100A7050 and the
-/// lock-on RETs A 0x100A1C10 run only for lag-comp 1 and 2). Measured (TRACE-6 mode 0): no LOS call from samp.
+/// With S = 2 samp installs none of its bullet hooks: InitGame runs the hook installer and the lock-on patches only
+/// for lag-comp 1 and 2 (confirmed on the original with lag-comp 0: no line-of-sight call from samp).
 pub fn bullet_hooks_active(selector: u8) -> bool {
     selector != 2
 }
@@ -83,7 +78,7 @@ pub struct Matrix {
 }
 
 impl Matrix {
-    /// `M × p` including the translation (samp's A 0x100B4D50).
+    /// `M × p` including the translation.
     pub fn transform(&self, p: V3) -> V3 {
         let m = self;
         [
@@ -93,7 +88,7 @@ impl Matrix {
         ]
     }
 
-    /// The inverse of a rigid matrix applied to `p` (samp: A 0x100B5780 inverse, then A 0x100B4D50).
+    /// The inverse of a rigid matrix applied to `p`.
     pub fn inverse_transform(&self, p: V3) -> V3 {
         let d = sub(p, self.pos);
         let dot = |a: V3| a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
@@ -103,7 +98,7 @@ impl Matrix {
 
 // ---- 206: local capture -----------------------------------------------------------------------------------
 
-/// What the line-of-sight hook captured for a local shot (the 44-byte record of A 0x100A5450).
+/// What the line-of-sight hook captured for a local shot (samp's 44-byte shot record).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShotRecord {
     /// Ray start (the LOS origin).
@@ -117,7 +112,7 @@ pub struct ShotRecord {
     pub entity: bool,
 }
 
-/// Builds the record (A 0x100A5450): the offset is only computed when the hit entity has a matrix.
+/// Builds the record: the offset is only computed when the hit entity has a matrix. Mirrors samp.dll 0x100A5450.
 pub fn capture(selector: u8, origin: V3, hit_pos: V3, entity_matrix: Option<&Matrix>) -> ShotRecord {
     let offset = match entity_matrix {
         Some(m) if selector == 0 => m.inverse_transform(hit_pos),
@@ -127,7 +122,7 @@ pub fn capture(selector: u8, origin: V3, hit_pos: V3, entity_matrix: Option<&Mat
     ShotRecord { origin, hit_pos, offset, entity: entity_matrix.is_some() }
 }
 
-/// What the hit entity is to the network (A 0x10006BC0: remote player, pool vehicle, object, else nothing).
+/// What the hit entity is to the network: remote player, pool vehicle, object, else nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HitTarget {
     None,
@@ -146,7 +141,7 @@ pub enum Placement {
     Position(V3),
 }
 
-/// Builds the 206 for a captured record (A 0x10006BC0). `None` = not sent (sniper without a hit entity).
+/// Builds the 206 for a captured record. `None` = not sent (sniper without a hit entity). Mirrors samp.dll 0x10006BC0.
 pub fn bullet_sync(rec: &ShotRecord, target: HitTarget, other: Option<Placement>, weapon: u8) -> Option<BulletSync> {
     if weapon == weapon::SNIPER && !rec.entity {
         return None;
@@ -177,13 +172,13 @@ pub fn bullet_sync(rec: &ShotRecord, target: HitTarget, other: Option<Placement>
 
 // ---- 206: remote apply ------------------------------------------------------------------------------------
 
-/// Receive-side check (A 0x10016370): with a hit type every offset component must be within ±300.
+/// Receive-side check: with a hit type every offset component must be within ±300. Mirrors samp.dll 0x10016370.
 pub fn remote_bullet_valid(b: &BulletSync) -> bool {
     b.hit_type == hit_type::NONE || [b.offset.x, b.offset.y, b.offset.z].iter().all(|c| c.abs() <= MAX_OFFSET)
 }
 
-/// The redirect of the LOS hook (A 0x100A5640): P = entity matrix × offset (S 0) or entity position + offset
-/// (S 1); the ray end becomes P + (P − start). `None` for S 2.
+/// The redirect of the line-of-sight hook: P = entity matrix × offset (S 0) or entity position + offset (S 1);
+/// the ray end becomes P + (P − start). `None` for S 2. Mirrors samp.dll 0x100A5640.
 pub fn redirect_end(selector: u8, start: V3, entity: &Matrix, offset: V3) -> Option<V3> {
     let p = match selector {
         0 => entity.transform(offset),
@@ -203,16 +198,16 @@ pub struct RemoteRef {
     pub team: u8,
 }
 
-/// Inputs of the damage decision (A 0x100A3BF0), resolved by the hook.
+/// Inputs of the damage decision, resolved by the hook.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DamageCtx {
     pub victim_local: bool,
     pub damager_local: bool,
     /// The victim is a `CCivilianPed` (samp actors).
     pub victim_civilian: bool,
-    /// The surfed entity (local surf state +0x2DA, a pool vehicle or object) is the damager.
+    /// The surfed entity (a pool vehicle or object) is the damager.
     pub surface_is_damager: bool,
-    /// The local surf state has a surface (+0x2DA set).
+    /// The local surf state has a surface.
     pub surfing: bool,
     pub weapon: u32,
     /// Local victim: the attacker as a remote player (ped, or the first remote in the damaging vehicle).
@@ -243,13 +238,13 @@ pub struct Decision {
     pub cancel: bool,
 }
 
-/// The same-team rule (§6.3; Settings +0x22 is always 1, RE-10 §2).
+/// The same-team rule (remote-control-combat.md §6.3; the setting that could disable it is always on).
 fn same_team(local_team: u8, other: Option<RemoteRef>) -> bool {
     local_team != 255 && other.is_some_and(|r| r.team == local_team)
 }
 
-/// The surf inputs of the decision (A 0x100A3BF0): `surface` = the GTA entity of the surfed pool vehicle or
-/// object while the local surf state has one (`Some(0)` when that pool entry has no GTA entity).
+/// The surf inputs of the decision: `surface` = the GTA entity of the surfed pool vehicle or object while the
+/// local surf state has one (`Some(0)` when that pool entry has no GTA entity).
 pub fn surf_inputs(surface: Option<u32>, damager: u32) -> (bool, bool) {
     match surface {
         Some(e) => (true, e == damager),
@@ -257,7 +252,8 @@ pub fn surf_inputs(surface: Option<u32>, damager: u32) -> (bool, bool) {
     }
 }
 
-/// Object pool lookup by GTA entity (A 0x10012A10): it scans ids 1..=highest in use, so id 0 is never found.
+/// Object pool lookup by GTA entity: it scans ids 1..=highest in use, so id 0 is never found.
+/// Mirrors samp.dll 0x10012A10.
 pub fn object_of_entity(objects: &[(u32, u16)], entity: u32) -> Option<u16> {
     if entity == 0 {
         return None;
@@ -265,7 +261,7 @@ pub fn object_of_entity(objects: &[(u32, u16)], entity: u32) -> Option<u16> {
     objects.iter().find(|o| o.1 != 0 && o.0 == entity).map(|o| o.1)
 }
 
-/// The decision table of remote-control-combat.md §6.1 in samp's order.
+/// The decision table of remote-control-combat.md §6.1 in samp's order. Mirrors samp.dll 0x100A3BF0.
 pub fn decide(c: &DamageCtx) -> Decision {
     let cancel = |report| Decision { report, cancel: true };
     let original = |report| Decision { report, cancel: false };
@@ -308,7 +304,7 @@ pub enum Damager {
     Other,
 }
 
-/// Reason and killer of RPC 53 (A 0x100AC890; the weapon is read as a byte).
+/// Reason and killer of RPC 53 (the weapon is read as a byte). Mirrors samp.dll 0x100AC890.
 pub fn death_reason(last_weapon: u32, damager: Damager) -> (u8, u16) {
     const NOBODY: (u8, u16) = (255, NONE_ID);
     let w = last_weapon as u8;
@@ -342,7 +338,7 @@ pub struct AimSample {
     pub cam_mode: u8,
     pub front: V3,
     pub source: V3,
-    /// `m_pPlayerData->m_fLookPitch` (CPlayerPed +0x480 → +0x54).
+    /// `m_pPlayerData->m_fLookPitch`.
     pub aim_z: f32,
     pub fov: f32,
     pub aspect_ratio: f32,
@@ -359,7 +355,8 @@ fn ftol_u8(v: f32) -> u8 {
     v as i32 as u8
 }
 
-/// Builds the 203 (A 0x10005210).
+/// Builds the 203: zoom `trunc((FOV − 35) / 35 × 63)`, aspect `trunc((ratio − 1) × 255)`, weapon state 3 while
+/// reloading, else `min(clip, 2)`. Mirrors samp.dll 0x10005210.
 pub fn build_aim(s: &AimSample) -> AimSync {
     let state = if s.weapon_state == WEAPONSTATE_RELOADING { 3 } else { s.clip.min(2) as u8 };
     AimSync {
@@ -373,8 +370,7 @@ pub fn build_aim(s: &AimSample) -> AimSync {
     }
 }
 
-/// 203 intervals (remote-players-sync §0.4; local tick A 0x10007CB3, passenger A 0x100057B0, spectating
-/// A 0x10006665).
+/// 203 intervals per local state (remote-players-sync.md §0.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AimContext {
     /// On foot with the key word of this tick.
@@ -441,7 +437,7 @@ pub struct SlotState {
 
 pub const WEAPON_SLOTS: usize = 13;
 
-/// 204 delta encoder (A 0x10006290, remote-players-sync RE-10 "204 target fields").
+/// 204 delta encoder (remote-players-sync.md, "204 target fields"). Mirrors samp.dll 0x10006290.
 #[derive(Debug, Default, Clone)]
 pub struct WeaponsTracker {
     slots: [SlotState; WEAPON_SLOTS],
@@ -497,8 +493,8 @@ impl WeaponsTracker {
 
 // ---- local pad masks (carry / cuffs) ----------------------------------------------------------------------
 
-/// The local ped object's three pad masks (RE-10 §1): +0x2F6 clears Square (jump), +0x2F7 ShockL (crouch),
-/// +0x2F8 Cross (sprint), in both NewState and OldState of `Pads[0]`.
+/// The local ped's three pad masks: Square (jump), ShockL (crouch) and Cross (sprint), cleared in both NewState
+/// and OldState of `Pads[0]` (remote-control-combat.md, "Local pad masks").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PadMasks {
     pub jump: bool,
@@ -506,13 +502,13 @@ pub struct PadMasks {
     pub sprint: bool,
 }
 
-/// Special actions with masks (player-state.md 88).
+/// Special actions with masks (RPC 88).
 pub mod special {
     pub const CUFFED: u8 = 24;
     pub const CARRY: u8 = 25;
 }
 
-/// Masks after a local special action (A 0x100ACE90 carry: all three; A 0x100ACF40 cuffs: sprint).
+/// Masks after a local special action: carry sets all three, cuffs only sprint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LocalHandcuffs {
     pub carry: bool,
@@ -554,8 +550,8 @@ mod tests {
 
     #[test]
     fn capture_offsets_per_mode() {
-        // TRACE-6: the same hit on a bot facing 180° gives (−0.096, 0.296, 0.469) in mode 1 (S 0) and
-        // (0.097, −0.293, 0.469) in mode 2 (S 1).
+        // Measured on the original: the same hit on a bot facing 180° gives (−0.096, 0.296, 0.469) in mode 1
+        // (S 0) and (0.097, −0.293, 0.469) in mode 2 (S 1).
         let m = facing_south([1700.0, -2590.0, 13.55]);
         let hit = [1700.097, -2590.293, 14.019];
         let r0 = capture(0, [0.0; 3], hit, Some(&m));
@@ -588,7 +584,7 @@ mod tests {
     #[test]
     fn redirect() {
         let m = ident([1700.0, -2600.0, 13.547]);
-        // Mode 2 (S 1), offset (0, 0, 0.3): P = position + offset (TRACE-7: P = (1700, −2600, 13.847)).
+        // Mode 2 (S 1), offset (0, 0, 0.3): P = position + offset (measured: P = (1700, −2600, 13.847)).
         let e = redirect_end(1, [1700.0, -2590.0, 14.0], &m, [0.0, 0.0, 0.3]).unwrap();
         assert!((e[1] + 2610.0).abs() < 1e-3 && (e[2] - 13.694).abs() < 1e-3);
         assert!(redirect_end(2, [0.0; 3], &m, [0.0; 3]).is_none());
@@ -694,13 +690,13 @@ mod tests {
         assert_eq!(death_reason(54, Damager::Other), (54, NONE_ID));
         assert_eq!(death_reason(54, Damager::Vehicle { driver: Some(4) }), (54, 4));
         assert_eq!(death_reason(54, Damager::Vehicle { driver: None }), (255, NONE_ID));
-        // The spawn routine stores 0xFF: health 0 by the server gives 255/0xFFFF (TRACE-6).
+        // The spawn routine stores 0xFF: health 0 by the server gives 255/0xFFFF (measured).
         assert_eq!(death_reason(0xFF, Damager::None), (255, NONE_ID));
     }
 
     #[test]
     fn aim_packet() {
-        // TRACE-7 drive-by: cam mode 55, zoom 63 (FOV 70), weapon state 2.
+        // Measured drive-by: cam mode 55, zoom 63 (FOV 70), weapon state 2.
         let s = AimSample {
             cam_mode: 55,
             fov: 70.0,

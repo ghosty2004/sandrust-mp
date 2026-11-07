@@ -1,8 +1,8 @@
-//! The client side of combat (Windows only, milestone M7): InitGame selector and hook install, the hooks'
-//! shared view, sending what the hooks queued (206 / 115 / 177), the remote 206 apply, 203 / 204 senders,
-//! local drive-by and the carry / cuffs pad masks.
+//! The client side of combat (Windows only): the InitGame selector and hook install, the hooks' shared view,
+//! sending what the hooks queued (206 / 115 / 177), the remote 206 apply, the 203 / 204 senders, local drive-by
+//! and the carry / cuffs pad masks.
 //!
-//! Specs: see combat.rs. The local death / respawn sequence lives in client.rs (it drives the spawn routine).
+//! Spec: see `combat.rs`. The local death / respawn sequence lives in `client.rs` (it drives the spawn routine).
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
@@ -22,7 +22,7 @@ use crate::script::{Arg, Runner, op};
 use crate::swap::addr as sw;
 use crate::vehicles::Vehicles;
 
-/// `CPlayerPed` +0x79C: the ped the player targets (remote-players-sync RE-10 "204 target fields").
+/// `CPlayerPed` +0x79C: the ped the player targets (remote-players-sync.md, "204 target fields").
 const PLAYER_PED_TARGET: u32 = 0x79C;
 /// `CEntity::m_pRwObject`.
 const ENTITY_RW_OBJECT: u32 = 0x18;
@@ -56,7 +56,7 @@ pub struct Combat {
     aim_timer: AimTimer,
     /// Last 203 struct sent (duplicate gate).
     aim_last: Vec<u8>,
-    /// Local passenger drive-by active (local player +0x1CB).
+    /// Local passenger drive-by active.
     pub drive_by: bool,
     pub cuffs: LocalHandcuffs,
     /// Our player id.
@@ -68,7 +68,7 @@ impl Combat {
         Self { selector: 2, weapon_rate: 30, local_team: 255, ..Default::default() }
     }
 
-    /// InitGame (A 0x10010660): the selector, then the InitGame rows (lag-comp 1 and 2 only).
+    /// InitGame: the selector, then the InitGame patches (lag-comp 1 and 2 only). Mirrors samp.dll 0x10010660.
     pub fn on_init_game(&mut self, g: &samp_proto::session::InitGame) {
         self.selector = combat::lag_comp_selector(g.lag_compensation);
         self.weapon_rate = g.weapon_rate.clamp(10, 1000);
@@ -153,7 +153,7 @@ impl Combat {
         sent_177
     }
 
-    /// 206 from the server (A 0x10009B40 → 0x10016370): checks, target entity, weapon, then the shot.
+    /// 206 from the server: checks, target entity, weapon, then the shot. Mirrors samp.dll 0x10016370.
     pub fn on_bullet(&mut self, runner: &mut Runner, players: &mut Players, vehicles: &Vehicles, b: &RemoteBulletSync) {
         if b.player_id >= samp_proto::sync::policy::MAX_BULLET_MARKER_PLAYER_ID_EXCLUSIVE
             || Some(b.player_id) == self.local_id
@@ -178,7 +178,7 @@ impl Combat {
 
     // ---- local senders -----------------------------------------------------------------------------------
 
-    /// 204 (A 0x10006290), evaluated every tick while spawned.
+    /// 204, evaluated every tick while spawned.
     pub fn weapons_tick(&mut self, net: &mut NetClient, players: &Players, ped: u32, now: Instant) {
         let slots: [SlotState; combat::WEAPON_SLOTS] = std::array::from_fn(|i| {
             let w = ped + off::PED_WEAPONS + i as u32 * off::WEAPON_SIZE;
@@ -217,7 +217,7 @@ impl Combat {
         }
     }
 
-    /// 203 on foot, after the 207 (A 0x10007C9A); the duplicate gate shares the 207 timestamp.
+    /// 203 on foot, after the 207; the duplicate gate shares the 207 timestamp.
     pub fn aim_on_foot(
         &mut self,
         net: &mut NetClient,
@@ -233,8 +233,8 @@ impl Combat {
         self.send_aim_gated(net, foot, ped, now);
     }
 
-    /// 203 while spectating, right after a 212 (A 0x10006620): more than 2 × the on-foot interval since the last
-    /// attempt (the aim timer shared with the on-foot 203); the duplicate gate shares the 207 timestamp.
+    /// 203 while spectating, right after a 212: more than 2 × the on-foot interval since the last attempt (the aim
+    /// timer shared with the on-foot 203); the duplicate gate shares the 207 timestamp.
     pub fn aim_spectating(
         &mut self,
         net: &mut NetClient,
@@ -255,8 +255,8 @@ impl Combat {
         self.send_aim_gated(net, foot, ped, now);
     }
 
-    /// The 203 builder and its duplicate gate (A 0x10005210): identical to the last 203 within 501 ms of the shared
-    /// foot / aim timestamp → not sent.
+    /// The 203 builder and its duplicate gate: identical to the last 203 within 501 ms of the shared foot / aim
+    /// timestamp → not sent.
     fn send_aim_gated(&mut self, net: &mut NetClient, foot: &mut crate::footsync::FootSender, ped: u32, now: Instant) {
         let a = combat::build_aim(&Self::aim_sample(ped));
         let bytes = a.to_bits().as_bytes().to_vec();
@@ -268,9 +268,8 @@ impl Combat {
         net.send_sync(&a);
     }
 
-    /// 203 in a car: passenger (100 ms with drive-by, else 1000 ms; A 0x100057B0) or driver (after each 200 of an
-    /// armed vehicle, and from the 1000 ms tick; A 0x10007452 / 0x10007951). The in-car duplicate gate is shared
-    /// with 200/211.
+    /// 203 in a car: passenger (100 ms with drive-by, else 1000 ms) or driver (after each 200 of an armed vehicle,
+    /// and from the 1000 ms tick). The in-car duplicate gate is shared with 200 / 211.
     pub fn aim_in_car(&mut self, net: &mut NetClient, vehicles: &mut Vehicles, ped: u32, driver: bool, now: Instant) {
         let after_200 = vehicles.take_driver_sent();
         let armed = after_200
@@ -292,8 +291,8 @@ impl Combat {
         }
     }
 
-    /// Local passenger drive-by (A 0x10007B68): the horn key starts it; it stops when the weapon is fists or a
-    /// gun (> 15, not the parachute) has no ammo left.
+    /// Local passenger drive-by: the horn key starts it; it stops when the weapon is fists or a gun (> 15, not the
+    /// parachute) has no ammo left.
     pub fn passenger_drive_by(&mut self, runner: &mut Runner, ped: u32) {
         if !self.drive_by {
             if rd::<i16>(PAD_SHOCK_L) != 0
@@ -313,7 +312,7 @@ impl Combat {
         }
     }
 
-    /// RPC 88 for the local player: carry / cuffs masks (RE-10 §1); 0 clears them.
+    /// RPC 88 for the local player: carry / cuffs masks; 0 clears them.
     pub fn on_special_action(&mut self, action: u8) {
         match action {
             0 => self.cuffs = LocalHandcuffs::default(),
@@ -329,7 +328,7 @@ impl Combat {
         LOCAL_MASKS.store(u8::from(m.jump) | u8::from(m.crouch) << 1 | u8::from(m.sprint) << 2, Ordering::SeqCst);
     }
 
-    /// While cuffed, every frame (A 0x100ACF60): an armed weapon goes back to fists.
+    /// While cuffed, every frame: an armed weapon goes back to fists. Mirrors samp.dll 0x100ACF60.
     pub fn cuffed_tick(&mut self, runner: &mut Runner, ped: u32) {
         if self.cuffs.cuffed && hooks::current_weapon(ped) != 0 {
             set_armed_local(runner, ped, 0);
@@ -342,10 +341,10 @@ impl Combat {
     }
 }
 
-/// The local player's slot context around samp's weapon helpers (A 0x100AC0A0 / 0x100AF7D0 / 0x100AC050):
-/// `PlayerInFocus` := slot 0, and with `skills` the 11 weapon-skill stats saved, written from the slot's table and
-/// restored afterwards (EFX: two writes per stat and two `PlayerInFocus` writes per helper call). The local slot's
-/// table holds the current stats (RPC 34 updates both), so the values never change.
+/// The local player's slot context around samp's weapon helpers: `PlayerInFocus` := slot 0, and with `skills` the
+/// 11 weapon-skill stats saved, written from the slot's table and restored afterwards, as samp does (measured in
+/// docs/phase3/efx-notes.md). The local slot's table holds the current stats (RPC 34 updates both), so the values
+/// never change.
 pub fn local_context<R>(skills: bool, f: impl FnOnce() -> R) -> R {
     let wr32 = |a: u32, v: u32| {
         // SAFETY: GTA globals (.data/.bss), main thread.
@@ -370,8 +369,8 @@ pub fn local_context<R>(skills: bool, f: impl FnOnce() -> R) -> R {
     r
 }
 
-/// Set-armed-weapon (A 0x100AC0A0, not forced) on the local ped: on foot SET_CURRENT_CHAR_WEAPON, in a vehicle
-/// `CPed::SetCurrentWeapon` directly, inside the local slot context.
+/// Set-armed-weapon (not forced) on the local ped: on foot SET_CURRENT_CHAR_WEAPON, in a vehicle
+/// `CPed::SetCurrentWeapon` directly, inside the local slot context. Mirrors samp.dll 0x100AC0A0.
 pub fn set_armed_local(runner: &mut Runner, ped: u32, weapon: u8) {
     if ped == 0 {
         return;
@@ -394,7 +393,7 @@ fn set_armed_raw(runner: &mut Runner, ped: u32, weapon: u8) {
 /// `CPed::SetCurrentWeapon(eWeaponType)` (thiscall).
 const PED_SET_CURRENT_WEAPON: u32 = 0x5E6280;
 
-/// RPC 145 (A 0x1001AC10 → 0x100B00C0): the slot holding `weapon` gets `ammo` as total ammo.
+/// RPC 145: the slot holding `weapon` gets `ammo` as total ammo. Mirrors samp.dll 0x100B00C0.
 pub fn set_ammo(ped: u32, weapon: u8, ammo: u16) {
     if ped == 0 {
         return;
@@ -409,7 +408,8 @@ pub fn set_ammo(ped: u32, weapon: u8, ammo: u16) {
     }
 }
 
-/// RPC 34 for the local player (A 0x1000F5E0): the GTA stat (and samp's local copy, not kept here).
+/// RPC 34 for the local player: the GTA stat (samp also keeps a local copy, which we do not need).
+/// Mirrors samp.dll 0x1000F5E0.
 pub fn set_local_skill(skill: u32, level: u16) {
     if skill < 11 {
         // SAFETY: CStats::StatTypesFloat entry (.data), main thread.
@@ -422,8 +422,8 @@ pub fn set_local_skill(skill: u32, level: u16) {
     }
 }
 
-/// RPC 79 (A 0x1001BD10): script command 0x0948 with (x, y, z, type, radius); the radius float is passed through
-/// as the integer parameter (descriptor "fffii").
+/// RPC 79: script command 0x0948 with (x, y, z, type, radius); the radius float is passed through as the integer
+/// parameter (descriptor "fffii"). Mirrors samp.dll 0x1001BD10.
 pub fn create_explosion(runner: &mut Runner, e: &player::CreateExplosion) {
     runner.run(
         op::ADD_EXPLOSION,
@@ -432,8 +432,8 @@ pub fn create_explosion(runner: &mut Runner, e: &player::CreateExplosion) {
             Arg::Float(e.pos.y),
             Arg::Float(e.pos.z),
             Arg::Int(e.kind as i32),
-            // samp (A 0x1001BDB3) pushes the radius as a double, but the descriptor "fffii" reads one dword:
-            // the low half of the double (0 for every radius with few mantissa bits, e.g. 2.0).
+            // samp pushes the radius as a double, but the descriptor "fffii" reads one dword: the low half of
+            // the double (0 for every radius with few mantissa bits, e.g. 2.0).
             Arg::Int(f64::from(e.radius).to_bits() as u32 as i32),
         ],
     );

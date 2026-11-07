@@ -1,32 +1,11 @@
 //! The per-player context switch around GTA's own player code (Windows only).
 //!
-//! Spec: remote-control-onfoot.md §2.2/§2.3 and remote-control-combat.md §1.2.
-//! A remote player is a real `CPlayerPed` (player index = ped slot 2…209).
-//! GTA's player code reads `CPad::Pads[0]`, `CWorld::PlayerInFocus`, the
-//! camera and the weapon-skill stats, so around a remote ped's
-//! `CPlayerPed::ProcessControl` (vtable slot 0x86D190, CSV row 19) and
-//! `CTaskSimpleUseGun::SetPedPosition` (0x86D744, row 21) those globals are
-//! saved, replaced with the slot's shadow state, and restored afterwards.
-//!
-//! Differences to samp on purpose (documented samp bugs, combat spec §9.2):
-//! * every swapped global is restored to its *saved* value, including
-//!   `PlayerInFocus` (samp writes 0);
-//! * the slot data is copied out of the shared table before the original is
-//!   called, so the swap never holds a lock while GTA runs, and a nested call
-//!   (focus already ≠ 0) runs the original untouched (samp's guard).
-//!
-//! Fault containment like samp's wrapper A 0x100A2800 (remote peds only): the
-//! original `ProcessControl` runs inside an SEH frame ([`guarded_thiscall`]).
-//! A fault is reported as "Warning(playerped): Exception 0x… at 0x…." and,
-//! for the first 10 faults of the process (samp's filter counter), handled:
-//! execution continues after the call, the context is restored as usual and
-//! the slot is queued for [`take_faults`] (players.rs streams the player out
-//! and prints "Removed player N due to error."). From the 11th fault on the
-//! exception is passed on (the game crashes, as with samp). Deviations: samp
-//! deletes the ped inside the hook, we on the next client tick (after the
-//! world update); GTA SEH frames nested inside the faulting call are not
-//! unwound (GTA's player code registers none). The saved remote health global
-//! (no reader) is skipped.
+//! A remote player is a real `CPlayerPed` (player index = ped slot 2…209). GTA's player code reads `CPad::Pads[0]`,
+//! `CWorld::PlayerInFocus`, the camera and the weapon-skill stats, so around a remote ped's
+//! `CPlayerPed::ProcessControl` and `CTaskSimpleUseGun::SetPedPosition` those globals are saved, replaced with the
+//! slot's shadow state and restored afterwards ([`player_ped_process_control`]). Remote `ProcessControl` calls also
+//! run inside an SEH frame like samp's ([`guarded_thiscall`]). Spec: docs/re/subsystems/remote-control-onfoot.md
+//! §2.2–2.3 and remote-control-combat.md §1.2.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -34,7 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::patch::{Memory, PatchError, Patcher, ProcessMemory};
 use crate::remote::{AIM_FLOATS, PAD_SIZE, SKILLS, SlotShadow, SwapTable};
 
-/// GTA globals touched by the switch (onfoot §2.2; names via gta-reversed / plugin-sdk).
+/// GTA globals and code sites touched by the switch (names as in gta-reversed / plugin-sdk).
 pub mod addr {
     /// `CPad::Pads[0]`.
     pub const PAD0: u32 = crate::game::PAD0;
@@ -55,21 +34,22 @@ pub mod addr {
     pub const WEAPON_SKILLS: u32 = 0xB79380 + 0x114;
     /// `CWorld::PlayerInFocus` (u8).
     pub const PLAYER_IN_FOCUS: u32 = 0xB7CD74;
-    /// `CPlayerPed` vtable slot +0x28 (`ProcessControl`), CSV row 19.
+    /// `CPlayerPed` vtable slot +0x28 (`ProcessControl`).
     pub const VT_PLAYER_PED_PROCESS_CONTROL: u32 = 0x86D190;
     /// `CPlayerPed::ProcessControl`.
     pub const PLAYER_PED_PROCESS_CONTROL: u32 = 0x60EA90;
-    /// `CTaskSimpleUseGun` vtable slot +0x20 (`SetPedPosition`), CSV row 21.
+    /// `CTaskSimpleUseGun` vtable slot +0x20 (`SetPedPosition`).
     pub const VT_USE_GUN_SET_PED_POSITION: u32 = 0x86D744;
     /// `CTaskSimpleUseGun::SetPedPosition`.
     pub const USE_GUN_SET_PED_POSITION: u32 = 0x624ED0;
-    /// `CPlayerPed` vtable slot +0x2C (`ProcessCollision`), CSV row 23.
+    /// `CPlayerPed` vtable slot +0x2C (`ProcessCollision`).
     pub const VT_PLAYER_PED_PROCESS_COLLISION: u32 = 0x86D194;
     /// `CPhysical::ProcessCollision`.
     pub const PHYSICAL_PROCESS_COLLISION: u32 = 0x54DFB0;
-    /// `call CPed::UpdatePosition` inside `CPed::ProcessControl` (CSV row 366).
+    /// `call CPed::UpdatePosition` inside `CPed::ProcessControl` (NOPed while a remote ped is processed).
     pub const UPDATE_POSITION_CALL: u32 = 0x5E92F4;
-    /// `fst [esi+0x55C]` in PlayerControlZelda / PlayerControlDucked (CSV rows 213/214, 367).
+    /// The heading-goal stores (`fst [esi+0x55C]`) in PlayerControlZelda / PlayerControlDucked; NOPed except
+    /// while the local player is processed.
     pub const AIM_ROT_STORE_ZELDA: u32 = 0x6884C4;
     pub const AIM_ROT_STORE_DUCKED: u32 = 0x688200;
 }
@@ -134,7 +114,7 @@ struct Saved {
     focus: u8,
 }
 
-/// Steps 1–7 of onfoot §2.2: save the local values, write the slot's.
+/// Steps 1–7 of remote-control-onfoot.md §2.2: save the local values, write the slot's.
 unsafe fn enter(slot: u8, s: &SlotShadow) -> Saved {
     // SAFETY: fixed GTA globals (see `addr`), main thread.
     unsafe {
@@ -198,7 +178,7 @@ fn remote_context(ped: u32) -> Option<(u8, SlotShadow)> {
     Some((slot as u8, t.shadows[slot]))
 }
 
-// ---- fault containment (samp A 0x100A2800) -----------------------------------
+// ---- fault containment --------------------------------------------------------
 
 /// A fault caught inside a remote ped's `ProcessControl`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,8 +265,9 @@ pub fn take_fault_lines() -> Vec<String> {
     std::mem::take(&mut *FAULT_LINES.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// The chat line samp's filter prints for a guarded fault (B 0x10060960: "Warning(add_car_component %u): …" for
-/// opcode 0x06E7, "Warning(opcode 0x%X): …" for the other script commands, "Warning(%s): …" for named sites).
+/// The chat line samp's filter prints for a guarded fault: "Warning(add_car_component %u): …" for opcode 0x06E7,
+/// "Warning(opcode 0x%X): …" for the other script commands, "Warning(%s): …" for named sites.
+/// Mirrors samp.dll B 0x10060960.
 pub fn fault_line(site: FaultSite, code: u32, address: u32) -> String {
     match site {
         FaultSite::Opcode { opcode: 0x06E7, component: Some(c) } => {
@@ -303,7 +284,8 @@ pub enum FaultSite {
     Named(&'static str),
 }
 
-/// Faults caught since the last call (main thread, client tick).
+/// Faults caught since the last call (main thread, client tick). players.rs streams each faulted player out and
+/// prints "Removed player N due to error.", like samp (which deletes the ped inside the hook instead).
 pub fn take_faults() -> Vec<Fault> {
     std::mem::take(&mut *FAULTS.lock().unwrap_or_else(|e| e.into_inner()))
 }
@@ -334,8 +316,11 @@ unsafe extern "C" fn guarded_thiscall_raw(func: u32, this: u32, handler: u32) ->
     )
 }
 
-/// [`guarded_thiscall_raw`] with our handler (shared by every guarded call site: the remote ped's
-/// `ProcessControl` and the script commands, `script::Runner::run`; one fault counter, like samp's filter).
+/// [`guarded_thiscall_raw`] with our handler, shared by every guarded call site (the remote ped's `ProcessControl`
+/// and the script commands in `script::Runner::run`) with one fault counter, like samp's filter. The first 10
+/// faults of the process are handled (execution continues after the call); from the 11th on the exception is
+/// passed on and the game crashes, as with samp. GTA SEH frames nested inside the faulting call are not unwound
+/// (GTA's player code registers none). Mirrors samp.dll 0x100A2800.
 pub(crate) unsafe fn guarded_thiscall(func: u32, this: u32) -> u32 {
     let handler = seh_handler as unsafe extern "C" fn(*mut u8, *mut u32, *mut u8, *mut u8) -> u32 as usize as u32;
     // SAFETY: caller guarantees `func` is a thiscall function taking only `this`.
@@ -397,7 +382,11 @@ unsafe extern "C" fn seh_handler(rec: *mut u8, frame: *mut u32, context: *mut u8
     CONTINUE_EXECUTION
 }
 
-/// Replacement for `CPlayerPed::ProcessControl` (thiscall, vtable 0x86D190).
+/// Replacement for `CPlayerPed::ProcessControl` (thiscall). Deliberate differences to samp (samp bugs, see
+/// docs/re/subsystems/remote-control-combat.md §9.2): every swapped global, `PlayerInFocus` included, is restored
+/// to its saved value (samp writes 0); the slot data is copied out of the shared table first, so no lock is held
+/// while GTA runs; a nested call (focus already ≠ 0) runs the original untouched; the saved remote health global
+/// (which nothing reads) is skipped.
 pub extern "thiscall" fn player_ped_process_control(ped: u32) {
     // SAFETY: GTA's own function with the same signature.
     let original: extern "thiscall" fn(u32) = unsafe { std::mem::transmute(addr::PLAYER_PED_PROCESS_CONTROL as usize) };
@@ -424,10 +413,10 @@ pub extern "thiscall" fn player_ped_process_control(ped: u32) {
             if !crate::dll::PED_FLAGS_DONE.load(Ordering::Relaxed) {
                 crate::dll::first_frame_ped_flags();
             }
-            // Local player: the heading-goal stores run, then are NOPed again
-            // so remote peds never get them.
-            // SAFETY: as above.
+            // Local player: the world-bounds jump and the special-action pad masks first, then GTA's code with the
+            // heading-goal stores restored; they are NOPed again afterwards so remote peds never run them.
             crate::behaviourclient::bounds_jump(ped);
+            // SAFETY: main thread; code sites made writable at install.
             unsafe {
                 apply_local_masks();
                 copy_in(addr::AIM_ROT_STORE_ZELDA, &AIM_ROT_STORE_ORIGINAL);
@@ -440,8 +429,8 @@ pub extern "thiscall" fn player_ped_process_control(ped: u32) {
     }
 }
 
-/// The local pad masks of the carry / cuffs special actions (combat RE-10 §1, measured TRACE-7 "Carry / cuffs
-/// masks"): Square (jump), ShockL (crouch) and Cross (sprint) cleared in NewState and OldState of `Pads[0]`.
+/// The local pad masks of the carry / cuffs special actions: Square (jump), ShockL (crouch) and Cross (sprint)
+/// cleared in NewState and OldState of `Pads[0]` (docs/re/subsystems/remote-control-combat.md, "Local pad masks").
 unsafe fn apply_local_masks() {
     use crate::combat::pad;
     let m = crate::combatclient::LOCAL_MASKS.load(Ordering::Relaxed);
@@ -456,7 +445,7 @@ unsafe fn apply_local_masks() {
     }
 }
 
-/// Replacement for `CTaskSimpleUseGun::SetPedPosition(CPed*)` (thiscall, vtable 0x86D744).
+/// Replacement for `CTaskSimpleUseGun::SetPedPosition(CPed*)` (thiscall).
 pub extern "thiscall" fn use_gun_set_ped_position(task: u32, ped: u32) -> u32 {
     // SAFETY: GTA's own function with the same signature.
     let original: extern "thiscall" fn(u32, u32) -> u32 =
@@ -475,8 +464,8 @@ pub extern "thiscall" fn use_gun_set_ped_position(task: u32, ped: u32) -> u32 {
     }
 }
 
-/// Replacement for `CPlayerPed::ProcessCollision` (thiscall, vtable 0x86D194):
-/// skipped while entity flag bit 31 (samp's "no collision" marker, onfoot §3.6) is set.
+/// Replacement for `CPlayerPed::ProcessCollision` (thiscall): skipped while entity flag bit 31 (samp's
+/// "no collision" marker, docs/re/subsystems/remote-control-onfoot.md §3.6) is set.
 pub extern "thiscall" fn player_ped_process_collision(ent: u32) {
     if ent == 0 {
         return;
@@ -498,8 +487,7 @@ fn unprotect(a: u32, len: usize) -> bool {
     unsafe { VirtualProtect(a as usize as *const core::ffi::c_void, len, PAGE_EXECUTE_READWRITE, &mut old) != 0 }
 }
 
-/// Installs the three vtable redirects (CSV rows 19, 21 and 23). The 0x6884C4 /
-/// 0x688200 NOPs (rows 213/214) come from the patch table.
+/// Installs the three vtable redirects. The NOPs of the heading-goal stores come from the startup patch table.
 pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Result<(), PatchError> {
     let mut b = [0u8; 5];
     mem.read(addr::UPDATE_POSITION_CALL, &mut b)?;

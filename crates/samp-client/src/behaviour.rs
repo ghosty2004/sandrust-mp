@@ -1,11 +1,11 @@
-//! Remaining local behaviour (M8b), platform-independent rules: world bounds, drunk handling, camera RPC
-//! arguments, spectating targets, ClientCheck replies.
+//! Platform-independent rules of the local player's remaining behaviour: world bounds, drunk handling, camera
+//! RPC arguments, spectating targets and ClientCheck replies. The game side is in `behaviourclient.rs`.
 //!
-//! Spec: player-state.md (17, 35, 82, 158, 81, 33, 90), remote-players-sync.md §1 (124/126/127) and §2 "212",
-//! session-misc.md "103", and the measurements in docs/phase3/trace-notes.md "Remaining behaviour (TRACE-8)".
-//! Static details are cited by samp.dll build B address where they were read.
+//! Spec: docs/re/subsystems/player-state.md (RPCs 17, 33, 35, 81, 82, 90, 158), remote-players-sync.md (124, 126,
+//! 127, 212), session-misc.md ("103 ClientCheck"); measurements in docs/phase3/m8b-notes.md and trace-notes.md.
+//! samp.dll addresses here are build B where only B was read (table: docs/re/addresses/behaviour.md).
 
-/// World bounds (Settings +0x05/+0x09/+0x0D/+0x11, RPC 17); ±20000 = no bounds (InitGame, B 0x100088E0).
+/// World bounds set by RPC 17; ±20000 means no bounds (the InitGame default).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bounds {
     pub max_x: f32,
@@ -20,25 +20,27 @@ impl Default for Bounds {
     }
 }
 
-/// Text, time and style of the out-of-bounds message (B 0x10003F9D: `CMessages::AddBigMessage`).
+/// Text, time and style of the out-of-bounds message (shown with `CMessages::AddBigMessage`).
+/// The misspelling is samp's.
 pub const BOUNDS_TEXT: &str = "Stay within the ~r~world boundries";
 pub const BOUNDS_TEXT_MS: u32 = 1000;
 pub const BOUNDS_TEXT_STYLE: u32 = 5;
 
-/// Push-back of an entity outside the bounds (B 0x1009F450): the new move speed and the new matrix z.
+/// Push-back of an entity outside the bounds: the new move speed and the new matrix z.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PushBack {
     pub speed: [f32; 3],
     pub z: f32,
 }
 
-/// B 0x1009F5F0: the entity is outside the bounds (x > maxX, x < minX, y > maxY or y < minY).
+/// The entity is outside the bounds (x > maxX, x < minX, y > maxY or y < minY). Mirrors samp.dll B 0x1009F5F0.
 pub fn outside(pos: [f32; 3], b: &Bounds) -> bool {
     pos[0] > b.max_x || pos[0] < b.min_x || pos[1] > b.max_y || pos[1] < b.min_y
 }
 
-/// B 0x1009F450: strict compares in the order x > maxX, x < minX, y > maxY, y < minY. A non-zero speed on that
-/// axis becomes ∓0.2 towards the inside and speed z 0.1; the matrix is re-set with z + 0.04 in every case.
+/// Strict compares in the order x > maxX, x < minX, y > maxY, y < minY. A non-zero speed on that axis becomes
+/// ∓0.2 towards the inside and speed z 0.1; the matrix is re-set with z + 0.04 in every case.
+/// Mirrors samp.dll B 0x1009F450.
 pub fn push_back(pos: [f32; 3], speed: [f32; 3], b: &Bounds) -> Option<PushBack> {
     let mut s = speed;
     let (axis, sign) = if pos[0] > b.max_x {
@@ -59,14 +61,14 @@ pub fn push_back(pos: [f32; 3], speed: [f32; 3], b: &Bounds) -> Option<PushBack>
     Some(PushBack { speed: s, z: pos[2] + 0.04 })
 }
 
-/// Drunk level above which the effects run (B 0x100ADE06).
+/// Drunk level above which the effects run.
 pub const DRUNK_THRESHOLD: i32 = 2000;
-/// The wobble is applied at most every this many ms (B 0x100ADEC9: elapsed > 200).
+/// The wobble is applied at most once per this many ms (strictly more must have elapsed).
 pub const DRUNK_WOBBLE_MS: u32 = 200;
 
-/// `SET_PLAYER_DRUNKENNESS` value for a level above the threshold (B 0x100ADE31): `ftol(level · 0.02)` in single
-/// precision (GTA's D3D device leaves the x87 at 24-bit precision: 5000 → 100, 2100 → 42, both measured), > 250 →
-/// 250, < 5 → 0.
+/// `SET_PLAYER_DRUNKENNESS` value for a level above the threshold: `ftol(level · 0.02)` in single precision
+/// (GTA's D3D device leaves the x87 FPU at 24-bit precision, so 2100 gives 42, not 41), clamped: > 250 → 250,
+/// < 5 → 0.
 pub fn drunk_value(level: i32) -> i32 {
     let v = crate::anims::ftol(level as f32 * 0.02f32);
     if v > 250 {
@@ -78,8 +80,8 @@ pub fn drunk_value(level: i32) -> i32 {
     }
 }
 
-/// Steering wobble added to the vehicle's turn speed z (B 0x100ADED4): `rand() % 40` ≥ 20 → > 30 positive, else
-/// negative; 0.012, or 0.015 from level 5000 on; below 20 nothing.
+/// Steering wobble added to the vehicle's turn speed z: with `r = rand() % 40`, nothing below 20, positive above
+/// 30, negative otherwise; magnitude 0.012, or 0.015 from level 5000 on.
 pub fn drunk_wobble(rand: i32, level: i32) -> f32 {
     let r = rand % 40;
     if r < 20 {
@@ -89,12 +91,12 @@ pub fn drunk_wobble(rand: i32, level: i32) -> f32 {
     if r > 30 { m } else { -m }
 }
 
-/// The wobble applies only while the vehicle moves faster than 0.05 on x or y (B 0x100ADF23).
+/// The wobble applies only while the vehicle moves faster than 0.05 on x or y.
 pub fn drunk_moving(speed: [f32; 3]) -> bool {
     speed[0].abs() > 0.05 || speed[1].abs() > 0.05
 }
 
-/// MSVC CRT `rand()` (samp's static CRT, B 0x100CB096): per-thread seed, initially 1.
+/// MSVC CRT `rand()` as linked statically into samp.dll: per-thread seed, initially 1. Mirrors samp.dll B 0x100CB096.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MsvcRand(pub u32);
 
@@ -111,17 +113,17 @@ impl MsvcRand {
     }
 }
 
-/// Cut argument of RPC 158 / 82: 0 or > 2 becomes 2 (B 0x1001A18C).
+/// Cut argument of RPC 158 / 82: 0 or > 2 becomes 2 (jump cut).
 pub fn camera_cut(cut: u8) -> u8 {
     if cut == 0 || cut > 2 { 2 } else { cut }
 }
 
-/// samp's coordinate validator (B 0x100B4B60): −20000 < x, y < 20000 and −10000 < z < 100000.
+/// samp's coordinate validator: −20000 < x, y < 20000 and −10000 < z < 100000. Mirrors samp.dll B 0x100B4B60.
 pub fn valid_position(p: [f32; 3]) -> bool {
     p[0] > -20000.0 && p[0] < 20000.0 && p[1] > -20000.0 && p[1] < 20000.0 && p[2] > -10000.0 && p[2] < 100000.0
 }
 
-/// The spectated target (LocalPlayer +0x30F type, +0x310 id, +0x314 applied, +0x30E camera mode).
+/// The spectated target (RPC 126 player, RPC 127 vehicle).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SpecTarget {
     #[default]
@@ -139,40 +141,39 @@ pub struct Spectate {
     pub mode: u8,
 }
 
-/// Camera of the "no target" spectator view (B 0x1000674E): fixed at (50, 50, 50) looking at (60, 60, 50), jump cut.
+/// Camera of the "no target" spectator view: fixed at (50, 50, 50) looking at (60, 60, 50), jump cut.
 pub const SPEC_NO_TARGET_POS: [f32; 3] = [50.0, 50.0, 50.0];
 pub const SPEC_NO_TARGET_LOOK: [f32; 3] = [60.0, 60.0, 50.0];
-/// The local ped is parked this far above the camera every spectator tick (B 0x1000669C).
+/// The local ped is parked this far above the camera every spectator tick.
 pub const SPEC_PED_ABOVE: f32 = 20.0;
-/// Its health is forced to this every spectator tick (B 0x10006688).
+/// Its health is forced to this every spectator tick.
 pub const SPEC_PED_HEALTH: f32 = 100.0;
-/// Out of a vehicle first (B 0x1000674E → 0x100AC580): WARP_CHAR_FROM_CAR_TO_COORD to (0, 0, 10).
+/// Spectating from a vehicle first warps the ped out of it (`WARP_CHAR_FROM_CAR_TO_COORD`) to here.
 pub const SPEC_WARP_OUT: [f32; 3] = [0.0, 0.0, 10.0];
 
-/// ClientCheck (RPC 103, session-misc.md): requests outside these limits get no reply (B 0x10011AE3).
+/// ClientCheck (RPC 103): requests outside these limits get no reply.
 pub fn client_check_in_limits(offset: u16, count: u16) -> bool {
     offset <= 0x100 && (2..=0x100).contains(&count)
 }
 
-/// ClientCheck checksum (A 0x1000EA80): the XOR of every byte masked with 0xCC. Applied by the
-/// handler to `count` bytes of real memory: the client's own process (types 5, 0x45, 0x46, 0x47).
+/// ClientCheck checksum: the XOR of every byte masked with 0xCC. The handler applies it to `count` bytes of the
+/// client's own process memory (types 5, 0x45, 0x46, 0x47). Mirrors samp.dll 0x1000EA80.
 pub fn client_check_sum(bytes: &[u8]) -> u8 {
     bytes.iter().fold(0, |acc, b| acc ^ (b & 0xCC))
 }
 
-/// Type 5: the address must lie in [0x400000, 0x856E00] (A 0x10011CD8), else no reply.
+/// Type 5: the address must lie in [0x400000, 0x856E00] (gta_sa.exe's image), else no reply.
 pub fn client_check_exe_range(arg: u32) -> bool {
     (0x40_0000..=0x85_6E00).contains(&arg)
 }
 
-/// Type 0x45: the offset into the client's own module must be ≤ 800000 (A 0x10011D06), else no reply.
+/// Type 0x45: the offset into the client's own module must be ≤ 800000, else no reply.
 pub const CLIENT_CHECK_MODULE_LIMIT: u32 = 800_000;
 
-/// Type 0x47: HAS_MODEL_LOADED is polled this many times, 1 ms apart, after the request (A 0x10011B9A).
+/// Type 0x47: `HAS_MODEL_LOADED` is polled this many times, 1 ms apart, after the request.
 pub const CLIENT_CHECK_LOAD_POLLS: u32 = 1000;
 
-/// Type 0x48 reply argument (B 0x10011DC9): the QueryPerformanceCounter clock in ms (B 0x1002E7A0), low 28 bits,
-/// with 0x30000000 set.
+/// Type 0x48 reply argument: samp's QueryPerformanceCounter clock in ms, low 28 bits, with 0x30000000 set.
 pub fn client_check_time_arg(ms: u64) -> u32 {
     (ms as u32 & 0x0FFF_FFFF) | 0x3000_0000
 }
@@ -243,7 +244,7 @@ mod tests {
         assert!(!client_check_in_limits(0, 300));
         assert!(!client_check_in_limits(0, 1));
         assert_eq!(client_check_time_arg(0x1234_5678_9ABC), 0x3678_9ABC);
-        // Measured: gta_sa.exe's header "MZ\x90\0" (type 5, 0x400000/0/4) gives 0x84.
+        // Measured on the original: gta_sa.exe's header "MZ\x90\0" (type 5, 0x400000/0/4) gives 0x84.
         assert_eq!(client_check_sum(b"MZ\x90\x00"), 0x84);
         assert_eq!(client_check_sum(&[0x33, 0x33]), 0);
         assert!(client_check_exe_range(0x40_0000) && client_check_exe_range(0x85_6E00));

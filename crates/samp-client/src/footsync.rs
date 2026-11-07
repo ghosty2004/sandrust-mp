@@ -14,9 +14,9 @@ use samp_proto::sync::encoding::WeaponByte;
 use samp_proto::sync::player::{Animation, FootSync};
 use samp_proto::types::{Quat, Vec3};
 
-/// Identical structs are not re-sent within this window (§0.4).
+/// Identical structs are not re-sent within this window (remote-players-sync.md §0.4).
 pub const DUPLICATE_WINDOW: Duration = Duration::from_millis(501);
-/// Stats (205) interval: "every > 1000 ms".
+/// Stats (205) interval: sent when more than this has passed.
 pub const STATS_INTERVAL: Duration = Duration::from_millis(1000);
 /// Rotation components closer than this to the last sent ones reuse the old quaternion.
 pub const JITTER_EPSILON: f32 = 1e-5;
@@ -85,7 +85,7 @@ impl PadState {
     }
 }
 
-/// Context flags that gate some key bits (§0.3).
+/// Context flags that gate some key bits (remote-players-sync.md §0.3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyContext {
     pub in_vehicle: bool,
@@ -95,7 +95,7 @@ pub struct KeyContext {
     pub jetpack: bool,
 }
 
-/// The u16 key word of the sync packets (§0.3).
+/// The u16 key word of the sync packets (remote-players-sync.md §0.3).
 pub fn key_word(p: &PadState, ctx: KeyContext) -> u16 {
     let on = |v: i16| v != 0;
     let mut k = 0u16;
@@ -147,7 +147,7 @@ pub fn key_word(p: &PadState, ctx: KeyContext) -> u16 {
     k
 }
 
-/// "Additional key" of the weapon byte (§0.3): DPadRight 1, DPadLeft 2, DPadDown 3.
+/// "Additional key" of the weapon byte (remote-players-sync.md §0.3): DPadRight 1, DPadLeft 2, DPadDown 3.
 pub fn additional_key(p: &PadState) -> u8 {
     if p.dpad_right != 0 {
         1
@@ -196,7 +196,7 @@ pub struct LocalSample {
     pub special_action: u8,
     pub move_speed: [f32; 3],
     pub animation: u32,
-    /// Surf offset and id (A 0x100050E8; zeros when not surfing, surf.rs).
+    /// Surf offset and id (zeros when not surfing; see `surf.rs`). Mirrors samp.dll 0x100050E8.
     pub surf_offset: [f32; 3],
     pub surf_id: u16,
 }
@@ -241,7 +241,7 @@ fn body_bytes(f: &FootSync) -> Vec<u8> {
     w.as_bytes().to_vec()
 }
 
-/// Send-rate state for 207 (§0.4).
+/// Send-rate state for 207 (remote-players-sync.md §0.4).
 #[derive(Debug, Default)]
 pub struct FootSender {
     last_sent: Option<FootSync>,
@@ -293,7 +293,7 @@ impl FootSender {
     }
 }
 
-/// On-foot interval: `onFootRate + N` ms, N = streamed-in remote player peds (§0.4).
+/// On-foot interval: `onFootRate + N` ms, N = streamed-in remote player peds (remote-players-sync.md §0.4).
 pub fn on_foot_interval(on_foot_rate_ms: u32, streamed_peds: u32) -> Duration {
     Duration::from_millis(u64::from(on_foot_rate_ms) + u64::from(streamed_peds))
 }

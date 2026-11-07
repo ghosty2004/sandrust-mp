@@ -1,25 +1,19 @@
-//! The 207 "animation" field and samp's animation-name table (platform independent).
+//! The 207 on-foot sync "animation" field and samp's animation-name table, platform independent.
 //!
-//! Spec: remote-control-onfoot.md §4.1 (remote apply), docs/phase3/trace-notes.md "Animations (86/87) and the 207
-//! animation table" (TRACE-8, measured values) and the static reading of samp.dll build B noted per function:
-//!
-//! * the table ([`crate::animtable`]) holds 1812 upper-case `"LIB:NAME"` records, 1-based (accessor B 0x1009CF00
-//!   accepts 1..=0x714);
-//! * a script animation (`CTaskSimpleRunNamedAnim`) is encoded from the task's own fields (B 0x100AE600): index of
-//!   `"LIB:NAME"` (string search B 0x1009CE20), delta, the task's flag word and its time;
-//! * any other animation is encoded from the last `AddAnimation` / `BlendAnimation` call on the local clump
-//!   (B 0x100AE6B0): index of the first record whose NAME hash equals the hierarchy's hash, the blend delta, bit 31;
-//! * the local tick keeps the value until a 207 carried it (B 0x100077EF, read by the 207 builder B 0x10005131);
-//! * remotes apply a changed value once per stored 207 (B 0x100167E4 → B 0x100AE7E0).
+//! The local player encodes either the running script animation ([`encode_task`]) or the last plain animation
+//! played on its clump ([`encode_plain`]) as an index into samp's 1812-record `"LIB:NAME"` table
+//! ([`crate::animtable`], 1-based); [`Latch`] keeps the value until a 207 carried it, and remotes apply a changed
+//! value once per stored 207 ([`RemoteState::step`]). Spec: docs/re/subsystems/remote-control-onfoot.md §4.1;
+//! measurements in docs/phase3/trace-notes.md, "Animations (86/87) and the 207 animation table".
 
 pub use crate::animtable::{COUNT, NAMES};
 
 /// Index value samp uses for "not found" (`or ax, 0xFFFF`), sign-extended into the 32-bit field.
 pub const NOT_FOUND: i16 = -1;
-/// `VENDING:VEND_USE` (1660), delta 4, freeze, time code 1: after it, a 0 plays `VENDING:VEND_EAT_P` (B 0x1001680A).
+/// `VENDING:VEND_USE` (1660), delta 4, freeze, time code 1: on a remote, a 0 after it plays `VENDING:VEND_EAT_P`.
 pub const VEND_USE_VALUE: u32 = 0x1804_067C;
 
-/// Record `index` (1-based) as `"LIB:NAME"` (B 0x1009CF00: only 1..=0x714).
+/// Record `index` (1-based, 1..=1812) as `"LIB:NAME"`. Mirrors samp.dll B 0x1009CF00.
 pub fn record(index: i32) -> Option<&'static str> {
     if (1..=COUNT as i32).contains(&index) { Some(NAMES[index as usize - 1]) } else { None }
 }
@@ -29,13 +23,13 @@ pub fn split(rec: &str) -> Option<(&str, &str)> {
     rec.split_once(':')
 }
 
-/// The NAME part of record `index` (what samp hashes at start-up, B 0x1009CF30).
+/// The NAME part of the record at 0-based `index` (what samp hashes at start-up).
 pub fn name_part(index: usize) -> Option<&'static str> {
     NAMES.get(index).and_then(|r| split(r)).map(|(_, n)| n)
 }
 
-/// samp's `"%s:%s"` search (B 0x1009CE20): 1-based index of the upper-cased `lib:name`, or [`NOT_FOUND`] when
-/// `len(lib) + len(name) > 36` or no record matches.
+/// samp's `"%s:%s"` search: 1-based index of the upper-cased `lib:name`, or [`NOT_FOUND`] when
+/// `len(lib) + len(name) > 36` or no record matches. Mirrors samp.dll B 0x1009CE20.
 pub fn index_of(lib: &[u8], name: &[u8]) -> i16 {
     if lib.len() + name.len() > 0x24 {
         return NOT_FOUND;
@@ -47,19 +41,20 @@ pub fn index_of(lib: &[u8], name: &[u8]) -> i16 {
     NAMES.iter().position(|r| r.as_bytes() == key.as_slice()).map(|i| i as i16 + 1).unwrap_or(NOT_FOUND)
 }
 
-/// First 1-based index whose NAME hash equals `hash` (B 0x1009D000), or [`NOT_FOUND`].
+/// First 1-based index whose NAME hash equals `hash`, or [`NOT_FOUND`]. Mirrors samp.dll B 0x1009D000.
 pub fn index_of_hash(hashes: &[u32], hash: u32) -> i16 {
     hashes.iter().take(COUNT).position(|&h| h == hash).map(|i| i as i16 + 1).unwrap_or(NOT_FOUND)
 }
 
-/// MSVC `_ftol2` (B 0x100C7464): truncation toward zero; out-of-range and NaN give 0x80000000.
+/// MSVC `_ftol2`: truncation toward zero; out-of-range and NaN give 0x80000000.
 pub fn ftol(v: f32) -> i32 {
     if v.is_finite() && v > -2_147_483_648.0 && v < 2_147_483_648.0 { v as i32 } else { i32::MIN }
 }
 
-/// Encoding of a running script animation (B 0x100AE600). `flags` is the task's flag word (+0x5C), `time` its
-/// time (+0x40): bit 24 = flag 0x2 (loop), 25 = 0x40 (lock x), 26 = 0x80 (lock y), 27 = flag 0x8 clear (freeze),
-/// bits 28–29 = time > 0 → 2, time < 0 → 1, 0 → 0; bits 16–23 = delta; low 16 bits = index (sign-extended).
+/// Encoding of a running script animation (`CTaskSimpleRunNamedAnim`), from the task's own fields. `flags` is the
+/// task's flag word, `time` its time: bit 24 = flag 0x2 (loop), 25 = 0x40 (lock x), 26 = 0x80 (lock y), 27 = flag
+/// 0x8 clear (freeze), bits 28–29 = time > 0 → 2, time < 0 → 1, 0 → 0; bits 16–23 = delta; low 16 bits = index
+/// (sign-extended). Mirrors samp.dll B 0x100AE600.
 pub fn encode_task(index: i16, delta: f32, flags: u32, time: i32) -> u32 {
     let time_code: u32 = match time {
         t if t > 0 => 2,
@@ -75,14 +70,15 @@ pub fn encode_task(index: i16, delta: f32, flags: u32, time: i32) -> u32 {
     (v << 16) | (i32::from(index) as u32)
 }
 
-/// Encoding of the last plain (blend) animation (B 0x100AE6B0): bit 31 set, bits 16–23 = blend delta, low 16 bits =
-/// index (sign-extended, so "not found" makes the whole value 0xFFFFFFFF).
+/// Encoding of the last plain `AddAnimation` / `BlendAnimation` call on the local clump: bit 31 set, bits 16–23 =
+/// blend delta, low 16 bits = index of the first record whose NAME hash equals the animation's (sign-extended, so
+/// "not found" makes the whole value 0xFFFFFFFF). Mirrors samp.dll B 0x100AE6B0.
 pub fn encode_plain(index: i16, delta: f32) -> u32 {
     let hi = ((ftol(delta) as u32 & 0xFF) | 0xFFFF_8000) << 16;
     hi | (i32::from(index) as u32)
 }
 
-/// A decoded animation field (remote side, B 0x100AE7E0).
+/// A decoded animation field (remote side).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Decoded {
     pub index: u16,
@@ -95,6 +91,7 @@ pub struct Decoded {
     pub time: i32,
 }
 
+/// Decodes an animation field as a remote applies it. Mirrors samp.dll B 0x100AE7E0.
 pub fn decode(v: u32) -> Decoded {
     let b = |n: u32| (v >> n) & 1 != 0;
     Decoded {
@@ -112,7 +109,7 @@ pub fn decode(v: u32) -> Decoded {
     }
 }
 
-/// The local player's animation value between frames and 207 sends (LocalPlayer +0xFC / +0x100).
+/// The local player's animation value between frames and 207 sends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Latch {
     pub value: u32,
@@ -120,8 +117,8 @@ pub struct Latch {
 }
 
 impl Latch {
-    /// Every alive frame (B 0x100077F5): a non-zero value replaces the stored one (not yet sent); a zero clears
-    /// the stored value only after a 207 carried it.
+    /// Every alive frame: a non-zero value replaces the stored one (not yet sent); a zero clears the stored value
+    /// only after a 207 carried it.
     pub fn update(&mut self, anim: u32) {
         if anim != 0 {
             self.value = anim;
@@ -131,19 +128,19 @@ impl Latch {
         }
     }
 
-    /// The 207 builder reads the value and marks it sent (B 0x10005131).
+    /// The 207 builder reads the value and marks it sent.
     pub fn take(&mut self) -> u32 {
         self.sent = true;
         self.value
     }
 }
 
-/// Per remote player (remote +0x105 / +0x1B4 / +0x1C1).
+/// Animation state kept per remote player.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RemoteState {
-    /// Last applied value (+0x1B4).
+    /// Last applied value.
     pub last: u32,
-    /// An RPC 86 played an animation on this ped (+0x1C1); cleared by a changed value, RPC 87, stream-in.
+    /// An RPC 86 played an animation on this ped; cleared by a changed value, RPC 87 and stream-in.
     pub by_rpc: bool,
 }
 
@@ -159,7 +156,8 @@ pub enum RemoteAction {
 }
 
 impl RemoteState {
-    /// B 0x100167E4. `named_anim_running` is asked only when needed (task type 401 on the ped).
+    /// One stored 207's animation value: what to play. `named_anim_running` (task type 401 on the ped) is asked
+    /// only when needed. Mirrors samp.dll B 0x100167E4.
     pub fn step(&mut self, anim: u32, named_anim_running: impl FnOnce() -> bool) -> Vec<RemoteAction> {
         let mut out = Vec::new();
         let mut cur = anim;
@@ -181,7 +179,7 @@ impl RemoteState {
     }
 }
 
-/// samp's "SEX" refusal (B 0x100AD270: case-insensitive compare of the library).
+/// samp refuses to play animations of the "SEX" library (case-insensitive compare).
 pub fn refused_library(lib: &[u8]) -> bool {
     lib.eq_ignore_ascii_case(b"SEX")
 }
@@ -202,7 +200,7 @@ mod tests {
 
     #[test]
     fn string_search_is_case_insensitive_and_bounded() {
-        // TRACE-8 measured indexes.
+        // Indexes measured on the original (docs/phase3/trace-notes.md).
         assert_eq!(index_of(b"PED", b"WALK_DRUNK"), 1260);
         assert_eq!(index_of(b"ped", b"KO_skid_front"), 1209);
         assert_eq!(index_of(b"PED", b"IDLE_CHAT"), 1184);

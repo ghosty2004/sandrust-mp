@@ -1,12 +1,11 @@
 //! samp's animation-name table: 1812 `"LIBRARY:NAME"` records (upper case), the functional interop
 //! table the 207 animation field indexes (1-based).
 //!
-//! Source: samp.dll 0.3.7-R4 build B (fv0.3.7.3, 2019-11-21) `.data`, 36-byte records from B 0x101039E8
-//! (index 1) to 0x101138B4 (index 1812); build A holds the identical table at the same address. Embedded as
-//! an interop constant like the vehicle colour palette (docs/ROADMAP.md "Decisions made autonomously",
-//! 2026-11-04). Generated from the binary; do not edit by hand.
+//! Source: samp.dll 0.3.7-R4 `.data`, 36-byte records starting at 0x101039E8 (identical in both builds).
+//! Embedded as an interop constant like the vehicle colour palette (docs/ROADMAP.md, "Decisions made
+//! autonomously"). Generated from the binary; do not edit by hand.
 
-/// Number of records (samp's accessor accepts 1..=0x714).
+/// Number of records (samp's accessor accepts indexes 1..=1812).
 pub const COUNT: usize = 1812;
 
 /// Record `i` (1-based) is `NAMES[i - 1]`.

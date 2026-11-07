@@ -205,3 +205,9 @@ for putin). Left = original step capture of the samp.dll handler, right = our cl
 * `near_veh` (car within 30 m at capture start) was not found in two original runs (begin
   record now has a `world` note to diagnose); the diff renames the car the player ends up in
   (`player_ped+0x58c`) to `near_veh` instead, also when making specs.
+
+## Weapon helpers under the local slot context (moved from a code comment in `combatclient.rs`)
+
+The effect tracer shows, for each of samp's weapon helpers run for the local player (A 0x100AC0A0 / 0x100AF7D0 /
+0x100AC050): two writes per weapon-skill stat (save the slot's value in, restore) and two `PlayerInFocus` writes
+per helper call. `combatclient::local_context` reproduces that sequence.
