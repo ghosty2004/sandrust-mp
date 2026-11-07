@@ -13,7 +13,7 @@ differential capture against the original client, e2e script.
 | Slot | Running | Next |
 |---|---|---|
 | lane main, main2 | reserved for the user's manual play | — |
-| 7 worktrees (no games) | CLEANUP phase 1: comments only, per docs/STYLE.md, proven by tools/check-code-only.py (vehicles; players/combat; UI/audio; client core; world/patches; proto/ui/bot crates; tracer) | phase 2: file/function splits, memory-access helpers |
+| worktrees | CLEANUP phase 2: file / function splits and memory-access helpers (phase 1, comments, done: WORKLOG 2026-11-07) | tests, e2e per area, then F1–F7 |
 | lanes ui, veh, trace, diff | — (free) | CLEANUP phase 2 verification runs |
 
 ## Next up (ordered queue — the scheduler takes from the top)
@@ -28,7 +28,7 @@ audit's 12 observable gaps (class A) are fixed and covered by F3 / F4 / combatve
    flag A 0x1026EA50, vehicle blip "occupied" rule for remote passengers (A 0x100B7720), RPC 40 reset's
    jetpack-task kill and five wrapper resets, timed objects (+0x1199), radio resume after a stream stops,
    SAMPAUX3 22/28 font creation timing, remote drive-by firing / satchel detonation (samp-bot cannot drive them).
-2. CLEANUP — readability pass requested by the user (2026-11-06), no behaviour change: comments without internal
+2. CLEANUP — readability pass requested by the user (2026-11-06), no behaviour change (phase 1, comments, done 2026-11-07; phase 2 in progress): comments without internal
    task ids rewritten as plain explanations (also the stale "not implemented" headers found by the audit),
    samp.dll address citations moved to a reference table in docs/re/, files over ~1,400 lines and functions
    over ~150 lines split by subsystem, raw memory access concentrated in a few audited helpers. Verified by
@@ -41,6 +41,8 @@ audit's 12 observable gaps (class A) are fixed and covered by F3 / F4 / combatve
 7. WATCH — a derby soak start in lane ui once stayed at gGameState 6 and crashed in GTA's level loader
    (gta_sa.exe+0x137d12, write to 0x18) while the host had ~3 GB available; not reproduced since.
 8. EFX-2 — step-mode capture for our own client (tooling).
+9. SPEC-CHECK — mismatches found in the comment pass (WORKLOG 2026-11-07 "CLEANUP phase 1"): samp.saa ReadFile
+   last error on a full read; `nohudscalefix` non-zero vs 1; pedanims and editor-global A/B attributions.
 
 ## Phase 0 — Reverse engineering (specs in `docs/re/`)
 

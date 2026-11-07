@@ -960,3 +960,16 @@ was verified, cost, and what changed in `docs/ROADMAP.md`.
   original runs) → DIFF2-D5 / DIFF2-D6. Report on the final runs (6 original, ours-20261107-054758) with main's
   tooling: MATCH 131, UNTRIGGERABLE 10 — exit 0.
 - cargo test 620 passed, clippy 0 (host, i686).
+
+## 2026-11-07 — CLEANUP phase 1: comments (docs/STYLE.md)
+- Seven worktrees, comments and whitespace only; `tools/check-code-only.py 5765f35 HEAD`: 136 files,
+  code changes 0 (no build, test or game run needed: the compiled code is the same).
+- Internal ids in comments 514 → 0 (one remaining match is a doc section title); comment lines with samp.dll
+  addresses 1,329 → 507 (at most one per item, `Mirrors samp.dll 0x….`); every removed address is in
+  docs/re/addresses/<module>.md (66 tables). Module headers 2–8 lines. Stale comments fixed (docs on the wrong
+  item, "not implemented" for implemented features, wrong return descriptions).
+- Spec/code mismatches found while reading, code unchanged, to check: samp.saa ReadFile last error 38 on a
+  full read (docs/re/samp-saa.md "8. Redirection layer" vs `FakeFiles::read`); `nohudscalefix` cleared for
+  any non-zero value in the spec vs only 1 in ui/glue.rs; two address attributions (pedanims A/B,
+  objects/objedit editor globals A/B) recorded in their tables; m4-notes says the input-lock restore count
+  starts at −1, the code starts at 0.
