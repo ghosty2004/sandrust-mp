@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::patch::{Memory, PatchError, Patcher, ProcessMemory};
-use crate::remote::{PAD_OLD_STATE, PAD_SIZE};
+use crate::remote::{PAD_OLD_STATE, PAD_SIZE, SlotShadow};
 use crate::swap::addr as sw;
 use crate::vehicle::{self, Kind, NEAR_RANGE, is_rail};
 
@@ -36,7 +36,13 @@ pub mod g {
     pub const ENTITY_TYPE_STATUS: u32 = 0x36;
     pub const ENTITY_MODEL: u32 = 0x22;
     pub const PLACEABLE_MATRIX: u32 = 0x14;
-    pub const MOVE_SPEED: u32 = 0x44;
+    /// `CMatrix::pos` and its z component.
+    pub const MATRIX_POS: u32 = 0x30;
+    pub const MATRIX_POS_Z: u32 = 0x38;
+    /// `CPhysical::m_vecMoveSpeed.z`.
+    pub const MOVE_SPEED_Z: u32 = 0x4C;
+    /// `CAEAudioEntity::m_pEntity`.
+    pub const AUDIO_ENTITY: u32 = 0x4;
     pub const VEH_AUDIO: u32 = 0x138;
     pub const VEH_FLAGS: u32 = 0x428;
     pub const VEH_ENGINE_ON: u8 = 0x10;
@@ -81,16 +87,25 @@ pub const PROCESS_CONTROL: [(u32, u32, u32, u32); 10] = [
 pub const BREAK_TOW_LINK_SLOTS: [(u32, u32); 5] =
     [(70, 0x871218), (71, 0x871778), (72, 0x8718D0), (73, 0x871A40), (74, 0x871BE0)];
 
+/// `CAutomobile::ProcessEntityCollision`.
+pub const PEC_AUTOMOBILE: u32 = 0x6ACE70;
+/// `CBike::ProcessEntityCollision`.
+pub const PEC_BIKE: u32 = 0x6BDEA0;
+/// `CMonsterTruck::ProcessEntityCollision`.
+pub const PEC_MONSTER_TRUCK: u32 = 0x6C8AE0;
+/// `CPhysical::ProcessEntityCollision`.
+pub const PEC_PHYSICAL: u32 = 0x546D00;
+
 /// `ProcessEntityCollision` vtable slots (+0x58): (patch row, slot, original function).
 pub const ENTITY_COLLISION_SLOTS: [(u32, u32, u32); 8] = [
-    (84, 0x871178, 0x6ACE70),
-    (85, 0x8716D8, 0x6ACE70),
-    (86, 0x8719A0, 0x6ACE70),
-    (87, 0x871B40, 0x6ACE70),
-    (88, 0x8713B8, 0x6BDEA0),
-    (89, 0x871580, 0x6BDEA0),
-    (90, 0x871830, 0x6C8AE0),
-    (91, 0x8721F8, 0x546D00),
+    (84, 0x871178, PEC_AUTOMOBILE),
+    (85, 0x8716D8, PEC_AUTOMOBILE),
+    (86, 0x8719A0, PEC_AUTOMOBILE),
+    (87, 0x871B40, PEC_AUTOMOBILE),
+    (88, 0x8713B8, PEC_BIKE),
+    (89, 0x871580, PEC_BIKE),
+    (90, 0x871830, PEC_MONSTER_TRUCK),
+    (91, 0x8721F8, PEC_PHYSICAL),
 ];
 
 /// Call sites of `ProcessVehicleSirenAlarmHorn`: (patch row, call address).
@@ -237,7 +252,7 @@ fn pos_of(ent: u32) -> Option<[f32; 3]> {
         if m == 0 {
             return None;
         }
-        Some([rd(m + 0x30), rd(m + 0x34), rd(m + 0x38)])
+        Some([rd(m + g::MATRIX_POS), rd(m + g::MATRIX_POS + 4), rd(m + g::MATRIX_POS_Z)])
     }
 }
 
@@ -308,6 +323,7 @@ unsafe fn engine_off_rules(veh: u32, kind: Kind) -> bool {
     }
 }
 
+/// The globals a remote driver's `ProcessControl` swaps out, restored afterwards.
 struct SwapSaved {
     pad: [u8; PAD_SIZE],
     looking: (u8, u8),
@@ -317,128 +333,203 @@ struct SwapSaved {
     focus: u8,
 }
 
+/// One `ProcessControl` call: the vehicle, its class kind and model, and GTA's own function for the class.
+#[derive(Clone, Copy)]
+struct PcCall {
+    veh: u32,
+    kind: Kind,
+    model: u32,
+    original: extern "thiscall" fn(u32),
+}
+
 /// Replacement for `ProcessControl` of every vehicle class (thiscall, vtable slot +0x28). Three branches as in
 /// samp: A. a remote player drives (swap in that player's pad, camera and focus, run GTA's function, protect z,
 /// swap out); B. the local player drives or a swap is active; C. no player driver (simulate only when near,
 /// towed or on rails). Mirrors samp.dll 0x100A3140.
 pub extern "thiscall" fn vehicle_process_control(veh: u32) {
-    // SAFETY: GTA calls us with a live vehicle; every address below is a GTA global or a field of it.
-    unsafe {
-        let vt: u32 = rd(veh);
-        let Some(orig_addr) = original_for(vt) else { return };
-        let original: extern "thiscall" fn(u32) = std::mem::transmute(orig_addr as usize);
-        let kind = vehicle::kind_from_vtable(vt);
-        let model = model_of(veh);
-        let focus: u8 = rd(sw::PLAYER_IN_FOCUS);
-        let driver: u32 = rd(veh + g::VEH_DRIVER);
-        let local = local_ped();
-        let player_driver = driver != 0 && rd::<u32>(driver + g::PED_TYPE) == 0;
+    // SAFETY: GTA calls us with a live vehicle; the vtable is its first field.
+    let vt: u32 = unsafe { rd(veh) };
+    let Some(orig_addr) = original_for(vt) else { return };
+    // SAFETY: `orig_addr` is GTA's `ProcessControl` of this vehicle class (thiscall, no arguments).
+    let original: extern "thiscall" fn(u32) = unsafe { std::mem::transmute(orig_addr as usize) };
+    let pc = PcCall { veh, kind: vehicle::kind_from_vtable(vt), model: model_of(veh), original };
+    // SAFETY: a GTA global and a field of the live vehicle.
+    let (focus, driver): (u8, u32) = unsafe { (rd(sw::PLAYER_IN_FOCUS), rd(veh + g::VEH_DRIVER)) };
+    let local = local_ped();
+    // SAFETY: the driver is a live ped while it is set.
+    let player_driver = driver != 0 && unsafe { rd::<u32>(driver + g::PED_TYPE) } == 0;
 
-        // A. remote player driver.
-        if player_driver && driver != local && focus == 0 {
-            let ctx = crate::swap::TABLE.try_lock().ok().and_then(|g| {
-                let t = g.as_ref()?;
-                let slot = t.slot_of(driver)?;
-                Some((slot as u8, t.shadows[slot]))
-            });
-            if let Some((slot, shadow)) = ctx {
-                PC_REMOTE.fetch_add(1, Ordering::Relaxed);
-                // Swap in the remote player's pad, look-left/right, camera mode, weapon mode and aim vectors.
-                let mut saved = SwapSaved {
-                    pad: [0; PAD_SIZE],
-                    looking: (rd(sw::CAM0_LOOKING_LEFT), rd(sw::CAM0_LOOKING_RIGHT)),
-                    cam_mode: rd(sw::CAM0_MODE),
-                    weapon_mode: rd(sw::PLAYER_WEAPON_MODE),
-                    vectors: [0; 0x30],
-                    focus,
-                };
-                copy_out(sw::PAD0, &mut saved.pad);
-                copy_out(sw::CAM0_VECTORS, &mut saved.vectors);
-                copy_in(sw::PAD0, &shadow.pad);
-                let (l, r) = shadow.looking_left_right();
-                wr(sw::CAM0_LOOKING_LEFT, l);
-                wr(sw::CAM0_LOOKING_RIGHT, r);
-                wr(sw::CAM0_MODE, shadow.cam_mode);
-                wr(sw::PLAYER_WEAPON_MODE, shadow.weapon_mode());
-                let aim: Vec<u8> = shadow.aim.iter().flat_map(|f| f.to_le_bytes()).collect();
-                copy_in(sw::CAM0_VECTORS, &aim);
-                // Engine off: no throttle.
-                if engine_off_rules(veh, kind) {
-                    zero_throttle(sw::PAD0);
-                }
-                // Bike lean values, restored and smoothed after GTA's function.
-                let bike = matches!(kind, Kind::Bike | Kind::Bmx);
-                let lean: (f32, f32) =
-                    if bike { (rd(veh + g::BIKE_LEAN), rd(veh + g::BIKE_DESIRED_LEAN)) } else { (0.0, 0.0) };
-                // Vehicle audio serviced as an AI car (civilian driver, physics status), then restored.
-                wr(sw::PLAYER_IN_FOCUS, 0u8);
-                let st: u8 = rd(veh + g::ENTITY_TYPE_STATUS);
-                wr(driver + g::PED_TYPE, g::PEDTYPE_CIVMALE);
-                wr(veh + g::ENTITY_TYPE_STATUS, g::TYPE_STATUS_VEHICLE_PHYSICS);
-                audio_service(veh);
-                wr(veh + g::ENTITY_TYPE_STATUS, st);
-                wr(driver + g::PED_TYPE, 0u32);
-                // Focus := slot, save matrix z and move-speed z, run GTA's function.
-                wr(sw::PLAYER_IN_FOCUS, slot);
-                let m: u32 = rd(veh + g::PLACEABLE_MATRIX);
-                let z: f32 = if m != 0 { rd(m + 0x38) } else { 0.0 };
-                let vz: f32 = rd(veh + g::MOVE_SPEED + 8);
-                original(veh);
-                // z protection: far away / no collision loaded, or always for boats and aircraft.
-                let restore = if !is_rail(model) && !near_with_collision(veh) {
-                    true
-                } else {
-                    matches!(kind, Kind::Boat | Kind::Plane | Kind::Heli)
-                };
-                if restore {
-                    let m2: u32 = rd(veh + g::PLACEABLE_MATRIX);
-                    if m2 != 0 && m2 == m {
-                        wr(m2 + 0x38, z);
-                    }
-                    wr(veh + g::MOVE_SPEED + 8, vz);
-                }
-                if bike {
-                    wr(veh + g::BIKE_LEAN, lean.0);
-                    wr(veh + g::BIKE_DESIRED_LEAN, lean.1);
-                    wr(veh + g::BIKE_LEAN, lean.0 + (lean.1 - lean.0) * 0.5);
-                }
-                // Swap out: every value restored to what it was.
-                wr(sw::PLAYER_IN_FOCUS, saved.focus);
-                copy_in(sw::PAD0, &saved.pad);
-                wr(sw::CAM0_LOOKING_LEFT, saved.looking.0);
-                wr(sw::CAM0_LOOKING_RIGHT, saved.looking.1);
-                wr(sw::CAM0_MODE, saved.cam_mode);
-                wr(sw::PLAYER_WEAPON_MODE, saved.weapon_mode);
-                copy_in(sw::CAM0_VECTORS, &saved.vectors);
-                return;
-            }
+    // A. remote player driver.
+    if player_driver
+        && driver != local
+        && focus == 0
+        && let Some((slot, shadow)) = remote_driver_shadow(driver)
+    {
+        PC_REMOTE.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: called from GTA's vehicle processing with a live vehicle and its live driver.
+        unsafe { process_remote_driver(pc, driver, slot, &shadow, focus) };
+        return;
+    }
+    // B. local driver, a nested call while a switch is active, or a player driver without a slot.
+    if (driver != 0 && driver == local) || focus != 0 || player_driver {
+        PC_LOCAL.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: as above.
+        unsafe { process_local_driver(pc) };
+        return;
+    }
+    // C. no driver or a non-player driver.
+    // SAFETY: as above.
+    unsafe { process_without_player_driver(pc) };
+}
+
+/// The swap slot and shadow state of a remote player's ped (`None` when the ped has no slot or the table is busy).
+fn remote_driver_shadow(driver: u32) -> Option<(u8, SlotShadow)> {
+    crate::swap::TABLE.try_lock().ok().and_then(|g| {
+        let t = g.as_ref()?;
+        let slot = t.slot_of(driver)?;
+        Some((slot as u8, t.shadows[slot]))
+    })
+}
+
+/// Branch A: the remote player's pad, camera and focus swapped in around GTA's function, the vehicle audio
+/// serviced as an AI car, z protected, bike lean smoothed, then everything swapped out again.
+unsafe fn process_remote_driver(pc: PcCall, driver: u32, slot: u8, shadow: &SlotShadow, focus: u8) {
+    let veh = pc.veh;
+    // SAFETY: the caller passes a live vehicle; the rest are GTA globals.
+    unsafe {
+        let saved = swap_in(shadow, focus);
+        // Engine off: no throttle.
+        if engine_off_rules(veh, pc.kind) {
+            zero_throttle(sw::PAD0);
         }
-        // B. local driver, a nested call while a switch is active, or a player driver without a slot.
-        if (driver != 0 && driver == local) || focus != 0 || player_driver {
-            PC_LOCAL.fetch_add(1, Ordering::Relaxed);
-            if engine_off_rules(veh, kind) {
-                let mut pad = [0u8; PAD_SIZE];
-                copy_out(sw::PAD0, &mut pad);
-                zero_throttle(sw::PAD0);
-                audio_service(veh);
-                original(veh);
-                copy_in(sw::PAD0, &pad);
-            } else {
-                audio_service(veh);
-                original(veh);
-            }
-            return;
+        // Bike lean values, restored and smoothed after GTA's function.
+        let bike = matches!(pc.kind, Kind::Bike | Kind::Bmx);
+        let lean: (f32, f32) = if bike { (rd(veh + g::BIKE_LEAN), rd(veh + g::BIKE_DESIRED_LEAN)) } else { (0.0, 0.0) };
+        wr(sw::PLAYER_IN_FOCUS, 0u8);
+        service_audio_as_ai_car(veh, driver);
+        // Focus := slot, then GTA's function with the z protection.
+        wr(sw::PLAYER_IN_FOCUS, slot);
+        run_with_z_protection(pc);
+        if bike {
+            wr(veh + g::BIKE_LEAN, lean.0);
+            wr(veh + g::BIKE_DESIRED_LEAN, lean.1);
+            wr(veh + g::BIKE_LEAN, lean.0 + (lean.1 - lean.0) * 0.5);
         }
-        // C. no driver or a non-player driver: simulate only when towed by a seated driver, rail, or near.
-        let tractor: u32 = rd(veh + g::VEH_TRACTOR);
-        let towed = tractor != 0 && seated(rd::<u32>(tractor + g::VEH_DRIVER));
-        if towed || is_rail(model) || near_with_collision(veh) {
-            PC_NONE_RUN.fetch_add(1, Ordering::Relaxed);
-            audio_service(veh);
-            original(veh);
+        swap_out(&saved);
+    }
+}
+
+/// Swaps in the remote player's pad, look-left/right, camera mode, weapon mode and aim vectors; returns what
+/// was there.
+unsafe fn swap_in(shadow: &SlotShadow, focus: u8) -> SwapSaved {
+    // SAFETY: GTA globals (Pads[0], TheCamera, the local player's weapon mode).
+    unsafe {
+        let mut saved = SwapSaved {
+            pad: [0; PAD_SIZE],
+            looking: (rd(sw::CAM0_LOOKING_LEFT), rd(sw::CAM0_LOOKING_RIGHT)),
+            cam_mode: rd(sw::CAM0_MODE),
+            weapon_mode: rd(sw::PLAYER_WEAPON_MODE),
+            vectors: [0; 0x30],
+            focus,
+        };
+        copy_out(sw::PAD0, &mut saved.pad);
+        copy_out(sw::CAM0_VECTORS, &mut saved.vectors);
+        copy_in(sw::PAD0, &shadow.pad);
+        let (l, r) = shadow.looking_left_right();
+        wr(sw::CAM0_LOOKING_LEFT, l);
+        wr(sw::CAM0_LOOKING_RIGHT, r);
+        wr(sw::CAM0_MODE, shadow.cam_mode);
+        wr(sw::PLAYER_WEAPON_MODE, shadow.weapon_mode());
+        let aim: Vec<u8> = shadow.aim.iter().flat_map(|f| f.to_le_bytes()).collect();
+        copy_in(sw::CAM0_VECTORS, &aim);
+        saved
+    }
+}
+
+/// Swap out: every value restored to what it was.
+unsafe fn swap_out(saved: &SwapSaved) {
+    // SAFETY: GTA globals, as in `swap_in`.
+    unsafe {
+        wr(sw::PLAYER_IN_FOCUS, saved.focus);
+        copy_in(sw::PAD0, &saved.pad);
+        wr(sw::CAM0_LOOKING_LEFT, saved.looking.0);
+        wr(sw::CAM0_LOOKING_RIGHT, saved.looking.1);
+        wr(sw::CAM0_MODE, saved.cam_mode);
+        wr(sw::PLAYER_WEAPON_MODE, saved.weapon_mode);
+        copy_in(sw::CAM0_VECTORS, &saved.vectors);
+    }
+}
+
+/// Vehicle audio serviced as an AI car (civilian driver, physics status), then both restored.
+unsafe fn service_audio_as_ai_car(veh: u32, driver: u32) {
+    // SAFETY: the caller passes a live vehicle and its live driver.
+    unsafe {
+        let st: u8 = rd(veh + g::ENTITY_TYPE_STATUS);
+        wr(driver + g::PED_TYPE, g::PEDTYPE_CIVMALE);
+        wr(veh + g::ENTITY_TYPE_STATUS, g::TYPE_STATUS_VEHICLE_PHYSICS);
+        audio_service(veh);
+        wr(veh + g::ENTITY_TYPE_STATUS, st);
+        wr(driver + g::PED_TYPE, 0u32);
+    }
+}
+
+/// GTA's function for a remote-driven vehicle with the matrix z and move-speed z saved around it; they are
+/// restored when the car is far away / without collision, and always for boats and aircraft.
+unsafe fn run_with_z_protection(pc: PcCall) {
+    let veh = pc.veh;
+    // SAFETY: the caller passes a live vehicle; its matrix pointer may be null.
+    unsafe {
+        let m: u32 = rd(veh + g::PLACEABLE_MATRIX);
+        let z: f32 = if m != 0 { rd(m + g::MATRIX_POS_Z) } else { 0.0 };
+        let vz: f32 = rd(veh + g::MOVE_SPEED_Z);
+        (pc.original)(veh);
+        let restore = if !is_rail(pc.model) && !near_with_collision(veh) {
+            true
         } else {
-            PC_NONE_SKIP.fetch_add(1, Ordering::Relaxed);
+            matches!(pc.kind, Kind::Boat | Kind::Plane | Kind::Heli)
+        };
+        if restore {
+            let m2: u32 = rd(veh + g::PLACEABLE_MATRIX);
+            if m2 != 0 && m2 == m {
+                wr(m2 + g::MATRIX_POS_Z, z);
+            }
+            wr(veh + g::MOVE_SPEED_Z, vz);
         }
+    }
+}
+
+/// Branch B: GTA's function with the audio serviced first; with the engine off, the pad's throttle is zeroed
+/// for the call and restored after it.
+unsafe fn process_local_driver(pc: PcCall) {
+    let veh = pc.veh;
+    // SAFETY: the caller passes a live vehicle; Pads[0] is a GTA global.
+    unsafe {
+        if engine_off_rules(veh, pc.kind) {
+            let mut pad = [0u8; PAD_SIZE];
+            copy_out(sw::PAD0, &mut pad);
+            zero_throttle(sw::PAD0);
+            audio_service(veh);
+            (pc.original)(veh);
+            copy_in(sw::PAD0, &pad);
+        } else {
+            audio_service(veh);
+            (pc.original)(veh);
+        }
+    }
+}
+
+/// Branch C: simulate only when towed by a seated driver, on rails, or near with collision loaded.
+unsafe fn process_without_player_driver(pc: PcCall) {
+    let veh = pc.veh;
+    // SAFETY: the caller passes a live vehicle; the tractor is a live vehicle while it is set.
+    let tractor: u32 = unsafe { rd(veh + g::VEH_TRACTOR) };
+    let towed = tractor != 0 && seated(unsafe { rd::<u32>(tractor + g::VEH_DRIVER) });
+    if towed || is_rail(pc.model) || near_with_collision(veh) {
+        PC_NONE_RUN.fetch_add(1, Ordering::Relaxed);
+        audio_service(veh);
+        (pc.original)(veh);
+    } else {
+        PC_NONE_SKIP.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -529,7 +620,10 @@ fn gate_driver_enter(veh: u32) -> Option<HookEvent> {
     };
     if vehicle::driver_enter_refused(info.locked, info.model, cuffed, carrying) {
         if cuffed || carrying {
-            crate::log!("vehicles: driver enter of vehicle {} refused: local ped cuffed {cuffed} carrying {carrying}", info.id);
+            crate::log!(
+                "vehicles: driver enter of vehicle {} refused: local ped cuffed {cuffed} carrying {carrying}",
+                info.id
+            );
         }
         return None;
     }
@@ -566,25 +660,7 @@ extern "C" fn leave_filter(ret: u32, _task: u32, veh: u32) -> i32 {
     // SAFETY: live vehicle.
     let driver = unsafe { rd::<u32>(veh + g::VEH_DRIVER) } == local && !matches!(info.model, 569 | 570);
     if train {
-        // Inside the constructor, like samp: WARP_CHAR_FROM_CAR_TO_COORD to the train's position + (2.5, 2.5, 0),
-        // before GTA's SetTask of the leave task; no camera call and no RPC 154.
-        if let Ok(Some(h)) = crate::game::ped_handle(&crate::patch::ProcessMemory, local) {
-            // SAFETY: live vehicle matrix.
-            let m: u32 = unsafe { rd(veh + 0x14) };
-            if m != 0 {
-                let p: [f32; 3] = unsafe { [rd(m + 0x30), rd(m + 0x34), rd(m + 0x38)] };
-                use crate::script::{Arg, Runner, op};
-                Runner::new().run(
-                    op::WARP_CHAR_FROM_CAR_TO_COORD,
-                    &[
-                        Arg::Int(h),
-                        Arg::Float(p[0] + vehicle::TRAIN_EXIT_OFFSET),
-                        Arg::Float(p[1] + vehicle::TRAIN_EXIT_OFFSET),
-                        Arg::Float(p[2]),
-                    ],
-                );
-            }
-        }
+        warp_beside_train(local, veh);
     }
     with_shared(|s| {
         s.events.push(HookEvent::Exit { vehicle_id: info.id, driver, rc: vehicle::is_rc(info.model), train })
@@ -592,15 +668,32 @@ extern "C" fn leave_filter(ret: u32, _task: u32, veh: u32) -> i32 {
     if train { 1 } else { -1 }
 }
 
+/// Inside the leave constructor, like samp: WARP_CHAR_FROM_CAR_TO_COORD to the train's position + (2.5, 2.5, 0),
+/// before GTA's SetTask of the leave task; no camera call and no RPC 154.
+fn warp_beside_train(local: u32, veh: u32) {
+    let Ok(Some(h)) = crate::game::ped_handle(&crate::patch::ProcessMemory, local) else { return };
+    let Some(p) = pos_of(veh) else { return };
+    use crate::script::{Arg, Runner, op};
+    Runner::new().run(
+        op::WARP_CHAR_FROM_CAR_TO_COORD,
+        &[
+            Arg::Int(h),
+            Arg::Float(p[0] + vehicle::TRAIN_EXIT_OFFSET),
+            Arg::Float(p[1] + vehicle::TRAIN_EXIT_OFFSET),
+            Arg::Float(p[2]),
+        ],
+    );
+}
+
 // ---- other hooks ----------------------------------------------------------------------------------------
 
 /// `ProcessVehicleSirenAlarmHorn` call sites: entity status PLAYER while a driver is seated, else ABANDONED, for
 /// the duration of the call.
 extern "thiscall" fn siren_alarm_horn(audio: u32, params: u32) {
-    // SAFETY: GTA's audio entity (m_pEntity at +4) and its own function.
+    // SAFETY: GTA's audio entity (its `m_pEntity`) and its own function.
     unsafe {
         let f: extern "thiscall" fn(u32, u32) = std::mem::transmute(g::PROCESS_SIREN_ALARM_HORN as usize);
-        let veh: u32 = rd(audio + 4);
+        let veh: u32 = rd(audio + g::AUDIO_ENTITY);
         if veh == 0 {
             f(audio, params);
             return;
@@ -678,16 +771,16 @@ macro_rules! entity_collision_hook {
         }
     };
 }
-entity_collision_hook!(pec_automobile, 0x6ACE70u32);
-entity_collision_hook!(pec_bike, 0x6BDEA0u32);
-entity_collision_hook!(pec_monster_truck, 0x6C8AE0u32);
-entity_collision_hook!(pec_physical, 0x546D00u32);
+entity_collision_hook!(pec_automobile, PEC_AUTOMOBILE);
+entity_collision_hook!(pec_bike, PEC_BIKE);
+entity_collision_hook!(pec_monster_truck, PEC_MONSTER_TRUCK);
+entity_collision_hook!(pec_physical, PEC_PHYSICAL);
 
 fn pec_for(original: u32) -> u32 {
     let f: extern "thiscall" fn(u32, u32, u32) -> i32 = match original {
-        0x6ACE70 => pec_automobile,
-        0x6BDEA0 => pec_bike,
-        0x6C8AE0 => pec_monster_truck,
+        PEC_AUTOMOBILE => pec_automobile,
+        PEC_BIKE => pec_bike,
+        PEC_MONSTER_TRUCK => pec_monster_truck,
         _ => pec_physical,
     };
     f as usize as u32
@@ -831,7 +924,13 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
     out.push((
         62,
         patcher
-            .retarget_branch(mem, "CVehicle::Render SetDirtTextures", RENDER_DIRT_CALL, rd_stub, Some(SET_DIRT_TEXTURES))
+            .retarget_branch(
+                mem,
+                "CVehicle::Render SetDirtTextures",
+                RENDER_DIRT_CALL,
+                rd_stub,
+                Some(SET_DIRT_TEXTURES),
+            )
             .map(|_| ()),
     ));
     let enter = enter_ctor_stub as unsafe extern "C" fn() as usize as u32;

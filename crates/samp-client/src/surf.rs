@@ -89,7 +89,13 @@ impl LocalSurf {
     /// One probe step, run on every local on-foot tick. Mirrors samp.dll 0x10003730.
     /// `cancel`: the ped is entering a car or in another task that stops surfing (see `gta::cancel_tasks`);
     /// `exists(t)`: the surface is still in its pool.
-    pub fn probe(&mut self, contact: Contact, cancel: bool, now_ms: u32, exists: impl Fn(Target) -> bool) -> ProbeAction {
+    pub fn probe(
+        &mut self,
+        contact: Contact,
+        cancel: bool,
+        now_ms: u32,
+        exists: impl Fn(Target) -> bool,
+    ) -> ProbeAction {
         if cancel {
             self.target = None;
             self.glue = false;
@@ -226,7 +232,17 @@ mod gta {
     const PAD0: u32 = 0xB73458;
     /// `CPed::m_pIntelligence`, primary task slots of its task manager.
     const PED_INTELLIGENCE: u32 = 0x47C;
+    /// First primary task slot inside `CPedIntelligence` (the task manager's array).
+    const INTEL_PRIMARY_TASKS: u32 = 0x4;
     const PED_FLAGS: u32 = 0x46C;
+    /// `PED_FLAGS` bit `bInVehicle`.
+    const PED_IN_VEHICLE: u32 = 0x100;
+    /// `CPed::m_nPedType` (0 = player).
+    const PED_TYPE: u32 = 0x598;
+    /// `CVehicle::m_pDriver`.
+    const VEH_DRIVER: u32 = 0x460;
+    /// `CTask::GetTaskType` vtable slot.
+    const VT_TASK_GET_TYPE: u32 = 0x10;
     /// `RwMatrixInvert(dst, src)`.
     const RW_MATRIX_INVERT: u32 = 0x7F2070;
     /// Task type 211 in a primary slot: the glue does not hold the ped.
@@ -273,7 +289,7 @@ mod gta {
         if !(0x80_0000..=0x90_0000).contains(&vt) {
             return 0;
         }
-        let f: u32 = rd(vt + 0x10);
+        let f: u32 = rd(vt + VT_TASK_GET_TYPE);
         if f == 0 {
             return 0;
         }
@@ -286,11 +302,11 @@ mod gta {
 
     fn primary_task(ped: u32, slot: u32) -> u32 {
         let intel: u32 = rd(ped + PED_INTELLIGENCE);
-        if intel == 0 { 0 } else { rd(intel + 4 + 4 * slot) }
+        if intel == 0 { 0 } else { rd(intel + INTEL_PRIMARY_TASKS + 4 * slot) }
     }
 
     fn in_vehicle(ped: u32) -> bool {
-        rd::<u32>(ped + PED_FLAGS) & 0x100 != 0
+        rd::<u32>(ped + PED_FLAGS) & PED_IN_VEHICLE != 0
     }
 
     /// The probe's cancel test: physical-response task 208 (not in a vehicle), primary task 704, or an
@@ -308,8 +324,8 @@ mod gta {
     /// samp's "player-driven" test of a vehicle: a driver that is in the vehicle and has ped type 0 (player).
     /// Mirrors samp.dll 0x100B7120.
     pub fn player_driven(vehicle: u32) -> bool {
-        let driver: u32 = rd(vehicle + 0x460);
-        driver != 0 && in_vehicle(driver) && rd::<u32>(driver + 0x598) == 0
+        let driver: u32 = rd(vehicle + VEH_DRIVER);
+        driver != 0 && in_vehicle(driver) && rd::<u32>(driver + PED_TYPE) == 0
     }
 
     fn inverse(m: &[f32; 16]) -> [f32; 16] {

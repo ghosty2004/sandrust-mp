@@ -29,14 +29,15 @@ pub fn preload_models(counts: &[u8]) -> Vec<u16> {
 
 /// Vehicle subtype from the GTA vtable (0 for an unknown vtable). Mirrors samp.dll 0x100B6220.
 pub fn subtype(vtable: u32) -> u8 {
+    use crate::vehicle::vtbl;
     match vtable {
-        0x0087_1120 => 1,
-        0x0087_21A0 => 4,
-        0x0087_1360 => 2,
-        0x0087_1948 => 5,
-        0x0087_1680 => 3,
-        0x0087_1528 => 6,
-        0x0087_2370 => 7,
+        vtbl::AUTOMOBILE => 1,
+        vtbl::BOAT => 4,
+        vtbl::BIKE => 2,
+        vtbl::PLANE => 5,
+        vtbl::HELI => 3,
+        vtbl::BMX => 6,
+        vtbl::TRAIN => 7,
         _ => 0,
     }
 }
@@ -87,6 +88,13 @@ mod imp {
     use crate::script::{Arg, Runner, op};
     use std::sync::Mutex;
 
+    /// `CVehicle::m_fHealth`.
+    const VEH_HEALTH: u32 = 0x4C0;
+    /// `CVehicle::m_nMaxPassengers` (u8).
+    const VEH_MAX_PASSENGERS: u32 = 0x488;
+    /// `TheCamera`'s matrix position.
+    const CAMERA_MATRIX_POS: u32 = 0xB6F9CC;
+
     /// Preload flag per model, indexed from [`FIRST_MODEL`].
     static PRELOADED: Mutex<[bool; MODEL_COUNT]> = Mutex::new([false; MODEL_COUNT]);
     /// One label: world position and text.
@@ -127,7 +135,6 @@ mod imp {
     /// Client tick: rebuild the labels while `/dl` is on. `spectating` selects the camera as the reference point.
     /// `rows` holds (vehicle id, `CVehicle*`, stream-in position) per streamed-in vehicle.
     pub fn tick(rows: Vec<(u16, u32, [f32; 3])>, local_ped: u32, spectating: bool) {
-        const CAMERA_MATRIX_POS: u32 = 0xB6F9CC;
         if !crate::ui::vehicle_labels_on() {
             *DRAWS.lock().unwrap_or_else(|e| e.into_inner()) = None;
             return;
@@ -147,13 +154,13 @@ mod imp {
                 id,
                 model,
                 subtype: subtype(m.read_u32(ptr).unwrap_or(0)),
-                health: m.read_f32(ptr + 0x4C0).unwrap_or(0.0), // CVehicle::m_fHealth
+                health: m.read_f32(ptr + VEH_HEALTH).unwrap_or(0.0),
                 preloaded: model
                     .checked_sub(FIRST_MODEL)
                     .and_then(|i| flags.get(usize::from(i)).copied())
                     .unwrap_or(false),
                 distance: d,
-                seats: m.read_u8(ptr + 0x488).unwrap_or(0), // CVehicle::m_nMaxPassengers
+                seats: m.read_u8(ptr + VEH_MAX_PASSENGERS).unwrap_or(0),
                 pos,
                 spawn,
             };

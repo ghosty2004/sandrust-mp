@@ -28,9 +28,14 @@ const RASTER_DESTROY_RESUME: u32 = 0x7FB026;
 const RASTER_DESTROY_ORIGINAL: [u8; 6] = [0x56, 0x8B, 0x74, 0x24, 0x08, 0x56];
 /// `RwD3D9Raster` extension: offset of the D3D texture in a raster.
 const RASTER_D3D_TEXTURE: u32 = 0x34;
-/// `RwEngineInstance` and its `RwRenderStateSet` slot (+0x20); TEXTUREFILTER (9) := LINEAR (2).
+/// `RwEngineInstance` and its `RwRenderStateSet` slot (+0x20).
 const RW_ENGINE: u32 = 0xC97B24;
 const RW_RENDER_STATE_SET: u32 = 0x20;
+/// `rwRENDERSTATETEXTUREFILTER` and its value `rwFILTERLINEAR`.
+const RW_STATE_TEXTURE_FILTER: u32 = 9;
+const RW_FILTER_LINEAR: u32 = 2;
+/// `IUnknown::Release` vtable slot.
+const IUNKNOWN_RELEASE: u32 = 0x8;
 /// Default plate text.
 pub const DEFAULT_TEXT: &[u8] = b"XYZSR998";
 
@@ -59,7 +64,7 @@ fn release(tex: u32) {
         // SAFETY: a texture this module owns one reference of (IUnknown::Release, slot 2).
         unsafe {
             let vt: u32 = rd(tex);
-            let f: extern "system" fn(u32) -> u32 = std::mem::transmute(rd::<u32>(vt + 8) as usize);
+            let f: extern "system" fn(u32) -> u32 = std::mem::transmute(rd::<u32>(vt + IUNKNOWN_RELEASE) as usize);
             f(tex);
         }
     }
@@ -212,7 +217,7 @@ pub fn substitute(tex: u32) -> Option<u32> {
     unsafe {
         let engine: u32 = rd(RW_ENGINE);
         let f: extern "C" fn(u32, u32) -> i32 = std::mem::transmute(rd::<u32>(engine + RW_RENDER_STATE_SET) as usize);
-        f(9, 2);
+        f(RW_STATE_TEXTURE_FILTER, RW_FILTER_LINEAR);
     }
     Some(t)
 }
