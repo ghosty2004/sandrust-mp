@@ -5,6 +5,7 @@
 //! * the device, D3DX font, sprite, render-to-surface and vertex-buffer class vtables are patched (one
 //!   throw-away object of each D3DX class is created to find them);
 //! * the D3DX factory exports of the loaded `d3dx9_NN.dll` are inline-hooked at their hot-patch prologue.
+//!
 //! Output: `d3d.jsonl` next to `trace.jsonl` (`SAMP_TRACER_D3D_OUT`).
 
 use super::*;
