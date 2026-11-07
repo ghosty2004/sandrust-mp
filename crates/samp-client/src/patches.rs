@@ -1,47 +1,37 @@
-//! Startup patch table (milestone M1: boot straight into gameplay).
+//! The table of gta_sa.exe byte patches samp.dll applies at start-up, minus the ones done elsewhere.
 //!
-//! Every entry names its row in `docs/re/data/gta-patches-r4-annotated.csv`
-//! (1-based line number in the file, header = line 1) and the spec section in
-//! `docs/re/subsystems/gta-patches.md` ("Purpose analysis" → "Startup / intro").
-//! `original` holds the bytes of the unmodified 1.0 US executable; a patch is
-//! only written when memory still holds them.
-//!
-//! M3 adds the rows remote players need (ped-related pool sizes, the
-//! `Players[-1]` / NULL-player-info NOPs, the ped-group and heading-store
-//! patches); the sector relocation itself is table-driven in `sectors.rs`.
-//!
-//! SAA-2 adds the pool sizes the samp.saa data needs (rows 107–109, 119, 131)
-//! and, only when files are served from samp.saa, `CStreaming::InitImageList`
-//! := RET (row 128: the archive's default.dat registers the image archives);
-//! the model-info stores are moved in `stores.rs`.
-//!
-//! The parity pass adds the CJ-walk anim-group gate (row 187 here, the row 43
-//! call in pedhooks.rs) and the IPL / interior pickup removals (rows 172, 208).
-//!
-//! Deliberately NOT applied yet (later milestones): the object pool and the
-//! colour-table and model-pointer relocations.
+//! Each [`Entry`] carries `csv_row`, its "patch table row": the 1-based line number in
+//! docs/re/data/gta-patches-r4-annotated.csv (header = line 1), where its purpose and the samp.dll site are
+//! recorded; docs/re/subsystems/gta-patches.md explains them. `original` holds the bytes of the unmodified
+//! 1.0 US executable, and a patch is only written while memory still holds them ([`apply_phase`]).
+//! Table-driven elsewhere: the sector relocation (`sectors.rs`), the model-info stores (`stores.rs`), the
+//! vehicle patches and colour table (`vehpatches.rs`) and the world-entity hooks (`worldhooks.rs`).
 
 use crate::patch::{Memory, PatchError, Patcher};
 
+/// When an entry is applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// At DLL attach, while the main thread is still suspended (spec §2 step 2).
+    /// At DLL attach, while the main thread is still suspended (gta-patches.md, "2. When patches are applied",
+    /// step 2).
     Early,
-    /// Once `gGameState == 7` (FRONTEND_IDLE), before switching to state 8 (spec §2 step 3).
+    /// Once `gGameState == 7` (FRONTEND_IDLE), before switching to state 8 (same section, step 3).
     Main,
-    /// At attach, only when files are served from samp.saa (SAA-2): samp's
-    /// default.dat registers the image archives itself.
+    /// At attach, only when files are served from samp.saa: samp's default.dat registers the image
+    /// archives itself.
     EarlyArchive,
 }
 
+/// What an entry writes.
 #[derive(Debug, Clone, Copy)]
 pub enum Write {
     Bytes(&'static [u8]),
     Nop(usize),
-    /// imm32 chosen from physical RAM (row 127, spec §4.6).
+    /// imm32 chosen from physical RAM ([`streaming_budget`]; gta-patches.md, "4.6 Streaming memory").
     StreamingBudget,
 }
 
+/// One patch: site, phase, new bytes, the bytes expected before patching and its patch table row.
 #[derive(Debug, Clone, Copy)]
 pub struct Entry {
     pub addr: u32,
@@ -49,7 +39,7 @@ pub struct Entry {
     pub write: Write,
     /// Bytes expected before patching (from gta_sa.exe 1.0 US).
     pub original: &'static [u8],
-    /// Line number in gta-patches-r4-annotated.csv.
+    /// Patch table row: line number in gta-patches-r4-annotated.csv (header = line 1).
     pub csv_row: u32,
     pub what: &'static str,
 }
@@ -72,8 +62,8 @@ const TIMER_QPC_BYPASS: [u8; 29] = {
 };
 
 pub const TABLE: &[Entry] = &[
-    // CSV row 121 — psInitialize: NOP `mov [gGameState],esi` so the state set at
-    // attach (5, written separately) survives. Spec: Startup / intro.
+    // psInitialize: NOP `mov [gGameState],esi` so the state set at
+    // attach (5, written separately) survives (gta-patches.md, "Startup / intro").
     Entry {
         addr: 0x747483,
         phase: Phase::Early,
@@ -82,7 +72,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 121,
         what: "psInitialize: keep gGameState",
     },
-    // CSV row 124 — GetVideoModeList: drop the aspect-ratio filter (68 bytes).
+    // GetVideoModeList: drop the aspect-ratio filter (68 bytes).
     Entry {
         addr: 0x745B87,
         phase: Phase::Early,
@@ -96,7 +86,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 124,
         what: "GetVideoModeList: no aspect filter",
     },
-    // CSV row 125 — FillAvailableVMs: NOP one `jp` of the aspect test.
+    // FillAvailableVMs: NOP one `jp` of the aspect test.
     Entry {
         addr: 0x7459E1,
         phase: Phase::Early,
@@ -105,7 +95,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 125,
         what: "FillAvailableVMs: no aspect filter",
     },
-    // CSV row 126 — CTimer::Initialise: always the millisecond timer path.
+    // CTimer::Initialise: always the millisecond timer path.
     Entry {
         addr: 0x561872,
         phase: Phase::Early,
@@ -117,7 +107,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 126,
         what: "CTimer::Initialise: no QPC",
     },
-    // CSV row 127 — CStreaming::Init2: ms_memoryAvailable budget from physical RAM (spec §4.6).
+    // CStreaming::Init2: ms_memoryAvailable budget from physical RAM (see `streaming_budget`).
     Entry {
         addr: 0x5B8E6A,
         phase: Phase::Early,
@@ -126,7 +116,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 127,
         what: "CStreaming::Init2: streaming memory budget",
     },
-    // CSV row 129 — CLoadingScreen::RenderSplash: NOP a CSprite2d::DrawRect call.
+    // CLoadingScreen::RenderSplash: NOP a CSprite2d::DrawRect call.
     Entry {
         addr: 0x590099,
         phase: Phase::Early,
@@ -135,7 +125,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 129,
         what: "RenderSplash: no DrawRect",
     },
-    // CSV row 130 — Idle: frame-limiter busy-wait 14 ms -> 2 ms.
+    // Idle: frame-limiter busy-wait 14 ms -> 2 ms.
     Entry {
         addr: 0x53E94C,
         phase: Phase::Early,
@@ -144,7 +134,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 130,
         what: "Idle: frame limiter 2 ms",
     },
-    // CSV row 160 — __MainWndProc: NOP the CGame::InitAfterLostFocus call.
+    // __MainWndProc: NOP the CGame::InitAfterLostFocus call.
     Entry {
         addr: 0x748063,
         phase: Phase::Main,
@@ -153,7 +143,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 160,
         what: "__MainWndProc: no InitAfterLostFocus",
     },
-    // CSV row 246 — CGame::Process: NOP the CCutsceneMgr::Update call. Besides
+    // CGame::Process: NOP the CCutsceneMgr::Update call. Besides
     // removing cutscenes this keeps the stock main.scm from taking over the
     // player: its intro mission waits for a cutscene that never finishes
     // loading (see docs/phase3/m2-notes.md).
@@ -165,7 +155,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 246,
         what: "CGame::Process: no CCutsceneMgr::Update",
     },
-    // CSV row 157 — CUserDisplay::Process: NOP CPlaceName::Process (no zone names).
+    // CUserDisplay::Process: NOP CPlaceName::Process (no zone names).
     Entry {
         addr: 0x5720A5,
         phase: Phase::Main,
@@ -174,7 +164,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 157,
         what: "CUserDisplay::Process: no CPlaceName::Process",
     },
-    // CSV row 161 — CHud::Draw: NOP CHud::DrawVehicleName.
+    // CHud::Draw: NOP CHud::DrawVehicleName.
     Entry {
         addr: 0x58FBE9,
         phase: Phase::Main,
@@ -183,7 +173,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 161,
         what: "CHud::Draw: no DrawVehicleName",
     },
-    // CSV row 180 — CHud::SetHelpMessage := ret (no single-player help boxes).
+    // CHud::SetHelpMessage := ret (no single-player help boxes).
     Entry {
         addr: 0x588BE0,
         phase: Phase::Main,
@@ -192,7 +182,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 180,
         what: "CHud::SetHelpMessage: ret",
     },
-    // CSV row 202 — CHud::DrawWanted: the shown wanted level is an immediate
+    // CHud::DrawWanted: the shown wanted level is an immediate
     // (low byte at 0x58DB60) that SetPlayerWantedLevel (RPC 133) rewrites; 0 here.
     Entry {
         addr: 0x58DB5F,
@@ -202,7 +192,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 202,
         what: "CHud::DrawWanted: level from samp",
     },
-    // CSV row 205 — CHud::Draw: NOP the vital-stats block.
+    // CHud::Draw: NOP the vital-stats block.
     Entry {
         addr: 0x58FC2E,
         phase: Phase::Main,
@@ -214,7 +204,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 205,
         what: "CHud::Draw: no vital stats",
     },
-    // CSV row 209 — diMouseInit: cooperative level always non-exclusive|foreground.
+    // diMouseInit: cooperative level always non-exclusive|foreground.
     Entry {
         addr: 0x7469AF,
         phase: Phase::Main,
@@ -223,8 +213,9 @@ pub const TABLE: &[Entry] = &[
         csv_row: 209,
         what: "diMouseInit: non-exclusive mouse",
     },
-    // ---- M3: remote players (remote-control-onfoot.md §1.6, §7.1 item 7) ----
-    // CSV row 178 — CStreaming::DeleteAllRwObjects := RET (goes with the sector relocation:
+    // ---- Remote players (remote-control-onfoot.md, "1.6 GTA patches that exist for remote `CPlayerPed`s"
+    // and "7.1 Minimal hook and patch set for remote on-foot players") ----
+    // CStreaming::DeleteAllRwObjects := RET (goes with the sector relocation:
     // samp's table would otherwise corrupt an instruction inside it, see sectors.rs).
     Entry {
         addr: 0x4090A0,
@@ -234,8 +225,9 @@ pub const TABLE: &[Entry] = &[
         csv_row: 178,
         what: "CStreaming::DeleteAllRwObjects: ret",
     },
-    // CSV rows 110–118 — CPools::Initialise / CPlaceable::InitMatrixArray capacities that grow
-    // with the number of peds (gta-patches.md "Pools & limits"). Run at gGameState 8, after this.
+    // CPools::Initialise / CPlaceable::InitMatrixArray capacities that grow
+    // with the number of peds (gta-patches.md, "Pools & limits"). CPools::Initialise runs at gGameState 8,
+    // after this phase.
     Entry {
         addr: 0x550F46,
         phase: Phase::Main,
@@ -300,8 +292,8 @@ pub const TABLE: &[Entry] = &[
         csv_row: 118,
         what: "CPlaceable::InitMatrixArray: 6000 matrices",
     },
-    // CSV row 183 — CPlayerPed::CPlayerPed: inverted jcc, SetupPlayerPed(false) creates no ped group
-    // (CPedGroups has 8 groups; remote-control-onfoot.md §1.6).
+    // CPlayerPed::CPlayerPed: inverted jcc, SetupPlayerPed(false) creates no ped group
+    // (CPedGroups has only 8 groups).
     Entry {
         addr: 0x60D64E,
         phase: Phase::Main,
@@ -310,7 +302,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 183,
         what: "CPlayerPed ctor: no ped group",
     },
-    // CSV row 193 — CPlayerPed::ProcessControl: drop FindPlayerSlotWithPedPointer + Players[slot]
+    // CPlayerPed::ProcessControl: drop FindPlayerSlotWithPedPointer + Players[slot]
     // .m_pRemoteVehicle (−1 for remote peds → Players[-1]).
     Entry {
         addr: 0x60F2C4,
@@ -323,7 +315,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 193,
         what: "CPlayerPed::ProcessControl: no FindPlayerSlotWithPedPointer",
     },
-    // CSV rows 173–176 — GetPlayerInfoForThisPlayerPed()->+0x153 uses removed (NULL for slots ≥ 2).
+    // GetPlayerInfoForThisPlayerPed()->+0x153 uses removed (NULL for slots ≥ 2).
     Entry {
         addr: 0x5E63A6,
         phase: Phase::Main,
@@ -362,7 +354,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 176,
         what: "CVehicle::DoDriveByShootings: no player-info lookup",
     },
-    // CSV row 206 — CPed::UpdatePosition: standing-on-entity block always skipped.
+    // CPed::UpdatePosition: standing-on-entity block always skipped.
     Entry {
         addr: 0x5E1E70,
         phase: Phase::Main,
@@ -371,8 +363,8 @@ pub const TABLE: &[Entry] = &[
         csv_row: 206,
         what: "CPed::UpdatePosition: ignore m_standingOnEntity",
     },
-    // CSV rows 213/214 — the m_fAimingRotation stores of CTaskSimplePlayerOnFoot; restored around the
-    // local player's ProcessControl only (remote.rs hook, CSV row 367).
+    // The m_fAimingRotation stores of CTaskSimplePlayerOnFoot; restored around the
+    // local player's ProcessControl only (the remote.rs hook, patch table row 367).
     Entry {
         addr: 0x6884C4,
         phase: Phase::Main,
@@ -389,7 +381,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 214,
         what: "PlayerControlDucked: no m_fAimingRotation store",
     },
-    // CSV row 167 — CPlayerPed::ProcessAnimGroups: no release of the previous anim block and no
+    // CPlayerPed::ProcessAnimGroups: no release of the previous anim block and no
     // store to playerData+0x4C (players.rs zeroes that field before deleting a remote ped, as samp).
     Entry {
         addr: 0x609C08,
@@ -403,9 +395,9 @@ pub const TABLE: &[Entry] = &[
         csv_row: 167,
         what: "CPlayerPed::ProcessAnimGroups: no anim block switch",
     },
-    // SAA-2: pool sizes samp sets in CPools::Initialise (gta-patches.md §4.1). samp.saa's data
+    // Pool sizes samp sets in CPools::Initialise (gta-patches.md, "4.1 Pool capacities"). samp.saa's data
     // (SAMP.ide, SAMP.ipl, SAMPCOL.img) needs more buildings, dummies and collision models.
-    // CSV row 107 — vehicle pool: `push "Vehicles"; push 110` -> `push 0; push 710`.
+    // Vehicle pool: `push "Vehicles"; push 110` -> `push 0; push 710`.
     Entry {
         addr: 0x551024,
         phase: Phase::Main,
@@ -414,7 +406,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 107,
         what: "CPools::Initialise: vehicle pool 710",
     },
-    // CSV row 108 — building pool 13000 -> 20000.
+    // Building pool 13000 -> 20000.
     Entry {
         addr: 0x55105F,
         phase: Phase::Main,
@@ -423,7 +415,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 108,
         what: "CPools::Initialise: building pool 20000",
     },
-    // CSV row 109 — dummy pool 2500 -> 4000.
+    // Dummy pool 2500 -> 4000.
     Entry {
         addr: 0x5510CF,
         phase: Phase::Main,
@@ -432,7 +424,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 109,
         what: "CPools::Initialise: dummy pool 4000",
     },
-    // CSV row 119 — collision-model pool 10150 -> 32511.
+    // Collision-model pool 10150 -> 32511.
     Entry {
         addr: 0x551106,
         phase: Phase::Main,
@@ -441,7 +433,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 119,
         what: "CPools::Initialise: col-model pool 32511",
     },
-    // CSV row 131 — CTxdStore::Initialise: texture-dictionary pool 5000 -> 20000.
+    // CTxdStore::Initialise: texture-dictionary pool 5000 -> 20000.
     Entry {
         addr: 0x731F60,
         phase: Phase::Early,
@@ -450,7 +442,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 131,
         what: "CTxdStore::Initialise: txd pool 20000",
     },
-    // CSV row 128 — CStreaming::InitImageList := RET. samp.saa's default.dat lists
+    // CStreaming::InitImageList := RET. samp.saa's default.dat lists
     // SAMP\CUSTOM.IMG, SAMP\SAMP.IMG, MODELS\GTA3.IMG and MODELS\GTA_INT.IMG itself;
     // without this the two stock archives would be registered twice (9 of 8 image slots).
     Entry {
@@ -461,7 +453,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 128,
         what: "CStreaming::InitImageList := RET",
     },
-    // CSV rows 122/123 — splash texture names "title_pc_US" and "loadsc%d" -> "title":
+    // Splash texture names "title_pc_US" and "loadsc%d" -> "title":
     // samp.saa's loadscs.txd holds a single texture called `title` (loading screen).
     Entry {
         addr: 0x866CD8,
@@ -479,9 +471,9 @@ pub const TABLE: &[Entry] = &[
         csv_row: 123,
         what: "splash name loadsc%d -> title",
     },
-    // SP-OFF: single-player population, traffic and replay off (TRACE-4, trace-notes.md
-    // "SP-OFF baseline"). Row 55 (police scanner) is a call hook installed in dll.rs.
-    // CSV row 189 — CGame::Process: no CCarCtrl::GenerateRandomCars.
+    // Single-player population, traffic and replay off (docs/phase3/trace-notes.md, "SP-OFF baseline").
+    // Patch table row 55 (police scanner) is a call hook installed in dll.rs.
+    // CGame::Process: no CCarCtrl::GenerateRandomCars.
     Entry {
         addr: 0x53C1C1,
         phase: Phase::Main,
@@ -490,7 +482,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 189,
         what: "CGame::Process: no GenerateRandomCars",
     },
-    // CSV row 181 — CGame::Process: no CTheCarGenerators::Process (parked cars).
+    // CGame::Process: no CTheCarGenerators::Process (parked cars).
     Entry {
         addr: 0x53C06A,
         phase: Phase::Main,
@@ -499,7 +491,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 181,
         what: "CGame::Process: no CTheCarGenerators::Process",
     },
-    // CSV row 163 — CGame::Process: no CReplay::Update.
+    // CGame::Process: no CReplay::Update.
     Entry {
         addr: 0x53C090,
         phase: Phase::Main,
@@ -508,7 +500,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 163,
         what: "CGame::Process: no CReplay::Update",
     },
-    // CSV row 182 — GenerateRandomCars: no CPlane::DoPlaneGenerationAndRemoval.
+    // GenerateRandomCars: no CPlane::DoPlaneGenerationAndRemoval.
     Entry {
         addr: 0x434272,
         phase: Phase::Main,
@@ -517,7 +509,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 182,
         what: "GenerateRandomCars: no plane generation",
     },
-    // CSV row 185 — CPopulation::AddPed := xor eax,eax; ret.
+    // CPopulation::AddPed := xor eax,eax; ret.
     Entry {
         addr: 0x612710,
         phase: Phase::Main,
@@ -526,7 +518,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 185,
         what: "CPopulation::AddPed := return NULL",
     },
-    // CSV row 186 — CPopulation::AddPedInCar: no CCarEnterExit::SetPedInCarDirect.
+    // CPopulation::AddPedInCar: no CCarEnterExit::SetPedInCarDirect.
     Entry {
         addr: 0x613BA7,
         phase: Phase::Main,
@@ -535,7 +527,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 186,
         what: "AddPedInCar: no SetPedInCarDirect",
     },
-    // CSV row 164 — CEntryExit::TransitionFinished: no GenerateAmbientPeds (push + call).
+    // CEntryExit::TransitionFinished: no GenerateAmbientPeds (push + call).
     Entry {
         addr: 0x440833,
         phase: Phase::Main,
@@ -544,7 +536,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 164,
         what: "CEntryExit::TransitionFinished: no GenerateAmbientPeds",
     },
-    // CSV row 162 — "playidles" blanked: no idle anims on player peds.
+    // "playidles" blanked: no idle anims on player peds.
     Entry {
         addr: 0x86D1EC,
         phase: Phase::Main,
@@ -553,8 +545,8 @@ pub const TABLE: &[Entry] = &[
         csv_row: 162,
         what: "playidles anim block name blanked",
     },
-    // CSV row 187 — CPlayerPed::ProcessAnimGroups: NOP the move-anim-group store; samp then
-    // writes its gated call over the first 5 bytes (row 43, pedhooks.rs), so a player ped keeps
+    // CPlayerPed::ProcessAnimGroups: NOP the move-anim-group store; samp then
+    // writes its gated call over the first 5 bytes (patch table row 43, pedhooks.rs), so a player ped keeps
     // its skin's own walk style unless InitGame "CJ walk" is set.
     Entry {
         addr: 0x609A4E,
@@ -564,8 +556,8 @@ pub const TABLE: &[Entry] = &[
         csv_row: 187,
         what: "ProcessAnimGroups: no move-anim-group store",
     },
-    // CSV row 172 — CFileLoader::LoadPickup := RET: no pickups from the IPL files (the stock
-    // weapon pickups DIFF-2 saw in ours: sniper 358, extinguishers 366).
+    // CFileLoader::LoadPickup := RET: no pickups from the IPL files (the stock
+    // weapon pickups such as the sniper rifle and fire extinguishers).
     Entry {
         addr: 0x5B47B0,
         phase: Phase::Main,
@@ -574,7 +566,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 172,
         what: "CFileLoader::LoadPickup := RET",
     },
-    // CSV row 208 — Interior_c::Init: NOP Interior_c::AddPickups (no interior pickups).
+    // Interior_c::Init: NOP Interior_c::AddPickups (no interior pickups).
     Entry {
         addr: 0x593D7C,
         phase: Phase::Main,
@@ -583,8 +575,8 @@ pub const TABLE: &[Entry] = &[
         csv_row: 208,
         what: "Interior_c::Init: no AddPickups",
     },
-    // COV-1 (GTA function coverage, original vs ours): systems that ran only with our client.
-    // CSV row 158 — CGame::Process: no CPlantMgr::Update (grass/plants).
+    // GTA systems that samp switches off and that a coverage comparison showed running only with our client.
+    // CGame::Process: no CPlantMgr::Update (grass/plants).
     Entry {
         addr: 0x53C159,
         phase: Phase::Main,
@@ -593,7 +585,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 158,
         what: "CGame::Process: no CPlantMgr::Update",
     },
-    // CSV row 159 — CGame::Process: no CCoronas::DoSunAndMoon.
+    // CGame::Process: no CCoronas::DoSunAndMoon.
     Entry {
         addr: 0x53C136,
         phase: Phase::Main,
@@ -602,7 +594,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 159,
         what: "CGame::Process: no CCoronas::DoSunAndMoon",
     },
-    // CSV row 155 — CAEGlobalWeaponAudioEntity::ServiceAmbientGunFire: state always reset
+    // CAEGlobalWeaponAudioEntity::ServiceAmbientGunFire: state always reset
     // (no ambient gunfire sounds).
     Entry {
         addr: 0x4DF7E2,
@@ -612,7 +604,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 155,
         what: "ServiceAmbientGunFire: no ambient gunfire",
     },
-    // CSV row 192 — CPlayerPed::ClearWeaponTarget: no CCamera::ClearPlayerWeaponMode.
+    // CPlayerPed::ClearWeaponTarget: no CCamera::ClearPlayerWeaponMode.
     Entry {
         addr: 0x609CB4,
         phase: Phase::Main,
@@ -621,7 +613,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 192,
         what: "ClearWeaponTarget: no ClearPlayerWeaponMode",
     },
-    // CSV row 244 — CCam::Process_FollowPed_SA: no CIdleCam::Process (idle camera).
+    // CCam::Process_FollowPed_SA: no CIdleCam::Process (idle camera).
     Entry {
         addr: 0x524582,
         phase: Phase::Main,
@@ -630,10 +622,9 @@ pub const TABLE: &[Entry] = &[
         csv_row: 244,
         what: "Process_FollowPed_SA: no idle camera",
     },
-    // Parity audit L1–L6: rows samp applies at init-main that ours did not.
-    // Rows 165/184 — real-time shadows off (the earlier "black world" with row 165 was the D3D
-    // state-block bug fixed in 831455f; re-tested in docs/phase3/par-audit.md "CSV row 165 re-test").
-    // CSV row 165 — Idle: no CRealTimeShadowManager::Update.
+    // Further rows samp applies at init-main (docs/phase3/par-audit.md). The next two turn real-time shadows
+    // off (docs/phase3/par-audit.md, "CSV row 165 re-test").
+    // Idle: no CRealTimeShadowManager::Update.
     Entry {
         addr: 0x53EA08,
         phase: Phase::Main,
@@ -642,7 +633,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 165,
         what: "Idle: no CRealTimeShadowManager::Update",
     },
-    // CSV row 184 — CPhysical dtor: no ReturnRealTimeShadow.
+    // CPhysical dtor: no ReturnRealTimeShadow.
     Entry {
         addr: 0x542485,
         phase: Phase::Main,
@@ -651,7 +642,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 184,
         what: "CPhysical dtor: no ReturnRealTimeShadow",
     },
-    // CSV row 166 — RenderStencilShadows: overlay alpha 80.
+    // RenderStencilShadows: overlay alpha 80.
     Entry {
         addr: 0x71162C,
         phase: Phase::Main,
@@ -660,7 +651,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 166,
         what: "RenderStencilShadows: overlay alpha 80",
     },
-    // CSV row 170 — SetEventResponseTask: no editable response (facial expressions).
+    // SetEventResponseTask: no editable response (facial expressions).
     Entry {
         addr: 0x4BC6C1,
         phase: Phase::Main,
@@ -669,7 +660,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 170,
         what: "SetEventResponseTask: no editable response (facial expressions)",
     },
-    // CSV row 215 — CPlayerInfo::Process: no hold/fight test.
+    // CPlayerInfo::Process: no hold/fight test.
     Entry {
         addr: 0x570535,
         phase: Phase::Main,
@@ -678,7 +669,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 215,
         what: "CPlayerInfo::Process: no hold/fight test",
     },
-    // CSV row 216 — CPed::Render: weapon also while holding.
+    // CPed::Render: weapon also while holding.
     Entry {
         addr: 0x5E7847,
         phase: Phase::Main,
@@ -689,7 +680,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 216,
         what: "CPed::Render: weapon also while holding",
     },
-    // CSV row 217 — CPlayerInfo::Process: no script-command task.
+    // CPlayerInfo::Process: no script-command task.
     Entry {
         addr: 0x570546,
         phase: Phase::Main,
@@ -709,7 +700,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 217,
         what: "CPlayerInfo::Process: no script-command task",
     },
-    // CSV row 223 — 0x6348F0: phone model -1.
+    // Unnamed GTA function: the cell-phone model pushed for CPed::RemoveWeaponModel becomes -1.
     Entry {
         addr: 0x6348F6,
         phase: Phase::Main,
@@ -718,7 +709,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 223,
         what: "0x6348F0: phone model -1",
     },
-    // CSV row 224 — 0x634A40: phone model -1.
+    // Same in a second unnamed function.
     Entry {
         addr: 0x634DE2,
         phase: Phase::Main,
@@ -727,7 +718,8 @@ pub const TABLE: &[Entry] = &[
         csv_row: 224,
         what: "0x634A40: phone model -1",
     },
-    // CSV row 225 — CFont::ProcessCurrentString: frame 0x32C.
+    // CFont::ProcessCurrentString: 15 stack-offset high bytes 0x01 -> 0x03 together grow the stack frame
+    // from 0x12C to 0x32C bytes (a bigger local line buffer for longer text lines).
     Entry {
         addr: 0x71A223,
         phase: Phase::Main,
@@ -736,7 +728,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 225,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 226 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A5D5,
         phase: Phase::Main,
@@ -745,7 +736,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 226,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 227 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A247,
         phase: Phase::Main,
@@ -754,7 +744,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 227,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 228 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A282,
         phase: Phase::Main,
@@ -763,7 +752,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 228,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 229 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A26A,
         phase: Phase::Main,
@@ -772,7 +760,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 229,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 230 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A2E5,
         phase: Phase::Main,
@@ -781,7 +768,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 230,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 231 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A3AC,
         phase: Phase::Main,
@@ -790,7 +776,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 231,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 232 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A4B9,
         phase: Phase::Main,
@@ -799,7 +784,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 232,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 233 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A53C,
         phase: Phase::Main,
@@ -808,7 +792,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 233,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 234 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A37F,
         phase: Phase::Main,
@@ -817,7 +800,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 234,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 235 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A518,
         phase: Phase::Main,
@@ -826,7 +808,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 235,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 236 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A525,
         phase: Phase::Main,
@@ -835,7 +816,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 236,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 237 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A54B,
         phase: Phase::Main,
@@ -844,7 +824,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 237,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 238 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A5B6,
         phase: Phase::Main,
@@ -853,7 +832,6 @@ pub const TABLE: &[Entry] = &[
         csv_row: 238,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 239 — CFont::ProcessCurrentString: frame 0x32C.
     Entry {
         addr: 0x71A3BB,
         phase: Phase::Main,
@@ -862,8 +840,8 @@ pub const TABLE: &[Entry] = &[
         csv_row: 239,
         what: "CFont::ProcessCurrentString: frame 0x32C",
     },
-    // CSV row 179 — CGameLogic::SortOutStreamingAndMemory: NOP the
-    // CStreaming::DeleteRwObjectsAfterDeath call (samp init-main, A 0x100AB291).
+    // CGameLogic::SortOutStreamingAndMemory: NOP the
+    // CStreaming::DeleteRwObjectsAfterDeath call.
     Entry {
         addr: 0x441482,
         phase: Phase::Main,
@@ -872,8 +850,8 @@ pub const TABLE: &[Entry] = &[
         csv_row: 179,
         what: "SortOutStreamingAndMemory: keep RW objects after death",
     },
-    // CSV row 199 — CFire::ProcessFire: `jmp +0x77` over the BMX branch (a BMX
-    // near a fire sets the local player on fire / bursts a tyre); A 0x100AB53D.
+    // CFire::ProcessFire: `jmp +0x77` over the BMX branch (a BMX
+    // near a fire sets the local player on fire / bursts a tyre).
     Entry {
         addr: 0x53A984,
         phase: Phase::Main,
@@ -882,7 +860,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 199,
         what: "CFire::ProcessFire: skip the BMX branch",
     },
-    // CSV row 203 — CMenuManager::PrintMap: NOP one CSprite2d::DrawRect (A 0x100AB5FF).
+    // CMenuManager::PrintMap: NOP one CSprite2d::DrawRect.
     Entry {
         addr: 0x575B0E,
         phase: Phase::Main,
@@ -891,7 +869,7 @@ pub const TABLE: &[Entry] = &[
         csv_row: 203,
         what: "PrintMap: no DrawRect",
     },
-    // CSV row 212 — InteriorGroup_c::Exit: NOP the Interior_c::Exit call (A 0x100AB74C).
+    // InteriorGroup_c::Exit: NOP the Interior_c::Exit call.
     Entry {
         addr: 0x5952A6,
         phase: Phase::Main,
@@ -900,8 +878,8 @@ pub const TABLE: &[Entry] = &[
         csv_row: 212,
         what: "InteriorGroup_c::Exit: no Interior_c::Exit",
     },
-    // CSV row 245 — CBirds::CreateNumberOfBirds: the line-of-sight test also
-    // checks objects (`push 0` → `push 1`, A 0x100ABA04).
+    // CBirds::CreateNumberOfBirds: the line-of-sight test also
+    // checks objects (`push 0` → `push 1`).
     Entry {
         addr: 0x712025,
         phase: Phase::Main,
@@ -912,8 +890,8 @@ pub const TABLE: &[Entry] = &[
     },
 ];
 
-/// Streaming budget for `CStreaming::ms_memoryAvailable` from physical RAM in
-/// MB (spec §4.6, CSV row 127).
+/// Streaming budget for `CStreaming::ms_memoryAvailable` from physical RAM in MB (patch table row 127;
+/// gta-patches.md, "4.6 Streaming memory").
 pub fn streaming_budget(ram_mb: u64) -> u32 {
     match ram_mb {
         m if m > 4000 => 0x4000_0000,
@@ -931,7 +909,7 @@ pub struct Report {
     pub failed: Vec<(u32, &'static str, PatchError)>,
 }
 
-/// Diagnostics only: `SAMP_RS_SKIP_CSV_ROWS=158,159` leaves those rows unapplied (bisecting).
+/// Diagnostics only: `SAMP_RS_SKIP_CSV_ROWS=158,159` leaves those patch table rows unapplied (for bisecting).
 pub fn skipped_rows() -> Vec<u32> {
     std::env::var("SAMP_RS_SKIP_CSV_ROWS")
         .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
@@ -1081,9 +1059,9 @@ mod tests {
             assert_eq!(exe.read_va(e.addr, e.original.len()), e.original, "{:#x} {}", e.addr, e.what);
         }
         assert_eq!(exe.read_va(crate::cdstream::SYNC_WAIT_CALL, 6), crate::cdstream::SYNC_WAIT_CALL_ORIGINAL);
-        // CGame::Shutdown entry (CSV row 52).
+        // CGame::Shutdown entry (patch table row 52).
         assert_eq!(exe.read_va(crate::game::CGAME_SHUTDOWN, 7), crate::game::CGAME_SHUTDOWN_ORIGINAL);
-        // The police scanner's FindPlayerPed call (CSV row 55).
+        // The police scanner's FindPlayerPed call (patch table row 55).
         assert_eq!(
             exe.read_va(crate::game::POLICE_SCANNER_FIND_PLAYER_CALL, 5),
             crate::patch::encode_branch(
@@ -1092,7 +1070,7 @@ mod tests {
                 crate::game::FIND_PLAYER_PED
             )
         );
-        // The CGame::Process call site in Idle (CSV row 10).
+        // The CGame::Process call site in Idle (patch table row 10).
         assert_eq!(
             exe.read_va(crate::game::IDLE_GAME_PROCESS_CALL, 5),
             crate::patch::encode_branch(0xE8, crate::game::IDLE_GAME_PROCESS_CALL, crate::game::CGAME_PROCESS)

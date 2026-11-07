@@ -1,18 +1,10 @@
-//! Pickups, actors, checkpoints, gang zones, map icons and 3D text labels (Windows only, milestone M6).
+//! Pickups, actors, checkpoints, gang zones, map icons and 3D text labels (Windows only).
 //!
-//! Specs: world-entities.md (RPC layouts and client behaviour) with its RE-10 additions, and the original client
-//! measured by TRACE-6 (docs/phase3/trace-notes.md "World entities"):
-//! * pickups: CREATE_PICKUP(model, type, x, y, z); RPC 131 rel 9 from the collision path (row 44), type-14
-//!   pickups polled with HAS_PICKUP_BEEN_COLLECTED every 7 frames (rel 10);
-//! * actors: busy model load, CREATE_CHAR(5, skin, x, y, z − 1), heading, 0x0446(h, 0), decision maker 65542,
-//!   health (≤ 0 → EXPLODE_CHAR_HEAD), proofs; RPC 177 from the damage hook (worldhooks row 53);
-//! * checkpoints: LOCATE_CHAR_ANY_MEANS_3D every frame, blip 0x04CE + colour 1005 + scale 3 once; race checkpoint
-//!   blip / DELETE_CHECKPOINT / CREATE_CHECKPOINT order;
-//! * gang zones: drawn by the radar hooks (worldhooks rows 41/42) from the records kept here;
-//! * map icons: blip opcode by style, colour + scale for type 0 (scale rule: unsigned colour < 1004 → 2);
-//! * 3D labels: small font, 4-way black outline only when the colour's alpha is FF, main pass through the colour-code
-//!   wrapper (per-glyph `{RRGGBB}`), rect [x, y, x+1, y+1], format 0x101, colour RGBA → ARGB, draw distance, LOS test
-//!   IS_LINE_OF_SIGHT_CLEAR(label → camera, 1, 0, 0, 1, 0).
+//! [`Entities`] keeps the client's records for these RPCs and turns them into GTA script commands the way
+//! samp does; the per-frame part (`tick`) runs checkpoints, the pickup poll and the label placement. Gang zones
+//! are drawn by the radar hooks in `worldhooks.rs` from the records kept here. Spec:
+//! docs/re/subsystems/world-entities.md; the original's measured behaviour is in docs/phase3/trace-notes.md
+//! ("World entities"). samp.dll addresses: docs/re/addresses/entities.md.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -28,9 +20,10 @@ use crate::vehicles::Vehicles;
 use crate::worldents::{self as world, GangZone, op};
 use crate::worldhooks::{self as wh, Event, g, rd, wr};
 
-/// `IS_LINE_OF_SIGHT_CLEAR` (gta-reversed eScriptCommands.h); samp descriptor A 0x100ea618 "ffffffiiiii".
+/// `IS_LINE_OF_SIGHT_CLEAR` (named via gta-reversed eScriptCommands.h; samp's descriptor has the parameter
+/// types "ffffffiiiii").
 const IS_LINE_OF_SIGHT_CLEAR: u16 = 0x06BD;
-/// Camera source position samp's label LOS test uses (pointer A 0x101039C8 = 0xB6F32C, vector at +0xC).
+/// Camera position samp's label line-of-sight test starts from (a GTA camera object, vector at +0xC).
 const LOS_CAMERA_POS: u32 = 0xB6F32C + 0xC;
 /// `CPedIntelligence::FlushImmediately(bool)` (RPC 174).
 const FLUSH_IMMEDIATELY: u32 = 0x601640;
@@ -144,6 +137,7 @@ pub fn label_draws() -> Vec<LabelDraw> {
     LABEL_DRAWS.try_lock().map(|g| g.clone()).unwrap_or_default()
 }
 
+/// The client's pickups, actors, checkpoints, gang zones, map icons and 3D labels, keyed by wire id.
 #[derive(Default)]
 pub struct Entities {
     pickups: BTreeMap<i32, Pickup>,
@@ -165,7 +159,7 @@ impl Entities {
 
     pub fn on_rpc(&mut self, runner: &mut Runner, r: W) {
         match r {
-            // ---- pickups (A 0x10013270 / 0x10013320)
+            // ---- pickups (create / destroy)
             W::PlayerCreatePickup(p) => {
                 if !(0..world::MAX_PICKUPS).contains(&p.pickup_id) || self.pickups.len() >= world::MAX_PICKUPS as usize
                 {
@@ -210,7 +204,7 @@ impl Entities {
                     });
                 }
             }
-            // ---- actors (A 0x10001900, 0x1009C310 …)
+            // ---- actors
             W::ShowActorForPlayer(a) => {
                 if a.actor_id >= world::MAX_ACTORS || wh::model_info(a.skin as i32) == 0 {
                     return;
@@ -267,7 +261,7 @@ impl Entities {
                     let t0 = std::time::Instant::now();
                     while !runner.run(sop::HAS_ANIMATION_LOADED, &[Arg::Text(lib)]) {
                         if t0.elapsed() > std::time::Duration::from_millis(15) {
-                            // Gives up without playing (DIFF-2: the original runs no 0x0812 then).
+                            // Gives up without playing, as the original does when the block is not loaded yet.
                             return;
                         }
                         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -315,7 +309,7 @@ impl Entities {
                     set_actor_health(runner, ac.handle, ac.ped, h.health);
                 }
             }
-            // ---- checkpoints (A 0x100A1E20 / 0x100A2140)
+            // ---- checkpoints (normal / race)
             W::SetCheckpoint(c) => {
                 self.cp.pos = vec(c.position);
                 self.cp.size = c.size;
@@ -358,7 +352,7 @@ impl Entities {
                 r.active = true;
             }
             W::DisableRaceCheckpoint(_) => self.rcp.active = false,
-            // ---- gang zones (A 0x10002180 …; the wire id is bounds-checked here)
+            // ---- gang zones (the wire id is bounds-checked here)
             W::ShowGangZone(z) => {
                 if z.zone_id < world::MAX_GANG_ZONES {
                     wh::with_shared(|s| {
@@ -379,7 +373,7 @@ impl Entities {
                     r.flash = r.colour;
                 }
             }),
-            // ---- map icons (A 0x1000a300 → 0x100a0dd0)
+            // ---- map icons
             W::SetPlayerMapIcon(m) => {
                 if m.icon_id >= world::MAX_MAP_ICONS {
                     return;
@@ -411,7 +405,7 @@ impl Entities {
                     runner.run(sop::REMOVE_BLIP, &[Arg::Int(h)]);
                 }
             }
-            // ---- 3D labels (A 0x100011d0 / 0x100012e0)
+            // ---- 3D labels
             W::PlayerShowTextLabel(l) => {
                 if l.label_id < world::MAX_LABELS {
                     self.labels.insert(
@@ -423,9 +417,9 @@ impl Entities {
                             los: l.test_los != 0,
                             player: l.attached_player_id,
                             vehicle: l.attached_vehicle_id,
-                            // A 0x100011d0: stored as received (colour codes kept for the painter's colour
-                            // wrapper); a text shorter than 400 chars with `~k~` gets GTA's key-name
-                            // expansion (A 0x100b6140), kept if it fits in 399 chars.
+                            // Stored as received (colour codes are kept for the painter's colour wrapper); a
+                            // text shorter than 400 chars with `~k~` gets GTA's key-name expansion, kept if it
+                            // fits in 399 chars.
                             text: samp_ui::text::expand_key_names_limit(
                                 &l.text,
                                 &crate::ui::GameExpander,
@@ -444,8 +438,8 @@ impl Entities {
 
     fn delete_actor(&mut self, runner: &mut Runner, id: u16) {
         if let Some(a) = self.actors.remove(&id) {
-            // The wrapper's destructor (A 0x1009C460) deletes the ped through its own virtual destructor
-            // (scalar deleting, flag 1) when the handle is still valid — no script command.
+            // samp's actor wrapper destructor deletes the ped through its own virtual destructor (scalar
+            // deleting, flag 1) when the handle is still valid; no script command is used.
             let _ = runner;
             if a.ped != 0 && ped_at(a.handle) == a.ped && rd::<u32>(a.ped) != g::VTBL_PLACEABLE {
                 let vt: u32 = rd(a.ped);
@@ -458,8 +452,8 @@ impl Entities {
         }
     }
 
-    /// The streamed actors as (ped, actor id), published every tick to the combat hooks: their damage hook (CSV
-    /// row 53, combathooks.rs) sends RPC 177 for them, and 204 carries them as the target actor.
+    /// The streamed actors as (ped, actor id), published every tick to the combat hooks: their damage hook
+    /// (combathooks.rs) sends RPC 177 for them, and the 204 packet carries them as the target actor.
     pub fn hook_actors(&self) -> Vec<(u32, u16)> {
         self.actors.iter().filter(|(_, a)| a.ped != 0).map(|(&id, a)| (a.ped, id)).collect()
     }
@@ -477,7 +471,7 @@ impl Entities {
         }
     }
 
-    /// Per frame, from the netgame tick (checkpoints A 0x100A1F60, pickup poll A 0x10013520 every 7 frames).
+    /// Per frame, from the netgame tick: checkpoint tests, the pickup poll (every 7 frames) and the labels.
     pub fn tick(&mut self, runner: &mut Runner, net: &mut NetClient, players: &Players, vehicles: &Vehicles) {
         self.frame += 1;
         let ped = local_ped();
@@ -546,13 +540,13 @@ impl Entities {
         self.labels_tick(runner, players, vehicles);
     }
 
-    /// 3D label placement (A 0x10001350) and screen projection for the Present pass.
+    /// 3D label placement and screen projection for the Present pass. Mirrors samp.dll 0x10001350.
     fn labels_tick(&mut self, runner: &mut Runner, players: &Players, vehicles: &Vehicles) {
         let cam = rd_v3(g::CAMERA_POS);
         let mut out = Vec::new();
         for l in self.labels.values() {
             let pos = if l.player != rw::INVALID_ID {
-                // TRACE-6: a label attached to the local player is not drawn for that player.
+                // A label attached to the local player is not drawn for that player.
                 if Some(l.player) == self.local_id {
                     continue;
                 }
@@ -583,7 +577,7 @@ impl Entities {
             }
             if l.los {
                 let c = rd_v3(LOS_CAMERA_POS);
-                // One test per label and frame (parity run orig-20261104-233854: 189 frames × 1 call).
+                // One test per label and frame, as in the original.
                 let args = [
                     Arg::Float(pos[0]),
                     Arg::Float(pos[1]),
@@ -628,14 +622,14 @@ impl Entities {
         }
     }
 
-    /// The pickup pool's deletion (A 0x10013410: `REMOVE_PICKUP` for every slot in id order).
+    /// The pickup pool's deletion: `REMOVE_PICKUP` for every slot in id order. Mirrors samp.dll 0x10013410.
     pub fn clear_pickups(&mut self, runner: &mut Runner) {
         for (_, p) in std::mem::take(&mut self.pickups) {
             runner.run(op::REMOVE_PICKUP, &[Arg::Int(p.handle)]);
         }
     }
 
-    /// The actor pool's deletion (A 0x100018e0: every actor in id order).
+    /// The actor pool's deletion: every actor in id order. Mirrors samp.dll 0x100018E0.
     pub fn clear_actors(&mut self, runner: &mut Runner) {
         let ids: Vec<u16> = self.actors.keys().copied().collect();
         for id in ids {
@@ -759,7 +753,7 @@ fn ped_at(handle: i32) -> u32 {
     objects + index * crate::game::PED_POOL_ELEMENT
 }
 
-/// RPC 178 / actor creation (A 0x1009C630): CPed health; ≤ 0 → EXPLODE_CHAR_HEAD.
+/// RPC 178 and actor creation: sets the CPed health; ≤ 0 → EXPLODE_CHAR_HEAD. Mirrors samp.dll 0x1009C630.
 fn set_actor_health(runner: &mut Runner, handle: i32, ped: u32, health: f32) {
     if ped == 0 {
         return;
@@ -783,7 +777,7 @@ fn teleport(ent: u32, p: [f32; 3]) {
     }
 }
 
-/// Checkpoint blip (A 0x100A1F60): 0x04CE (sprite 0), colour 0x3ED (1005), scale 3.
+/// Checkpoint blip: sprite 0 at the position, colour 1005, scale 3. Mirrors samp.dll 0x100A1F60.
 fn add_checkpoint_blip(runner: &mut Runner, p: [f32; 3]) -> i32 {
     runner.run(
         op::ADD_SHORT_RANGE_SPRITE_BLIP_FOR_COORD,

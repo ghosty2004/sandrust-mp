@@ -1,16 +1,12 @@
-//! Objects inside the game (Windows only, milestone M6): the samp object pool (RPC 44/45/46/47/99/122/75/84/169),
-//! player-attached objects (RPC 113), the select/edit RPC flows (27/28/116/117) and RemoveBuildingForPlayer (43).
+//! Objects inside the game (Windows only): the samp object pool (RPC 44/45/46/47/99/122/75/84/169),
+//! player-attached objects (RPC 113), the select/edit RPC flows (27/28/116/117, state in `objedit`), the pool
+//! ray test used for picking, and RemoveBuildingForPlayer (43). Entry points: [`Objects::on_rpc`] and the
+//! per-frame [`Objects::process`]. Material text is drawn by `ui::mattext`.
 //!
-//! Specs: world-entities.md (layouts; RE-10 §2 streaming and render passes, §3 per-frame process and MoveObject,
-//! §4 materials, §5 attached objects, §7 building removal, §10 sync rotation), the disassembly of samp A cited per
-//! function, and TRACE-6 (trace-notes "World entities"): CREATE_OBJECT + SET_OBJECT_ROTATION in the RPC frame, RW
-//! object 1–3 frames later, flags bit 31, RPC 44 re-send → DELETE_OBJECT + CREATE_OBJECT, 1000-frame RW release,
-//! MoveObject speed × 0.02 with arrival clamp and slerp, StopObject in place, attached objects re-placed every frame.
-//!
-//! Material text: `ui::mattext` (render target per slot, SetTexture substitution while the object renders).
-//! Not reproduced (docs/phase3/m6-notes.md): the "blanktex"
-//! texture of model-0 material records, the object editor gizmo and the mouse picking of selection mode (MR-6.11),
-//! the camera-collision row 81 (MR-6.12).
+//! Spec: docs/re/subsystems/world-entities.md ("Objects", "Object streaming and the two render paths",
+//! "Materials (RPC 44/84) at render time"); observed behaviour of the original in docs/phase3/trace-notes.md
+//! ("World entities"). samp.dll addresses are build A unless marked B (full list: docs/re/addresses/objects.md).
+//! "Patch table row N" is line N of docs/re/data/gta-patches-r4-annotated.csv (header = line 1).
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -29,7 +25,7 @@ use crate::vehicles::Vehicles;
 use crate::worldents::{self as world, MATERIAL_SLOTS, Motion, MotionStep, op};
 use crate::worldhooks::{self as wh, MatSlot, ObjInfo, g, rd, wr};
 
-/// Atomic-type model-info vtables (A 0x100B4520: CAtomicModelInfo and its derived classes).
+/// Vtables of `CAtomicModelInfo` and its derived classes (samp's "is atomic model" test checks these).
 const ATOMIC_MI_VTABLES: [u32; 5] = [0x85BBF0, 0x85BC30, 0x85BC70, 0x85BCB0, 0x85BCF0];
 
 fn v3(a: u32) -> [f32; 3] {
@@ -75,7 +71,7 @@ fn rows(ent: u32) -> Option<(Rotation, [f32; 3])> {
     (m != 0).then(|| (Rotation { right: v3(m), forward: v3(m + 0x10), up: v3(m + 0x20) }, v3(m + 0x30)))
 }
 
-/// Matrix write: Remove, rows + position, UpdateRW, Add (samp A 0x1009FD60).
+/// Matrix write: Remove, rows + position, UpdateRW, Add. Mirrors samp.dll 0x1009FD60.
 pub(crate) fn write_matrix(ent: u32, r: &Rotation, pos: [f32; 3]) {
     let m: u32 = rd(ent + g::ENTITY_MATRIX);
     if m == 0 {
@@ -107,7 +103,7 @@ fn vcall(ent: u32, slot: u32) {
     }
 }
 
-/// A material slot of the object (+0x217 texture, +0x257 colour, text slots +0x110B/+0x114B).
+/// A material slot of the object (samp wrapper +0x217 texture, +0x257 colour, text slots +0x110B/+0x114B).
 #[derive(Clone, Debug, Default)]
 struct Material {
     texture: u32,
@@ -130,7 +126,7 @@ struct Obj {
     no_camera_collision: bool,
     materials: Vec<Material>,
     motion: Option<Motion>,
-    /// +0x49 / +0x4A.
+    /// samp wrapper +0x49 / +0x4A: the RW object was created by samp's own streaming.
     drawn_by_samp: bool,
     out_frames: u32,
     radius: f32,
@@ -178,7 +174,7 @@ struct AttachedSlot {
     ptr: u32,
 }
 
-/// The object editor / selection state (A globals 0x1026e9d8 / 0x1026e9dc).
+/// What the object editor / selection mode is working on.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 enum Edit {
     #[default]
@@ -203,13 +199,14 @@ pub struct Objects {
     last_pass: Option<Instant>,
     epoch: Option<Instant>,
     local_id: Option<u16>,
-    /// The editor's matrix copy (B +0xC3): taken at the button press, its position follows the translate drag.
+    /// The editor's matrix copy (samp editor object +0xC3): taken at the button press, its position follows the
+    /// translate drag.
     edit_matrix: Option<(Rotation, [f32; 3])>,
     pub sent_edit: u32,
 }
 
 impl Objects {
-    /// F5 ObjectSlotsUsed: objects in the pool.
+    /// Objects in the pool (the "ObjectSlotsUsed" line of the F5 debug overlay).
     pub fn count(&self) -> u32 {
         self.pool.len() as u32
     }
@@ -224,7 +221,7 @@ impl Objects {
         self.pool.get(&id).map(|o| o.ptr)
     }
 
-    /// Pool id of a GTA object (samp A 0x10012A10), for the surf probe.
+    /// Pool id of a GTA object, for the surf probe. Mirrors samp.dll 0x10012A10.
     pub fn id_of_entity(&self, ptr: u32) -> Option<u16> {
         if ptr == 0 {
             return None;
@@ -232,8 +229,8 @@ impl Objects {
         self.pool.values().find(|o| o.ptr == ptr).map(|o| o.id)
     }
 
-    /// samp's "moving" test of a pool object (A 0x100A8500): attached to an object → that object moves;
-    /// attached to a vehicle → yes; otherwise its own move (MoveObject) in progress.
+    /// samp's "moving" test of a pool object: attached to an object → that object moves; attached to a
+    /// vehicle → yes; otherwise its own move (MoveObject) in progress. Mirrors samp.dll 0x100A8500.
     pub fn moving(&self, id: u16) -> bool {
         let Some(o) = self.pool.get(&id) else { return false };
         if let Some((_, _, oid, _)) = o.attach_object {
@@ -326,7 +323,7 @@ impl Objects {
             }
             W::SetPlayerAttachedObject(a) => self.attached_object(runner, players, a),
             W::PlayerBeginObjectSelect(_) => {
-                // B 0x1000E880: textdraw selection off, editor stopped (cancel 117/116), selection on (B 0x1006DB40).
+                // Textdraw selection off, editor stopped (cancel 117/116), selection on.
                 crate::ui::cancel_textdraw_selection();
                 self.stop_editing(net, 0);
                 self.select(true);
@@ -337,7 +334,7 @@ impl Objects {
                 Edit::None => {}
             },
             W::PlayerBeginObjectEdit(e) => {
-                // B 0x10011880: selection and textdraw selection off, editor start (B 0x10072450).
+                // Selection and textdraw selection off, then the editor starts.
                 self.select(false);
                 crate::ui::cancel_textdraw_selection();
                 let rotation = self.pool.get(&e.object_id).map(|o| o.rotation).unwrap_or_default();
@@ -349,7 +346,7 @@ impl Objects {
                 crate::log!("objects: editing object {}", e.object_id);
             }
             W::PlayerBeginAttachedObjectEdit(e) => {
-                // B 0x100117C0: selection off, editor start in attached mode (B 0x10072510).
+                // Selection off, then the editor starts in attached mode.
                 self.select(false);
                 objedit::with(|sh| sh.editor.start(objedit::Target::Attached { slot: e.index }, [0.0; 3]));
                 Self::editor_input_start();
@@ -361,12 +358,12 @@ impl Objects {
         self.publish(players);
     }
 
-    /// Editor start (B 0x10072450 / 0x10072510): cursor mode 0 with an immediate restore, then the restore runs at once.
+    /// Input side of the editor start: cursor mode 0 with an immediate restore, then the restore runs at once.
     fn editor_input_start() {
         crate::ui::restore_input_now(true);
     }
 
-    /// Selection on / off (B 0x1006DB40).
+    /// Selection on / off. Mirrors samp.dll B 0x1006DB40.
     fn select(&mut self, on: bool) {
         let was = objedit::with(|sh| std::mem::replace(&mut sh.selection.active, on));
         if was && !on {
@@ -383,7 +380,8 @@ impl Objects {
         }
     }
 
-    /// Editor stop (B 0x10072BF0): cursor mode 0 (immediate), the chat input closed, then the final 117 / 116.
+    /// Editor stop: cursor mode 0 (immediate), the chat input closed, then the final 117 / 116. Mirrors samp.dll
+    /// B 0x10072BF0.
     fn stop_editing(&mut self, net: &mut NetClient, response: u32) {
         if !matches!(self.edit, Edit::Object { .. } | Edit::Attached { .. }) {
             return;
@@ -399,8 +397,8 @@ impl Objects {
         self.edit_matrix = None;
     }
 
-    /// 117 (B 0x100728E0) or 116 (B 0x10072AF0) with `response`; 117 only for an existing object, response 2 at
-    /// most every 250 ms (the tick of every 117 send counts).
+    /// Sends RPC 117 (object) or 116 (attached slot) with `response`; 117 only for an existing object, response 2
+    /// at most every 250 ms (the tick of every 117 send counts).
     fn send_edit(&mut self, net: &mut NetClient, response: u32) {
         match self.edit {
             Edit::Object { player_object, object_id } => {
@@ -463,15 +461,16 @@ impl Objects {
         });
     }
 
-    /// Drag step: objects B 0x10073240 (translate along the edit matrix with MoveObject at speed 1, rotate the
-    /// rotation copy; then a rate-limited 117 response 2), attached objects B 0x10072240 (slot data only).
+    /// Drag step. Objects: translate moves along the edit matrix with MoveObject at speed 1 (so the object
+    /// follows with a lag), rotate changes the rotation copy; then a rate-limited 117 response 2. Attached
+    /// objects: only the slot data changes; nothing is sent until the end. Mirrors samp.dll B 0x10073240.
     fn drag(&mut self, runner: &mut Runner, net: &mut NetClient, axis: usize, d: f32) {
         let mode = objedit::with(|sh| sh.editor.mode);
         match self.edit {
             Edit::Object { object_id, .. } => {
                 let now = self.now_ms();
                 let Some(o) = self.pool.get_mut(&object_id).filter(|o| o.ptr != 0) else { return };
-                // B 0x1009F7B0: physical flag bit 3 cleared on every step.
+                // Physical flag bit 3 is cleared on every step, as samp does.
                 wr(o.ptr + g::PHYSICAL_FLAGS, rd::<u32>(o.ptr + g::PHYSICAL_FLAGS) & !8);
                 match mode {
                     0 => {
@@ -512,7 +511,7 @@ impl Objects {
         }
     }
 
-    /// 27 C→S (B 0x1006DC90): type 0, id, model, position of an existing object.
+    /// RPC 27 C→S: type 0, id, model, position of an existing object. Mirrors samp.dll B 0x1006DC90.
     fn send_select(&mut self, net: &mut NetClient, id: u16) {
         let Some(o) = self.pool.get(&id).filter(|o| o.ptr != 0) else { return };
         let Some((_, p)) = rows(o.ptr) else { return };
@@ -523,7 +522,8 @@ impl Objects {
         self.sent_edit += 1;
     }
 
-    /// RPC 44 (A 0x1001b340 → pool create 0x100128d0 → wrapper 0x100a9150).
+    /// RPC 44 CreateObject: a re-sent id replaces the old object; unknown models fall back to
+    /// `world::MODEL_UNKNOWN`. Mirrors samp.dll 0x100A9150 (the object wrapper constructor).
     fn create(&mut self, runner: &mut Runner, c: rw::CreateObject) {
         if c.object_id >= world::MAX_OBJECTS {
             return;
@@ -567,7 +567,7 @@ impl Objects {
         };
         if ptr != 0 {
             o.draw_distance = if is_atomic_mi(mi) { rd(mi + g::MI_DRAW_DISTANCE) } else { c.draw_distance };
-            // Exact position into the matrix (A 0x1009EC20), then the rotation (A 0x100A80E0 → SCM 0x0453).
+            // Exact position into the matrix, then the rotation (SCM opcode 0x0453, SET_OBJECT_ROTATION).
             let m: u32 = rd(ptr + g::ENTITY_MATRIX);
             if m != 0 {
                 wr(m + 0x30, pos[0]);
@@ -579,7 +579,7 @@ impl Objects {
                 &[Arg::Int(handle), Arg::Float(rot[0]), Arg::Float(rot[1]), Arg::Float(rot[2])],
             );
             wr(ptr + g::ENTITY_FLAGS, rd::<u32>(ptr + g::ENTITY_FLAGS) | wh::ENTITY_FLAG_CLIENT_OBJECT);
-            // Bounding radius of the collision model (A 0x100B63A0: colmodel +0x24).
+            // Bounding radius of the collision model (CColModel +0x24).
             let col: u32 = rd(mi + g::MI_COL_MODEL);
             o.radius = if col != 0 { rd(col + 0x24) } else { 0.0 };
             if c.attached_vehicle_id != rw::INVALID_ID {
@@ -600,7 +600,8 @@ impl Objects {
         self.pool.insert(c.object_id, o);
     }
 
-    /// RPC 113 (A 0x10018f00 → 0x100aee90 / 0x100b0b50).
+    /// RPC 113 SetPlayerAttachedObject: slots 0–9, bones 1–18; the old object of the slot is deleted first.
+    /// Mirrors samp.dll 0x10018F00.
     fn attached_object(&mut self, runner: &mut Runner, players: &Players, a: rw::SetPlayerAttachedObject) {
         if a.index > 9 {
             return;
@@ -647,8 +648,9 @@ impl Objects {
         self.attached.insert(key, AttachedSlot { data: d, handle, ptr });
     }
 
-    /// RPC 43 (A 0x1009D1E0): occluders within 500 units lose centre and size; matching buildings, dummies and objects get
-    /// area 1 and sink 2000 units; later IPL instances are replaced (row 65).
+    /// RPC 43 RemoveBuildingForPlayer: occluders within 500 units lose centre and size; matching buildings,
+    /// dummies and objects get area 1 and sink 2000 units; later IPL instances are replaced by a hook (patch table
+    /// row 65). Mirrors samp.dll 0x1009D1E0.
     pub fn remove_building(&mut self, model: i32, centre: [f32; 3], radius: f32) {
         self.removals += 1;
         wh::with_shared(|s| s.removals.push(wh::Removal { model, centre, radius }));
@@ -692,7 +694,7 @@ impl Objects {
         }
     }
 
-    // ---- per frame (CGame::Process pre-step, A 0x10012A50 → 0x100A9690) ---------------------------------------
+    // ---- per frame (samp's step before CGame::Process) ---------------------------------------------------------
 
     pub fn process(&mut self, runner: &mut Runner, vehicles: &Vehicles, players: &Players) {
         let now = Instant::now();
@@ -707,7 +709,8 @@ impl Objects {
                 continue;
             }
             stream(runner, o, cam);
-            // Material text render targets (TRACE-7: from samp's CGame::Process wrapper, outside any scene).
+            // Material text render targets are prepared here, outside any scene, as samp does from its
+            // CGame::Process wrapper.
             if o.materials.iter().any(|m| m.text.is_some()) {
                 crate::ui::mattext::ensure(o.ptr);
             }
@@ -787,12 +790,12 @@ impl Objects {
         });
     }
 
-    /// Control-channel lines.
     /// Created objects as the pool ray test takes them: (id, entity, model).
     pub fn pick_list(&self) -> Vec<(u16, u32, i32)> {
         self.pool.values().filter(|o| o.ptr != 0).map(|o| (o.id, o.ptr, o.model)).collect()
     }
 
+    /// Control-channel lines: one per pool object and one per attached slot.
     pub fn status_lines(&self, out: &mut Vec<String>) {
         for o in self.pool.values() {
             let (pos, rot) = match rows(o.ptr).filter(|_| o.ptr != 0) {
@@ -872,7 +875,7 @@ fn attach(runner: &mut Runner, opcode: u16, obj: i32, target: i32, off: [f32; 3]
     );
 }
 
-/// Entity teleport virtual (vtable +0x38), skipping the GTA placeholder (A 0x1009F0A0).
+/// Entity teleport virtual (vtable +0x38), skipping a bare `CPlaceable`. Mirrors samp.dll 0x1009F0A0.
 fn teleport(ent: u32, p: [f32; 3]) {
     let vt: u32 = rd(ent);
     if vt == g::VTBL_PLACEABLE {
@@ -886,7 +889,8 @@ fn teleport(ent: u32, p: [f32; 3]) {
     }
 }
 
-/// Wrapper destructor (A 0x100A9470): DeleteRwObject, DELETE_OBJECT, release the model if unused, free textures.
+/// Wrapper destructor: DeleteRwObject, DELETE_OBJECT, release the model if unused, free textures. Mirrors
+/// samp.dll 0x100A9470.
 fn destroy(runner: &mut Runner, o: &Obj) {
     crate::ui::mattext::unregister(o.ptr);
     wh::with_shared(|s| {
@@ -921,8 +925,9 @@ fn delete_object(runner: &mut Runner, handle: i32, ptr: u32, model: i32) {
     }
 }
 
-/// The blank material texture (TRACE-7): the loose file `SAMP\\blanktex.txd` of the SA:MP install, loaded into
-/// a TXD slot "blanktex" on first use; the texture pointer is cached for the session and never released.
+/// The blank material texture (material records with model 0): the loose file `SAMP\\blanktex.txd` of the SA:MP
+/// install, loaded into a TXD slot "blanktex" on first use; the texture pointer is cached for the session and never
+/// released.
 static BLANK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn blank_texture() -> u32 {
@@ -959,7 +964,8 @@ fn release_texture(tex: u32) {
     }
 }
 
-/// Material record (A 0x100A8570 kind 1, 0x100A86F0 kind 2). `from_create`: the RPC 44 model rule.
+/// Applies a material record (kind 1 texture, kind 2 text). `from_create`: the RPC 44 model rule. Mirrors
+/// samp.dll 0x100A8570.
 fn apply_material(runner: &mut Runner, o: &mut Obj, m: &ObjectMaterial, from_create: bool) {
     let slot = match m {
         ObjectMaterial::Texture { slot, .. } | ObjectMaterial::Text { slot, .. } => u32::from(*slot),
@@ -985,7 +991,7 @@ fn apply_material(runner: &mut Runner, o: &mut Obj, m: &ObjectMaterial, from_cre
                 if crate::client::load_model(runner, model) {
                     o.materials[slot].texture = find_texture(txd, texture);
                 }
-                // The model is released again when nothing else uses it (A 0x100A864B → 0x100A0A00).
+                // The model is released again when nothing else uses it.
                 let mi = wh::model_info(model);
                 if mi != 0
                     && rd::<u16>(mi + g::MI_REF_COUNT) == 0
@@ -1013,9 +1019,9 @@ fn apply_material(runner: &mut Runner, o: &mut Obj, m: &ObjectMaterial, from_cre
             if slot >= MATERIAL_SLOTS || !world::material_name_ok(font) || text.is_empty() {
                 return;
             }
-            // B 0x100A86C0: the slot's texture (a kind-1 texture or an earlier text texture) and render target
-            // are released; a fresh 2x2 RenderWare texture becomes the slot texture (the render target replaces
-            // it at D3D level) and the slot colour is cleared.
+            // The slot's texture (a kind-1 texture or an earlier text texture) and render target are released;
+            // a fresh 2x2 RenderWare texture becomes the slot texture (the render target replaces it at D3D
+            // level) and the slot colour is cleared.
             release_texture(o.materials[slot].texture);
             o.materials[slot].texture = 0;
             o.materials[slot].text = None;
@@ -1046,8 +1052,7 @@ fn apply_material(runner: &mut Runner, o: &mut Obj, m: &ObjectMaterial, from_cre
     }
 }
 
-/// The 2x2 texture of a material-text slot (B 0x100A8715: `RwRasterCreate(2, 2, 0, 0)` + `RwTextureCreate`,
-/// filter mode + 1).
+/// The 2x2 texture of a material-text slot: `RwRasterCreate(2, 2, 0, 0)` + `RwTextureCreate`, filter mode + 1.
 fn text_slot_texture() -> u32 {
     // SAFETY: RenderWare's cdecl RwRasterCreate (0x7FB230), RwTextureCreate (0x7F37C0), RwRasterDestroy (0x7FB020).
     unsafe {
@@ -1064,14 +1069,15 @@ fn text_slot_texture() -> u32 {
             return 0;
         }
         // samp adds 1 to `RwTexture.filterAddressing` (+0x50): filter mode NEAREST (1) → LINEAR (2), so the text
-        // is sampled bilinearly (measured: MIN/MAGFILTER 2 on the original's text draws, 1 without this).
+        // is sampled bilinearly like the original's text draws.
         let fa = (tex + 0x50) as usize as *mut u32;
         fa.write_unaligned(fa.read_unaligned() + 1);
         tex
     }
 }
 
-/// `txd/texture` lookup (A 0x100B2CA0): FindTxdSlot(txd), push/set the current TXD, read the texture, pop.
+/// `txd/texture` lookup: FindTxdSlot(txd), push/set the current TXD, read the texture, pop. Mirrors samp.dll
+/// 0x100B2CA0.
 fn find_texture(txd: &[u8], texture: &[u8]) -> u32 {
     let cstr = |b: &[u8]| {
         let mut v = b.to_vec();
@@ -1099,7 +1105,9 @@ fn find_texture(txd: &[u8], texture: &[u8]) -> u32 {
     }
 }
 
-/// samp's own streaming for its pass (A 0x100A95A0) or the model request of ordinary objects (A 0x100A96C0).
+/// samp's own streaming for objects it draws in its own pass (RW object created within the draw distance,
+/// released after `world::RW_RELEASE_FRAMES` frames outside it), or the model request of ordinary objects.
+/// Mirrors samp.dll 0x100A95A0.
 fn stream(runner: &mut Runner, o: &mut Obj, cam: [f32; 3]) {
     let has_rw = rd::<u32>(o.ptr + g::ENTITY_RW_OBJECT) != 0;
     let pos = rows(o.ptr).map(|(_, p)| p).unwrap_or_default();
@@ -1113,7 +1121,8 @@ fn stream(runner: &mut Runner, o: &mut Obj, cam: [f32; 3]) {
                     runner.run(crate::script::op::REQUEST_MODEL, &[Arg::Int(o.model)]);
                     return;
                 }
-                // DeleteRwObject, model index, SetModelIndex (creates the RW object through row 67).
+                // DeleteRwObject, model index, SetModelIndex (creates the RW object through the hook of patch
+                // table row 67).
                 crate::crash::note(crate::crash::crumb::OBJ_RW, o.id, o.model as u32);
                 vcall(o.ptr, 0x20);
                 wr(o.ptr + g::ENTITY_MODEL, o.model as u16);
@@ -1127,7 +1136,7 @@ fn stream(runner: &mut Runner, o: &mut Obj, cam: [f32; 3]) {
             if rd::<u32>(o.ptr + g::ENTITY_RW_OBJECT) != 0 {
                 o.drawn_by_samp = true;
                 o.out_frames = 0;
-                // Clear the model's "pre-rendered" flag (A 0x100A8FE0).
+                // Clear the model's "pre-rendered" flag.
                 let mi = wh::model_info(o.model);
                 if mi != 0 {
                     wr(mi + g::MI_FLAGS, rd::<u16>(mi + g::MI_FLAGS) & !1);
@@ -1153,7 +1162,7 @@ fn stream(runner: &mut Runner, o: &mut Obj, cam: [f32; 3]) {
         && dist < o.draw_distance - world::REQUEST_MARGIN
         && !runner.run(crate::script::op::HAS_MODEL_LOADED, &[Arg::Int(o.model)])
     {
-        // Only while the local ped is in a vehicle (A 0x100A96C9: local ped flags +0x46C bit 8).
+        // Only while the local ped is in a vehicle (ped flags +0x46C bit 8).
         runner.run(crate::script::op::REQUEST_MODEL, &[Arg::Int(o.model)]);
     }
 }
@@ -1164,29 +1173,30 @@ fn local_in_vehicle() -> bool {
 }
 
 /// `CCollision::SphereCastVsEntity` (cdecl), `CCollision::TestLineSphere` (cdecl), `CEntity::GetBoundCentre`
-/// (thiscall) and `gpColCache`, used by samp's pick ray test (B 0x10012E40).
+/// (thiscall) and `gpColCache`, used by the pick ray test.
 const SPHERE_CAST_VS_ENTITY: u32 = 0x419F00;
 const TEST_LINE_SPHERE: u32 = 0x417470;
 const GET_BOUND_CENTRE: u32 = 0x534250;
 const COL_CACHE_PTR: u32 = 0x9655CC;
 
-/// samp's own collision cache for the pick (B 0x1026CDF8, zero-initialised .bss; swapped into `gpColCache` around
-/// the sphere cast, B 0x100B6560).
+/// Our copy of samp's own collision cache for the pick (zero-initialised, like samp's .bss buffer); swapped into
+/// `gpColCache` around the sphere cast.
 static mut PICK_COL_CACHE: [u32; 0x420] = [0; 0x420];
 
 fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
-/// The object pool ray test (B 0x10012E40), used by selection mode (`max` 150) and the camera target (`max` 40):
-/// of the created objects other than model 19300 that are closer to `start` than the best so far (initially
-/// `max`), the ones the segment hits — a sphere cast (radius 0.25 spheres) against the collision model when the
-/// entity uses collision and has collision data, else [`bound_sphere_hit`] — and the nearest of those wins.
+/// The object pool ray test, used by selection mode (`max` 150) and the camera target (`max` 40): of the created
+/// objects other than model 19300 that are closer to `start` than the best so far (initially `max`), the ones the
+/// segment hits — a sphere cast (radius 0.25 spheres) against the collision model when the entity uses collision
+/// and has collision data, else [`bound_sphere_hit`] — and the nearest of those wins. Mirrors samp.dll
+/// B 0x10012E40.
 pub fn pick_within(start: [f32; 3], end: [f32; 3], list: &[(u16, u32, i32)], max: f32) -> Option<(u16, u32, i32)> {
     let mut best_d = max;
     let mut best = None;
     for &(id, ptr, model) in list {
-        // B 0x100A7DE0: an entity with an RW object; B 0x1009F060: not the removed-building model.
+        // Only entities with an RW object, and not the removed-building model.
         if rd::<u32>(ptr + 0x18) == 0 || model == crate::worldents::REMOVED_BUILDING_MODEL {
             continue;
         }
@@ -1231,9 +1241,10 @@ pub fn pick(start: [f32; 3], end: [f32; 3], list: &[(u16, u32, i32)]) -> Option<
     pick_within(start, end, list, objedit::PICK_DISTANCE)
 }
 
-/// samp's bounding-sphere line test (B 0x100B65E0 with its frustum check on): the entity's model needs a collision
+/// samp's bounding-sphere line test (with its frustum check on): the entity's model needs a collision
 /// model; the bounding sphere (GetBoundCentre, collision-model radius) must not be outside the camera frustum; then
-/// the segment is tested against a sphere of [`objedit::pick_radius`] × `scale` around the centre.
+/// the segment is tested against a sphere of [`objedit::pick_radius`] × `scale` around the centre. Mirrors
+/// samp.dll B 0x100B65E0.
 pub fn bound_sphere_hit(start: [f32; 3], end: [f32; 3], ptr: u32, scale: f32) -> bool {
     let model = i32::from(rd::<i16>(ptr + 0x22));
     let mi = wh::model_info(model);
@@ -1284,7 +1295,7 @@ fn matrix16(r: &Rotation, p: [f32; 3]) -> [f32; 16] {
     m
 }
 
-/// MoveObject setup (A 0x100A9C10).
+/// MoveObject setup; a move in progress is finished first. Mirrors samp.dll 0x100A9C10.
 fn start_move(o: &mut Obj, target: [f32; 3], speed: f32, rot: [f32; 3], now_ms: u32) {
     if let Some(m) = o.motion.take() {
         // A move in progress stops and snaps to its old target (and target rotation).
@@ -1304,7 +1315,7 @@ fn start_move(o: &mut Obj, target: [f32; 3], speed: f32, rot: [f32; 3], now_ms: 
     o.motion = Some(Motion { target, speed, start_ms: now_ms, total: world::dist3(target, pos), rotation, from, to });
 }
 
-/// StopObject (A 0x100A8070): move and turn speed 0, moving flag off; the object stays where it is.
+/// StopObject: move and turn speed 0, moving flag off; the object stays where it is. Mirrors samp.dll 0x100A8070.
 fn stop(o: &mut Obj) {
     o.motion = None;
     for i in 0..3 {
@@ -1332,7 +1343,7 @@ fn move_step(o: &mut Obj, m: &Motion, dt: f32, now_ms: u32) {
             for (i, v) in move_speed.iter().enumerate() {
                 wr(o.ptr + g::MOVE_SPEED + 4 * i as u32, *v);
             }
-            // samp advances the matrix itself: pos += move speed × CTimer::ms_fTimeStep (A 0x1009FDC0).
+            // samp advances the matrix itself: pos += move speed × CTimer::ms_fTimeStep.
             let ts: f32 = rd(g::TIME_STEP);
             let next = [0, 1, 2].map(|i| pos[i] + move_speed[i] * ts);
             let rr = match turn_z {

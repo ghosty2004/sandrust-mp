@@ -1,41 +1,33 @@
-//! Fix for a lost-wakeup race in the game's streaming code (not a SA:MP patch).
+//! Fix for a lost-wakeup race in GTA's own streaming code (an addition; samp.dll has no such patch).
 //!
-//! Observed under Wine (about 1 boot in 6 froze in LOADING_STARTED): the main
-//! thread blocks forever in `CdStreamSync` (0x406460, body relocated to
-//! 0x156CD80) inside `WaitForSingleObject(channel semaphore, INFINITE)`, while
-//! `CdStreamThread` (0x406560) idles on its request semaphore. The sync side
-//! tests "sectors left to read", then sets the channel's "locked" flag and
-//! waits; the reader thread, on completion, clears "sectors left", releases
-//! the channel semaphore only if "locked" is already set, then clears "in
-//! use". If the reader's completion falls between the main thread's test and
-//! its flag store, nobody ever releases the semaphore.
-//!
-//! The fix replaces the `call [WaitForSingleObject]` at 0x156CDAE with a call
-//! to our own wait (same stdcall signature) that waits in short slices and
-//! returns once the channel is idle ("sectors left" == 0 and "in use" == 0).
-//! By then the reader has made its release decision, so a pending release is
-//! consumed with a zero-timeout wait and the semaphore count stays balanced.
-//!
-//! Layout (named via gta-reversed `CdStreamInfo.h`: `CdStream`, 0x30 bytes):
-//! +0x04 nSectorsToRead, +0x0D bLocked, +0x0E bInUse, +0x14 sync.hSemaphore.
-//! `gCdStreams` pointer at 0x8E3FFC; `gStreamQueue.m_size` (= channel count
-//! + 1, `CdStreamInit(5)` in CGame) at 0x8E3FF8.
+//! `CdStreamSync` tests "sectors left to read" before it sets the channel's "locked" flag, while the
+//! reader thread releases the channel semaphore only if "locked" is already set. A completion in between
+//! leaves the main thread in `WaitForSingleObject(INFINITE)` forever (seen under Wine during loading).
+//! [`hook::sync_wait`] replaces that wait: it waits in short slices and returns once the channel is idle.
+//! Background: docs/phase3/m1-notes.md ("Extra fix, not in samp"); layout named via gta-reversed `CdStreamInfo.h`.
 
 use crate::patch::Memory;
 
-/// `call dword ptr [0x858088]` (WaitForSingleObject via the IAT) in CdStreamSync.
+/// The `call [WaitForSingleObject]` (through the import table) inside `CdStreamSync`.
 pub const SYNC_WAIT_CALL: u32 = 0x156CDAE;
+/// Bytes of that call in the unmodified executable.
 pub const SYNC_WAIT_CALL_ORIGINAL: [u8; 6] = [0xFF, 0x15, 0x88, 0x80, 0x85, 0x00];
 /// `gCdStreams` (CdStream*), named via gta-reversed.
 pub const G_CD_STREAMS: u32 = 0x8E3FFC;
-/// `gStreamQueue.m_size`, named via gta-reversed (`Queue` at 0x8E3FEC).
+/// `gStreamQueue.m_size` (channel count + 1), named via gta-reversed.
 pub const G_STREAM_QUEUE_SIZE: u32 = 0x8E3FF8;
+/// Size of one `CdStream` channel record.
 pub const CHANNEL_SIZE: u32 = 0x30;
 
+/// Field offsets inside a `CdStream` channel record.
 pub mod off {
+    /// `nSectorsToRead`.
     pub const SECTORS_TO_READ: u32 = 0x04;
+    /// `bLocked`: the sync side is waiting.
     pub const LOCKED: u32 = 0x0D;
+    /// `bInUse`: a request is in flight.
     pub const IN_USE: u32 = 0x0E;
+    /// `sync.hSemaphore`.
     pub const SEMAPHORE: u32 = 0x14;
 }
 

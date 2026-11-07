@@ -1,35 +1,22 @@
-//! Server-driven world state: game clock and weather, like samp's Game object
-//! (A 0x100a0b60 / 0x100a14a0 / 0x100a0ba0 / 0x100a0b10) and the netgame
-//! settings it uses (player-state.md "Object map": Settings +0x1f, +0x2c,
-//! +0x2d, +0x2e).
+//! Server-driven world state: the game clock and the weather, kept the way samp's Game object and its
+//! netgame settings keep them (docs/re/subsystems/player-state.md, "30 TogglePlayerClock",
+//! "152 SetPlayerWeather"; samp.dll addresses in docs/re/addresses/world.md).
 //!
-//! What the original does (static, samp.dll A; confirmed by DIFF-2's idle
-//! state: weather `10/10/forced 10` in the original, cycling in ours before):
-//! * first frame (A 0x100c47d0): the GTA clock is switched off —
-//!   `CClock::Update` := RET (CSV row 354) and the HUD clock format string
-//!   zeroed (row 355); "HUD clock enabled" (Game +0x69) := 0;
-//! * netgame constructor (A 0x1000b930): settings hour 12, minute 0,
-//!   weather 1, "server holds the time" (+0x1f) := 1;
-//! * every frame while not connected (A 0x100089b0): weather := 1;
-//! * InitGame (A 0x10010660): weather := InitGame weather;
-//! * every frame (netgame tick A 0x1000b5b0) while the server holds the time:
-//!   clock hours/minutes written and `SET_TIME_OF_DAY(hour, minute)`;
-//! * weather (A 0x100a0ba0): forced weather := w, and while the HUD clock is
-//!   off also the old and new weather (immediate change);
-//! * RPC 30 (A 0x100a14a0 via 0x1000f500): toggles the clock patch, the HUD
-//!   string and the two flags; switching off copies GTA's current hour/minute
-//!   into the settings.
+//! On its first frame samp stops GTA's clock and blanks the HUD clock; while the server holds the time the
+//! hour and minute are re-applied every frame. [`World`] holds that state and returns the memory writes
+//! ([`Write`]) each change needs; `apply` performs them on the game.
 
-/// `CClock::Update` first byte (CSV row 354): 0x56 (push esi) = running, 0xC3 = stopped.
+/// First byte of `CClock::Update` (patch table row 354, i.e. line 354 of
+/// docs/re/data/gta-patches-r4-annotated.csv): `push esi` = running, `ret` = stopped.
 pub const CLOCK_UPDATE: u32 = 0x52CF10;
 pub const CLOCK_UPDATE_ON: u8 = 0x56;
 pub const CLOCK_UPDATE_OFF: u8 = 0xC3;
-/// HUD clock format string (CSV row 355). samp writes three dwords.
+/// HUD clock format string (patch table row 355); samp writes all 12 bytes (three dwords).
 pub const HUD_CLOCK_FORMAT: u32 = 0x859A6C;
 pub const HUD_CLOCK_FORMAT_ON: [u8; 12] = *b"%02d:%02d\0\0\0";
-/// `CClock::ms_nGameClockMinutes` / `ms_nGameClockHours` (u8).
-/// `CTimer::m_snTimeInMilliseconds` (RPC 60 writes it while the HUD clock is off, B 0x100A1760).
+/// `CTimer::m_snTimeInMilliseconds`; RPC 60 (SendGameTimeUpdate) writes it while the HUD clock is off.
 pub const TIMER_MS: u32 = 0xB7CB84;
+/// `CClock::ms_nGameClockMinutes` / `ms_nGameClockHours` (u8).
 pub const CLOCK_MINUTES: u32 = 0xB70152;
 pub const CLOCK_HOURS: u32 = 0xB70153;
 /// `CWeather::ForcedWeatherType`, `NewWeatherType`, `OldWeatherType` (i16; samp writes a dword
@@ -38,15 +25,15 @@ pub const WEATHER_FORCED: u32 = 0xC81318;
 pub const WEATHER_NEW: u32 = 0xC8131C;
 pub const WEATHER_OLD: u32 = 0xC81320;
 
-/// Weather samp forces while connecting (A 0x100089b0) and the constructor default.
+/// Weather samp forces every frame while connecting; also the netgame constructor's default.
 pub const CONNECTING_WEATHER: u8 = 1;
 
 /// The client-side copy of samp's clock/weather state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct World {
-    /// Game +0x69: the HUD clock (and GTA's running clock) is on.
+    /// samp Game +0x69: the HUD clock (and GTA's running clock) is on.
     pub clock_enabled: bool,
-    /// Settings +0x1f: the server holds the time (per-frame SET_TIME_OF_DAY).
+    /// samp settings +0x1f: the server holds the time (re-applied every frame with SET_TIME_OF_DAY).
     pub server_time: bool,
     pub hour: u8,
     pub minute: u8,
@@ -70,8 +57,8 @@ pub enum Write {
 }
 
 impl World {
-    /// Clock on/off (Game method A 0x100a14a0): patch byte, HUD string, flag.
-    /// The first frame calls it with `false`.
+    /// Clock on/off: the `CClock::Update` byte, the HUD string and the flag. The first frame calls it
+    /// with `false`. Mirrors samp.dll 0x100A14A0.
     pub fn toggle_clock(&mut self, enable: bool) -> Vec<Write> {
         self.clock_enabled = enable;
         if enable {
@@ -84,8 +71,8 @@ impl World {
         }
     }
 
-    /// RPC 30 (A 0x1000f500): the toggle, then "server holds the time" := !enable;
-    /// switching off copies GTA's current (hour, minute) into the settings.
+    /// RPC 30 (TogglePlayerClock): the toggle, then "server holds the time" := !enable; switching off
+    /// copies GTA's current (hour, minute) into the settings. Mirrors samp.dll 0x1000F500.
     pub fn on_toggle_clock_rpc(&mut self, enable: bool, current: (u8, u8)) -> Vec<Write> {
         let w = self.toggle_clock(enable);
         self.server_time = !enable;
@@ -96,7 +83,8 @@ impl World {
         w
     }
 
-    /// Weather (A 0x100a0ba0): forced always, old/new too while the clock is off.
+    /// Weather writes: the forced weather always, the old and new weather too while the clock is off (so
+    /// the change is immediate). Mirrors samp.dll 0x100A0BA0.
     pub fn weather_writes(&self, weather: u8) -> Vec<Write> {
         let v = u32::from(weather).to_le_bytes().to_vec();
         let mut w = vec![Write::Data(WEATHER_FORCED, v.clone())];

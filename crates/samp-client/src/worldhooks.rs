@@ -1,13 +1,8 @@
-//! World-entity hooks inside GTA (Windows only, milestone M6), table-driven from
-//! `docs/re/data/gta-patches-r4-annotated.csv` (row = 1-based line number).
-//!
-//! Specs: world-entities.md RE-10 §2 (render-list filter, own render passes, Create/DeleteRwObject), §4 (materials
-//! at render time), §5 (attached objects on peds), §6 (actors: pinned invulnerable actors, ped fog), §7 (building
-//! removal replay), §8 (radar trace colours), §10 (attached-entity rotation, roadsign guard); remote-control-combat.md
-//! §6.1 (ComputeDamageResponse: rules 0, 1, 2, 7, 8 — the player rules 3–6 and RPC 115 belong to M7); the
-//! disassembly notes of samp A are cited per hook. TRACE-6 (trace-notes "World entities"): render paths by draw
-//! distance (GTA list / samp pass after RenderEverythingBarRoads / after RenderFadingInEntities), bit-31 flags,
-//! 1000-frame RW release, pickups via the collision path, gang zones per frame in id order.
+//! World-entity hooks inside GTA (Windows only): samp's object render passes and materials, building-removal
+//! replay, pickup collision, radar gang zones and trace colours, pinned actors, ped fog, objects attached to peds
+//! and the camera-collision tests; [`install`] applies them. "Patch table row N" is line N (header = line 1) of
+//! `docs/re/data/gta-patches-r4-annotated.csv`, the samp patch a hook reproduces. Spec:
+//! `docs/re/subsystems/world-entities.md`; measured behaviour in `docs/phase3/trace-notes.md` ("World entities").
 //!
 //! The hooks never touch the client session: they read [`SHARED`] (written by `objects.rs` / `entities.rs` on the
 //! main thread, never while calling into GTA) with `try_lock`, and queue [`Event`]s that the client tick handles.
@@ -22,7 +17,7 @@ use crate::worldents::{self as world, FlashPhase, GangZone, MATERIAL_SLOTS};
 /// GTA addresses (names via gta-reversed / plugin-sdk).
 pub mod g {
     pub const CWORLD_PLAYERS: u32 = 0xB7CD98;
-    /// `TheCamera` matrix position (samp's distance helper A 0x1009D760 reads it).
+    /// `TheCamera` matrix position (what samp's camera-distance helper reads).
     pub const CAMERA_POS: u32 = 0xB6F9CC;
     /// `CGame::currArea`.
     pub const CURR_AREA: u32 = 0xB72914;
@@ -41,7 +36,7 @@ pub mod g {
     pub const SCENE_CAMERA: u32 = 0xC1703C;
     /// `_RwD3DDevice`.
     pub const RW_D3D_DEVICE: u32 = 0xC97C28;
-    /// `CMenuManager` "in menu" byte DrawAreaOnRadar's flag comes from (A 0x100a1486).
+    /// `CMenuManager` "in menu" byte, passed as DrawAreaOnRadar's menu flag.
     pub const RADAR_IN_MENU: u32 = 0xBA67A4;
     // Functions.
     pub const ENTITY_CREATE_RW: u32 = 0x533D30;
@@ -83,9 +78,9 @@ pub mod g {
     pub const PED_BONES: u32 = 0x488;
 }
 
-/// Entity flag samp sets on every object it creates (RE-10 §2; A 0x1009F780).
+/// Entity flag samp sets on every object it creates. Mirrors samp.dll 0x1009F780.
 pub const ENTITY_FLAG_CLIENT_OBJECT: u32 = 0x8000_0000;
-/// Entity flag set by samp's lighting wrapper (A 0x100a9098).
+/// Entity flag set by samp's lighting wrapper around a coloured object's draw. Mirrors samp.dll 0x100A9098.
 pub const ENTITY_FLAG_LIGHTING: u32 = 0x1000_0000;
 
 /// What a hook asks the client to do in the next tick.
@@ -95,7 +90,8 @@ pub enum Event {
     PickupHit(i32),
 }
 
-/// A material slot as the render hooks apply it (RE-10 §4: texture +0x217, colour +0x257).
+/// A material slot as the render hooks apply it (samp keeps texture and colour at object +0x217 / +0x257;
+/// world-entities.md, "Materials (RPC 44/84) at render time").
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MatSlot {
     /// RwTexture* (0 = keep the model's texture).
@@ -123,9 +119,10 @@ pub struct ObjInfo {
     pub materials: [MatSlot; MATERIAL_SLOTS],
     /// Material text slots exist (`ui::mattext`).
     pub has_text: bool,
-    /// Object-to-object attachment with sync rotation 0 keeps its own rotation (row 75).
+    /// Object-to-object attachment with sync rotation 0 keeps its own rotation (patch table row 75).
     pub keep_rotation: Option<[f32; 3]>,
-    /// An object of samp's object pool (not a player-attached slot); row 81 tests only these.
+    /// An object of samp's object pool (not a player-attached slot); the camera test of patch table row 81 only
+    /// checks these.
     pub pool_object: bool,
     /// Wrapper +0x53: no camera collision (RPC 44 field / RPC 169).
     pub no_camera_collision: bool,
@@ -139,7 +136,7 @@ pub struct Removal {
     pub radius: f32,
 }
 
-/// One player-attached object slot (RPC 113) placed per frame on a ped bone (row 25).
+/// One player-attached object slot (RPC 113) placed per frame on a ped bone (patch table row 25).
 #[derive(Clone, Copy, Debug)]
 pub struct Attached {
     pub ped: u32,
@@ -186,7 +183,7 @@ fn try_shared<R>(f: impl FnOnce(&mut Shared) -> R) -> Option<R> {
     Some(f(g.get_or_insert_with(Shared::default)))
 }
 
-/// Diagnostics: calls of the own passes and the render filter.
+/// Diagnostics: objects drawn by our own passes, and objects the render-list filter kept out of GTA's list.
 pub static PASS_DRAWS: AtomicU32 = AtomicU32::new(0);
 pub static FILTERED: AtomicU32 = AtomicU32::new(0);
 /// Diagnostics: radar gang-overlay hook calls, calls that found the shared state busy, zones drawn.
@@ -227,7 +224,7 @@ fn vcall0(this: u32, slot: u32) -> u32 {
     thiscall0(rd(vt + slot), this)
 }
 
-/// `RwRenderStateSet(state, value)` through `RwEngineInstance` (+0x20), like samp's A 0x100c3e60.
+/// `RwRenderStateSet(state, value)` through `RwEngineInstance` (+0x20). Mirrors samp.dll 0x100C3E60.
 fn rw_render_state(state: u32, value: u32) {
     let engine: u32 = rd(g::RW_ENGINE);
     let f: u32 = rd(engine + 0x20);
@@ -241,7 +238,7 @@ fn rw_render_state(state: u32, value: u32) {
     }
 }
 
-/// `IDirect3DDevice9::SetRenderState` on `_RwD3DDevice` (vtable +0xE4), like samp's fog setter A 0x100c3d70.
+/// `IDirect3DDevice9::SetRenderState` on `_RwD3DDevice` (vtable +0xE4), as samp's fog setter calls it.
 fn d3d_render_state(state: u32, value: u32) {
     let dev: u32 = rd(g::RW_D3D_DEVICE);
     if dev == 0 {
@@ -255,12 +252,12 @@ fn d3d_render_state(state: u32, value: u32) {
     }
 }
 
-/// samp's vehicle-preview flag (A 0x1026ea58): set around the vehicle draw of a model-preview render
-/// (A 0x1006c608); the fog setter then always writes FOGENABLE 0.
+/// samp's vehicle-preview flag: set around the vehicle draw of a model-preview render; while it is set the fog
+/// setter always writes FOGENABLE 0. Mirrors samp.dll 0x1026EA58.
 static PREVIEW_VEHICLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// One `RwRenderStateSet(FOGENABLE, on)` the way samp's RenderWare render-state hook (A 0x100c3dc0) turns it into
-/// D3D calls: samp's fog setter with the value, then RenderWare itself gets FALSE.
+/// One `RwRenderStateSet(FOGENABLE, on)` the way samp's RenderWare render-state hook turns it into D3D calls: samp's
+/// fog setter with the value, then RenderWare itself gets FALSE. Mirrors samp.dll 0x100C3DC0.
 pub(crate) fn samp_fog_render_state(on: bool) {
     set_fog(on);
     rw_render_state(14, 0);
@@ -270,8 +267,8 @@ pub(crate) fn set_preview_vehicle(on: bool) {
     PREVIEW_VEHICLE.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// samp's fog setter (A 0x100c3d70): FOGENABLE := on (0 while a preview vehicle is drawn), FOGTABLEMODE := NONE,
-/// FOGVERTEXMODE := LINEAR.
+/// samp's fog setter: FOGENABLE := on (0 while a preview vehicle is drawn), FOGTABLEMODE := NONE,
+/// FOGVERTEXMODE := LINEAR. Mirrors samp.dll 0x100C3D70.
 fn set_fog(on: bool) {
     let on = on && !PREVIEW_VEHICLE.load(std::sync::atomic::Ordering::Relaxed);
     d3d_render_state(28, u32::from(on));
@@ -279,8 +276,8 @@ fn set_fog(on: bool) {
     d3d_render_state(140, 3);
 }
 
-/// RenderWare's current fog state (`rwRENDERSTATEFOGENABLE` = 14 via `RwEngineInstance` +0x24 get). samp tracks
-/// the same value from its own render-state hook (A 0x100c3dc0 → flag A 0x1026ea54).
+/// RenderWare's current fog state (`rwRENDERSTATEFOGENABLE` = 14 via the `RwEngineInstance` +0x24 getter). samp
+/// keeps the same value in a flag that its render-state hook updates.
 fn rw_fog_enabled() -> bool {
     let engine: u32 = rd(g::RW_ENGINE);
     let f: u32 = rd(engine + 0x24);
@@ -296,7 +293,7 @@ fn rw_fog_enabled() -> bool {
     v != 0
 }
 
-// ---- materials (RE-10 §4) -------------------------------------------------------------------------------
+// ---- materials (world-entities.md, "Materials (RPC 44/84) at render time") -----------------------------------
 
 /// What the pre-pass changed, for the post-pass.
 #[derive(Default)]
@@ -376,24 +373,21 @@ pub fn forget_material_rw(entity: u32) {
     }
 }
 
-/// End of a draw of a material-carrying object (A 0x100AA124 / 0x100A9E9D: +0x118F := 1).
+/// End of a draw of a material-carrying object: samp sets its "drawn" flag (+0x118F). Mirrors samp.dll 0x100AA124.
 pub fn mark_drawn(entity: u32) {
     with_pre_pass(entity, |p| p.drawn());
 }
 
-/// Pre-pass (A 0x100A8C40, gated by +0x118F at A 0x100AA082 / 0x100A9E7D): slot textures and colours onto the
-/// RW materials in geometry order. Nothing happens before the object's first draw; the first pre-pass after the
-/// RW object changed only records (A 0x100A8C59 → record callback 0x100A8B10, +0x118F := 0) and changes nothing;
-/// later ones apply (callback 0x100A8880). A new RW object is therefore drawn twice with its own geometry
-/// flags first (`world::MaterialPrePass`). CRASH-1 (measured): applying from the first draw re-instanced a
-/// geometry with a pending prelight lock (lockedSinceLastInst 0x8, set by GTA's day/night prelight update
-/// 0x5D6850) while PRELIT was cleared (flags 0x67): RenderWare then asked for a zero-length dynamic vertex
-/// buffer (D3DERR_INVALIDCALL), kept a buffer-less record in its dynamic list (0xC97B8C) and crashed at
-/// 0x7F5A3A on the next differently sized create. The originals are saved on every applying render; the
-/// post-pass restores them.
+/// Material pre-pass: slot textures and colours onto the RW materials in geometry order, gated by samp's "drawn"
+/// flag. Nothing happens before the object's first draw; the first pre-pass after the RW object changed only
+/// records and changes nothing; later ones apply. A new RW object is therefore drawn twice with its own geometry
+/// flags first (`world::MaterialPrePass`). Applying from the first draw crashes RenderWare: it re-instances a
+/// geometry whose prelight is still locked while PRELIT is cleared (docs/phase3/m6-notes.md, "Moved from
+/// worldhooks.rs comments"). The originals are saved on every applying render; the post-pass restores them.
+/// Mirrors samp.dll 0x100A8C40.
 ///
 /// `texts`: (D3D texture of a text slot's 2x2 RW texture, render target) — samp's device proxy swaps them in
-/// `SetTexture` while the object renders (the 2x2 texture is that slot's material texture, B 0x100A86C0).
+/// `SetTexture` while the object renders (the 2x2 texture is that slot's material texture).
 pub fn apply_materials(entity: u32, slots: &[MatSlot; MATERIAL_SLOTS], texts: &[(u32, u32)]) -> SavedMaterials {
     let mut saved = SavedMaterials::default();
     let rw: u32 = rd(entity + g::ENTITY_RW_OBJECT);
@@ -425,7 +419,7 @@ pub fn apply_materials(entity: u32, slots: &[MatSlot; MATERIAL_SLOTS], texts: &[
     saved
 }
 
-/// Post-pass (A 0x100A9EB0): restore what the pre-pass changed.
+/// Material post-pass: restores what the pre-pass changed. Mirrors samp.dll 0x100A9EB0.
 pub fn restore_materials(saved: &SavedMaterials) {
     if saved.text {
         crate::ui::mattext::set_active(Vec::new());
@@ -442,7 +436,7 @@ pub fn restore_materials(saved: &SavedMaterials) {
     }
 }
 
-// ---- row 63: CObject::Render ----------------------------------------------------------------------------
+// ---- CObject::Render (patch table row 63) ---------------------------------------------------------------------
 
 extern "thiscall" fn object_render(this: u32) {
     let info = if rd::<u32>(this + g::ENTITY_FLAGS) & ENTITY_FLAG_CLIENT_OBJECT != 0 {
@@ -465,15 +459,15 @@ extern "thiscall" fn object_render(this: u32) {
     RENDERING.store(0, Ordering::Relaxed);
 }
 
-// ---- rows 67/68/69 + 372/373: Create/DeleteRwObject -----------------------------------------------------
+// ---- Create/DeleteRwObject (patch table rows 67/68/69 and 372/373) -------------------------------------------
 
-/// `call [edx+0x20]` in `CStreaming::AddEntity` (row 372).
+/// `call [edx+0x20]` in `CStreaming::AddEntity` (patch table row 372).
 const ADD_ENTITY_CALL: u32 = 0x4096AA;
 const ADD_ENTITY_CALL_BYTES: [u8; 3] = [0xFF, 0x52, 0x20];
-/// `call CEscalator::SwitchOff` in `CEntity::RemoveEscalatorsForEntity` (row 373).
+/// `call CEscalator::SwitchOff` in `CEntity::RemoveEscalatorsForEntity` (patch table row 373).
 const ESCALATOR_SWITCH_OFF_CALL: u32 = 0x71791F;
 const ESCALATOR_SWITCH_OFF_BYTES: [u8; 5] = [0xE8, 0x3C, 0xFF, 0xFF, 0xFF];
-/// Escalator models (A 0x100a4bb8: 0xE02, 0xE9F, 0x2314, 0x2313).
+/// Escalator models whose RW-object deletion keeps the escalator running. Mirrors samp.dll 0x100A4BB8.
 const ESCALATOR_MODELS: [u16; 4] = [3586, 3743, 8980, 8979];
 
 fn raw_patch(addr: u32, bytes: &[u8]) {
@@ -481,14 +475,15 @@ fn raw_patch(addr: u32, bytes: &[u8]) {
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr as usize as *mut u8, bytes.len()) }
 }
 
-/// Row 67 (A 0x100A4B30): `CEntity::CreateRwObject` with the AddEntity `call [edx+0x20]` NOPed for the call.
+/// `CEntity::CreateRwObject` with the AddEntity `call [edx+0x20]` NOPed for the call, so creating one RW object
+/// does not make the streamer drop another (patch table row 67). Mirrors samp.dll 0x100A4B30.
 extern "thiscall" fn object_create_rw(this: u32) {
     raw_patch(ADD_ENTITY_CALL, &[0x90; 3]);
     thiscall0(g::ENTITY_CREATE_RW, this);
     raw_patch(ADD_ENTITY_CALL, &ADD_ENTITY_CALL_BYTES);
 }
 
-/// Rows 68/69 (A 0x100A4BA0): escalator models keep running when their RW object goes.
+/// Escalator models keep running when their RW object goes (patch table rows 68/69). Mirrors samp.dll 0x100A4BA0.
 extern "thiscall" fn entity_delete_rw(this: u32) {
     let model: u16 = rd(this + g::ENTITY_MODEL);
     if ESCALATOR_MODELS.contains(&model) {
@@ -500,11 +495,12 @@ extern "thiscall" fn entity_delete_rw(this: u32) {
     }
 }
 
-// ---- row 66 + 371: escalator speed constants -------------------------------------------------------------
+// ---- escalator speed constants (patch table rows 66 and 371) ---------------------------------------------------
 
 const ESCALATOR_FLOATS: [(u32, f32); 2] = [(0x858BA4, 40.0), (0x858F84, 50.0)];
 
-/// Row 66 (A 0x100A4C40): `CEscalator::Update` with the two constants raised to 40.0 / 50.0 for the call.
+/// `CEscalator::Update` with the two constants raised to 40.0 / 50.0 for the call (patch table row 66).
+/// Mirrors samp.dll 0x100A4C40.
 extern "thiscall" fn escalator_update(this: u32) {
     let saved = ESCALATOR_FLOATS.map(|(a, _)| rd::<u32>(a));
     for (a, v) in ESCALATOR_FLOATS {
@@ -516,14 +512,13 @@ extern "thiscall" fn escalator_update(this: u32) {
     }
 }
 
-// ---- row 75: attached entity rotation (sync rotation 0) ----------------------------------------------------
+// ---- attached entity rotation, sync rotation 0 (patch table rows 24 and 75) -----------------------------------
 
-/// Row 75 (A 0x100A4F10): after GTA positions an attached entity, an object attached to an object with sync
-/// rotation 0 gets its own stored rotation back (A 0x100A7E60).
 /// `CWorld::ProcessAttachedEntities()` (cdecl).
 const PROCESS_ATTACHED_ENTITIES: u32 = 0x5647F0;
 
-/// CSV row 24 (A 0x100A4990): the game's `ProcessAttachedEntities`, then the surf glues (surf.rs).
+/// The game's `ProcessAttachedEntities`, then the surf glues (surf.rs; patch table row 24).
+/// Mirrors samp.dll 0x100A4990.
 extern "C" fn process_attached_entities() {
     // SAFETY: GTA's own argument-less cdecl function, called from its only call site's hook.
     unsafe {
@@ -533,6 +528,8 @@ extern "C" fn process_attached_entities() {
     crate::surf::after_process_attached_entities(rd::<u32>(g::CWORLD_PLAYERS));
 }
 
+/// After GTA positions an attached entity, an object attached to an object with sync rotation 0 gets its own
+/// stored rotation back (patch table row 75). Mirrors samp.dll 0x100A4F10.
 extern "thiscall" fn position_attached_entity(this: u32) -> u32 {
     let r = thiscall0(g::POSITION_ATTACHED_ENTITY, this);
     if rd::<u32>(this + g::ENTITY_FLAGS) & ENTITY_FLAG_CLIENT_OBJECT != 0
@@ -552,7 +549,7 @@ extern "thiscall" fn position_attached_entity(this: u32) -> u32 {
     r
 }
 
-/// `CMatrix::UpdateRwMatrix` into the RW frame + `CEntity::UpdateRwFrame` (samp A 0x1009ECE0).
+/// `CMatrix::UpdateRwMatrix` into the RW frame + `CEntity::UpdateRwFrame`. Mirrors samp.dll 0x1009ECE0.
 pub fn update_rw(ent: u32) {
     let m: u32 = rd(ent + g::ENTITY_MATRIX);
     let rw: u32 = rd(ent + g::ENTITY_RW_OBJECT);
@@ -571,10 +568,10 @@ pub fn update_rw(ent: u32) {
     thiscall0(g::UPDATE_RW_FRAME, ent);
 }
 
-// ---- rows 76/77/78: render-list filter and samp's own passes -----------------------------------------------
+// ---- render-list filter and samp's own passes (patch table rows 76/77/78) ------------------------------------
 
-/// Row 78 decision (A 0x100A5150): a samp object with materials, a draw distance > 300 or timed hours is not
-/// added to GTA's render list.
+/// Render-list filter decision (patch table row 78): a samp object with materials, a draw distance > 300 or timed
+/// hours is not added to GTA's render list. Mirrors samp.dll 0x100A5150.
 extern "C" fn render_list_skip(entity: u32) -> u32 {
     if entity == 0
         || rd::<u32>(entity) != g::VTBL_OBJECT
@@ -625,7 +622,7 @@ fn camera_pos() -> [f32; 3] {
 /// The entity our render hooks are drawing (samp pass or CObject::Render), for diagnostics (0 = none).
 pub static RENDERING: AtomicU32 = AtomicU32::new(0);
 
-/// One manual draw (A 0x100A9FD0).
+/// One manual draw of a samp-drawn object. Mirrors samp.dll 0x100A9FD0.
 fn draw_object(o: &ObjInfo) {
     let ent = o.ptr;
     RENDERING.store(ent, Ordering::Relaxed);
@@ -658,13 +655,13 @@ fn draw_object(o: &ObjInfo) {
         rw_render_state(30, alpha_ref);
     }
     rw_render_state(20, if mflags & 0x40 != 0 { 2 } else { 1 });
-    // Material text render targets were created in the CGame::Process pre-step (objects.rs, TRACE-7).
+    // Material text render targets were created in the CGame::Process pre-step (objects.rs).
     let texts = if o.has_text { crate::ui::mattext::textures(ent) } else { Vec::new() };
     let saved = o.has_materials.then(|| apply_materials(ent, &o.materials, &texts));
     set_fog(true);
     let coloured = saved.as_ref().is_some_and(|s| s.coloured);
     if coloured && o.cam_dist < world::DIRECT_RENDER_DISTANCE {
-        // Lighting wrapper (A 0x100A9080): entity bit 28, SetupLighting; RW render; RemoveLighting(1).
+        // samp's lighting wrapper: entity bit 28, SetupLighting; RW render; RemoveLighting(1).
         wr(ent + g::ENTITY_FLAGS, rd::<u32>(ent + g::ENTITY_FLAGS) | ENTITY_FLAG_LIGHTING);
         vcall0(ent, 0x4C);
         render_rw(rw);
@@ -675,7 +672,7 @@ fn draw_object(o: &ObjInfo) {
             f(ent, 1);
         }
     } else if !coloured && o.cam_dist < world::DIRECT_RENDER_DISTANCE {
-        // PreRender + CRenderer::RenderOneNonRoad (A 0x100A8FA0).
+        // PreRender + CRenderer::RenderOneNonRoad, as samp does for uncoloured near objects.
         vcall0(ent, 0x44);
         // SAFETY: CRenderer::RenderOneNonRoad(CEntity*) (cdecl).
         unsafe {
@@ -693,7 +690,7 @@ fn draw_object(o: &ObjInfo) {
     PASS_DRAWS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// RW object render (A 0x100B6370): atomic → its render callback, clump → RpClumpRender.
+/// RW object render: atomic → its render callback, clump → RpClumpRender. Mirrors samp.dll 0x100B6370.
 fn render_rw(rw: u32) {
     match rd::<u8>(rw) {
         1 => {
@@ -741,7 +738,7 @@ fn samp_pass(draw_last: bool) {
             draw_object(o);
         }
     } else {
-        // Draw-last objects far → near (A 0x10012BD0).
+        // Draw-last objects far → near, like samp's sort.
         let mut l = list;
         l.sort_by(|a, b| b.cam_dist.partial_cmp(&a.cam_dist).unwrap_or(std::cmp::Ordering::Equal));
         for o in &l {
@@ -750,7 +747,7 @@ fn samp_pass(draw_last: bool) {
     }
 }
 
-/// Row 76 (A 0x100A50D0).
+/// Opaque samp objects after `RenderEverythingBarRoads` (patch table row 76). Mirrors samp.dll 0x100A50D0.
 extern "C" fn after_render_everything_bar_roads() {
     // SAFETY: CRenderer::RenderEverythingBarRoads (cdecl, no arguments).
     unsafe {
@@ -760,7 +757,7 @@ extern "C" fn after_render_everything_bar_roads() {
     samp_pass(false);
 }
 
-/// Row 77 (A 0x100A5110).
+/// Draw-last samp objects after `RenderFadingInEntities` (patch table row 77). Mirrors samp.dll 0x100A5110.
 extern "C" fn after_render_fading_in() {
     // SAFETY: CRenderer::RenderFadingInEntities (cdecl, no arguments).
     unsafe {
@@ -770,7 +767,7 @@ extern "C" fn after_render_fading_in() {
     samp_pass(true);
 }
 
-// ---- row 79: roadsign guard ---------------------------------------------------------------------------
+// ---- roadsign guard: no RenderRoadsignAtomic with a null atomic (patch table row 79) ---------------------------
 
 #[unsafe(naked)]
 unsafe extern "C" fn roadsign_guard_stub() {
@@ -786,9 +783,10 @@ unsafe extern "C" fn roadsign_guard_stub() {
     )
 }
 
-// ---- rows 82/83: camera collision --------------------------------------------------------------------------
+// ---- camera collision (patch table rows 81/82/83) ---------------------------------------------------------------
 
-/// Row 82 (A 0x100A5B00): no camera collision with vehicles while RPC 167 disabled vehicle collisions.
+/// No camera collision with vehicles while RPC 167 disabled vehicle collisions (patch table row 82). Mirrors
+/// samp.dll 0x100A5B00.
 extern "C" fn camera_collision_vehicles_off() -> u32 {
     u32::from(crate::vehhooks::with_shared(|s| s.disable_collisions))
 }
@@ -811,19 +809,19 @@ unsafe extern "C" fn check_camera_collision_vehicles_stub() {
     )
 }
 
-/// `CCollision::BuildCacheOfCameraCollision(CColSphere*, CColSphere*)` (cdecl, bool), the row-81 call target.
+/// `CCollision::BuildCacheOfCameraCollision(CColSphere*, CColSphere*)` (cdecl, bool), the call patch table row 81
+/// redirects.
 const BUILD_CACHE_OF_CAMERA_COLLISION: u32 = 0x41AC40;
-/// `CCollision::SphereCastVsEntity(CColSphere*, CColSphere*, CEntity*)` (cdecl, bool; samp's pointer B 0x1011742C).
+/// `CCollision::SphereCastVsEntity(CColSphere*, CColSphere*, CEntity*)` (cdecl, bool).
 const SPHERE_CAST_VS_ENTITY: u32 = 0x419F00;
 /// `CWorld::pIgnoreEntity`.
 const WORLD_IGNORE_ENTITY: u32 = 0xB7CD68;
-/// `CPhysical::m_pMovingList` (samp's vehicle test, B 0x1009F400, requires it).
+/// `CPhysical::m_pMovingList` (samp's vehicle camera test requires it to be set).
 const PHYSICAL_MOVING_LIST: u32 = 0xB4;
-/// samp adds its own tests only while the camera sphere is outside this square (B 0x100A59DC…0x100A5A18: |x| or
-/// |y| > 3000, i.e. outside GTA's sector grid). Measured (run orig-20261105-042300, mark `cam81`): at x = 3100 a
-/// wall behind the player pulls the camera in; with `SetObjectNoCameraCol` it does not.
+/// samp adds its own tests only while the camera sphere is outside this square (|x| or |y| > 3000, i.e. outside
+/// GTA's sector grid, where GTA's own cache sees no objects); measured in docs/phase3/m6p-notes.md (mark `cam81`).
 const CAMERA_TEST_LIMIT: f32 = 3000.0;
-/// Camera-distance limits of samp's object (B 0x10012DB0, < 200) and vehicle (B 0x1001EDD0, < 300) tests.
+/// Camera-distance limits of samp's object (< 200) and vehicle (< 300) camera tests.
 const CAMERA_OBJECT_RANGE: f32 = 200.0;
 const CAMERA_VEHICLE_RANGE: f32 = 300.0;
 
@@ -835,8 +833,8 @@ fn sphere_cast(a: u32, b: u32, ent: u32) -> bool {
     }
 }
 
-/// samp's per-entity camera test (B 0x1009FC30 with the direct call): alive, not `pIgnoreEntity`, in range, a
-/// collision model with radius > 0, then the sphere cast.
+/// samp's per-entity camera test: alive, not `pIgnoreEntity`, in range, a collision model with radius > 0, then the
+/// sphere cast. Mirrors samp.dll B 0x1009FC30.
 fn camera_entity_hit(a: u32, b: u32, ent: u32, range: f32) -> bool {
     if ent == 0 || rd::<u32>(ent) == g::VTBL_PLACEABLE || ent == rd::<u32>(WORLD_IGNORE_ENTITY) {
         return false;
@@ -859,10 +857,10 @@ fn camera_entity_hit(a: u32, b: u32, ent: u32, range: f32) -> bool {
     sphere_cast(a, b, ent)
 }
 
-/// Row 81 (B 0x100A5960): GTA's camera cache first; when it found nothing and the camera is outside GTA's world
-/// square, samp's object pool (objects with the no-camera-collision flag skipped) and then the vehicles (skipped
-/// while RPC 167 disabled collisions). samp's second object pool (B 0x1014FE24) is the `-d` debug-script pool,
-/// absent in network play.
+/// Camera collision cache (patch table row 81): GTA's cache first; when it found nothing and the camera is outside
+/// GTA's world square, samp's object pool (objects with the no-camera-collision flag skipped) and then the vehicles
+/// (skipped while RPC 167 disabled collisions). samp also walks its debug-script object pool, which is empty in
+/// network play. Mirrors samp.dll B 0x100A5960.
 extern "C" fn build_cache_of_camera_collision(a: u32, b: u32) -> u32 {
     // SAFETY: the original cdecl call this site made.
     let found = unsafe {
@@ -898,7 +896,7 @@ extern "C" fn build_cache_of_camera_collision(a: u32, b: u32) -> u32 {
     u32::from(hit)
 }
 
-/// Row 83 (A 0x100A5B30): the camera ignores attached objects (`m_pAttachedTo` set).
+/// The camera ignores attached objects (`m_pAttachedTo` set; patch table row 83). Mirrors samp.dll 0x100A5B30.
 #[unsafe(naked)]
 unsafe extern "C" fn camera_ignore_object_stub() {
     core::arch::naked_asm!(
@@ -918,7 +916,7 @@ unsafe extern "C" fn camera_ignore_object_stub() {
     )
 }
 
-// ---- row 65: building removal replay -----------------------------------------------------------------------
+// ---- building removal replay on IPL loads (patch table row 65) -------------------------------------------------
 
 /// `CFileObjectInstance`: position +0, model id +0x1C (gta-reversed FileObjectInstance.h).
 extern "C" fn load_object_instance_filter(inst: u32) {
@@ -935,8 +933,8 @@ extern "C" fn load_object_instance_filter(inst: u32) {
     }
 }
 
-/// `CFileLoader::LoadObjectInstance(CFileObjectInstance*, const char*)` entry (row 65, A 0x100A4AB0): replays the
-/// removals, then runs the overwritten `push -1; push 0x83C931` and continues at 0x538097.
+/// `CFileLoader::LoadObjectInstance(CFileObjectInstance*, const char*)` entry: replays the removals, then runs the
+/// overwritten `push -1; push 0x83C931` and continues at 0x538097. Mirrors samp.dll 0x100A4AB0.
 #[unsafe(naked)]
 unsafe extern "C" fn load_object_instance_stub() {
     core::arch::naked_asm!(
@@ -954,9 +952,9 @@ unsafe extern "C" fn load_object_instance_stub() {
     )
 }
 
-// ---- row 44: pickup collision --------------------------------------------------------------------------------
+// ---- pickup collision (patch table row 44) ---------------------------------------------------------------------
 
-/// A 0x100a3f80 → 0x10013440: GTA pickup index → samp id; report when live, cooldown 0 and not a dropped weapon.
+/// GTA pickup index → samp id; report when live, cooldown 0 and not a dropped weapon. Mirrors samp.dll 0x100A3F80.
 extern "C" fn pickup_touched(pickup: u32) {
     let index = pickup.wrapping_sub(world::GTA_PICKUPS) / world::GTA_PICKUP_SIZE;
     try_shared(|s| {
@@ -990,7 +988,7 @@ unsafe extern "C" fn pickup_update_stub() {
     )
 }
 
-// ---- row 51: radar trace colour --------------------------------------------------------------------------------
+// ---- radar trace colour (patch table row 51) -------------------------------------------------------------------
 
 extern "C" fn radar_trace_colour(index: u32) -> u32 {
     try_shared(|s| {
@@ -1000,10 +998,10 @@ extern "C" fn radar_trace_colour(index: u32) -> u32 {
     .unwrap_or_else(|| world::radar_trace_colour(index, |_| 0))
 }
 
-// ---- rows 41/42: gang zones ----------------------------------------------------------------------------------
+// ---- gang zones (patch table rows 41/42) -------------------------------------------------------------------------
 
-/// Replaces the `CRadar::DrawRadarGangOverlay` calls (A 0x100A3F40 → 0x10002270): every shown zone, in id order,
-/// through `CRadar::DrawAreaOnRadar(rect, colour, in_menu)` with the 500 ms flash phase.
+/// Replaces the `CRadar::DrawRadarGangOverlay` calls: every shown zone, in id order, through
+/// `CRadar::DrawAreaOnRadar(rect, colour, in_menu)` with the 500 ms flash phase. Mirrors samp.dll 0x100A3F40.
 extern "C" fn draw_gang_zones() {
     let now = tick_ms();
     ZONE_CALLS[0].fetch_add(1, Ordering::Relaxed);
@@ -1035,9 +1033,9 @@ pub fn tick_ms() -> u32 {
     unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount() }
 }
 
-// ---- row 20: CCivilianPed::ProcessControl ---------------------------------------------------------------------
+// ---- CCivilianPed::ProcessControl (patch table row 20) ----------------------------------------------------------
 
-/// Row 20 (A 0x100A2CA0): invulnerable actors (bullet + explosion + melee proof) cannot be pushed.
+/// Invulnerable actors (bullet + explosion + melee proof) cannot be pushed. Mirrors samp.dll 0x100A2CA0.
 extern "thiscall" fn civilian_process_control(ped: u32) {
     let flags: u32 = rd(ped + g::PHYSICAL_FLAGS);
     let pinned = world::invulnerable_flags(flags);
@@ -1060,16 +1058,16 @@ extern "thiscall" fn civilian_process_control(ped: u32) {
     }
 }
 
-// ---- rows 11–15: ped Render fog ----------------------------------------------------------------------------------
+// ---- ped Render fog (patch table rows 11–15) -----------------------------------------------------------------------
 
-/// Rows 11–15 (A 0x100A3E70): fog off for the ped draw, then back to RenderWare's fog state.
+/// Fog off for the ped draw, then back to RenderWare's fog state. Mirrors samp.dll 0x100A3E70.
 extern "thiscall" fn ped_render(ped: u32) {
     set_fog(false);
     thiscall0(g::PED_RENDER, ped);
     set_fog(rw_fog_enabled());
 }
 
-// ---- row 25: attached objects on peds (RE-10 §5) -------------------------------------------------------------
+// ---- attached objects on peds (patch table row 25) ---------------------------------------------------------------
 
 extern "C" fn process_peds_after_pre_render() {
     // SAFETY: CWorld::ProcessPedsAfterPreRender (cdecl, no arguments).
@@ -1178,7 +1176,7 @@ pub fn bone_matrix(ped: u32, bone: i32) -> Option<[f32; 16]> {
     Some(std::array::from_fn(|i| rd(base + 4 * i as u32)))
 }
 
-/// Entity matrix position (Remove, write, UpdateRW, Add — samp A 0x1009FD60).
+/// Entity matrix position (Remove, write, UpdateRW, Add). Mirrors samp.dll 0x1009FD60.
 pub fn set_position(ent: u32, p: [f32; 3]) {
     let m: u32 = rd(ent + g::ENTITY_MATRIX);
     if m == 0 {
@@ -1192,13 +1190,13 @@ pub fn set_position(ent: u32, p: [f32; 3]) {
     vcall0(ent, 0x08);
 }
 
-// ---- row 96: CWorld::ProcessVerticalLine ------------------------------------------------------------------
+// ---- CWorld::ProcessVerticalLine (patch table row 96) ----------------------------------------------------------
 
-/// Row 96 (B 0x100A5FD0, TRACE-7): every caller except `BreakObject_c::Init` (return address 0x59E8F9) that tests
+/// Every caller except `BreakObject_c::Init` (return address 0x59E8F9) that tests
 /// buildings also tests objects, so ground searches (e.g. FIND_GROUND_Z_FOR_COORD for SetPlayerPosFindZ) land on
 /// client objects. Arguments (cdecl): +0x14 buildings, +0x20 objects. Then the overwritten `sub esp, 0x2C` and a
 /// jump to 0x407C37, where the original's `jmp` after the entry leads (its bytes at 0x5674E3 are now part of the
-/// `jmp dword [slot]`), like samp's wrapper.
+/// `jmp dword [slot]`), like samp's wrapper. Mirrors samp.dll B 0x100A5FD0.
 #[unsafe(naked)]
 unsafe extern "C" fn process_vertical_line_stub() {
     core::arch::naked_asm!(
@@ -1215,8 +1213,8 @@ unsafe extern "C" fn process_vertical_line_stub() {
     )
 }
 
-// Row 53 (ComputeDamageResponse) is installed once, by combathooks.rs (H6): its rules include M6's actor rules
-// (others hitting a CCivilianPed → cancel; local hitting an actor → RPC 177, cancel), fed with the actors
+// Patch table row 53 (ComputeDamageResponse) is installed once, by combathooks.rs: its rules include the actor
+// rules (others hitting a CCivilianPed → cancel; local hitting an actor → RPC 177, cancel), fed with the actors
 // entities.rs publishes every tick.
 
 // ---- install ------------------------------------------------------------------------------------------------------
@@ -1263,11 +1261,11 @@ fn unprotect(addr: u32, len: usize) -> bool {
     unsafe { VirtualProtect(addr as usize as *const _, len, PAGE_EXECUTE_READWRITE, &mut old) != 0 }
 }
 
-/// `pickup visibility` constant samp points `CPickup::IsVisible`'s `fcomp` at (row 211, A .data 0x1011671c).
+/// Pickup visibility distance that `CPickup::IsVisible`'s `fcomp` is pointed at (patch table row 211). Mirrors
+/// samp.dll 0x1011671C.
 static PICKUP_VISIBLE_DISTANCE: f32 = 10000.0;
 
-/// Byte rows (all init-main): (row, address, new bytes, original bytes, label).
-/// (row, address, new bytes, original bytes, label).
+/// Byte rows, all applied at init-main: (row, address, new bytes, original bytes, label).
 type ByteRow = (u32, u32, &'static [u8], &'static [u8], &'static str);
 /// (row, site, slot, handler, original bytes, label).
 type IndirectRow = (u32, u32, u32, u32, &'static [u8], &'static str);
@@ -1280,7 +1278,7 @@ const BYTE_ROWS: &[ByteRow] = &[(
     "CPools::Initialise object pool 350 -> 3000",
 )];
 
-/// Installs every M6 row. Returns (row, result) per CSV row for the log.
+/// Installs every world-entity row. Returns (patch table row, result) per row for the log.
 pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Result<(), PatchError>)> {
     let mut out = Vec::new();
     for &(row, addr, new, orig, label) in BYTE_ROWS {
@@ -1422,7 +1420,7 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
     for (row, site, target, orig, label) in calls {
         out.push((row, patcher.retarget_branch(mem, label, site, target, Some(orig)).map(|_| ())));
     }
-    // Row 371: the escalator floats are written around each call (made writable once here).
+    // Patch table row 371: the escalator floats are written around each call (made writable once here).
     out.push((
         371,
         if ESCALATOR_FLOATS.iter().all(|(a, _)| unprotect(*a, 4)) {
@@ -1431,7 +1429,7 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
             Err(PatchError::Mismatch { addr: 0x858BA4, expected: vec![], found: vec![] })
         },
     ));
-    // Rows 372/373: temporary NOPs around the calls (made writable once here).
+    // Patch table rows 372/373: temporary NOPs around the calls (made writable once here).
     let ok372 = unprotect(ADD_ENTITY_CALL, 3) && ProcessMemory.read_u8(ADD_ENTITY_CALL).ok() == Some(0xFF);
     out.push((
         372,
@@ -1493,7 +1491,7 @@ pub fn install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Vec<(u32, Resu
     for (row, site, slot, handler, orig, label) in ind {
         out.push((row, jmp_indirect(patcher, mem, label, site, slot, handler, orig)));
     }
-    // Row 44: the pickup-collision jmp over `mov al,[esi+0x1C]; cmp al,6`.
+    // Patch table row 44: the pickup-collision jmp over `mov al,[esi+0x1C]; cmp al,6`.
     let pk = pickup_update_stub as unsafe extern "C" fn() as usize as u32;
     out.push((
         44,

@@ -234,9 +234,7 @@ impl Memory for ProcessMemory {
         if addr == 0 {
             return Err(PatchError::Access { addr, len: buf.len() });
         }
-        // SAFETY: callers only pass addresses inside gta_sa.exe's image or
-        // game objects reached through it; the game is single-image and not
-        // relocated (base 0x400000).
+        // SAFETY: callers pass addresses inside gta_sa.exe's (never relocated) image or game objects reached from it.
         unsafe { std::ptr::copy_nonoverlapping(addr as usize as *const u8, buf.as_mut_ptr(), buf.len()) };
         Ok(())
     }

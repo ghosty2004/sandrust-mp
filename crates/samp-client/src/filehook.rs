@@ -1,21 +1,10 @@
-//! samp.saa file redirection, Windows side (SAA-2; docs/re/samp-saa.md §8).
+//! samp.saa file redirection, Windows side (docs/re/samp-saa.md, "8. Redirection layer").
 //!
-//! At attach (main thread still suspended) the archive is read from
-//! `samp.saa` next to gta_sa.exe. If it opens and its signature verifies, the
-//! six kernel32 imports samp hooks (CreateFileA, ReadFile, GetFileSize,
-//! SetFilePointer, CloseHandle, GetFileType) are redirected in gta_sa.exe's
-//! import address table to the functions below; the rules themselves are in
-//! `saafs.rs`.
-//!
-//! Deviation from samp: samp inline-hooks the kernel32 exports (5-byte jumps,
-//! B 0x10062C60), which also catches calls from other modules; we patch the
-//! game's import table. Every file the archive covers is opened by gta_sa.exe
-//! itself (its CRT `fopen`, RenderWare streams and CdStream all import from
-//! kernel32), so the same opens are served.
-//!
-//! Without a usable archive (missing, unreadable, or failing the signature
-//! check, which in samp turns the directory into garbage) nothing is hooked
-//! and the client falls back to its own minimal main.scm (dll.rs).
+//! [`init`] runs at attach while the main thread is still suspended: it opens `samp.saa` next to
+//! gta_sa.exe and, if the signature verifies, points gta_sa.exe's import-table slots for the six kernel32
+//! file functions at the hooks below; the rules themselves live in `saafs.rs`. samp instead inline-hooks the
+//! kernel32 exports, but every file the archive covers is opened by gta_sa.exe itself, so the same opens
+//! are served. Without a usable archive nothing is hooked and the client falls back to its own main.scm.
 
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -52,6 +41,7 @@ const TYPE: usize = 5;
 /// The real kernel32 functions (read from the import table before patching).
 static ORIG: [AtomicU32; 6] = [const { AtomicU32::new(0) }; 6];
 
+/// True when files are served from samp.saa.
 pub fn archive_active() -> bool {
     matches!(MODE.get(), Some(Mode::Archive))
 }
@@ -114,9 +104,8 @@ fn load_and_install(patcher: &mut Patcher, mem: &mut ProcessMemory) -> Result<us
         entries.len()
     );
     if !saa.signature_valid() {
-        // samp keeps going with a directory decoded without the hash term, i.e.
-        // garbage sizes and links for a genuine archive (samp-saa.md §6). We do
-        // not reproduce that: report it and use the stock files instead.
+        // samp keeps going with a directory decoded without the hash term, i.e. garbage sizes and links
+        // (docs/re/samp-saa.md, "6. Signature"). We report it and use the stock files instead.
         return Err("samp.saa signature does not verify (samp would decode garbage)".into());
     }
     for e in &entries {
@@ -207,7 +196,7 @@ unsafe extern "system" fn create_file_a(
         let path = unsafe { std::ffi::CStr::from_ptr(name.cast()) }.to_bytes();
         let n = saafs::trim_trailing_space(path);
         if n < path.len() {
-            // samp cuts a trailing space in the caller's buffer (B 0x10062950).
+            // samp cuts a trailing space in the caller's buffer (see `saafs::trim_trailing_space`).
             let p = name.wrapping_add(n) as *mut u8;
             if writable(p) {
                 // SAFETY: inside the caller's string, checked writable.

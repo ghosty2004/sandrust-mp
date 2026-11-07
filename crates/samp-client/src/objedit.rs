@@ -1,31 +1,22 @@
 //! Object editor and object selection (RPC 27/28/116/117): state, gizmo layout and input rules.
 //!
-//! Static source: samp.dll B (the build the lanes run). Editor object (global 0x1026E9D8, 0x117 bytes, ctor
-//! B 0x10071B90): per-frame draw B 0x100737B0, gizmo B 0x10072C60, handle painter B 0x10072570, hover test
-//! B 0x100720D0, mouse handler B 0x10073580, drag step B 0x100734B0, object apply B 0x10073240, attached apply
-//! B 0x10072240, update/final send B 0x100728E0, stop B 0x10072BF0. Selection object (global 0x1026E9DC, ctor B 0x1006D9C0): per-frame
-//! B 0x1006DBC0, pick B 0x1006D9D0 → pool ray test B 0x10012E40, highlight B 0x1006DA20, click B 0x1006DE00.
-//!
-//! Measured on the original (run `orig-20261105-042300`, docs/phase3/m6p-notes.md): the handle glyphs, colours
-//! and rects of the D3D stream, 117 response 2 only while the mouse moves during a drag (≥ 250 ms apart), the
-//! position lagging behind the drag (the object is moved with MoveObject at speed 1), no 116 during an
-//! attached-object drag, 116/117 response 1 from the save button, 27 on the click.
-//!
-//! This module is platform independent; the Windows side (drawing, window messages, GTA calls) lives in
-//! `ui::render`, `ui::glue` and `objects`.
+//! Platform independent; the Windows side (drawing, window messages, GTA calls) lives in `ui::render`,
+//! `ui::glue` and `objects`. Spec: docs/re/subsystems/world-entities.md, "Object editor and selection UI".
+//! The samp.dll addresses cited here are build B (the build our trace runs use); the full list is in
+//! docs/re/addresses/objedit.md.
 
 use std::sync::Mutex;
 
-/// Handle indices of samp's hover test (B 0x100720D0): 0–2 axes, 3–5 mode buttons, 10 save. The rects are kept
-/// in this order (index 10 is the seventh rect).
+/// Handle indices of samp's hover test: 0–2 axes, 3–5 mode buttons, 10 save. The rects are kept in this order
+/// (index 10 is the seventh rect).
 pub const HANDLE_SAVE: i32 = 10;
 pub const NO_HANDLE: i32 = -1;
 
-/// Background glyph of every handle and the glyph-size probe (SAMPAUX3 28, B 0x100E6304).
+/// Background glyph of every handle and the glyph-size probe (font SAMPAUX3, size 28).
 pub const GLYPH_BACKGROUND: &[u8] = b"C";
-/// Axis glyphs per mode (translate, rotate, scale) and axis (B 0x10071FD0).
+/// Axis glyphs per mode (translate, rotate, scale) and axis.
 pub const AXIS_GLYPHS: [[&[u8]; 3]; 3] = [[b"6", b"7", b"8"], [b"3", b"4", b"5"], [b"9", b"A", b"B"]];
-/// Button glyphs: translate (3), rotate (4), scale (5), save (10) (B 0x10072701…0x100728B2).
+/// Button glyphs: translate (3), rotate (4), scale (5), save (10).
 pub const BUTTON_GLYPHS: [(i32, &[u8]); 4] = [(3, b"2"), (4, b"0"), (5, b"1"), (HANDLE_SAVE, b"H")];
 /// Line and axis-glyph colours (X, Y, Z).
 pub const AXIS_COLOURS: [u32; 3] = [0xFF99_99CC, 0xFFCC_9999, 0xFF99_CC99];
@@ -38,19 +29,18 @@ pub const PROBE_COLOUR: u32 = 0xFF00_0000;
 /// DrawText formats: probe (CALCRECT | NOCLIP | VCENTER | CENTER) and handles (NOCLIP | VCENTER | CENTER).
 pub const FMT_PROBE: u32 = 0x505;
 pub const FMT_HANDLE: u32 = 0x105;
-/// Gizmo half length per metre of camera distance (B 0x100EA740).
+/// Gizmo half length per metre of camera distance.
 pub const SCALE_PER_METRE: f32 = 0.125;
-/// Pixels → drag units (B 0x10073546: × 0.01).
+/// Pixels → drag units.
 pub const PIXEL_UNIT: f32 = 0.01;
-/// Minimum interval of 117 response 2 (B 0x100728E0: `GetTickCount() - last > 0xF9`).
+/// Minimum interval between two RPC 117 sends with response 2 (samp tests `GetTickCount() - last > 249`).
 pub const UPDATE_INTERVAL_MS: u32 = 250;
-/// Selection: pick distance and highlight / accept limit (B 0x1006D9D0, 0x1006DC00: 150 m), axis cross length
-/// (B 0x1006DAD1: 1.0) and colour, label colour (B 0x1006DA20).
+/// Selection: pick distance and highlight / accept limit (150 m), axis cross length and colour, label colour.
 pub const PICK_DISTANCE: f32 = 150.0;
 pub const SELECT_CROSS: f32 = 1.0;
 pub const SELECT_LINE_COLOUR: u32 = 0xFFCC_9999;
 pub const SELECT_LABEL_COLOUR: u32 = 0xFFD4_7B75;
-/// Pick spheres of the ray test (B 0x10012E99: radius 0.25).
+/// Radius of the spheres the pick ray test casts.
 pub const PICK_SPHERE_RADIUS: f32 = 0.25;
 
 /// Mouse messages handled by the editor / selection (WM_*).
@@ -60,7 +50,7 @@ pub const WM_LBUTTONUP: u32 = 0x202;
 
 pub type Rect = [i32; 4];
 
-/// What the editor edits (+0x78: 1 object, 2 attached object).
+/// What the editor edits (samp's editor object +0x78: 1 object, 2 attached object).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Target {
     #[default]
@@ -77,13 +67,13 @@ pub enum Target {
 /// Requests for the client tick (it owns the object pool, the script runner and the network).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
-    /// Drag step on `axis` by `d` units (B 0x10073490).
+    /// Drag step on `axis` by `d` units.
     Drag { axis: usize, d: f32 },
-    /// Button press on an axis handle: copy the object matrix into the edit matrix (B 0x100735F0).
+    /// Button press on an axis handle: copy the object matrix into the edit matrix.
     Press,
-    /// End editing with this response (0 cancel, 1 save) (B 0x10072BF0).
+    /// End editing with this response (0 cancel, 1 save).
     Stop { response: u32 },
-    /// Selection click (B 0x1006DC90): send 27 for this object.
+    /// Selection click: send RPC 27 for this object.
     Select { id: u16 },
 }
 
@@ -95,22 +85,23 @@ pub struct MouseEffects {
     pub capture: bool,
     /// ReleaseCapture + ShowCursor(TRUE) + SetCursorPos(client → screen of this point).
     pub release_to: Option<(i32, i32)>,
-    /// Re-centre the cursor in the client area after a drag step (B 0x100723F0).
+    /// Re-centre the cursor in the client area after a drag step.
     pub recentre: bool,
-    /// Run the hover test again (B 0x100720D0) with the current cursor.
+    /// Run the hover test again with the current cursor.
     pub hover: bool,
 }
 
-/// The editor object (+0x78…+0x113 of B 0x10071B90).
+/// The editor state; the `+0x…` notes on the fields are offsets in samp's editor object. Mirrors samp.dll
+/// B 0x10071B90.
 #[derive(Clone, Debug)]
 pub struct Editor {
     pub active: bool,
     pub target: Target,
     /// +0x7C: 0 translate, 1 rotate, 2 scale.
     pub mode: u32,
-    /// +0xA3.
+    /// +0xA3: an axis handle is being dragged.
     pub dragging: bool,
-    /// +0x113.
+    /// +0x113: hovered handle index, or [`NO_HANDLE`].
     pub hovered: i32,
     /// +0x84: the gizmo was drawn this frame.
     pub drawn: bool,
@@ -156,7 +147,7 @@ impl Default for Editor {
     }
 }
 
-/// Selection mode (B 0x1006D9C0: +0 active, +4 hovered id).
+/// Selection mode (samp's selection object: +0 active, +4 hovered id). Mirrors samp.dll B 0x1006D9C0.
 #[derive(Clone, Debug)]
 pub struct Selection {
     pub active: bool,
@@ -170,7 +161,7 @@ impl Default for Selection {
 }
 
 /// What the Present pass draws the gizmo for (published by the client tick): the edited GTA object and, for an
-/// attached object, the local ped and the slot's bone (translate mode uses the bone's axes, B 0x10073930).
+/// attached object, the local ped and the slot's bone (translate mode uses the bone's axes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EditFrame {
     pub object: u32,
@@ -208,7 +199,7 @@ fn half(x: i32) -> i32 {
 }
 
 impl Editor {
-    /// Editor start (B 0x10072450 object, B 0x10072510 attached): mode translate, no drag.
+    /// Editor start (object or attached slot): mode translate, no drag. Mirrors samp.dll B 0x10072450.
     pub fn start(&mut self, target: Target, rotation: [f32; 3]) {
         self.active = true;
         self.target = target;
@@ -220,12 +211,12 @@ impl Editor {
         }
     }
 
-    /// B 0x10072220: objects have no scale mode.
+    /// Sets the mode; objects have no scale mode. Mirrors samp.dll B 0x10072220.
     pub fn set_mode(&mut self, mode: u32) {
         self.mode = if matches!(self.target, Target::Object { .. }) && mode == 2 { 0 } else { mode };
     }
 
-    /// Background colour of a handle (B 0x10072570).
+    /// Background colour of a handle. Mirrors samp.dll B 0x10072570.
     pub fn background(&self, index: i32) -> u32 {
         match index {
             0..=2 => {
@@ -262,7 +253,7 @@ impl Editor {
         }
     }
 
-    /// Hit rect of a handle drawn at `(x, y)` (B 0x10072070: centred on the point, glyph size).
+    /// Hit rect of a handle drawn at `(x, y)`: the glyph size, centred on the point. Mirrors samp.dll B 0x10072070.
     pub fn place(&mut self, index: i32, x: i32, y: i32) {
         let (w, h) = self.glyph;
         let l = x - half(w);
@@ -278,7 +269,7 @@ impl Editor {
         }
     }
 
-    /// Drag direction of an axis from its projected end points `a` (+s) and `b` (−s) (B 0x10072D8F…).
+    /// Drag direction of an axis from its projected end points `a` (+s) and `b` (−s); kept while dragging.
     pub fn set_direction(&mut self, axis: usize, a: [f32; 2], b: [f32; 2]) {
         if self.dragging {
             return;
@@ -293,7 +284,7 @@ impl Editor {
         }
     }
 
-    /// Hover test (B 0x100720D0): needs a drawn gizmo and a visible cursor (cursor mode ≠ 0).
+    /// Hover test: needs a drawn gizmo and a visible cursor (cursor mode ≠ 0). Mirrors samp.dll B 0x100720D0.
     pub fn hover(&mut self, cursor: (i32, i32), cursor_mode: u8) {
         if !self.drawn || cursor_mode == 0 {
             self.hovered = NO_HANDLE;
@@ -309,7 +300,7 @@ impl Editor {
         }
     }
 
-    /// Mouse message (B 0x10073580). `cursor` = screen position, `client` = client position.
+    /// Mouse message; `cursor` = screen position, `client` = client position. Mirrors samp.dll B 0x10073580.
     pub fn on_mouse(&mut self, msg: u32, cursor: (i32, i32), client: (i32, i32)) -> MouseEffects {
         let mut fx = MouseEffects::default();
         if !self.active {
@@ -363,8 +354,8 @@ impl Editor {
         fx
     }
 
-    /// Drag step (B 0x100734B0): the axis' screen direction picks x or y (swapped in rotate mode), the inversion
-    /// flag the sign; `None` when the cursor did not move on that coordinate.
+    /// Drag step: the axis' screen direction picks x or y (swapped in rotate mode), the inversion flag the sign;
+    /// `None` when the cursor did not move on that coordinate. Mirrors samp.dll B 0x100734B0.
     pub fn drag_delta(&self, cursor: (i32, i32)) -> Option<f32> {
         let axis = usize::try_from(self.hovered).ok().filter(|&a| a < 3);
         let (inv, vert) = axis.map(|a| (self.invert[a], self.vertical[a])).unwrap_or((false, false));
@@ -374,12 +365,12 @@ impl Editor {
         (delta != 0).then_some(delta as f32 * PIXEL_UNIT)
     }
 
-    /// Re-centre (B 0x100723F0): the stored press point becomes the client centre.
+    /// Re-centre: the stored press point becomes the client centre. Mirrors samp.dll B 0x100723F0.
     pub fn recentred(&mut self, centre: (i32, i32)) {
         self.press = centre;
     }
 
-    /// Stop (B 0x10072BF0): the client tick sends the final 116/117.
+    /// Stop; the client tick then sends the final RPC 116/117. Mirrors samp.dll B 0x10072BF0.
     pub fn stop(&mut self, response: u32) {
         if self.active {
             self.active = false;
@@ -388,7 +379,7 @@ impl Editor {
     }
 }
 
-/// Angle wrap of the rotate drag (B 0x100B48F0): one step of ±360 outside (−180, 180].
+/// Angle wrap of the rotate drag: one step of ±360 outside (−180, 180]. Mirrors samp.dll B 0x100B48F0.
 pub fn wrap_degrees(v: f32) -> f32 {
     let mut v = v;
     if v > 180.0 {
@@ -400,12 +391,13 @@ pub fn wrap_degrees(v: f32) -> f32 {
     v
 }
 
-/// Object drag in rotate mode (B 0x10073240): rotation copy += d × 10, wrapped.
+/// Object drag in rotate mode: rotation copy += d × 10, wrapped.
 pub fn rotate(rot: &mut [f32; 3], axis: usize, d: f32) {
     rot[axis] = wrap_degrees(rot[axis] + d * 10.0);
 }
 
-/// Attached-object drag (B 0x10072240) on the slot's offset / rotation / scale.
+/// Attached-object drag on the slot's offset / rotation / scale (scale not below 0). Mirrors samp.dll
+/// B 0x10072240.
 pub fn attached_drag(
     offset: &mut [f32; 3],
     rotation: &mut [f32; 3],
@@ -427,7 +419,7 @@ pub fn attached_drag(
     }
 }
 
-/// `M · v` with samp's matrix helper (B 0x100B4D20): rows right (0), forward (4), up (8), position (12).
+/// `M · v` as samp's matrix helper computes it: rows right (0), forward (4), up (8), position (12).
 pub fn transform(m: &[f32; 16], v: [f32; 3]) -> [f32; 3] {
     [
         m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12],
@@ -436,18 +428,19 @@ pub fn transform(m: &[f32; 16], v: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-/// 117 response-2 rate rule.
+/// Whether an RPC 117 with response 2 may be sent now ([`UPDATE_INTERVAL_MS`] since the last 117).
 pub fn update_due(now_ms: u32, last_ms: u32) -> bool {
     now_ms.wrapping_sub(last_ms) as i32 >= UPDATE_INTERVAL_MS as i32
 }
 
-/// Selection label (B 0x1006DA20).
+/// Label drawn over the hovered object in selection mode.
 pub fn select_label(id: u16, model: i32, distance: f32) -> String {
     format!("[id: {id}, type: {model}]\nDistance: {distance:.2}m\n")
 }
 
-/// Pick ray through the cursor (B 0x10073F70): `inv` = inverse of world × view, `proj` = projection, `size` =
-/// back-buffer size. Returns (start, end) with end = start + 150 · direction (direction not normalised).
+/// Pick ray through the cursor: `inv` = inverse of world × view, `proj` = projection, `size` = back-buffer size.
+/// Returns (start, end) with end = start + 150 · direction (direction not normalised). Mirrors samp.dll
+/// B 0x10073F70.
 pub fn pick_ray(cursor: (i32, i32), size: (u32, u32), proj: &[f32; 16], inv: &[f32; 16]) -> ([f32; 3], [f32; 3]) {
     let nx = ((cursor.0 as f32 * 2.0) / size.0 as f32 - 1.0) / proj[0];
     let ny = -(((cursor.1 as f32 * 2.0) / size.1 as f32 - 1.0) / proj[5]);
@@ -522,7 +515,7 @@ pub fn mat_inverse(m: &[f32; 16]) -> Option<[f32; 16]> {
     Some(inv.map(|v| (v / det) as f32))
 }
 
-/// Pick sphere radius of an object's bounding test (B 0x100B65E0): < 0.5 → 0.5 then × 1.5, < 1 → × 1.5.
+/// Sphere radius for an object's bounding-sphere pick test: below 0.5 → 0.75, below 1 → × 1.5, else unchanged.
 pub fn pick_radius(col_radius: f32) -> f32 {
     if col_radius < 0.5 {
         0.75

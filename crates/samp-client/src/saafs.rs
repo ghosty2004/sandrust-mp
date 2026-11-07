@@ -1,36 +1,19 @@
-//! samp.saa file redirection, platform-independent part (SAA-2).
+//! samp.saa file redirection, platform-independent part (docs/re/samp-saa.md, "7. Lookup" and
+//! "8. Redirection layer").
 //!
-//! samp.dll serves every file whose lower-case basename matches a live entry of
-//! its archive from memory instead of the disk (docs/re/samp-saa.md §7–8). The
-//! Windows hooks (`filehook.rs`) only translate the kernel32 calls; the fake
-//! handle table, the read/seek/size rules and the decrypted-entry cache live
-//! here so they can be unit-tested on the host.
-//!
-//! Rules reproduced from samp.dll 0.3.7-R4 build B (addresses there):
-//! * handles start at 0xFF000001 and step by 2 on every successful open, also
-//!   once they leave the recognised range (0x10102350, 0x100625B0);
-//! * only handles in 0xFF000001..=0xFF000100 are treated as fake by the other
-//!   hooks (0x10062540); at most 50 files are open at once (0x10062560); a full
-//!   table makes the open return handle 0;
-//! * `ReadFile`: an `OVERLAPPED` argument sets the position from its `Offset`;
-//!   a read that reaches the end of the entry copies what is left, reports
-//!   that count and sets the last error to 38 (`ERROR_HANDLE_EOF`); a read that
-//!   ends before the end copies everything and leaves the last error alone;
-//!   the event of the `OVERLAPPED` is signalled either way; the result is TRUE
-//!   (0x10062630);
-//! * `SetFilePointer`: FILE_BEGIN sets, FILE_CURRENT adds (32-bit wrap),
-//!   FILE_END jumps to the size ignoring the distance, other methods keep the
-//!   position; returns the position; the high word is ignored (0x10062800);
-//! * `GetFileSize` returns the size and zeroes the high word (0x100627B0);
-//! * `CloseHandle` frees the slot; the decrypted entry stays cached
-//!   (0x100628A0, 0x10064F20); `GetFileType` answers 1, disk (0x100628E0).
+//! samp.dll serves every file whose lower-case basename matches a live archive entry from memory instead of
+//! the disk. The Windows hooks (`filehook.rs`) only translate the kernel32 calls; the fake handle table
+//! ([`FakeFiles`]), the read/seek/size rules and the decrypted-entry cache ([`Redirector`]) live here so they
+//! can be unit-tested on the host. The rules follow samp.dll build B (addresses in
+//! docs/re/addresses/saafs.md).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use samp_saa::{EntryInfo, SaaArchive};
 
-/// First fake handle samp hands out.
+/// First fake handle samp hands out. Handles keep advancing by [`HANDLE_STEP`] on every successful open,
+/// even past [`LAST_RECOGNISED_HANDLE`].
 pub const FIRST_HANDLE: u32 = 0xFF00_0001;
 /// Handles advance by this much per open.
 pub const HANDLE_STEP: u32 = 2;
@@ -41,7 +24,8 @@ pub const MAX_OPEN: usize = 50;
 /// `ERROR_HANDLE_EOF`, set after a read that reaches the end of an entry.
 pub const ERROR_HANDLE_EOF: u32 = 38;
 
-/// Whether the other hooks would look `h` up in the fake-file table.
+/// Whether the read/seek/size/close hooks would look `h` up in the fake-file table.
+/// Mirrors samp.dll B 0x10062540.
 pub fn in_fake_range(h: u32) -> bool {
     (FIRST_HANDLE..=LAST_RECOGNISED_HANDLE).contains(&h)
 }
@@ -83,8 +67,8 @@ impl FakeFiles {
         Self { slots: (0..MAX_OPEN).map(|_| None).collect(), next_handle: FIRST_HANDLE }
     }
 
-    /// Opens a fake file over `data`. Returns the handle, or 0 when all 50
-    /// slots are in use (what samp's `CreateFileA` hook then returns).
+    /// Opens a fake file over `data`. Returns the handle, or 0 when all 50 slots are in use (what samp's
+    /// `CreateFileA` hook then returns). Mirrors samp.dll B 0x100625B0.
     pub fn open(&mut self, data: Arc<[u8]>) -> u32 {
         let Some(i) = self.slots.iter().position(Option::is_none) else { return 0 };
         let handle = self.next_handle;
@@ -111,8 +95,10 @@ impl FakeFiles {
         self.slots.iter().flatten().count()
     }
 
-    /// `ReadFile`. `offset` is the `OVERLAPPED.Offset` when an `OVERLAPPED` was
-    /// passed. `None` if `h` is not an open fake handle.
+    /// `ReadFile`. `offset` is the `OVERLAPPED.Offset` when an `OVERLAPPED` was passed and sets the
+    /// position. A read that reaches the end of the entry copies what is left and reports `eof` (the hook
+    /// then sets the last error to 38); a shorter read leaves the last error alone. `None` if `h` is not an
+    /// open fake handle. Mirrors samp.dll B 0x10062630.
     pub fn read(&mut self, h: u32, offset: Option<u32>, out: &mut [u8]) -> Option<ReadOutcome> {
         let s = self.slot(h)?;
         if let Some(o) = offset {
@@ -131,7 +117,9 @@ impl FakeFiles {
         Some(ReadOutcome { copied: copied as usize, eof })
     }
 
-    /// `SetFilePointer`; returns the new position.
+    /// `SetFilePointer`; returns the new position. FILE_BEGIN sets, FILE_CURRENT adds (32-bit wrap),
+    /// FILE_END jumps to the size ignoring the distance, other methods keep the position; the high word is
+    /// ignored. Mirrors samp.dll B 0x10062800.
     pub fn seek(&mut self, h: u32, distance: i32, method: u32) -> Option<u32> {
         let s = self.slot(h)?;
         match method {
@@ -143,12 +131,13 @@ impl FakeFiles {
         Some(s.pos)
     }
 
-    /// `GetFileSize` (low word; the high word is 0).
+    /// `GetFileSize` (low word; the hook zeroes the high word). Mirrors samp.dll B 0x100627B0.
     pub fn size(&mut self, h: u32) -> Option<u32> {
         self.slot(h).map(|s| s.data.len() as u32)
     }
 
-    /// `CloseHandle`; true if `h` was ours.
+    /// `CloseHandle`: frees the slot (the decrypted entry stays cached); true if `h` was ours.
+    /// Mirrors samp.dll B 0x100628A0.
     pub fn close(&mut self, h: u32) -> bool {
         if !in_fake_range(h) {
             return false;
@@ -287,8 +276,8 @@ pub fn report_fallback(reason: &str) -> String {
     format!("files mode=fallback distinct=0 opens=0 reason={reason}")
 }
 
-/// `CreateFileA` path preprocessing done in place by samp (0x10062950): a
-/// trailing space is replaced by NUL. Returns the length to use.
+/// `CreateFileA` path preprocessing samp does in place: a trailing space is replaced by NUL. Returns the
+/// length to use. Mirrors samp.dll B 0x10062950.
 pub fn trim_trailing_space(path: &[u8]) -> usize {
     match path.last() {
         Some(b' ') => path.len() - 1,

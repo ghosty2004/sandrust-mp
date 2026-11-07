@@ -1,80 +1,78 @@
-//! World entities (milestone M6): the platform-independent rules, host-tested.
+//! World entities: the platform-independent rules, tested on the host.
 //!
 //! The GTA-side work lives in `objects.rs` (objects), `entities.rs` (pickups, actors, checkpoints, gang zones,
-//! map icons, 3D labels, building removal) and `worldhooks.rs` (the CSV hook rows); this file holds the
-//! constants and the arithmetic they share.
-//!
-//! Specs: docs/re/subsystems/world-entities.md (RPC layouts, RE-10 additions §1–§10) and the measurements of
-//! the original client in docs/phase3/trace-notes.md "World entities (TRACE-6)". Constants read from samp.dll
-//! build A (2021) are cited with their address.
+//! map icons, 3D labels, building removal) and `worldhooks.rs` (the hooks); this file holds the constants and the
+//! arithmetic they share. Spec: docs/re/subsystems/world-entities.md; the original client's measured behaviour is
+//! in docs/phase3/trace-notes.md ("World entities"). "Patch table row N" is line N of
+//! docs/re/data/gta-patches-r4-annotated.csv (header = line 1); samp.dll addresses: docs/re/addresses/worldents.md.
 
 use samp_proto::types::Quat;
 
 use crate::footsync::Rotation;
 
-/// Object ids the client accepts (the original tests `id < 1001` against 1000-entry arrays; world-entities.md
-/// "Object-ID bound": a Rust client accepts 0…999).
+/// Object ids the client accepts. The original tests `id < 1001` against 1000-entry arrays; we accept 0…999
+/// (docs/re/subsystems/world-entities.md, "Client entity pools").
 pub const MAX_OBJECTS: u16 = 1000;
-/// The "?" model used for models without model info (A 0x100a923b: 0x48C7).
+/// The "?" model used for models without model info.
 pub const MODEL_UNKNOWN: i32 = 18631;
-/// Model ids above this are not world models (A 0x100a09d0 compares with 0x4E20).
+/// Model ids above this are not world models.
 pub const MAX_MODEL: i32 = 20000;
-/// Draw distance above which samp streams and draws the object itself (constant A 0x100E6170).
+/// Draw distance above which samp streams and draws the object itself.
 pub const SAMP_PASS_DRAW_DISTANCE: f32 = 300.0;
-/// Ordinary objects request their model when the camera is closer than draw distance − 30 (A 0x100E5808).
+/// Ordinary objects request their model when the camera is closer than draw distance − 30.
 pub const REQUEST_MARGIN: f32 = 30.0;
-/// Camera distance below which samp's own pass renders through GTA's renderer (A 0x100ECD88).
+/// Camera distance below which samp's own pass renders through GTA's renderer.
 pub const DIRECT_RENDER_DISTANCE: f32 = 600.0;
-/// Consecutive out-of-range frames before a samp-streamed object loses its RW object (world-entities.md RE-10
-/// §2; TRACE-6: exactly 1000 frames).
+/// Consecutive out-of-range frames before a samp-streamed object loses its RW object
+/// (world-entities.md, "Object streaming and the two render paths").
 pub const RW_RELEASE_FRAMES: u32 = 1000;
 /// Material slots per object (the client checks `slot < 17` against 16-entry arrays; accept 0…15).
 pub const MATERIAL_SLOTS: usize = 16;
 /// Material name limit: names of 32 or more characters make the client skip the record.
 pub const MATERIAL_NAME_MAX: usize = 31;
 
-/// MoveObject: GTA speed units per second → per 1/50 s (A 0x100E6130).
+/// MoveObject: GTA speed units per second → per 1/50 s.
 pub const MOVE_SPEED_SCALE: f32 = 0.02;
-/// MoveObject: drift threshold and gain (A 0x100E611C, used for both).
+/// MoveObject: drift threshold and gain (samp uses one constant for both).
 pub const MOVE_DRIFT: f32 = 0.1;
-/// MoveObject: rotation turn-speed gain and clamp (A 0x100E6120, A 0x100E60A4 / 0x100ECD80).
+/// MoveObject: rotation turn-speed gain and clamp.
 pub const TURN_GAIN: f32 = 0.01;
 pub const TURN_CLAMP: f32 = 0.001;
 /// MoveObject: a target rotation component ≤ this means "do not rotate" (open.mp sends −1000).
 pub const NO_ROTATION: f32 = -999.0;
 
-/// Pickup ids (`0 ≤ id < 0x1000`, world-entities.md 95).
+/// Pickup ids (`0 ≤ id < 0x1000`; world-entities.md, "95 PlayerCreatePickup").
 pub const MAX_PICKUPS: i32 = 4096;
-/// GTA's pickup array (`CPickups::aPickUps`, 32-byte entries; world-entities.md 131 stub at A 0x100a3f80).
+/// GTA's pickup array (`CPickups::aPickUps`, 32-byte entries; world-entities.md, "131 OnPlayerPickUpPickup").
 pub const GTA_PICKUPS: u32 = 0x9788C0;
 pub const GTA_PICKUP_SIZE: u32 = 0x20;
-/// Collision-path cooldown, counted down by one per poll (A 0x100134e5).
+/// Collision-path cooldown, counted down by one per poll.
 pub const PICKUP_COOLDOWN: u32 = 15;
-/// The poll runs every 7 frames (TRACE-6: HAS_PICKUP_BEEN_COLLECTED for type-14 pickups every 7 frames exactly).
+/// The HAS_PICKUP_BEEN_COLLECTED poll runs every 7 frames.
 pub const PICKUP_POLL_FRAMES: u64 = 7;
-/// Pickup type polled with HAS_PICKUP_BEEN_COLLECTED (A 0x10013573).
+/// Pickup type polled with HAS_PICKUP_BEEN_COLLECTED.
 pub const PICKUP_TYPE_POLLED: i32 = 14;
 
 /// Actor ids (`id < 1000`).
 pub const MAX_ACTORS: u16 = 1000;
-/// Ped type of actors (CREATE_CHAR, TRACE-6).
+/// Ped type of actors (CREATE_CHAR).
 pub const ACTOR_PED_TYPE: i32 = 5;
-/// Decision maker given to actors (SET_CHAR_DECISION_MAKER, TRACE-6: 65542).
+/// Decision maker given to actors (SET_CHAR_DECISION_MAKER).
 pub const ACTOR_DECISION_MAKER: i32 = 65542;
 
 /// Gang zone slots (1024; the client does not bounds-check the wire id, we do).
 pub const MAX_GANG_ZONES: u16 = 1024;
-/// Flash phase period (A 0x10002284: 500 ms by the system tick count).
+/// Flash phase period, measured with the system tick count.
 pub const GANG_ZONE_FLASH_MS: u32 = 500;
 /// Map icon slots (`id < 100`).
 pub const MAX_MAP_ICONS: u8 = 100;
 /// 3D label slots (`id < 0x800`).
 pub const MAX_LABELS: u16 = 2048;
 
-/// Blip colour index of checkpoints (`CRadar::GetRadarTraceColour` replacement A 0x100a7270).
+/// Blip colour index of checkpoints (see [`radar_trace_colour`]).
 pub const BLIP_COLOUR_CHECKPOINT: i32 = 0x3ED;
 
-/// SCM opcodes (named via gta-reversed `eScriptCommands.h`; world-entities.md RE-10 §1).
+/// SCM opcodes (named via gta-reversed `eScriptCommands.h`; world-entities.md, "Opcode names").
 pub mod op {
     pub const CREATE_OBJECT: u16 = 0x0107;
     pub const DELETE_OBJECT: u16 = 0x0108;
@@ -99,7 +97,7 @@ pub mod op {
     pub const ADD_SPRITE_BLIP_FOR_CONTACT_POINT: u16 = 0x02A7;
 }
 
-/// Blip opcode of a map icon style (world-entities.md 56; TRACE-6 confirmed 0–3).
+/// Blip opcode of a map icon style (world-entities.md, "56 SetPlayerMapIcon").
 pub fn map_icon_opcode(style: u8) -> u16 {
     match style {
         1 => op::ADD_SPRITE_BLIP_FOR_COORD,
@@ -109,14 +107,15 @@ pub fn map_icon_opcode(style: u8) -> u16 {
     }
 }
 
-/// CHANGE_BLIP_SCALE of a type-0 map icon: 2 for colours below 1004, else 3. The comparison is unsigned:
-/// TRACE-6 saw scale 3 for 0xFF0000FF (negative as an int) and 2 for colour 5.
+/// CHANGE_BLIP_SCALE of a type-0 map icon: 2 for colours below 1004, else 3. The comparison is unsigned, so
+/// 0xFF0000FF (negative as an int) gets 3.
 pub fn map_icon_scale(colour: u32) -> i32 {
     if colour < 1004 { 2 } else { 3 }
 }
 
-/// `CRadar::GetRadarTraceColour` replacement (CSV row 51, A 0x100a7270): fixed colours for the vehicle and
+/// `CRadar::GetRadarTraceColour` replacement (patch table row 51): fixed colours for the vehicle and
 /// checkpoint blips, the player colour table for ids below 4000, RGBA values otherwise.
+/// Mirrors samp.dll 0x100A7270.
 pub fn radar_trace_colour(index: u32, player_rgba: impl Fn(u16) -> u32) -> u32 {
     match index {
         0x3EC => 0x89A4_C440,
@@ -165,14 +164,15 @@ pub fn material_log_line(rpc: u8, object: u16, m: &samp_proto::rpcs::world::Obje
     }
 }
 
-/// The object pass a samp-marked object belongs to (render-list filter, CSV row 78, A 0x100A5150).
+/// The object pass a samp-marked object belongs to (render-list filter, patch table row 78).
+/// Mirrors samp.dll 0x100A5150.
 pub fn drawn_by_samp(has_materials: bool, draw_distance: f32, timed: bool) -> bool {
     has_materials || draw_distance > SAMP_PASS_DRAW_DISTANCE || timed
 }
 
 /// Degrees (SA:MP object rotation) → the rotation rows SET_OBJECT_ROTATION gives a CObject
 /// (`CPlaceable::SetOrientation(x, y, z)` in radians; gta-reversed `Matrix.cpp` `SetRotate`):
-/// TRACE-6 shows rotation (0, 0, 90) as right = (0, 1, 0), forward = (−1, 0, 0).
+/// rotation (0, 0, 90) gives right = (0, 1, 0), forward = (−1, 0, 0).
 pub fn rotation_rows(deg: [f32; 3]) -> Rotation {
     let [x, y, z] = deg.map(f32::to_radians);
     let (sx, cx) = x.sin_cos();
@@ -189,8 +189,9 @@ pub fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
-/// A MoveObject in progress (world-entities.md 99, RE-10 §3; samp wrapper +0x10B target, +0x15B total
-/// distance, +0x15F start time, +0x1B0 speed, +0x1B5 rotation flag, quaternions +0x167/+0x177/+0x187).
+/// A MoveObject in progress (world-entities.md, "99 MoveObject" and "Per-frame object process"; samp wrapper
+/// +0x10B target, +0x15B total distance, +0x15F start time, +0x1B0 speed, +0x1B5 rotation flag, quaternions
+/// +0x167/+0x177/+0x187).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Motion {
     pub target: [f32; 3],
@@ -249,13 +250,14 @@ impl Motion {
 }
 
 /// The turn speed only drives GTA's own (unused) rotation integration; samp clamps it to ±0.001 almost
-/// always (TRACE-6: 0.001 every frame of a 90° turn). The z of the start rotation is the reference.
+/// always. The z of the start rotation is the reference.
 fn current_heading_hint(m: &Motion) -> f32 {
     let q = m.from;
     (2.0 * (q.w * q.z + q.x * q.y)).atan2(1.0 - 2.0 * (q.y * q.y + q.z * q.z)).to_degrees()
 }
 
-/// Gang zone flash phase (A 0x10002270): toggles when 500 ms passed since the last toggle (GetTickCount).
+/// Gang zone flash phase: toggles when 500 ms passed since the last toggle (GetTickCount).
+/// Mirrors samp.dll 0x10002270.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FlashPhase {
     pub on: bool,
@@ -272,8 +274,8 @@ impl FlashPhase {
     }
 }
 
-/// One gang zone record (A 0x10002180: `[minX, maxY, maxX, minY, colour, flash colour]`, the CRect order
-/// `CRadar::DrawAreaOnRadar` takes; TRACE-6 saw exactly that rect).
+/// One gang zone record: `[minX, maxY, maxX, minY, colour, flash colour]`, the CRect order
+/// `CRadar::DrawAreaOnRadar` takes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GangZone {
     pub rect: [f32; 4],
@@ -292,33 +294,35 @@ impl GangZone {
     }
 }
 
-/// The CRGBA bytes `DrawAreaOnRadar` gets: the wire colour's bytes as they are in memory (TRACE-6:
-/// 0xFF000080 → R ff, G 00, B 00, A 80, i.e. the server RGBA value read big-endian).
+/// The CRGBA bytes `DrawAreaOnRadar` gets: the wire colour's bytes as they are in memory
+/// (0xFF000080 → R ff, G 00, B 00, A 80, i.e. the server RGBA value read big-endian).
 pub fn crgba_bytes(wire: u32) -> [u8; 4] {
     wire.to_le_bytes()
 }
 
-/// RemoveBuildingForPlayer match rule (world-entities.md RE-10 §7): model equal (or −1) and within radius (≤).
+/// RemoveBuildingForPlayer match rule: model equal (or −1) and within radius (≤)
+/// (world-entities.md, "RemoveBuildingForPlayer (RPC 43) internals").
 pub fn removal_matches(removal_model: i32, centre: [f32; 3], radius: f32, model: i32, pos: [f32; 3]) -> bool {
     (removal_model == -1 || removal_model == model) && dist3(centre, pos) <= radius
 }
 
-/// Model a matching IPL instance is replaced with (row 65, A 0x100a4b03: 0x4B64).
+/// Model a matching IPL instance is replaced with (patch table row 65).
 pub const REMOVED_BUILDING_MODEL: i32 = 19300;
 /// Removal: occluders within this distance of the point are zeroed; matching entities sink by 2000 units.
 pub const REMOVAL_OCCLUDER_RANGE: f32 = 500.0;
 pub const REMOVAL_SINK: f32 = 2000.0;
-/// `COcclusion::Occluders` (0xC73FA0), 0x12-byte records, count at `NumOccludersOnMap` (0xC73F98).
+/// `COcclusion::Occluders` (0x12-byte records); the count is at `NumOccludersOnMap`.
 pub const OCCLUDERS: u32 = 0xC73FA0;
 pub const OCCLUDER_COUNT: u32 = 0xC73F98;
 pub const OCCLUDER_SIZE: u32 = 0x12;
-/// The part of an occluder record a removal clears (A 0x1009D0F0): the six i16 of centre and size (+0..+0xC). The
-/// rotation bytes and the 15-bit next-occluder link + far-away bit at +0x10 stay: GTA walks its nearby / far-away
-/// occluder lists through that link every frame (0x7201C0), so a zeroed link points at occluder 0 and can close
-/// a cycle (the main thread then spins in the list walk forever).
+/// The part of an occluder record a removal clears: the six i16 of centre and size (+0..+0xC). The rotation
+/// bytes and the 15-bit next-occluder link + far-away bit at +0x10 stay: GTA walks its nearby / far-away
+/// occluder lists through that link every frame, so a zeroed link points at occluder 0 and can close a cycle
+/// (the main thread then spins in the list walk forever). Mirrors samp.dll 0x1009D0F0.
 pub const OCCLUDER_CLEARED: std::ops::Range<u32> = 0..0xC;
 
-/// samp's degrees → radians for actor facing (A 0x100B59B0): outside 0…360 → 0; above 180 → negative.
+/// samp's degrees → radians for actor facing: outside 0…360 → 0; above 180 → negative.
+/// Mirrors samp.dll 0x100B59B0.
 pub fn samp_actor_heading(deg: f32) -> f32 {
     if !(0.0..=360.0).contains(&deg) {
         0.0
@@ -334,19 +338,19 @@ pub fn actor_anim_refused(library: &[u8]) -> bool {
     library.eq_ignore_ascii_case(b"SEX")
 }
 
-/// SET_CHAR_PROOFS arguments of an actor (world-entities.md 171; TRACE-6).
+/// SET_CHAR_PROOFS arguments of an actor (world-entities.md, "171 ShowActorForPlayer").
 pub fn actor_proofs(invulnerable: bool) -> [i32; 5] {
     if invulnerable { [1, 1, 1, 1, 1] } else { [0, 0, 0, 1, 0] }
 }
 
-/// The physical flags samp tests for an invulnerable actor (row 20, A 0x100a2cba): bullet, explosion and
+/// The physical flags samp tests for an invulnerable actor (patch table row 20): bullet, explosion and
 /// melee proof (`CPhysical` +0x40 bits 0x40000, 0x800000, 0x200000).
 pub fn invulnerable_flags(flags: u32) -> bool {
     flags & 0x40000 != 0 && flags & 0x80_0000 != 0 && flags & 0x20_0000 != 0
 }
 
 /// Material pre-pass gate of one samp object (samp +0x1D3 = RW object of the last record, +0x118F = drawn since
-/// that record; A 0x100A8C40 / 0x100AA082 / 0x100AA124 / 0x100A9E9D). Nothing is applied before the first draw;
+/// that record). Nothing is applied before the first draw;
 /// the first pre-pass after the RW object changed only records; later ones apply. A new RW object is therefore
 /// drawn twice with the geometry's own flags before the material colour state (PRELIT off) is ever applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

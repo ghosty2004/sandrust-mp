@@ -138,3 +138,19 @@ Not applied (with reason):
 
 * Material text and device loss (measured with a forced `Reset` on both clients): samp releases the material
   render targets before `Reset` and re-creates them in the next object pass; ours does the same (`on_lost`).
+
+## Moved from worldhooks.rs comments
+
+* Material pre-pass crash (measured): applying slot colours from an object's first draw re-instanced a geometry
+  with a pending prelight lock (`lockedSinceLastInst` 0x8, set by GTA's day/night prelight update 0x5D6850) while
+  PRELIT was cleared (geometry flags 0x67). RenderWare then asked for a zero-length dynamic vertex buffer
+  (D3DERR_INVALIDCALL), kept a buffer-less record in its dynamic list (0xC97B8C) and crashed at 0x7F5A3A
+  (`RwD3D9DynamicVertexBufferCreate`) on the next differently sized create. Hence the record-only first pre-pass
+  after an RW object change, as samp does (`worldhooks::apply_materials`, `worldents::MaterialPrePass`).
+
+## Moved from worldents.rs comments
+
+* RemoveBuildingForPlayer clears only centre and size (+0..+0xC) of each occluder record within range, as samp
+  does at A 0x1009D0F0. The rotation bytes and the 15-bit next-occluder link + far-away bit at +0x10 must stay:
+  GTA walks its nearby / far-away occluder lists through that link every frame (0x7201C0), so a zeroed link
+  points at occluder 0 and can close a cycle in which the main thread spins forever.
