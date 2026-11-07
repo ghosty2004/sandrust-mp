@@ -20,6 +20,10 @@ small per-version profile (join version string, RPC differences, game addresses)
 - Never commit third-party binaries (`re/samp-dll/`, `re/snapshots/`, `server/`
   are gitignored). Commits are made by the MAIN session only (never by agents): plain descriptive English messages, no internal task IDs (M1, SAA-2, …), no Claude session links or Co-Authored-By trailers. Push only when the user asks. Remote: git@github.com:ghosty2004/sandrust-mp.git (branch main).
 
+## Code style
+Follow `docs/STYLE.md` (comments in plain English, no internal ids, samp.dll address chains in
+`docs/re/addresses/`). `tools/check-code-only.py BASE` proves a change touched only comments/whitespace.
+
 ## Parity loop (mandatory for every implementation agent)
 A feature is done only when the NEW client (Rust) behaves like the ORIGINAL
 samp.dll for the same input. For every system you implement or change:
