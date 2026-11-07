@@ -273,7 +273,9 @@ pub fn fault_line(site: FaultSite, code: u32, address: u32) -> String {
         FaultSite::Opcode { opcode: 0x06E7, component: Some(c) } => {
             format!("Warning(add_car_component {c}): Exception 0x{code:X} at 0x{address:X}")
         }
-        FaultSite::Opcode { opcode, .. } => format!("Warning(opcode 0x{opcode:X}): Exception 0x{code:X} at 0x{address:X}"),
+        FaultSite::Opcode { opcode, .. } => {
+            format!("Warning(opcode 0x{opcode:X}): Exception 0x{code:X} at 0x{address:X}")
+        }
         FaultSite::Named(n) => format!("Warning({n}): Exception 0x{code:X} at 0x{address:X}"),
     }
 }
@@ -377,7 +379,10 @@ unsafe extern "C" fn seh_handler(rec: *mut u8, frame: *mut u32, context: *mut u8
         std::ptr::write_unaligned(context.add(ctx::EAX).cast::<u32>(), code.max(1));
         std::ptr::write_unaligned(context.add(ctx::EBP).cast::<u32>(), saved_ebp);
         std::ptr::write_unaligned(context.add(ctx::ESP).cast::<u32>(), frame as u32);
-        std::ptr::write_unaligned(context.add(ctx::EIP).cast::<u32>(), seh_tail as unsafe extern "C" fn() as usize as u32);
+        std::ptr::write_unaligned(
+            context.add(ctx::EIP).cast::<u32>(),
+            seh_tail as unsafe extern "C" fn() as usize as u32,
+        );
     }
     CONTINUE_EXECUTION
 }

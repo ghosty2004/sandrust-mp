@@ -11,12 +11,13 @@ use std::time::Instant;
 
 use samp_proto::rpcs::remote::Incoming as R;
 use samp_proto::sync::IncomingSync;
+use samp_proto::types::Quat;
 
 use crate::footsync::{Rotation, quat_from_matrix};
 use crate::game::{self, off};
 use crate::patch::{Memory, ProcessMemory};
 use crate::remote::{
-    self, Correction, PadInput, RemotePlayer, SKILLS, SlotAllocator, SpecialStep, correct_position,
+    self, Correction, FootData, PadInput, RemotePlayer, SKILLS, SlotAllocator, SpecialStep, correct_position,
     heading_from_forward, normalise, rows_from_quat, samp_deg_to_rad, slerp, state,
 };
 use crate::script::{Arg, Runner, op};
@@ -500,98 +501,7 @@ impl Players {
                 && matrix != 0
                 && let Some(f) = p.foot
             {
-                let surfing = f.surf_id != 0 && f.surf_id != 0xFFFF && f.surf_id < 3000;
-                if p.foot_new {
-                    p.foot_new = false;
-                    // One-shot apply of a newly stored 207: velocity, then the position correction.
-                    put_v3(ped + off::MOVE_SPEED, f.velocity);
-                    if !surfing && let Some(cur) = v3(&mem, matrix + off::MATRIX_POS) {
-                        let vt = mem.read_u32(ped + off::VTABLE).unwrap_or(0);
-                        let moving =
-                            vt != VTBL_CPLACEABLE && mem.read_u32(ped + PHYSICAL_MOVING_LIST).unwrap_or(0) != 0;
-                        match correct_position(cur, f.position, f.velocity, moving) {
-                            Correction::None => {}
-                            Correction::Nudge(s) => {
-                                put_v3(ped + off::MOVE_SPEED, s);
-                            }
-                            Correction::Teleport => {
-                                p.teleports += 1;
-                                put_v3(matrix + off::MATRIX_POS, f.position);
-                            }
-                        }
-                    }
-                    // One-shot weapon and ped state.
-                    if crate::client::ped_in_world(ped) {
-                        apply_weapon(runner, ped, slot, f.weapon);
-                    }
-                    sniper_state(runner, ped, f.keys);
-                    // The synced animation.
-                    crate::behaviourclient::remote_anim(runner, p.id, ped, f.animation);
-                }
-                if let Some(v) = v3(&mem, ped + off::MOVE_SPEED) {
-                    p.last_speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-                }
-                // Every frame: rotation 25 % toward the synced quaternion, mirrored into the headings.
-                if let (Some(right), Some(forward), Some(up)) =
-                    (v3(&mem, matrix), v3(&mem, matrix + 0x10), v3(&mem, matrix + 0x20))
-                {
-                    let cur = quat_from_matrix(&Rotation { right, forward, up });
-                    let q = normalise(slerp(f.rotation, cur, remote::SLERP_KEEP));
-                    let rows = rows_from_quat(q);
-                    put_v3(matrix, rows.right);
-                    put_v3(matrix + 0x10, rows.forward);
-                    put_v3(matrix + 0x20, rows.up);
-                    let h = heading_from_forward(rows.forward);
-                    poke(ped + off::PED_HEADING, h);
-                    poke(ped + off::PED_HEADING_GOAL, h);
-                }
-                // Head look (not for NPCs).
-                if !p.npc {
-                    let (refresh, call) = remote::head_look_due(p, now);
-                    if refresh {
-                        p.look_refresh = Some(now);
-                        let front = swap::with_table(|t| {
-                            t.shadows.get(usize::from(slot)).map(|s| [s.aim[0], s.aim[1], s.aim[2]]).unwrap_or_default()
-                        });
-                        p.look_offset = front.map(|c| c * remote::LOOK_DISTANCE);
-                    }
-                    if call && let Some(pos) = v3(&mem, matrix + off::MATRIX_POS) {
-                        p.look_last = Some(now);
-                        let mut target = [0, 1, 2].map(|i| pos[i] + p.look_offset[i]);
-                        look_at(ped, 1000, &mut target);
-                    }
-                }
-                // Special actions.
-                special_actions(runner, p.id, slot, ped, f.special_action, in_vehicle, &mut p.phone);
-                let stale = p.is_stale(now);
-                let intel = mem.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
-                let task =
-                    if intel != 0 { mem.read_u32(intel + off::INTELLIGENCE_PRIMARY_TASK).unwrap_or(0) } else { 0 };
-                let jetpack = task != 0 && mem.read_u32(task).unwrap_or(0) == game::VTBL_TASK_SIMPLE_JETPACK;
-                let input = PadInput {
-                    keys: f.keys,
-                    left_right: if stale { 0 } else { f.left_right },
-                    up_down: if stale { 0 } else { f.up_down },
-                    in_vehicle,
-                    jetpack,
-                };
-                swap::with_table(|t| {
-                    if let Some(sh) = t.shadows.get_mut(usize::from(slot)) {
-                        remote::apply_keys(&mut sh.pad, input);
-                    }
-                });
-                // Collision gating.
-                if let Some(on) = remote::collision_wanted(&f) {
-                    let flags = mem.read_u32(ped + ENTITY_FLAGS).unwrap_or(0);
-                    poke(ped + ENTITY_FLAGS, remote::collision_flags(flags, on));
-                }
-                if f.velocity == [0.0; 3] {
-                    put_v3(ped + off::MOVE_SPEED, [0.0; 3]);
-                }
-                if stale {
-                    put_v3(ped + off::MOVE_SPEED, [0.0; 3]);
-                    put_v3(matrix + off::MATRIX_POS, f.position);
-                }
+                on_foot_frame(runner, p, slot, matrix, in_vehicle, f, now);
             }
             if p.state != state::WASTED {
                 poke(ped + off::PED_HEALTH, remote::REMOTE_PED_HEALTH);
@@ -648,8 +558,7 @@ impl Players {
             let mem = ProcessMemory;
             let in_vehicle = mem.read_u32(ped + off::PED_FLAGS).unwrap_or(0) & (1 << 8) != 0;
             let intel = mem.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
-            let task =
-                if intel != 0 { mem.read_u32(intel + off::INTELLIGENCE_PRIMARY_TASK).unwrap_or(0) } else { 0 };
+            let task = if intel != 0 { mem.read_u32(intel + off::INTELLIGENCE_PRIMARY_TASK).unwrap_or(0) } else { 0 };
             if !in_vehicle && task != 0 && mem.read_u32(task).ok() == Some(game::VTBL_TASK_SIMPLE_JETPACK) {
                 // SAFETY: the jetpack task's deleting destructor (thiscall), main thread.
                 unsafe {
@@ -787,6 +696,133 @@ fn with_focus<R>(slot: u8, f: impl FnOnce() -> R) -> R {
 pub(crate) fn set_weapon(runner: &mut Runner, ped: u32, slot: u8, weapon: u8) {
     let Some(h) = game::ped_handle(&ProcessMemory, ped).ok().flatten() else { return };
     with_focus(slot, || runner.run(op::SET_CURRENT_CHAR_WEAPON, &[Arg::Int(h), Arg::Int(i32::from(weapon))]));
+}
+
+/// One frame of a remote player on foot with its stored foot sync `f`.
+fn on_foot_frame(
+    runner: &mut Runner,
+    p: &mut RemotePlayer,
+    slot: u8,
+    matrix: u32,
+    in_vehicle: bool,
+    f: FootData,
+    now: Instant,
+) {
+    let mem = ProcessMemory;
+    let ped = p.ped;
+    if p.foot_new {
+        p.foot_new = false;
+        apply_new_foot_sync(runner, p, slot, matrix, &f);
+    }
+    if let Some(v) = v3(&mem, ped + off::MOVE_SPEED) {
+        p.last_speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    }
+    rotate_toward_sync(ped, matrix, f.rotation);
+    // Head look (not for NPCs).
+    if !p.npc {
+        head_look(p, slot, matrix, now);
+    }
+    // Special actions.
+    special_actions(runner, p.id, slot, ped, f.special_action, in_vehicle, &mut p.phone);
+    let stale = p.is_stale(now);
+    feed_pad(ped, slot, &f, stale, in_vehicle);
+    // Collision gating.
+    if let Some(on) = remote::collision_wanted(&f) {
+        let flags = mem.read_u32(ped + ENTITY_FLAGS).unwrap_or(0);
+        poke(ped + ENTITY_FLAGS, remote::collision_flags(flags, on));
+    }
+    if f.velocity == [0.0; 3] {
+        put_v3(ped + off::MOVE_SPEED, [0.0; 3]);
+    }
+    if stale {
+        put_v3(ped + off::MOVE_SPEED, [0.0; 3]);
+        put_v3(matrix + off::MATRIX_POS, f.position);
+    }
+}
+
+/// One-shot apply of a newly stored 207: velocity, then the position correction; then weapon, ped state and the
+/// synced animation.
+fn apply_new_foot_sync(runner: &mut Runner, p: &mut RemotePlayer, slot: u8, matrix: u32, f: &FootData) {
+    let mem = ProcessMemory;
+    let ped = p.ped;
+    let surfing = f.surf_id != 0 && f.surf_id != 0xFFFF && f.surf_id < 3000;
+    put_v3(ped + off::MOVE_SPEED, f.velocity);
+    if !surfing && let Some(cur) = v3(&mem, matrix + off::MATRIX_POS) {
+        let vt = mem.read_u32(ped + off::VTABLE).unwrap_or(0);
+        let moving = vt != VTBL_CPLACEABLE && mem.read_u32(ped + PHYSICAL_MOVING_LIST).unwrap_or(0) != 0;
+        match correct_position(cur, f.position, f.velocity, moving) {
+            Correction::None => {}
+            Correction::Nudge(s) => {
+                put_v3(ped + off::MOVE_SPEED, s);
+            }
+            Correction::Teleport => {
+                p.teleports += 1;
+                put_v3(matrix + off::MATRIX_POS, f.position);
+            }
+        }
+    }
+    // One-shot weapon and ped state.
+    if crate::client::ped_in_world(ped) {
+        apply_weapon(runner, ped, slot, f.weapon);
+    }
+    sniper_state(runner, ped, f.keys);
+    // The synced animation.
+    crate::behaviourclient::remote_anim(runner, p.id, ped, f.animation);
+}
+
+/// Every frame: rotation 25 % toward the synced quaternion, mirrored into the headings.
+fn rotate_toward_sync(ped: u32, matrix: u32, rotation: Quat) {
+    let mem = ProcessMemory;
+    if let (Some(right), Some(forward), Some(up)) = (v3(&mem, matrix), v3(&mem, matrix + 0x10), v3(&mem, matrix + 0x20))
+    {
+        let cur = quat_from_matrix(&Rotation { right, forward, up });
+        let q = normalise(slerp(rotation, cur, remote::SLERP_KEEP));
+        let rows = rows_from_quat(q);
+        put_v3(matrix, rows.right);
+        put_v3(matrix + 0x10, rows.forward);
+        put_v3(matrix + 0x20, rows.up);
+        let h = heading_from_forward(rows.forward);
+        poke(ped + off::PED_HEADING, h);
+        poke(ped + off::PED_HEADING_GOAL, h);
+    }
+}
+
+/// Head look toward the slot's aim direction, refreshed and re-issued on samp's timers.
+fn head_look(p: &mut RemotePlayer, slot: u8, matrix: u32, now: Instant) {
+    let mem = ProcessMemory;
+    let (refresh, call) = remote::head_look_due(p, now);
+    if refresh {
+        p.look_refresh = Some(now);
+        let front = swap::with_table(|t| {
+            t.shadows.get(usize::from(slot)).map(|s| [s.aim[0], s.aim[1], s.aim[2]]).unwrap_or_default()
+        });
+        p.look_offset = front.map(|c| c * remote::LOOK_DISTANCE);
+    }
+    if call && let Some(pos) = v3(&mem, matrix + off::MATRIX_POS) {
+        p.look_last = Some(now);
+        let mut target = [0, 1, 2].map(|i| pos[i] + p.look_offset[i]);
+        look_at(p.ped, 1000, &mut target);
+    }
+}
+
+/// The synced keys and sticks (zeroed while the sync is stale) into the slot's shadow pad.
+fn feed_pad(ped: u32, slot: u8, f: &FootData, stale: bool, in_vehicle: bool) {
+    let mem = ProcessMemory;
+    let intel = mem.read_u32(ped + off::PED_INTELLIGENCE).unwrap_or(0);
+    let task = if intel != 0 { mem.read_u32(intel + off::INTELLIGENCE_PRIMARY_TASK).unwrap_or(0) } else { 0 };
+    let jetpack = task != 0 && mem.read_u32(task).unwrap_or(0) == game::VTBL_TASK_SIMPLE_JETPACK;
+    let input = PadInput {
+        keys: f.keys,
+        left_right: if stale { 0 } else { f.left_right },
+        up_down: if stale { 0 } else { f.up_down },
+        in_vehicle,
+        jetpack,
+    };
+    swap::with_table(|t| {
+        if let Some(sh) = t.shadows.get_mut(usize::from(slot)) {
+            remote::apply_keys(&mut sh.pad, input);
+        }
+    });
 }
 
 /// The one-shot weapon check: arm the synced weapon; if the ped does not have it,

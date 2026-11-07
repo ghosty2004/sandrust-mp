@@ -634,7 +634,8 @@ mod tests {
         let rammed = DamageCtx { victim_local: true, weapon: 49, surfing, surface_is_damager: by_surface, ..ctx() };
         assert_eq!(decide(&rammed), Decision { report: None, cancel: true });
         let (surfing, by_surface) = surf_inputs(Some(0x1234), 0x9999);
-        let shot = DamageCtx { victim_local: true, attacker: Some(bot), surfing, surface_is_damager: by_surface, ..ctx() };
+        let shot =
+            DamageCtx { victim_local: true, attacker: Some(bot), surfing, surface_is_damager: by_surface, ..ctx() };
         assert_eq!(decide(&shot), Decision { report: Some(Report::Take { attacker: 3 }), cancel: false });
         assert_eq!(surf_inputs(None, 0), (false, false));
         assert_eq!(surf_inputs(Some(0), 0), (true, true));

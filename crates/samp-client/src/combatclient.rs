@@ -43,6 +43,11 @@ fn rd<T: Copy>(a: u32) -> T {
     unsafe { std::ptr::read_unaligned(a as usize as *const T) }
 }
 
+fn wr<T: Copy>(a: u32, v: T) {
+    // SAFETY: callers pass writable fields of live game objects / globals, main thread.
+    unsafe { std::ptr::write_unaligned(a as usize as *mut T, v) }
+}
+
 fn v3(a: u32) -> [f32; 3] {
     [rd(a), rd(a + 4), rd(a + 8)]
 }
@@ -401,8 +406,7 @@ pub fn set_ammo(ped: u32, weapon: u8, ammo: u16) {
     for i in 0..13u32 {
         let w = ped + off::PED_WEAPONS + i * off::WEAPON_SIZE;
         if rd::<u32>(w) == u32::from(weapon) {
-            // SAFETY: the ped's own CWeapon, main thread.
-            unsafe { std::ptr::write_unaligned((w + off::WEAPON_AMMO_TOTAL) as usize as *mut u32, u32::from(ammo)) };
+            wr(w + off::WEAPON_AMMO_TOTAL, u32::from(ammo));
             return;
         }
     }
@@ -412,13 +416,7 @@ pub fn set_ammo(ped: u32, weapon: u8, ammo: u16) {
 /// Mirrors samp.dll 0x1000F5E0.
 pub fn set_local_skill(skill: u32, level: u16) {
     if skill < 11 {
-        // SAFETY: CStats::StatTypesFloat entry (.data), main thread.
-        unsafe {
-            std::ptr::write_unaligned(
-                (crate::game::WEAPON_SKILL_STATS + 4 * skill) as usize as *mut f32,
-                f32::from(level),
-            )
-        };
+        wr(crate::game::WEAPON_SKILL_STATS + 4 * skill, f32::from(level));
     }
 }
 

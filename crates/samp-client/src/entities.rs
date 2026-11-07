@@ -160,206 +160,23 @@ impl Entities {
     pub fn on_rpc(&mut self, runner: &mut Runner, r: W) {
         match r {
             // ---- pickups (create / destroy)
-            W::PlayerCreatePickup(p) => {
-                if !(0..world::MAX_PICKUPS).contains(&p.pickup_id) || self.pickups.len() >= world::MAX_PICKUPS as usize
-                {
-                    return;
-                }
-                if let Some(old) = self.pickups.remove(&p.pickup_id) {
-                    runner.run(op::REMOVE_PICKUP, &[Arg::Int(old.handle)]);
-                }
-                let mut model = p.model;
-                if wh::model_info(model) == 0 {
-                    model = world::MODEL_UNKNOWN;
-                }
-                if (0..=world::MAX_MODEL).contains(&model) {
-                    busy_load(runner, model);
-                }
-                let pos = vec(p.position);
-                runner.run(
-                    op::CREATE_PICKUP,
-                    &[
-                        Arg::Int(model),
-                        Arg::Int(p.pickup_type),
-                        Arg::Float(pos[0]),
-                        Arg::Float(pos[1]),
-                        Arg::Float(pos[2]),
-                        Arg::Local(0),
-                    ],
-                );
-                let handle = runner.local_i32(0);
-                self.pickups.insert(p.pickup_id, Pickup { model, kind: p.pickup_type, pos, handle });
-                let id = p.pickup_id;
-                wh::with_shared(|s| {
-                    s.pickups.insert((handle & 0xFFFF) as u32, id);
-                    s.cooldown.insert(id, 0);
-                });
-            }
-            W::PlayerDestroyPickup(p) => {
-                if let Some(old) = self.pickups.remove(&p.pickup_id) {
-                    runner.run(op::REMOVE_PICKUP, &[Arg::Int(old.handle)]);
-                    wh::with_shared(|s| {
-                        s.pickups.retain(|_, v| *v != p.pickup_id);
-                        s.cooldown.remove(&p.pickup_id);
-                    });
-                }
-            }
+            W::PlayerCreatePickup(p) => self.create_pickup(runner, p),
+            W::PlayerDestroyPickup(p) => self.destroy_pickup(runner, p),
             // ---- actors
-            W::ShowActorForPlayer(a) => {
-                if a.actor_id >= world::MAX_ACTORS || wh::model_info(a.skin as i32) == 0 {
-                    return;
-                }
-                if self.actors.contains_key(&a.actor_id) {
-                    crate::ui::print_debug(&format!("Warning: actor {} was not deleted", a.actor_id));
-                    self.delete_actor(runner, a.actor_id);
-                }
-                if !busy_load(runner, a.skin as i32) {
-                    return;
-                }
-                let p = vec(a.position);
-                runner.run(
-                    op::CREATE_CHAR,
-                    &[
-                        Arg::Int(world::ACTOR_PED_TYPE),
-                        Arg::Int(a.skin as i32),
-                        Arg::Float(p[0]),
-                        Arg::Float(p[1]),
-                        Arg::Float(p[2] - 1.0),
-                        Arg::Local(0),
-                    ],
-                );
-                let handle = runner.local_i32(0);
-                let ped = ped_at(handle);
-                runner.run(sop::SET_CHAR_HEADING, &[Arg::Int(handle), Arg::Float(a.angle)]);
-                runner.run(sop::SET_CHAR_SUFFERS_CRITICAL_HITS, &[Arg::Int(handle), Arg::Int(0)]);
-                runner.run(op::SET_CHAR_DECISION_MAKER, &[Arg::Int(handle), Arg::Int(world::ACTOR_DECISION_MAKER)]);
-                set_actor_health(runner, handle, ped, a.health);
-                let pr = world::actor_proofs(a.invulnerable != 0);
-                runner.run(
-                    sop::SET_CHAR_PROOFS,
-                    &[
-                        Arg::Int(handle),
-                        Arg::Int(pr[0]),
-                        Arg::Int(pr[1]),
-                        Arg::Int(pr[2]),
-                        Arg::Int(pr[3]),
-                        Arg::Int(pr[4]),
-                    ],
-                );
-                self.actors.insert(a.actor_id, Actor { skin: a.skin, handle, ped, invulnerable: a.invulnerable != 0 });
-            }
+            W::ShowActorForPlayer(a) => self.show_actor(runner, a),
             W::HideActorForPlayer(h) => self.delete_actor(runner, h.actor_id),
-            W::ApplyActorAnimationForPlayer(a) => {
-                let Some(ac) = self.actors.get(&a.actor_id).copied() else { return };
-                if ac.ped == 0 || world::actor_anim_refused(&a.library) {
-                    return;
-                }
-                let lib = intern(&a.library);
-                let name = intern(&a.name);
-                if !runner.run(sop::HAS_ANIMATION_LOADED, &[Arg::Text(lib)]) {
-                    runner.run(sop::REQUEST_ANIMATION, &[Arg::Text(lib)]);
-                    let t0 = std::time::Instant::now();
-                    while !runner.run(sop::HAS_ANIMATION_LOADED, &[Arg::Text(lib)]) {
-                        if t0.elapsed() > std::time::Duration::from_millis(15) {
-                            // Gives up without playing, as the original does when the block is not loaded yet.
-                            return;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
-                }
-                runner.run(
-                    op::TASK_PLAY_ANIM_NON_INTERRUPTABLE,
-                    &[
-                        Arg::Int(ac.handle),
-                        Arg::Text(name),
-                        Arg::Text(lib),
-                        Arg::Float(a.delta),
-                        Arg::Int(i32::from(a.loop_anim)),
-                        Arg::Int(i32::from(a.lock_x)),
-                        Arg::Int(i32::from(a.lock_y)),
-                        Arg::Int(i32::from(a.freeze)),
-                        Arg::Int(a.time as i32),
-                    ],
-                );
-            }
-            W::ClearActorAnimationsForPlayer(c) => {
-                if let Some(ac) = self.actors.get(&c.actor_id).filter(|a| a.ped != 0) {
-                    let intel: u32 = rd(ac.ped + crate::game::off::PED_INTELLIGENCE);
-                    if intel != 0 {
-                        // SAFETY: CPedIntelligence::FlushImmediately(bool) (thiscall) on the actor's intelligence.
-                        unsafe {
-                            let f: extern "thiscall" fn(u32, u32) = std::mem::transmute(FLUSH_IMMEDIATELY as usize);
-                            f(intel, 1);
-                        }
-                    }
-                }
-            }
-            W::SetActorFacingAngleForPlayer(f) => {
-                if let Some(ac) = self.actors.get(&f.actor_id).filter(|a| a.ped != 0) {
-                    wr(ac.ped + crate::game::off::PED_HEADING_GOAL, world::samp_actor_heading(f.angle));
-                }
-            }
-            W::SetActorPosForPlayer(p) => {
-                if let Some(ac) = self.actors.get(&p.actor_id).filter(|a| a.ped != 0) {
-                    teleport(ac.ped, vec(p.position));
-                }
-            }
-            W::SetActorHealthForPlayer(h) => {
-                if let Some(ac) = self.actors.get(&h.actor_id).copied().filter(|a| a.ped != 0) {
-                    set_actor_health(runner, ac.handle, ac.ped, h.health);
-                }
-            }
+            W::ApplyActorAnimationForPlayer(a) => self.apply_actor_animation(runner, a),
+            W::ClearActorAnimationsForPlayer(c) => self.clear_actor_animations(c),
+            W::SetActorFacingAngleForPlayer(f) => self.set_actor_facing_angle(f),
+            W::SetActorPosForPlayer(p) => self.set_actor_pos(p),
+            W::SetActorHealthForPlayer(h) => self.update_actor_health(runner, h),
             // ---- checkpoints (normal / race)
-            W::SetCheckpoint(c) => {
-                self.cp.pos = vec(c.position);
-                self.cp.size = c.size;
-                if self.cp.blip != 0 {
-                    runner.run(sop::REMOVE_BLIP, &[Arg::Int(self.cp.blip)]);
-                    self.cp.blip = add_checkpoint_blip(runner, self.cp.pos);
-                }
-                self.cp.active = true;
-            }
+            W::SetCheckpoint(c) => self.set_checkpoint(runner, c),
             W::DisableCheckpoint(_) => self.cp.active = false,
-            W::SetRaceCheckpoint(c) => {
-                let r = &mut self.rcp;
-                r.kind = c.checkpoint_type;
-                r.pos = vec(c.position);
-                r.next = vec(c.next_position);
-                r.size = c.size;
-                if r.blip != 0 {
-                    runner.run(sop::REMOVE_BLIP, &[Arg::Int(r.blip)]);
-                    r.blip = add_checkpoint_blip(runner, r.pos);
-                }
-                if r.handle != 0 {
-                    runner.run(op::DELETE_CHECKPOINT, &[Arg::Int(r.handle)]);
-                    r.handle = 0;
-                }
-                runner.run(
-                    op::CREATE_CHECKPOINT,
-                    &[
-                        Arg::Int(i32::from(r.kind)),
-                        Arg::Float(r.pos[0]),
-                        Arg::Float(r.pos[1]),
-                        Arg::Float(r.pos[2]),
-                        Arg::Float(r.next[0]),
-                        Arg::Float(r.next[1]),
-                        Arg::Float(r.next[2]),
-                        Arg::Float(r.size),
-                        Arg::Local(0),
-                    ],
-                );
-                r.handle = runner.local_i32(0);
-                r.active = true;
-            }
+            W::SetRaceCheckpoint(c) => self.set_race_checkpoint(runner, c),
             W::DisableRaceCheckpoint(_) => self.rcp.active = false,
             // ---- gang zones (the wire id is bounds-checked here)
-            W::ShowGangZone(z) => {
-                if z.zone_id < world::MAX_GANG_ZONES {
-                    wh::with_shared(|s| {
-                        s.zones.insert(z.zone_id, GangZone::new(z.min.x, z.min.y, z.max.x, z.max.y, z.colour));
-                    });
-                }
-            }
+            W::ShowGangZone(z) => Self::show_gang_zone(z),
             W::HideGangZone(z) => wh::with_shared(|s| {
                 s.zones.remove(&z.zone_id);
             }),
@@ -374,65 +191,261 @@ impl Entities {
                 }
             }),
             // ---- map icons
-            W::SetPlayerMapIcon(m) => {
-                if m.icon_id >= world::MAX_MAP_ICONS {
-                    return;
-                }
-                if let Some(h) = self.icons.remove(&m.icon_id) {
-                    runner.run(sop::REMOVE_BLIP, &[Arg::Int(h)]);
-                }
-                let p = vec(m.position);
-                runner.run(
-                    world::map_icon_opcode(m.style),
-                    &[
-                        Arg::Float(p[0]),
-                        Arg::Float(p[1]),
-                        Arg::Float(p[2]),
-                        Arg::Int(i32::from(m.icon_type)),
-                        Arg::Local(0),
-                    ],
-                );
-                let h = runner.local_i32(0);
-                if m.icon_type == 0 {
-                    runner.run(sop::CHANGE_BLIP_COLOUR, &[Arg::Int(h), Arg::Int(m.colour as i32)]);
-                    runner.run(sop::CHANGE_BLIP_SCALE, &[Arg::Int(h), Arg::Int(world::map_icon_scale(m.colour))]);
-                }
-                self.icons.insert(m.icon_id, h);
-            }
-            W::RemovePlayerMapIcon(m) => {
-                if m.icon_id < world::MAX_MAP_ICONS {
-                    let h = self.icons.remove(&m.icon_id).unwrap_or(0);
-                    runner.run(sop::REMOVE_BLIP, &[Arg::Int(h)]);
-                }
-            }
+            W::SetPlayerMapIcon(m) => self.set_map_icon(runner, m),
+            W::RemovePlayerMapIcon(m) => self.remove_map_icon(runner, m),
             // ---- 3D labels
-            W::PlayerShowTextLabel(l) => {
-                if l.label_id < world::MAX_LABELS {
-                    self.labels.insert(
-                        l.label_id,
-                        Label {
-                            colour: l.colour,
-                            pos: vec(l.position),
-                            draw_distance: l.draw_distance,
-                            los: l.test_los != 0,
-                            player: l.attached_player_id,
-                            vehicle: l.attached_vehicle_id,
-                            // Stored as received (colour codes are kept for the painter's colour wrapper); a
-                            // text shorter than 400 chars with `~k~` gets GTA's key-name expansion, kept if it
-                            // fits in 399 chars.
-                            text: samp_ui::text::expand_key_names_limit(
-                                &l.text,
-                                &crate::ui::GameExpander,
-                                samp_ui::text::LABEL_KEY_EXPANSION_MAX_OUTPUT,
-                            ),
-                        },
-                    );
-                }
-            }
+            W::PlayerShowTextLabel(l) => self.show_label(l),
             W::PlayerHideTextLabel(l) => {
                 self.labels.remove(&l.label_id);
             }
             _ => {}
+        }
+    }
+
+    fn create_pickup(&mut self, runner: &mut Runner, p: rw::PlayerCreatePickup) {
+        if !(0..world::MAX_PICKUPS).contains(&p.pickup_id) || self.pickups.len() >= world::MAX_PICKUPS as usize {
+            return;
+        }
+        if let Some(old) = self.pickups.remove(&p.pickup_id) {
+            runner.run(op::REMOVE_PICKUP, &[Arg::Int(old.handle)]);
+        }
+        let mut model = p.model;
+        if wh::model_info(model) == 0 {
+            model = world::MODEL_UNKNOWN;
+        }
+        if (0..=world::MAX_MODEL).contains(&model) {
+            busy_load(runner, model);
+        }
+        let pos = vec(p.position);
+        runner.run(
+            op::CREATE_PICKUP,
+            &[
+                Arg::Int(model),
+                Arg::Int(p.pickup_type),
+                Arg::Float(pos[0]),
+                Arg::Float(pos[1]),
+                Arg::Float(pos[2]),
+                Arg::Local(0),
+            ],
+        );
+        let handle = runner.local_i32(0);
+        self.pickups.insert(p.pickup_id, Pickup { model, kind: p.pickup_type, pos, handle });
+        let id = p.pickup_id;
+        wh::with_shared(|s| {
+            s.pickups.insert((handle & 0xFFFF) as u32, id);
+            s.cooldown.insert(id, 0);
+        });
+    }
+
+    fn destroy_pickup(&mut self, runner: &mut Runner, p: rw::PlayerDestroyPickup) {
+        if let Some(old) = self.pickups.remove(&p.pickup_id) {
+            runner.run(op::REMOVE_PICKUP, &[Arg::Int(old.handle)]);
+            wh::with_shared(|s| {
+                s.pickups.retain(|_, v| *v != p.pickup_id);
+                s.cooldown.remove(&p.pickup_id);
+            });
+        }
+    }
+
+    fn show_actor(&mut self, runner: &mut Runner, a: rw::ShowActorForPlayer) {
+        if a.actor_id >= world::MAX_ACTORS || wh::model_info(a.skin as i32) == 0 {
+            return;
+        }
+        if self.actors.contains_key(&a.actor_id) {
+            crate::ui::print_debug(&format!("Warning: actor {} was not deleted", a.actor_id));
+            self.delete_actor(runner, a.actor_id);
+        }
+        if !busy_load(runner, a.skin as i32) {
+            return;
+        }
+        let p = vec(a.position);
+        runner.run(
+            op::CREATE_CHAR,
+            &[
+                Arg::Int(world::ACTOR_PED_TYPE),
+                Arg::Int(a.skin as i32),
+                Arg::Float(p[0]),
+                Arg::Float(p[1]),
+                Arg::Float(p[2] - 1.0),
+                Arg::Local(0),
+            ],
+        );
+        let handle = runner.local_i32(0);
+        let ped = ped_at(handle);
+        runner.run(sop::SET_CHAR_HEADING, &[Arg::Int(handle), Arg::Float(a.angle)]);
+        runner.run(sop::SET_CHAR_SUFFERS_CRITICAL_HITS, &[Arg::Int(handle), Arg::Int(0)]);
+        runner.run(op::SET_CHAR_DECISION_MAKER, &[Arg::Int(handle), Arg::Int(world::ACTOR_DECISION_MAKER)]);
+        set_actor_health(runner, handle, ped, a.health);
+        let pr = world::actor_proofs(a.invulnerable != 0);
+        runner.run(
+            sop::SET_CHAR_PROOFS,
+            &[Arg::Int(handle), Arg::Int(pr[0]), Arg::Int(pr[1]), Arg::Int(pr[2]), Arg::Int(pr[3]), Arg::Int(pr[4])],
+        );
+        self.actors.insert(a.actor_id, Actor { skin: a.skin, handle, ped, invulnerable: a.invulnerable != 0 });
+    }
+
+    fn apply_actor_animation(&mut self, runner: &mut Runner, a: rw::ApplyActorAnimationForPlayer) {
+        let Some(ac) = self.actors.get(&a.actor_id).copied() else { return };
+        if ac.ped == 0 || world::actor_anim_refused(&a.library) {
+            return;
+        }
+        let lib = intern(&a.library);
+        let name = intern(&a.name);
+        if !runner.run(sop::HAS_ANIMATION_LOADED, &[Arg::Text(lib)]) {
+            runner.run(sop::REQUEST_ANIMATION, &[Arg::Text(lib)]);
+            let t0 = std::time::Instant::now();
+            while !runner.run(sop::HAS_ANIMATION_LOADED, &[Arg::Text(lib)]) {
+                if t0.elapsed() > std::time::Duration::from_millis(15) {
+                    // Gives up without playing, as the original does when the block is not loaded yet.
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        runner.run(
+            op::TASK_PLAY_ANIM_NON_INTERRUPTABLE,
+            &[
+                Arg::Int(ac.handle),
+                Arg::Text(name),
+                Arg::Text(lib),
+                Arg::Float(a.delta),
+                Arg::Int(i32::from(a.loop_anim)),
+                Arg::Int(i32::from(a.lock_x)),
+                Arg::Int(i32::from(a.lock_y)),
+                Arg::Int(i32::from(a.freeze)),
+                Arg::Int(a.time as i32),
+            ],
+        );
+    }
+
+    fn clear_actor_animations(&mut self, c: rw::ClearActorAnimationsForPlayer) {
+        if let Some(ac) = self.actors.get(&c.actor_id).filter(|a| a.ped != 0) {
+            let intel: u32 = rd(ac.ped + crate::game::off::PED_INTELLIGENCE);
+            if intel != 0 {
+                // SAFETY: CPedIntelligence::FlushImmediately(bool) (thiscall) on the actor's intelligence.
+                unsafe {
+                    let f: extern "thiscall" fn(u32, u32) = std::mem::transmute(FLUSH_IMMEDIATELY as usize);
+                    f(intel, 1);
+                }
+            }
+        }
+    }
+
+    fn set_actor_facing_angle(&mut self, f: rw::SetActorFacingAngleForPlayer) {
+        if let Some(ac) = self.actors.get(&f.actor_id).filter(|a| a.ped != 0) {
+            wr(ac.ped + crate::game::off::PED_HEADING_GOAL, world::samp_actor_heading(f.angle));
+        }
+    }
+
+    fn set_actor_pos(&mut self, p: rw::SetActorPosForPlayer) {
+        if let Some(ac) = self.actors.get(&p.actor_id).filter(|a| a.ped != 0) {
+            teleport(ac.ped, vec(p.position));
+        }
+    }
+
+    fn update_actor_health(&mut self, runner: &mut Runner, h: rw::SetActorHealthForPlayer) {
+        if let Some(ac) = self.actors.get(&h.actor_id).copied().filter(|a| a.ped != 0) {
+            set_actor_health(runner, ac.handle, ac.ped, h.health);
+        }
+    }
+
+    fn set_checkpoint(&mut self, runner: &mut Runner, c: rw::SetCheckpoint) {
+        self.cp.pos = vec(c.position);
+        self.cp.size = c.size;
+        if self.cp.blip != 0 {
+            runner.run(sop::REMOVE_BLIP, &[Arg::Int(self.cp.blip)]);
+            self.cp.blip = add_checkpoint_blip(runner, self.cp.pos);
+        }
+        self.cp.active = true;
+    }
+
+    fn set_race_checkpoint(&mut self, runner: &mut Runner, c: rw::SetRaceCheckpoint) {
+        let r = &mut self.rcp;
+        r.kind = c.checkpoint_type;
+        r.pos = vec(c.position);
+        r.next = vec(c.next_position);
+        r.size = c.size;
+        if r.blip != 0 {
+            runner.run(sop::REMOVE_BLIP, &[Arg::Int(r.blip)]);
+            r.blip = add_checkpoint_blip(runner, r.pos);
+        }
+        if r.handle != 0 {
+            runner.run(op::DELETE_CHECKPOINT, &[Arg::Int(r.handle)]);
+            r.handle = 0;
+        }
+        runner.run(
+            op::CREATE_CHECKPOINT,
+            &[
+                Arg::Int(i32::from(r.kind)),
+                Arg::Float(r.pos[0]),
+                Arg::Float(r.pos[1]),
+                Arg::Float(r.pos[2]),
+                Arg::Float(r.next[0]),
+                Arg::Float(r.next[1]),
+                Arg::Float(r.next[2]),
+                Arg::Float(r.size),
+                Arg::Local(0),
+            ],
+        );
+        r.handle = runner.local_i32(0);
+        r.active = true;
+    }
+
+    fn show_gang_zone(z: rw::ShowGangZone) {
+        if z.zone_id < world::MAX_GANG_ZONES {
+            wh::with_shared(|s| {
+                s.zones.insert(z.zone_id, GangZone::new(z.min.x, z.min.y, z.max.x, z.max.y, z.colour));
+            });
+        }
+    }
+
+    fn set_map_icon(&mut self, runner: &mut Runner, m: rw::SetPlayerMapIcon) {
+        if m.icon_id >= world::MAX_MAP_ICONS {
+            return;
+        }
+        if let Some(h) = self.icons.remove(&m.icon_id) {
+            runner.run(sop::REMOVE_BLIP, &[Arg::Int(h)]);
+        }
+        let p = vec(m.position);
+        runner.run(
+            world::map_icon_opcode(m.style),
+            &[Arg::Float(p[0]), Arg::Float(p[1]), Arg::Float(p[2]), Arg::Int(i32::from(m.icon_type)), Arg::Local(0)],
+        );
+        let h = runner.local_i32(0);
+        if m.icon_type == 0 {
+            runner.run(sop::CHANGE_BLIP_COLOUR, &[Arg::Int(h), Arg::Int(m.colour as i32)]);
+            runner.run(sop::CHANGE_BLIP_SCALE, &[Arg::Int(h), Arg::Int(world::map_icon_scale(m.colour))]);
+        }
+        self.icons.insert(m.icon_id, h);
+    }
+
+    fn remove_map_icon(&mut self, runner: &mut Runner, m: rw::RemovePlayerMapIcon) {
+        if m.icon_id < world::MAX_MAP_ICONS {
+            let h = self.icons.remove(&m.icon_id).unwrap_or(0);
+            runner.run(sop::REMOVE_BLIP, &[Arg::Int(h)]);
+        }
+    }
+
+    fn show_label(&mut self, l: rw::PlayerShowTextLabel) {
+        if l.label_id < world::MAX_LABELS {
+            self.labels.insert(
+                l.label_id,
+                Label {
+                    colour: l.colour,
+                    pos: vec(l.position),
+                    draw_distance: l.draw_distance,
+                    los: l.test_los != 0,
+                    player: l.attached_player_id,
+                    vehicle: l.attached_vehicle_id,
+                    // Stored as received (colour codes are kept for the painter's colour wrapper); a text shorter
+                    // than 400 chars with `~k~` gets GTA's key-name expansion, kept if it fits in 399 chars.
+                    text: samp_ui::text::expand_key_names_limit(
+                        &l.text,
+                        &crate::ui::GameExpander,
+                        samp_ui::text::LABEL_KEY_EXPANSION_MAX_OUTPUT,
+                    ),
+                },
+            );
         }
     }
 
@@ -808,6 +821,7 @@ fn head_position(ped: u32) -> Option<[f32; 3]> {
     if hier == 0 {
         return None;
     }
+    // SAFETY: RpHAnimIDGetIndex (cdecl) on the hierarchy just returned for the live clump.
     let idx = unsafe {
         let f: extern "C" fn(u32, i32) -> i32 = std::mem::transmute(g::RP_HANIM_ID_GET_INDEX as usize);
         f(hier, node_id)

@@ -221,6 +221,7 @@ type ReadFileFn = unsafe extern "system" fn(usize, *mut u8, u32, *mut u32, *mut 
 unsafe extern "system" fn read_file(h: usize, buf: *mut u8, n: u32, read: *mut u32, overlapped: *mut u8) -> i32 {
     if saafs::in_fake_range(h as u32) {
         // OVERLAPPED: Offset at +8, hEvent at +16.
+        // SAFETY: a non-null OVERLAPPED passed by the caller of ReadFile.
         let offset = (!overlapped.is_null()).then(|| unsafe { overlapped.add(8).cast::<u32>().read_unaligned() });
         let out = with_redirector(|r| {
             let dst: &mut [u8] = if n == 0 || buf.is_null() {

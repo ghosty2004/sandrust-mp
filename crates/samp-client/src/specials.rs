@@ -156,7 +156,10 @@ mod imp {
         }
         let Some((model, o)) = item_object(kind) else { return };
         let (Some(h), Some(p)) = (handle(ped), pos(ped)) else { return };
-        runner.run(op::CREATE_OBJECT, &[Arg::Int(model), Arg::Float(p[0]), Arg::Float(p[1]), Arg::Float(p[2]), Arg::Local(0)]);
+        runner.run(
+            op::CREATE_OBJECT,
+            &[Arg::Int(model), Arg::Float(p[0]), Arg::Float(p[1]), Arg::Float(p[2]), Arg::Local(0)],
+        );
         let obj = runner.local_i32(0);
         if crate::objects::object_at(obj) == 0 {
             ex.item_obj = 0;
@@ -231,7 +234,8 @@ mod imp {
         }
         match ex.item {
             1..=3 => {
-                let name: &[u8] = if female_drink(drink_type_value(ped)) { b"dnk_stndF_loop" } else { b"dnk_stndM_loop" };
+                let name: &[u8] =
+                    if female_drink(drink_type_value(ped)) { b"dnk_stndF_loop" } else { b"dnk_stndM_loop" };
                 crate::behaviourclient::play(runner, ped, name, b"BAR", 4.0, [false; 4], -1);
                 *drunk = after_drink(*drunk, ex.item);
                 true
@@ -257,7 +261,18 @@ mod imp {
         let f = Arg::Float;
         runner.run(
             op::CREATE_FX_SYSTEM_ON_CHAR_WITH_DIRECTION,
-            &[Arg::Text("PETROLCAN"), Arg::Int(h), f(0.0), f(0.58), f(-0.08), f(0.0), f(0.01), f(0.0), Arg::Int(1), Arg::Local(0)],
+            &[
+                Arg::Text("PETROLCAN"),
+                Arg::Int(h),
+                f(0.0),
+                f(0.58),
+                f(-0.08),
+                f(0.0),
+                f(0.01),
+                f(0.0),
+                Arg::Int(1),
+                Arg::Local(0),
+            ],
         );
         ex.piss_fx = runner.local_i32(0);
         runner.run(op::PLAY_FX_SYSTEM, &[Arg::Int(ex.piss_fx)]);
@@ -419,7 +434,14 @@ mod imp {
         runner.run(op::SET_OBJECT_SCALE, &[Arg::Int(obj), Arg::Float(0.0)]);
         runner.run(
             op::PLAY_OBJECT_ANIM,
-            &[Arg::Int(obj), Arg::Text("PARA_OPEN_O"), Arg::Text("PARACHUTE"), Arg::Float(1000.0), Arg::Int(0), Arg::Int(1)],
+            &[
+                Arg::Int(obj),
+                Arg::Text("PARA_OPEN_O"),
+                Arg::Text("PARACHUTE"),
+                Arg::Float(1000.0),
+                Arg::Int(0),
+                Arg::Int(1),
+            ],
         );
         runner.run(op::SET_OBJECT_VISIBLE, &[Arg::Int(obj), Arg::Int(1)]);
         runner.run(op::SET_OBJECT_SCALE, &[Arg::Int(obj), Arg::Float(1.0)]);
